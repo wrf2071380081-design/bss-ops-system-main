@@ -39,7 +39,7 @@ func NewWorkbenchAuditHandler(auditSvc *workbench.AuditService) *WorkbenchAuditH
 //	@Param		page			query		int		false	"页码（默认 1）"
 //	@Param		size			query		int		false	"每页大小（默认 20，最大 100）"
 //	@Success	200	{object}	api.APIResponse	"code=0；data=AuditListResult{items,total}"
-//	@Router		/internal/audit-logs [get]
+//	@Router		/api/internal/audit-logs [get]
 //	@Security	BearerAuth
 func (h *WorkbenchAuditHandler) ListAuditLogs(c *gin.Context) {
 	var q workbench.AuditQuery
@@ -87,7 +87,7 @@ func (h *WorkbenchAuditHandler) ListAuditLogs(c *gin.Context) {
 //	@Param		from	query		string	true	"起始时间（RFC3339，左闭）"
 //	@Param		to		query		string	true	"结束时间（RFC3339，右开）"
 //	@Success	200	{file}		file
-//	@Router		/internal/audit-logs/export [get]
+//	@Router		/api/internal/audit-logs/export [get]
 //	@Security	BearerAuth
 func (h *WorkbenchAuditHandler) ExportAuditLogs(c *gin.Context) {
 	var q workbench.AuditExportQuery

@@ -717,6 +717,7 @@ paths:
         + audit CUSTOMER_QUOTE_ACCEPTED。
       parameters:
       - description: customer_quote.id
+        format: int64
         in: path
         name: id
         required: true
@@ -754,6 +755,57 @@ paths:
       summary: 接受报价 → 转合同价（幂等）
       tags:
       - 客户门户
+  /api/internal/alerts:
+    get:
+      parameters:
+      - description: 严重级别（CRITICAL/HIGH/MID/LOW）
+        in: query
+        name: severity
+        type: string
+      - description: 状态（OPEN/HANDLING/RESOLVED/IGNORED）
+        in: query
+        name: status
+        type: string
+      - description: 告警类型（QUOTE_EXPIRE/QUOTE_ANOMALY/RETRO_LIMIT）
+        in: query
+        name: alert_type
+        type: string
+      - description: 页码（默认 1）
+        in: query
+        name: page
+        type: integer
+      - description: 每页大小（默认 20，最大 100）
+        in: query
+        name: size
+        type: integer
+      responses:
+        "200":
+          description: code=0；data=AlertListResult{list,total,page,size}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 告警列表
+      tags:
+      - workbench
+    post:
+      parameters:
+      - description: 处理动作
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/workbench.AlertActionInput'
+      responses:
+        "200":
+          description: code=0；data=AlertActionResult{alert_id,status,todo_id}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 告警处理
+      tags:
+      - workbench
   /api/internal/approvals/{id}/decision:
     post:
       consumes:
@@ -761,6 +813,7 @@ paths:
       description: 角色匹配 required_role；同一操作员不得完成同一单的两个步骤；两步 APPROVED → SKU 转 DEPRECATING。
       parameters:
       - description: change_request ID
+        format: int64
         in: path
         name: id
         required: true
@@ -808,6 +861,87 @@ paths:
       summary: 审批动作
       tags:
       - 模型管理
+  /api/internal/audit-logs:
+    get:
+      parameters:
+      - description: 动作（如 CUSTOMER_QUOTE_ACCEPTED）
+        in: query
+        name: action
+        type: string
+      - description: 目标类型（如 CUSTOMER_QUOTE）
+        in: query
+        name: target_type
+        type: string
+      - description: 目标 ID
+        in: query
+        name: target_id
+        type: integer
+      - description: 操作员 ID
+        in: query
+        name: operator_id
+        type: integer
+      - description: 操作员角色
+        in: query
+        name: operator_role
+        type: string
+      - description: 来源类型（INTERNAL/WORKER/SYSTEM）
+        in: query
+        name: source_type
+        type: string
+      - description: 起始时间（RFC3339，左闭）
+        in: query
+        name: from
+        type: string
+      - description: 结束时间（RFC3339，右开）
+        in: query
+        name: to
+        type: string
+      - description: 页码（默认 1）
+        in: query
+        name: page
+        type: integer
+      - description: 每页大小（默认 20，最大 100）
+        in: query
+        name: size
+        type: integer
+      responses:
+        "200":
+          description: code=0；data=AuditListResult{items,total}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 审计日志列表
+      tags:
+      - workbench
+  /api/internal/audit-logs/export:
+    get:
+      parameters:
+      - description: 格式（csv/xlsx）
+        in: query
+        name: format
+        required: true
+        type: string
+      - description: 起始时间（RFC3339，左闭）
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: 结束时间（RFC3339，右开）
+        in: query
+        name: to
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+      security:
+      - BearerAuth: []
+      summary: 导出审计日志
+      tags:
+      - workbench
   /api/internal/auth/login:
     post:
       consumes:
@@ -918,6 +1052,7 @@ paths:
       description: 前端按 change_request_id 恢复审批状态（价目表发布、官方价变更均适用），不再依赖浏览器缓存。
       parameters:
       - description: change_request.id
+        format: int64
         in: path
         name: id
         required: true
@@ -1288,6 +1423,7 @@ paths:
         → 409。
       parameters:
       - description: customer_quote.id
+        format: int64
         in: path
         name: id
         required: true
@@ -1338,6 +1474,7 @@ paths:
         EXPIRED）；值未变则 unchanged=true 且不产生新版本（changed_items=[]）。状态可刷新仅限 DRAFT/PENDING。
       parameters:
       - description: customer_quote.id
+        format: int64
         in: path
         name: id
         required: true
@@ -1394,6 +1531,7 @@ paths:
         预演（裁决 2）。重复申请（special_price_status=PENDING）→ 409。
       parameters:
       - description: customer_quote.id
+        format: int64
         in: path
         name: id
         required: true
@@ -1489,6 +1627,7 @@ paths:
         或毛利；执行与客户列表相同的数据域校验。
       parameters:
       - description: customer_profile.id
+        format: int64
         in: path
         name: id
         required: true
@@ -1537,6 +1676,7 @@ paths:
         + 持 SALES 角色的 staff；移交目标是当前归属 → 409 no-op；非主管 → 403。
       parameters:
       - description: customer_profile.id
+        format: int64
         in: path
         name: id
         required: true
@@ -1632,6 +1772,7 @@ paths:
         reason。仅 SUBMITTED 可审核，终态再次审核返回 10005。
       parameters:
       - description: model_application.id
+        format: int64
         in: path
         name: id
         required: true
@@ -1694,10 +1835,12 @@ paths:
         name: keyword
         type: string
       - description: 厂商筛选
+        format: int64
         in: query
         name: vendor_id
         type: integer
       - description: 系列筛选
+        format: int64
         in: query
         name: family_id
         type: integer
@@ -1798,6 +1941,7 @@ paths:
       description: 别名全量覆盖语义；lifecycle_status 须走 publish / deprecate / batch 流程。
       parameters:
       - description: SKU ID
+        format: int64
         in: path
         name: id
         required: true
@@ -1843,6 +1987,7 @@ paths:
       description: 前端提交该 SKU 当前全部别名，服务端做差集增删；传空数组 = 清空。
       parameters:
       - description: SKU ID
+        format: int64
         in: path
         name: id
         required: true
@@ -1889,6 +2034,7 @@ paths:
         2 步审批。SKU 状态不变。
       parameters:
       - description: SKU ID
+        format: int64
         in: path
         name: id
         required: true
@@ -1941,6 +2087,7 @@ paths:
       description: 统计 price_book / customer_quote 引用并推荐替代 SKU，结果落库 deprecation_impact。
       parameters:
       - description: SKU ID
+        format: int64
         in: path
         name: id
         required: true
@@ -1976,6 +2123,7 @@ paths:
       description: 前置 lifecycle_status=PURCHASABLE；条件更新做并发占位（0 行 → 409）。
       parameters:
       - description: SKU ID
+        format: int64
         in: path
         name: id
         required: true
@@ -2209,6 +2357,7 @@ paths:
         2 步审批（PRICING_OP → FINANCE）。floor_violation=true → 409；SCHEDULED/GRAY → 400。
       parameters:
       - description: price_book ID
+        format: int64
         in: path
         name: id
         required: true
@@ -2264,6 +2413,7 @@ paths:
         floor 校验目标版本售价，低于当前红线 → 409。
       parameters:
       - description: price_book ID（当前生效版）
+        format: int64
         in: path
         name: id
         required: true
@@ -2430,6 +2580,7 @@ paths:
         7 待 8b-3）；NOT_FOLLOW 且当前售价 < floor → 409（须走特价审批）；非 PENDING 行 → 409；不存在 → 404。
       parameters:
       - description: 队列行 id
+        format: int64
         in: path
         name: id
         required: true
@@ -2638,6 +2789,7 @@ paths:
         + todo DONE + task_job(ACTIVATE_QUOTE) 入队 + 审计。immediate（valid_from≤now）时事务提交后同步激活。
       parameters:
       - description: 报价单 ID
+        format: int64
         in: path
         name: id
         required: true
@@ -2684,6 +2836,7 @@ paths:
         撤销确认（仅当尚未执行剔除）。
       parameters:
       - description: 报价单 ID
+        format: int64
         in: path
         name: id
         required: true
@@ -2738,6 +2891,7 @@ paths:
         Stage 6）。
       parameters:
       - description: 报价单 ID
+        format: int64
         in: path
         name: id
         required: true
@@ -2774,6 +2928,7 @@ paths:
         status=APPROVING（否则 409）。REJECTED 是终态，修订必须提交新版本。
       parameters:
       - description: 报价单 ID
+        format: int64
         in: path
         name: id
         required: true
@@ -2949,6 +3104,7 @@ paths:
         name: size
         type: integer
       - description: 供应商筛选
+        format: int64
         in: query
         name: supplier_id
         type: integer
@@ -3066,6 +3222,7 @@ paths:
         多出的组件不参与比对。按 id ASC（录入序）分页。
       parameters:
       - description: 按采集批次过滤
+        format: int64
         in: query
         name: sync_job_id
         type: integer
@@ -3194,6 +3351,72 @@ paths:
       summary: 确认入正式版本（M2:E，幂等必填 Idempotency-Key）
       tags:
       - 官方价变更
+  /api/internal/suppliers:
+    get:
+      parameters:
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页（上限 100）
+        in: query
+        name: size
+        type: integer
+      - description: 法人名称关键字
+        in: query
+        name: keyword
+        type: string
+      - description: VALID/EXPIRING/FROZEN
+        in: query
+        name: qual_status
+        type: string
+      - description: ACTIVE/INACTIVE
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data={list,total,page,size}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 供应商列表（M3:V，按归属采购过滤）
+      tags:
+      - 供应商管理
+  /api/internal/suppliers/{id}:
+    get:
+      parameters:
+      - description: 供应商 ID
+        format: int64
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data=供应商档案
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: 超出数据域
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "404":
+          description: 供应商不存在
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 供应商档案详情（M3:V，按归属采购过滤）
+      tags:
+      - 供应商管理
   /api/internal/workbench/metrics:
     get:
       description: 已认证即可；按的角色裁剪：PROCUREMENT 4 卡（待审批报价/本月生效/30天内到期/单点依赖）、PRICING_OP
@@ -3261,6 +3484,7 @@ paths:
       parameters:
       - default: 0
         description: 客户端已见版本号
+        format: int64
         in: query
         name: since
         type: integer
@@ -3361,6 +3585,7 @@ paths:
       parameters:
       - default: 0
         description: 客户端已见最大事件 id
+        format: int64
         in: query
         name: since
         type: integer
@@ -3655,6 +3880,7 @@ paths:
         decision。不含官方价以外任何成本信息。
       parameters:
       - description: 报价单 ID
+        format: int64
         in: path
         name: id
         required: true
@@ -3703,6 +3929,7 @@ paths:
         name: status
         type: string
       - description: SKU 筛选
+        format: int64
         in: query
         name: sku_id
         type: integer
@@ -3824,10 +4051,12 @@ paths:
         name: scope
         type: string
       - description: scope=vendor 时必填
+        format: int64
         in: query
         name: vendor_id
         type: integer
       - description: scope=family 时必填
+        format: int64
         in: query
         name: family_id
         type: integer
@@ -3879,10 +4108,12 @@ paths:
         name: keyword
         type: string
       - description: 厂商筛选
+        format: int64
         in: query
         name: vendor_id
         type: integer
       - description: 系列筛选
+        format: int64
         in: query
         name: family_id
         type: integer
@@ -3931,138 +4162,6 @@ paths:
       summary: 健康检查（运维探针，不走统一响应包）
       tags:
       - 运维
-  /internal/alerts:
-    get:
-      parameters:
-      - description: 严重级别（CRITICAL/HIGH/MID/LOW）
-        in: query
-        name: severity
-        type: string
-      - description: 状态（OPEN/HANDLING/RESOLVED/IGNORED）
-        in: query
-        name: status
-        type: string
-      - description: 告警类型（QUOTE_EXPIRE/QUOTE_ANOMALY/RETRO_LIMIT）
-        in: query
-        name: alert_type
-        type: string
-      - description: 页码（默认 1）
-        in: query
-        name: page
-        type: integer
-      - description: 每页大小（默认 20，最大 100）
-        in: query
-        name: size
-        type: integer
-      responses:
-        "200":
-          description: code=0；data=AlertListResult{list,total,page,size}
-          schema:
-            $ref: '#/definitions/api.APIResponse'
-      security:
-      - BearerAuth: []
-      summary: 告警列表
-      tags:
-      - workbench
-    post:
-      parameters:
-      - description: 处理动作
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/workbench.AlertActionInput'
-      responses:
-        "200":
-          description: code=0；data=AlertActionResult{alert_id,status,todo_id}
-          schema:
-            $ref: '#/definitions/api.APIResponse'
-      security:
-      - BearerAuth: []
-      summary: 告警处理
-      tags:
-      - workbench
-  /internal/audit-logs:
-    get:
-      parameters:
-      - description: 动作（如 CUSTOMER_QUOTE_ACCEPTED）
-        in: query
-        name: action
-        type: string
-      - description: 目标类型（如 CUSTOMER_QUOTE）
-        in: query
-        name: target_type
-        type: string
-      - description: 目标 ID
-        in: query
-        name: target_id
-        type: integer
-      - description: 操作员 ID
-        in: query
-        name: operator_id
-        type: integer
-      - description: 操作员角色
-        in: query
-        name: operator_role
-        type: string
-      - description: 来源类型（INTERNAL/WORKER/SYSTEM）
-        in: query
-        name: source_type
-        type: string
-      - description: 起始时间（RFC3339，左闭）
-        in: query
-        name: from
-        type: string
-      - description: 结束时间（RFC3339，右开）
-        in: query
-        name: to
-        type: string
-      - description: 页码（默认 1）
-        in: query
-        name: page
-        type: integer
-      - description: 每页大小（默认 20，最大 100）
-        in: query
-        name: size
-        type: integer
-      responses:
-        "200":
-          description: code=0；data=AuditListResult{items,total}
-          schema:
-            $ref: '#/definitions/api.APIResponse'
-      security:
-      - BearerAuth: []
-      summary: 审计日志列表
-      tags:
-      - workbench
-  /internal/audit-logs/export:
-    get:
-      parameters:
-      - description: 格式（csv/xlsx）
-        in: query
-        name: format
-        required: true
-        type: string
-      - description: 起始时间（RFC3339，左闭）
-        in: query
-        name: from
-        required: true
-        type: string
-      - description: 结束时间（RFC3339，右开）
-        in: query
-        name: to
-        required: true
-        type: string
-      responses:
-        "200":
-          description: OK
-          schema:
-            type: file
-      security:
-      - BearerAuth: []
-      summary: 导出审计日志
-      tags:
-      - workbench
 securityDefinitions:
   BearerAuth:
     description: Bearer <token>，登录后获得

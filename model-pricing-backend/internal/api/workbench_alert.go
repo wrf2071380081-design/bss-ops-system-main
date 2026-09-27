@@ -47,7 +47,7 @@ func alertErrToAppErr(err error) apperr.Error {
 //	@Param		page		 query	 int		false	"页码（默认 1）"
 //	@Param		size		 query	 int		false	"每页大小（默认 20，最大 100）"
 //	@Success	200	{object}	api.APIResponse	"code=0；data=AlertListResult{list,total,page,size}"
-//	@Router		/internal/alerts [get]
+//	@Router		/api/internal/alerts [get]
 //	@Security	BearerAuth
 func (h *WorkbenchAlertHandler) ListAlerts(c *gin.Context) {
 	var q workbench.AlertQuery
@@ -71,7 +71,7 @@ func (h *WorkbenchAlertHandler) ListAlerts(c *gin.Context) {
 //	@Tags		workbench
 //	@Param		body	body		workbench.AlertActionInput	true	"处理动作"
 //	@Success	200	{object}	api.APIResponse	"code=0；data=AlertActionResult{alert_id,status,todo_id}"
-//	@Router		/internal/alerts [post]
+//	@Router		/api/internal/alerts [post]
 //	@Security	BearerAuth
 func (h *WorkbenchAlertHandler) HandleAlert(c *gin.Context) {
 	var in workbench.AlertActionInput
