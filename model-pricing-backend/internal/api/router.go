@@ -19,6 +19,7 @@ import (
 	"model_bss/internal/domain/customer"
 	"model_bss/internal/domain/model"
 	"model_bss/internal/domain/openapi"
+	"model_bss/internal/domain/orgperm"
 	"model_bss/internal/domain/price"
 	"model_bss/internal/domain/pricing"
 	"model_bss/internal/domain/supplier"
@@ -69,6 +70,8 @@ type Deps struct {
 	// 阶段 11a：开放接口（11-open-api.md §1/§2）。
 	OpenApiSvc     *openapi.Service
 	OpenTokenStore middleware.OpenTokenStore
+	// 阶段 12：组织与权限 M11 只读视图（批次 5）。
+	OrgPermSvc *orgperm.Service
 }
 
 // New 构建并返回应用使用的 Gin Engine。
@@ -513,5 +516,16 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 		uh := NewWorkbenchAuditHandler(deps.AuditSvc)
 		protected.GET("/audit-logs", middleware.RequirePerm(perm.M12View), uh.ListAuditLogs)
 		protected.GET("/audit-logs/export", middleware.RequirePerm(perm.M12View), uh.ExportAuditLogs)
+	}
+
+	// 业务接口：组织与权限 M11（批次 5）。
+	// 权限：M11:V。**本批只有只读接口**（任务书：不实现任何写操作）——
+	// 所以 M11:E/A/C/P 在 router 里仍然零挂载（批次 3b 已把 OPS_ADMIN 的这四点收走，
+	// 现在仅 PLATFORM_ADMIN 持有，属预防性收敛）。
+	// 路径前缀 /org-permissions 由前端写死（src/api/orgPermissions.ts），不要改。
+	if portal == "internal" && deps.OrgPermSvc != nil {
+		oh := NewOrgPermissionHandler(deps.OrgPermSvc)
+		protected.GET("/org-permissions/organizations", middleware.RequirePerm(perm.M11View), oh.ListOrganizations)
+		protected.GET("/org-permissions/roles", middleware.RequirePerm(perm.M11View), oh.ListRoles)
 	}
 }

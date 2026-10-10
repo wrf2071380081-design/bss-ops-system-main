@@ -36,6 +36,7 @@ import (
 	"model_bss/internal/domain/customer"
 	"model_bss/internal/domain/model"
 	"model_bss/internal/domain/openapi"
+	"model_bss/internal/domain/orgperm"
 	"model_bss/internal/domain/price"
 	"model_bss/internal/domain/pricing"
 	"model_bss/internal/domain/supplier"
@@ -146,6 +147,9 @@ func main() {
 	auditRepo := repo.NewWorkbenchAuditRepo(dbClient.DB)
 	auditSvc := workbench.NewAuditService(auditRepo)
 
+	// 阶段 12：组织与权限 M11 只读视图（批次 5）。
+	orgPermSvc := orgperm.NewService(repo.NewOrgPermRepo(dbClient.DB))
+
 	// 阶段 11a：开放接口（11-open-api.md §1/§2）。
 	openApiRepo := repo.NewOpenApiRepo(dbClient.DB)
 	openApiSvc := openapi.NewService(openApiRepo, adaptCalcFunc(costSvc))
@@ -220,6 +224,7 @@ func main() {
 		AuditSvc:               auditSvc,
 		OpenApiSvc:             openApiSvc,
 		OpenTokenStore:         openApiRepo,
+		OrgPermSvc:             orgPermSvc,
 	})
 
 	// worker 骨架（阶段 6a）：先注册任务，服务启动后 Start，优雅退出时

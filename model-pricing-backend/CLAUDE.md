@@ -207,7 +207,7 @@ docs/api/            【可写】**接口契约目录**：前端对接的唯一�
 - `M2:V` 发给了 SALES（官方价暂存区对销售可见，非成本机密，留 F 复审）
 - `M10` 全权限给了 FINANCE（工作台/审计只读即可，F 复审）
 - `OPS_ADMIN` 曾持 `M11` 全 5 点（含 E/A/C/P，即能改权限树），与需求文档 §1.2「只读为主」冲突——**批次 3b 已收敛**：只删 `M11:E/A/C/P`，保留 `M11:V` 及 `M10:V`/`M12:V`；迁移 `000031_ops_admin_converge`。同批把 `role.name` 从「运维管理员」统一为「运营管理员」（`000007_seed` 与需求文档的命名漂移，同一个 `role.code`）
-- **`M11` 目前零接口挂载**（`router.go` 里搜不到 `M11*`）：组织与权限接口属**批次 5**，尚未实现；前端 `internal.orgPermissions` 路由守卫已配 `M11:V`/`M11:C` 但后端 404。故 3b 的收敛是**预防性**的——批次 5 实现接口时应挂 `M11:*`，届时 OPS_ADMIN 自动只有只读
+- ~~**`M11` 目前零接口挂载**~~ → **批次 5 已实现**：`GET /api/internal/org-permissions/organizations` 与 `/roles` 两个**只读**接口挂 `M11:V`（代码 `internal/domain/orgperm/` + `internal/repo/orgperm.go` + `internal/api/org_permissions.go`；契约 `docs/api/12-org-permissions.md`）。**`M11:E/A/C/P` 在 router 里仍零挂载**（本批不做写操作），由 `router_orgperm_perm_test.go` 钉住。组织树按 `parent_id` 建树、**不用 `path`**（库里 `org_unit.path` 有脏值：id=2 的 path 是 `/1/1/` 而非 `/1/2/`，待数据治理）；`code` 用 id 填充（org_unit 无 code 列）；`description` 恒空串（role 表无该列）。遗留：**M11:V 授予了 9 个角色**（含 SALES/PROCUREMENT），即销售也能看到全系统权限矩阵——任务书验收 2 的「buyer_a 无 M11:V」前提与真库不符，是否收敛到管理员类角色待裁决
 
 **文档类**：
 - `approval_step.biz_type` 的 DDL 注释枚举（CHANGE_REQUEST/PRICE_BOOK/...）**与现有约定不符**——约定是 biz_type = change_request.change_type（DEPRECATE/PRICE_UP/PRICE_DOWN/PRICE_BOOK_PUBLISH/PRICE_BOOK_ROLLBACK），注释是旧建议性描述，**阶段 F 更新注释对齐现状，不是改代码对齐注释**
