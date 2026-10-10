@@ -25,10 +25,25 @@ type fakeRefreshStore struct {
 	refreshRes   *RefreshResult
 	refreshErr   error
 
-	lastQuote   QuoteRow
-	lastItems   []QuoteItemDetail
-	lastChanged []RefreshChangedItem
-	lastReason  string
+	// 数据域校验（红线 7 / 批次 2b）：默认在域内；越域用例显式置 scopeOutOfScope=true。
+	scopeOutOfScope  bool
+	scopeCalls       int
+	scopeLastQuoteID int64
+
+	refreshTxCalls int // 护栏：越域时 RefreshTx 必须一次都不被调用
+	lastQuote      QuoteRow
+	lastItems      []QuoteItemDetail
+	lastChanged    []RefreshChangedItem
+	lastReason     string
+}
+
+func (f *fakeRefreshStore) CheckQuoteOwnerScope(_ context.Context, quoteID int64, _ OwnerScope) (bool, bool, error) {
+	f.scopeCalls++
+	f.scopeLastQuoteID = quoteID
+	if f.scopeOutOfScope {
+		return true, false, nil // 存在但不在数据域内
+	}
+	return true, true, nil
 }
 
 func (f *fakeRefreshStore) LoadQuote(_ context.Context, _ int64) (*QuoteRow, error) {
@@ -44,6 +59,7 @@ func (f *fakeRefreshStore) LoadMinGrossMargin(_ context.Context) (decimal.Decima
 	return f.margin, f.marginErr
 }
 func (f *fakeRefreshStore) RefreshTx(_ context.Context, quote QuoteRow, items []QuoteItemDetail, changed []RefreshChangedItem, reason string, opID int64, reqID string, now time.Time) (*RefreshResult, error) {
+	f.refreshTxCalls++
 	f.lastQuote = quote
 	f.lastItems = items
 	f.lastChanged = changed
@@ -89,7 +105,7 @@ func TestRefresh_Unchanged(t *testing.T) {
 		margin:    dec("0.15"), // 3.0/0.85 = 3.52941176; 9.0/0.85 = 10.58823529 — 与 items 里的 floor_price 一致
 	}
 	svc := NewRefreshService(f, fixedNow)
-	res, err := svc.Refresh(context.Background(), RefreshInput{QuoteID: 1, Reason: "r"}, 7, "req-1")
+	res, err := svc.Refresh(context.Background(), selfScope(7), RefreshInput{QuoteID: 1, Reason: "r"}, 7, "req-1")
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
@@ -123,7 +139,7 @@ func TestRefresh_Changed(t *testing.T) {
 		},
 	}
 	svc := NewRefreshService(f, fixedNow)
-	res, err := svc.Refresh(context.Background(), RefreshInput{QuoteID: 1, Reason: "成本上涨"}, 7, "req-1")
+	res, err := svc.Refresh(context.Background(), selfScope(7), RefreshInput{QuoteID: 1, Reason: "成本上涨"}, 7, "req-1")
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
@@ -160,7 +176,7 @@ func TestRefresh_Changed(t *testing.T) {
 func TestRefresh_QuoteNotFound(t *testing.T) {
 	f := &fakeRefreshStore{}
 	svc := NewRefreshService(f, fixedNow)
-	_, err := svc.Refresh(context.Background(), RefreshInput{QuoteID: 999}, 7, "req-1")
+	_, err := svc.Refresh(context.Background(), selfScope(7), RefreshInput{QuoteID: 999}, 7, "req-1")
 	if !errors.Is(err, ErrQuoteForRefreshNotFound) {
 		t.Fatalf("err=%v", err)
 	}
@@ -177,7 +193,7 @@ func TestRefresh_TerminalState(t *testing.T) {
 		q.Status = tt.status
 		f := &fakeRefreshStore{quote: q}
 		svc := NewRefreshService(f, fixedNow)
-		_, err := svc.Refresh(context.Background(), RefreshInput{QuoteID: 1}, 7, "req-1")
+		_, err := svc.Refresh(context.Background(), selfScope(7), RefreshInput{QuoteID: 1}, 7, "req-1")
 		if !errors.Is(err, ErrQuoteTerminal) {
 			t.Fatalf("status=%s err=%v", tt.status, err)
 		}
@@ -194,7 +210,7 @@ func TestRefresh_PendingAllowed(t *testing.T) {
 		margin:    dec("0.15"),
 	}
 	svc := NewRefreshService(f, fixedNow)
-	res, err := svc.Refresh(context.Background(), RefreshInput{QuoteID: 1}, 7, "req-1")
+	res, err := svc.Refresh(context.Background(), selfScope(7), RefreshInput{QuoteID: 1}, 7, "req-1")
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
@@ -211,8 +227,54 @@ func TestRefresh_NoUnitCostForSKU(t *testing.T) {
 		margin:    dec("0.15"),
 	}
 	svc := NewRefreshService(f, fixedNow)
-	_, err := svc.Refresh(context.Background(), RefreshInput{QuoteID: 1}, 7, "req-1")
+	_, err := svc.Refresh(context.Background(), selfScope(7), RefreshInput{QuoteID: 1}, 7, "req-1")
 	if err == nil {
 		t.Fatalf("want err（缺 baseline）")
+	}
+}
+
+// ============================================================
+// 行级数据域（红线 7 / 批次 2b：修 V2 刷新越权写）
+// ============================================================
+
+func TestRefresh_OutOfScope_NoWrite(t *testing.T) {
+	// 关键护栏：越域刷新必须 ErrCustomerOutOfScope，且 RefreshTx 一次都不能调。
+	// 修前：为他人报价生成了新版本（稽核报告 §3.1 V2）。
+	f := &fakeRefreshStore{
+		quote:           baseRefreshQuote(),
+		items:           baseRefreshItems(),
+		unitCosts:       baseUnitCosts(),
+		margin:          dec("0.15"),
+		scopeOutOfScope: true,
+	}
+	svc := NewRefreshService(f, fixedNow)
+	_, err := svc.Refresh(context.Background(), selfScope(2), RefreshInput{QuoteID: 4, Reason: "r"}, 2, "req-1")
+	if !errors.Is(err, ErrCustomerOutOfScope) {
+		t.Fatalf("err=%v, want ErrCustomerOutOfScope", err)
+	}
+	if f.scopeCalls != 1 {
+		t.Fatalf("数据域校验未被调用（scopeCalls=%d）", f.scopeCalls)
+	}
+	if f.scopeLastQuoteID != 4 {
+		t.Fatalf("scopeLastQuoteID=%d，want 4", f.scopeLastQuoteID)
+	}
+	if f.refreshTxCalls != 0 {
+		t.Fatalf("越域后 RefreshTx 被调用了 %d 次——写操作必须早于它拦截", f.refreshTxCalls)
+	}
+}
+
+func TestRefresh_InScopeStillChecksScope(t *testing.T) {
+	f := &fakeRefreshStore{
+		quote:     baseRefreshQuote(),
+		items:     baseRefreshItems(),
+		unitCosts: baseUnitCosts(),
+		margin:    dec("0.15"),
+	}
+	svc := NewRefreshService(f, fixedNow)
+	if _, err := svc.Refresh(context.Background(), selfScope(7), RefreshInput{QuoteID: 4}, 7, "req-1"); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if f.scopeCalls != 1 {
+		t.Fatalf("数据域校验未被调用（scopeCalls=%d）", f.scopeCalls)
 	}
 }

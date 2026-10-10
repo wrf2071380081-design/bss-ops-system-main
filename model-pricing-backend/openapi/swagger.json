@@ -1414,7 +1414,7 @@
                         }
                     },
                     "403": {
-                        "description": "code=10003 无 M9:V",
+                        "description": "code=10003 无 M9:V / 报价不在当前操作员数据域内（行级越权）",
                         "schema": {
                             "$ref": "#/definitions/api.APIResponse"
                         }
@@ -1497,7 +1497,7 @@
                         }
                     },
                     "403": {
-                        "description": "code=10003 无 M9:E",
+                        "description": "code=10003 无 M9:E / 报价不在当前操作员数据域内（行级越权）",
                         "schema": {
                             "$ref": "#/definitions/api.APIResponse"
                         }
@@ -1581,7 +1581,7 @@
                         }
                     },
                     "403": {
-                        "description": "code=10003 无 M9:E",
+                        "description": "code=10003 无 M9:E / 报价不在当前操作员数据域内（行级越权）",
                         "schema": {
                             "$ref": "#/definitions/api.APIResponse"
                         }

@@ -91,6 +91,10 @@ func NewSpecialPriceService(store SpecialPriceStore) *SpecialPriceService {
 
 // SpecialPriceStore 是特价审批所需的最小仓储。
 type SpecialPriceStore interface {
+	// CheckQuoteOwnerScope 行级数据域校验（红线 7）：越域 → inScope=false。
+	// service 必须在 LoadQuote 之后、RequestSpecialPriceTx 之前调用——特价是写操作，
+	// 漏校验会对他人报价发起审批单。
+	CheckQuoteOwnerScope(ctx context.Context, quoteID int64, scope OwnerScope) (found, inScope bool, err error)
 	// LoadQuote 读 customer_quote 主表（含 quote_type / status / special_price_status / customer_id）。
 	LoadQuote(ctx context.Context, quoteID int64) (*QuoteRow, error)
 	// LoadQuoteItems 读 customer_quote_item（skew_id, unit_price, floor_price）。
@@ -173,9 +177,12 @@ func ComputeMarginImpact(items []QuoteItemDetail, expectedMargin string) *Margin
 //
 // 步骤：
 //  1. LoadQuote 校验存在 / DRAFT / 当前非 PENDING（防重复申请）。
-//  2. LoadQuoteItemsDetail → ComputeMarginImpact。
-//  3. RequestSpecialPriceTx 单事务落库。
-func (s *SpecialPriceService) Request(ctx context.Context, in SpecialPriceInput, operatorID int64, requestID string) (*SpecialPriceResult, error) {
+//  2. **数据域校验**（红线 7）：越域 → ErrCustomerOutOfScope，早于一切写库。
+//  3. LoadQuoteItemsDetail → ComputeMarginImpact。
+//  4. RequestSpecialPriceTx 单事务落库。
+//
+// scope 是当前操作员的数据域。特价会落 change_request + approval_step，越域必须 403。
+func (s *SpecialPriceService) Request(ctx context.Context, scope OwnerScope, in SpecialPriceInput, operatorID int64, requestID string) (*SpecialPriceResult, error) {
 	if in.Reason == "" {
 		return nil, ErrReasonRequired
 	}
@@ -190,6 +197,10 @@ func (s *SpecialPriceService) Request(ctx context.Context, in SpecialPriceInput,
 	}
 	if quote == nil {
 		return nil, ErrQuoteNotFound
+	}
+	// 数据域校验：紧跟 LoadQuote，必须早于 RequestSpecialPriceTx。
+	if err := checkQuoteOwnerScope(ctx, s.store, scope, in.QuoteID, ErrQuoteNotFound); err != nil {
+		return nil, err
 	}
 	if quote.Status != QuoteStatusDraft {
 		return nil, ErrQuoteNotDraft

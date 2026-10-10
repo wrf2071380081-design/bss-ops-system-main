@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/xuri/excelize/v2"
+
+	"model_bss/internal/domain/auth"
 )
 
 // ============================================================
@@ -23,16 +25,39 @@ type fakeExportStore struct {
 	itemsErr  error
 	legalName string
 	legalErr  error
+
+	// 数据域校验（红线 7 / 批次 2b）：默认在域内；越域用例显式置 scopeOutOfScope=true。
+	scopeOutOfScope  bool
+	scopeCalls       int
+	scopeLastQuoteID int64
+	itemsCalls       int
+	legalNameCalls   int
+}
+
+func (f *fakeExportStore) CheckQuoteOwnerScope(_ context.Context, quoteID int64, _ OwnerScope) (bool, bool, error) {
+	f.scopeCalls++
+	f.scopeLastQuoteID = quoteID
+	if f.scopeOutOfScope {
+		return true, false, nil // 存在但不在数据域内
+	}
+	return true, true, nil
 }
 
 func (f *fakeExportStore) LoadQuote(_ context.Context, _ int64) (*QuoteRow, error) {
 	return f.quote, f.quoteErr
 }
 func (f *fakeExportStore) LoadQuoteItemsDetail(_ context.Context, _ int64) ([]QuoteItemDetail, error) {
+	f.itemsCalls++
 	return f.items, f.itemsErr
 }
 func (f *fakeExportStore) LoadCustomerLegalName(_ context.Context, _ int64) (string, error) {
+	f.legalNameCalls++
 	return f.legalName, f.legalErr
+}
+
+// selfScope 构造 SELF 数据域（批次 2b 用例用）。
+func selfScope(staffID int64) OwnerScope {
+	return OwnerScope{DataScope: auth.ScopeSELF, StaffID: staffID}
 }
 
 // ============================================================
@@ -78,7 +103,7 @@ func TestExport_Success(t *testing.T) {
 		legalName: "东信公司",
 	}
 	svc := NewExportService(f, fixedNow, nil)
-	buf, err := svc.GenerateXLSX(context.Background(), 1, "xlsx")
+	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
@@ -121,7 +146,7 @@ func TestExport_Success(t *testing.T) {
 func TestExport_QuoteNotFound(t *testing.T) {
 	f := &fakeExportStore{quote: nil}
 	svc := NewExportService(f, fixedNow, nil)
-	_, err := svc.GenerateXLSX(context.Background(), 999, "xlsx")
+	_, err := svc.GenerateXLSX(context.Background(), selfScope(7), 999, "xlsx")
 	if !errors.Is(err, ErrQuoteForExportNotFound) {
 		t.Fatalf("err=%v", err)
 	}
@@ -130,7 +155,7 @@ func TestExport_QuoteNotFound(t *testing.T) {
 func TestExport_FormatUnsupported(t *testing.T) {
 	f := &fakeExportStore{}
 	svc := NewExportService(f, fixedNow, nil)
-	_, err := svc.GenerateXLSX(context.Background(), 1, "pdf")
+	_, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "pdf")
 	if !errors.Is(err, ErrExportFormatUnsupported) {
 		t.Fatalf("err=%v", err)
 	}
@@ -148,7 +173,7 @@ func TestExport_Expired(t *testing.T) {
 		items: baseExportItems(),
 	}
 	svc := NewExportService(f, fixedNow, nil)
-	_, err := svc.GenerateXLSX(context.Background(), 1, "xlsx")
+	_, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
 	if !errors.Is(err, ErrQuoteExpired) {
 		t.Fatalf("err=%v", err)
 	}
@@ -166,7 +191,7 @@ func TestExport_ApplyNotExpiredEvenIfPastValidUntil(t *testing.T) {
 		legalName: "东信公司",
 	}
 	svc := NewExportService(f, fixedNow, nil)
-	_, err := svc.GenerateXLSX(context.Background(), 1, "xlsx")
+	_, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
 	if err != nil {
 		t.Fatalf("APPLY 即使有过期 valid_until 也不应 409：%v", err)
 	}
@@ -179,7 +204,7 @@ func TestExport_TempWatermarkPresent(t *testing.T) {
 		legalName: "东信公司",
 	}
 	svc := NewExportService(f, fixedNow, nil)
-	buf, err := svc.GenerateXLSX(context.Background(), 1, "xlsx")
+	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
@@ -204,7 +229,7 @@ func TestExport_ApplyNoWatermark(t *testing.T) {
 		legalName: "东信公司",
 	}
 	svc := NewExportService(f, fixedNow, nil)
-	buf, err := svc.GenerateXLSX(context.Background(), 1, "xlsx")
+	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
@@ -229,7 +254,7 @@ func TestExport_BelowFloorComputedOnFly(t *testing.T) {
 		legalName: "东信",
 	}
 	svc := NewExportService(f, fixedNow, nil)
-	buf, err := svc.GenerateXLSX(context.Background(), 1, "xlsx")
+	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
@@ -242,5 +267,53 @@ func TestExport_BelowFloorComputedOnFly(t *testing.T) {
 	e10, _ := xls.GetCellValue(sheet, "E10")
 	if !strings.EqualFold(e10, "FALSE") {
 		t.Fatalf("E10=%q（应 false）", e10)
+	}
+}
+
+// ============================================================
+// 行级数据域（红线 7 / 批次 2b：修 V1 导出越权读）
+// ============================================================
+
+func TestExport_OutOfScope(t *testing.T) {
+	// 越域导出必须 ErrCustomerOutOfScope（→403），且不得继续取明细/客户名。
+	// 修前：直接 200 返回含 unit_price 与客户名的 xlsx（稽核报告 §3.1 V1）。
+	f := &fakeExportStore{
+		quote:           baseExportQuote(),
+		items:           baseExportItems(),
+		legalName:       "东信公司",
+		scopeOutOfScope: true,
+	}
+	svc := NewExportService(f, fixedNow, nil)
+	_, err := svc.GenerateXLSX(context.Background(), selfScope(2), 2, "xlsx")
+	if !errors.Is(err, ErrCustomerOutOfScope) {
+		t.Fatalf("err=%v, want ErrCustomerOutOfScope", err)
+	}
+	if f.scopeCalls != 1 {
+		t.Fatalf("数据域校验未被调用（scopeCalls=%d）——防漏拼护栏失效", f.scopeCalls)
+	}
+	if f.scopeLastQuoteID != 2 {
+		t.Fatalf("scope 校验传错 quoteID=%d，want 2", f.scopeLastQuoteID)
+	}
+	if f.itemsCalls != 0 || f.legalNameCalls != 0 {
+		t.Fatalf("越域后不得继续取数：itemsCalls=%d legalNameCalls=%d", f.itemsCalls, f.legalNameCalls)
+	}
+}
+
+func TestExport_InScopeStillChecksScope(t *testing.T) {
+	// 在域内也必须真的走过校验——防有人整段删掉校验后测试仍绿。
+	f := &fakeExportStore{
+		quote:     baseExportQuote(),
+		items:     baseExportItems(),
+		legalName: "东信公司",
+	}
+	svc := NewExportService(f, fixedNow, nil)
+	if _, err := svc.GenerateXLSX(context.Background(), selfScope(7), 2, "xlsx"); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if f.scopeCalls != 1 {
+		t.Fatalf("数据域校验未被调用（scopeCalls=%d）", f.scopeCalls)
+	}
+	if f.scopeLastQuoteID != 2 {
+		t.Fatalf("scopeLastQuoteID=%d，want 2", f.scopeLastQuoteID)
 	}
 }

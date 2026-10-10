@@ -61,6 +61,10 @@ func NewRefreshService(store RefreshStore, now func() time.Time) *RefreshService
 
 // RefreshStore 是刷新所需仓储。
 type RefreshStore interface {
+	// CheckQuoteOwnerScope 行级数据域校验（红线 7）：越域 → inScope=false。
+	// service 必须在 LoadQuote 之后、RefreshTx 之前调用——刷新是写操作，漏校验会
+	// 为他人报价生成新版本。
+	CheckQuoteOwnerScope(ctx context.Context, quoteID int64, scope OwnerScope) (found, inScope bool, err error)
 	// LoadQuote 同 SpecialPriceStore 的读取口径。
 	LoadQuote(ctx context.Context, quoteID int64) (*QuoteRow, error)
 	// LoadQuoteItemsDetail 读明细。
@@ -78,17 +82,24 @@ type RefreshStore interface {
 //
 // 步骤：
 //  1. LoadQuote 校验存在 + 状态可刷新（DRAFT/PENDING 允许）。
-//  2. LoadQuoteItemsDetail + LoadCurrentUnitCosts + LoadMinGrossMargin。
-//  3. 逐 item 算 newFloorPrice = CalcFloor(unit_cost, margin)；与 oldFloorPrice 比较（decimal.Equal）。
-//  4. 全 Equal → 返回 Unchanged=true + changed_items=[]（不产新版本）。
-//  5. 任一不同 → RefreshTx 生成新版本（items 仅更新 floor_price；unit_price 保留）。
-func (s *RefreshService) Refresh(ctx context.Context, in RefreshInput, operatorID int64, requestID string) (*RefreshResult, error) {
+//  2. **数据域校验**（红线 7）：越域 → ErrCustomerOutOfScope，早于一切写库。
+//  3. LoadQuoteItemsDetail + LoadCurrentUnitCosts + LoadMinGrossMargin。
+//  4. 逐 item 算 newFloorPrice = CalcFloor(unit_cost, margin)；与 oldFloorPrice 比较（decimal.Equal）。
+//  5. 全 Equal → 返回 Unchanged=true + changed_items=[]（不产新版本）。
+//  6. 任一不同 → RefreshTx 生成新版本（items 仅更新 floor_price；unit_price 保留）。
+//
+// scope 是当前操作员的数据域。刷新是写操作，越域必须 403（不能只挡"读"）。
+func (s *RefreshService) Refresh(ctx context.Context, scope OwnerScope, in RefreshInput, operatorID int64, requestID string) (*RefreshResult, error) {
 	quote, err := s.store.LoadQuote(ctx, in.QuoteID)
 	if err != nil {
 		return nil, fmt.Errorf("load quote %d: %w", in.QuoteID, err)
 	}
 	if quote == nil {
 		return nil, ErrQuoteForRefreshNotFound
+	}
+	// 数据域校验：紧跟 LoadQuote，必须早于 RefreshTx。
+	if err := checkQuoteOwnerScope(ctx, s.store, scope, in.QuoteID, ErrQuoteForRefreshNotFound); err != nil {
+		return nil, err
 	}
 	switch quote.Status {
 	case QuoteStatusDraft, QuoteStatusPending:

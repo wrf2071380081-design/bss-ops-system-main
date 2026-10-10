@@ -89,6 +89,36 @@ type OwnerScope struct {
 	ScopePaths []string
 }
 
+// QuoteScopeChecker 是「能对 customer_quote 做数据域校验」的最小接口。
+//
+// 9b 的三个 Store（ExportStore / RefreshStore / SpecialPriceStore）都实现了它，
+// 于是三个 service 能共用 checkQuoteOwnerScope，避免各写一份导致口径漂移。
+type QuoteScopeChecker interface {
+	CheckQuoteOwnerScope(ctx context.Context, quoteID int64, scope OwnerScope) (found, inScope bool, err error)
+}
+
+// checkQuoteOwnerScope 9b 三个 detail 级操作（导出 / 刷新 / 特价）的统一数据域收口。
+//
+// **调用位置是硬要求**：LoadQuote 之后、任何业务逻辑与写库之前。
+// 刷新与特价是写操作，晚一步就会为他人报价生成新版本 / 发起审批单
+// （批次 2b 修的就是这个：docs/行级数据域过滤稽核报告-20261010.md §3.1）。
+//
+// notFoundErr 由调用方给（三个 service 的 NotFound 文案不同）；越域一律返回
+// ErrCustomerOutOfScope（handler 映射为 403）。
+func checkQuoteOwnerScope(ctx context.Context, store QuoteScopeChecker, scope OwnerScope, quoteID int64, notFoundErr error) error {
+	found, inScope, err := store.CheckQuoteOwnerScope(ctx, quoteID, scope)
+	if err != nil {
+		return fmt.Errorf("check quote owner scope %d: %w", quoteID, err)
+	}
+	if !found {
+		return notFoundErr
+	}
+	if !inScope {
+		return ErrCustomerOutOfScope
+	}
+	return nil
+}
+
 // CustomerItem 客户列表的一行。
 //
 //nolint:revive // Customer 前缀与本包语义一致，改名破坏性大（沿用 8b-2 对齐既有命名风格）。

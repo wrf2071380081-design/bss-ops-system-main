@@ -46,6 +46,9 @@ func specialErrToAppErr(err error) apperr.Error {
 		errors.Is(err, customer.ErrQuoteTerminal),
 		errors.Is(err, customer.ErrQuoteExpired):
 		return apperr.New(apperr.ErrIdempotency.Code, err.Error(), apperr.ErrIdempotency.Status) // 409 业务冲突
+	case errors.Is(err, customer.ErrCustomerOutOfScope):
+		// 行级数据域越界（红线 7 / 批次 2b）：不是系统错误，必须 403 而非默认 500。
+		return apperr.New(apperr.ErrForbidden.Code, err.Error(), apperr.ErrForbidden.Status) // 403
 	case errors.Is(err, customer.ErrReasonRequired),
 		errors.Is(err, customer.ErrExpectedMarginInvalid),
 		errors.Is(err, customer.ErrExportFormatUnsupported):
@@ -75,7 +78,7 @@ type specialPriceBody struct {
 // @Success 200 {object} api.APIResponse "code=0；data=SpecialPriceResult{quote_id, change_request_id, step_count, status, margin_impact}"
 // @Failure 400 {object} api.APIResponse "code=10001 参数非法（缺 reason/expected_margin、expected_margin 非 decimal）"
 // @Failure 401 {object} api.APIResponse "code=10002 未认证"
-// @Failure 403 {object} api.APIResponse "code=10003 无 M9:E"
+// @Failure 403 {object} api.APIResponse "code=10003 无 M9:E / 报价不在当前操作员数据域内（行级越权）"
 // @Failure 404 {object} api.APIResponse "code=10004 报价不存在"
 // @Failure 409 {object} api.APIResponse "code=10005 报价非 DRAFT / 已在特价审批中（special_price_status=PENDING）"
 // @Router /api/internal/customer-quotes/{id}/special-price [post]
@@ -95,7 +98,7 @@ func (h *CustomerSpecialHandler) RequestSpecialPrice(c *gin.Context) {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, fmt.Sprintf("JSON 解析失败：%s", err.Error()), apperr.ErrInvalidParams.Status))
 		return
 	}
-	res, err := h.special.Request(c.Request.Context(), customer.SpecialPriceInput{
+	res, err := h.special.Request(c.Request.Context(), scopeOf(op), customer.SpecialPriceInput{
 		QuoteID:        id,
 		Reason:         body.Reason,
 		ExpectedMargin: body.ExpectedMargin,
@@ -127,7 +130,7 @@ type refreshBody struct {
 // @Success 200 {object} api.APIResponse "code=0；data=RefreshResult{quote_id, old_version_no, new_version_no, changed_items[], unchanged, status}"
 // @Failure 400 {object} api.APIResponse "code=10001 参数非法"
 // @Failure 401 {object} api.APIResponse "code=10002 未认证"
-// @Failure 403 {object} api.APIResponse "code=10003 无 M9:E"
+// @Failure 403 {object} api.APIResponse "code=10003 无 M9:E / 报价不在当前操作员数据域内（行级越权）"
 // @Failure 404 {object} api.APIResponse "code=10004 报价不存在"
 // @Failure 409 {object} api.APIResponse "code=10005 报价态不可刷新（APPROVED/EFFECTIVE/EXPIRED/REJECTED）"
 // @Router /api/internal/customer-quotes/{id}/refresh [post]
@@ -148,7 +151,7 @@ func (h *CustomerSpecialHandler) RefreshQuote(c *gin.Context) {
 		// 解析失败不是致命——可能没传 body；用空 reason 继续。
 		body = refreshBody{}
 	}
-	res, err := h.refresh.Refresh(c.Request.Context(), customer.RefreshInput{
+	res, err := h.refresh.Refresh(c.Request.Context(), scopeOf(op), customer.RefreshInput{
 		QuoteID: id,
 		Reason:  body.Reason,
 	}, op.OperatorID, requestIDOf(c))
@@ -172,12 +175,14 @@ func (h *CustomerSpecialHandler) RefreshQuote(c *gin.Context) {
 // @Success 200 {file} binary "XLSX 文件流；Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet；Content-Disposition: attachment; filename=\"customer_quote_<id>.xlsx\""
 // @Failure 400 {object} api.APIResponse "code=10001 参数非法 / format 不支持"
 // @Failure 401 {object} api.APIResponse "code=10002 未认证"
-// @Failure 403 {object} api.APIResponse "code=10003 无 M9:V"
+// @Failure 403 {object} api.APIResponse "code=10003 无 M9:V / 报价不在当前操作员数据域内（行级越权）"
 // @Failure 404 {object} api.APIResponse "code=10004 报价不存在"
 // @Failure 409 {object} api.APIResponse "code=10005 TEMP 报价已过期"
 // @Router /api/internal/customer-quotes/{id}/export [get]
 func (h *CustomerSpecialHandler) ExportQuote(c *gin.Context) {
-	if middleware.OperatorFrom(c) == nil {
+	// 导出也是 detail 级访问：必须取 op 投影数据域（红线 7），不能只判 != nil。
+	op := middleware.OperatorFrom(c)
+	if op == nil {
 		response.Error(c, apperr.ErrUnauthorized)
 		return
 	}
@@ -188,7 +193,7 @@ func (h *CustomerSpecialHandler) ExportQuote(c *gin.Context) {
 	}
 	format := c.DefaultQuery("format", "xlsx")
 
-	data, err := h.export.GenerateXLSX(c.Request.Context(), id, format)
+	data, err := h.export.GenerateXLSX(c.Request.Context(), scopeOf(op), id, format)
 	if err != nil {
 		response.Error(c, specialErrToAppErr(err))
 		return

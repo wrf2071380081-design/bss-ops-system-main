@@ -4,9 +4,10 @@
 //   - 不可变版本（红线 3）：customer_quote 刷新 = 同事务新版本 INSERT + 旧版本 EXPIRED。
 //     禁止原地 UPDATE unit_price / floor_price。
 //   - 事务边界（红线 8）：单事务内 DML + audit_log，跨表；事件出站用 event_outbox。
-//   - 行级过滤（红线 7）：本批是后台接口，**不做 scope 过滤**——9a customer_quote 的
-//     owner 字段用于列表过滤，本批 detail 访问由鉴权 + M9 权限点 + customer_id 一致性
-//     保证。若需要做 owner 过滤在 9c 补。
+//   - 行级过滤（红线 7）：detail 访问（导出 / 刷新 / 特价申请）按 customer_quote
+//     .owner_sales_operator_id 做数据域校验，由 service 层在写库前调用
+//     CheckQuoteOwnerScope 收口。9a 时期的"后台接口无需 scope"口径已被
+//     docs/行级数据域过滤稽核报告-20261010.md §3.1 实测证伪（3 个 IDOR），见批次 2b。
 package repo
 
 import (
@@ -44,6 +45,63 @@ func (r *CustomerSpecialRepo) txOf(ctx context.Context) *gorm.DB {
 		return tx
 	}
 	return r.base
+}
+
+// ============================================================
+// 行级过滤 Scope（红线 7）
+// ============================================================
+
+// applyQuoteOwnerScope 把数据域过滤应用到「别名为 cq 的 customer_quote」查询上。
+//
+// 与 CustomerRepo.applyCustomerOwnerScope 同形态（照抄四种分支），差别只在表名与别名：
+// 归属字段是 customer_quote.owner_sales_operator_id（销售归属），不是 customer_profile 的。
+func applyQuoteOwnerScope(tx *gorm.DB, scope customer.OwnerScope) *gorm.DB {
+	switch scope.DataScope {
+	case "ALL":
+		return tx
+	case "DEPT", "DEPT_SUB":
+		tx = tx.Joins("JOIN internal_staff os_ ON os_.id = cq.owner_sales_operator_id")
+		if scope.DataScope == "DEPT" {
+			return tx.Where("os_.org_unit_id = ?", scope.MyOrgID)
+		}
+		// DEPT_SUB：负责人可见下属整棵子树。
+		if len(scope.ScopePaths) == 0 {
+			return tx.Where("os_.org_unit_id = ?", scope.MyOrgID)
+		}
+		patterns := make([]string, 0, len(scope.ScopePaths))
+		for _, p := range scope.ScopePaths {
+			patterns = append(patterns, p+"%")
+		}
+		return tx.Joins("JOIN org_unit ou_ ON ou_.id = os_.org_unit_id").
+			Where("ou_.path LIKE ANY(?)", patterns)
+	default: // SELF
+		return tx.Where("cq.owner_sales_operator_id = ?", scope.StaffID)
+	}
+}
+
+// CheckQuoteOwnerScope 校验某条 customer_quote 是否落在数据域内。
+//
+// 形态照抄 CustomerRepo.CheckCustomerScope：先 WHERE id=? 判存在（found），
+// 再同一行按数据域计数（inScope）——命中 0 行即越域。
+// 调用方（三个 service）在 found=false 时按各自 NotFound 错误返回，inScope=false 时返回
+// customer.ErrCustomerOutOfScope（→ 403）。
+func (r *CustomerSpecialRepo) CheckQuoteOwnerScope(ctx context.Context, quoteID int64, scope customer.OwnerScope) (found bool, inScope bool, err error) {
+	var cnt int64
+	if err := r.txOf(ctx).Table("customer_quote cq").
+		Where("cq.id = ?", quoteID).
+		Count(&cnt).Error; err != nil {
+		return false, false, fmt.Errorf("check quote exists: %w", err)
+	}
+	if cnt == 0 {
+		return false, false, nil
+	}
+	var inScopeCnt int64
+	tx := r.txOf(ctx).Table("customer_quote cq").Where("cq.id = ?", quoteID)
+	tx = applyQuoteOwnerScope(tx, scope)
+	if err := tx.Count(&inScopeCnt).Error; err != nil {
+		return true, false, fmt.Errorf("check quote scope: %w", err)
+	}
+	return true, inScopeCnt > 0, nil
 }
 
 // ------------------------------------------------------------

@@ -19,12 +19,27 @@ type fakeSpecialStore struct {
 	reqRes *SpecialPriceResult
 	reqErr error
 
+	// 数据域校验（红线 7 / 批次 2b）：默认在域内；越域用例显式置 scopeOutOfScope=true。
+	scopeOutOfScope  bool
+	scopeCalls       int
+	scopeLastQuoteID int64
+
+	reqTxCalls int // 护栏：越域时 RequestSpecialPriceTx 必须一次都不被调用
 	lastQuote  QuoteRow
 	lastImpact *MarginImpact
 	lastReason string
 	lastEM     string
 	lastOpID   int64
 	lastReqID  string
+}
+
+func (f *fakeSpecialStore) CheckQuoteOwnerScope(_ context.Context, quoteID int64, _ OwnerScope) (bool, bool, error) {
+	f.scopeCalls++
+	f.scopeLastQuoteID = quoteID
+	if f.scopeOutOfScope {
+		return true, false, nil // 存在但不在数据域内
+	}
+	return true, true, nil
 }
 
 func (f *fakeSpecialStore) LoadQuote(_ context.Context, _ int64) (*QuoteRow, error) {
@@ -34,6 +49,7 @@ func (f *fakeSpecialStore) LoadQuoteItemsDetail(_ context.Context, _ int64) ([]Q
 	return f.items, f.itemsErr
 }
 func (f *fakeSpecialStore) RequestSpecialPriceTx(_ context.Context, quote QuoteRow, impact *MarginImpact, reason, em string, opID int64, reqID string) (*SpecialPriceResult, error) {
+	f.reqTxCalls++
 	f.lastQuote = quote
 	f.lastImpact = impact
 	f.lastReason = reason
@@ -75,7 +91,7 @@ func TestSpecialPriceRequest_Success(t *testing.T) {
 		},
 	}
 	svc := NewSpecialPriceService(f)
-	res, err := svc.Request(context.Background(), SpecialPriceInput{
+	res, err := svc.Request(context.Background(), selfScope(7), SpecialPriceInput{
 		QuoteID: 1, Reason: "战略客户", ExpectedMargin: "0.08",
 	}, 7, "req-1")
 	if err != nil {
@@ -101,7 +117,7 @@ func TestSpecialPriceRequest_Success(t *testing.T) {
 func TestSpecialPriceRequest_ReasonRequired(t *testing.T) {
 	f := &fakeSpecialStore{quote: baseQuote()}
 	svc := NewSpecialPriceService(f)
-	_, err := svc.Request(context.Background(), SpecialPriceInput{
+	_, err := svc.Request(context.Background(), selfScope(7), SpecialPriceInput{
 		QuoteID: 1, Reason: "", ExpectedMargin: "0.08",
 	}, 7, "req-1")
 	if !errors.Is(err, ErrReasonRequired) {
@@ -112,7 +128,7 @@ func TestSpecialPriceRequest_ReasonRequired(t *testing.T) {
 func TestSpecialPriceRequest_ExpectedMarginInvalid(t *testing.T) {
 	f := &fakeSpecialStore{quote: baseQuote()}
 	svc := NewSpecialPriceService(f)
-	_, err := svc.Request(context.Background(), SpecialPriceInput{
+	_, err := svc.Request(context.Background(), selfScope(7), SpecialPriceInput{
 		QuoteID: 1, Reason: "r", ExpectedMargin: "not-a-decimal",
 	}, 7, "req-1")
 	if !errors.Is(err, ErrExpectedMarginInvalid) {
@@ -123,7 +139,7 @@ func TestSpecialPriceRequest_ExpectedMarginInvalid(t *testing.T) {
 func TestSpecialPriceRequest_QuoteNotFound(t *testing.T) {
 	f := &fakeSpecialStore{quote: nil, quoteErr: nil}
 	svc := NewSpecialPriceService(f)
-	_, err := svc.Request(context.Background(), SpecialPriceInput{
+	_, err := svc.Request(context.Background(), selfScope(7), SpecialPriceInput{
 		QuoteID: 999, Reason: "r", ExpectedMargin: "0.08",
 	}, 7, "req-1")
 	if !errors.Is(err, ErrQuoteNotFound) {
@@ -136,7 +152,7 @@ func TestSpecialPriceRequest_QuoteNotDraft(t *testing.T) {
 	q.Status = QuoteStatusEffective
 	f := &fakeSpecialStore{quote: q}
 	svc := NewSpecialPriceService(f)
-	_, err := svc.Request(context.Background(), SpecialPriceInput{
+	_, err := svc.Request(context.Background(), selfScope(7), SpecialPriceInput{
 		QuoteID: 1, Reason: "r", ExpectedMargin: "0.08",
 	}, 7, "req-1")
 	if !errors.Is(err, ErrQuoteNotDraft) {
@@ -150,7 +166,7 @@ func TestSpecialPriceRequest_AlreadyPending(t *testing.T) {
 	q.SpecialPriceStatus = &s
 	f := &fakeSpecialStore{quote: q}
 	svc := NewSpecialPriceService(f)
-	_, err := svc.Request(context.Background(), SpecialPriceInput{
+	_, err := svc.Request(context.Background(), selfScope(7), SpecialPriceInput{
 		QuoteID: 1, Reason: "r", ExpectedMargin: "0.08",
 	}, 7, "req-1")
 	if !errors.Is(err, ErrQuoteAlreadyPending) {
@@ -217,5 +233,54 @@ func TestSpecialPriceStatus_StringEnum(t *testing.T) {
 	}
 	if ChangeSpecialPrice != "SPECIAL_PRICE" {
 		t.Fatalf("change_type=%s", ChangeSpecialPrice)
+	}
+}
+
+// ============================================================
+// 行级数据域（红线 7 / 批次 2b：修 V3 特价越权写）
+// ============================================================
+
+func TestSpecialPriceRequest_OutOfScope_NoWrite(t *testing.T) {
+	// 关键护栏：越域申请特价必须 ErrCustomerOutOfScope，且 RequestSpecialPriceTx 一次都不能调。
+	// 修前：为他人报价落了 change_request + approval_step（稽核报告 §3.1 V3）。
+	f := &fakeSpecialStore{
+		quote:           baseQuote(),
+		items:           baseItems(),
+		scopeOutOfScope: true,
+	}
+	svc := NewSpecialPriceService(f)
+	_, err := svc.Request(context.Background(), selfScope(2), SpecialPriceInput{
+		QuoteID: 4, Reason: "x", ExpectedMargin: "0.20",
+	}, 2, "req-1")
+	if !errors.Is(err, ErrCustomerOutOfScope) {
+		t.Fatalf("err=%v, want ErrCustomerOutOfScope", err)
+	}
+	if f.scopeCalls != 1 {
+		t.Fatalf("数据域校验未被调用（scopeCalls=%d）", f.scopeCalls)
+	}
+	if f.scopeLastQuoteID != 4 {
+		t.Fatalf("scopeLastQuoteID=%d，want 4", f.scopeLastQuoteID)
+	}
+	if f.reqTxCalls != 0 {
+		t.Fatalf("越域后 RequestSpecialPriceTx 被调用了 %d 次——写操作必须早于它拦截", f.reqTxCalls)
+	}
+}
+
+func TestSpecialPriceRequest_InScopeStillChecksScope(t *testing.T) {
+	f := &fakeSpecialStore{
+		quote: baseQuote(),
+		items: baseItems(),
+		reqRes: &SpecialPriceResult{
+			QuoteID: 1, ChangeRequestID: 42, StepCount: 2, Status: SpecialPricePending,
+		},
+	}
+	svc := NewSpecialPriceService(f)
+	if _, err := svc.Request(context.Background(), selfScope(7), SpecialPriceInput{
+		QuoteID: 4, Reason: "战略客户", ExpectedMargin: "0.08",
+	}, 7, "req-1"); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if f.scopeCalls != 1 {
+		t.Fatalf("数据域校验未被调用（scopeCalls=%d）", f.scopeCalls)
 	}
 }

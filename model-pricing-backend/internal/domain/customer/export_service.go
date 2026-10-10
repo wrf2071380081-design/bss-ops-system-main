@@ -43,6 +43,9 @@ func NewExportService(store ExportStore, now func() time.Time, loc *time.Locatio
 
 // ExportStore 是导出所需只读视图。
 type ExportStore interface {
+	// CheckQuoteOwnerScope 行级数据域校验（红线 7）：越域 → inScope=false。
+	// service 必须在 LoadQuote 之后、渲染之前调用，越域返回 ErrCustomerOutOfScope。
+	CheckQuoteOwnerScope(ctx context.Context, quoteID int64, scope OwnerScope) (found, inScope bool, err error)
 	// LoadQuote 同 SpecialPriceStore 的读取口径。
 	LoadQuote(ctx context.Context, quoteID int64) (*QuoteRow, error)
 	// LoadQuoteItemsDetail 读明细。
@@ -52,7 +55,10 @@ type ExportStore interface {
 }
 
 // GenerateXLSX 生成 XLSX 文件流（直返 []byte）；TEMP 带水印。
-func (s *ExportService) GenerateXLSX(ctx context.Context, quoteID int64, format string) ([]byte, error) {
+//
+// scope 是当前操作员的数据域（红线 7）。越域一律 ErrCustomerOutOfScope（→403），
+// 不得因"只是读"而放行——导出文件含 unit_price 与客户名，属越权读。
+func (s *ExportService) GenerateXLSX(ctx context.Context, scope OwnerScope, quoteID int64, format string) ([]byte, error) {
 	if format != "xlsx" {
 		return nil, ErrExportFormatUnsupported
 	}
@@ -62,6 +68,10 @@ func (s *ExportService) GenerateXLSX(ctx context.Context, quoteID int64, format 
 	}
 	if quote == nil {
 		return nil, ErrQuoteForExportNotFound
+	}
+	// 数据域校验：紧跟 LoadQuote，早于任何后续取数（含 items / 客户名）。
+	if err := checkQuoteOwnerScope(ctx, s.store, scope, quoteID, ErrQuoteForExportNotFound); err != nil {
+		return nil, err
 	}
 	// TEMP 才校验 valid_until（其余类型可以不带；但本规则只限 TEMP，
 	// 因为 APPLY/CLONE 是长期价格条目，不该因临时校验被拒——裁决 5/EXPIRED 联动本批不做）。
