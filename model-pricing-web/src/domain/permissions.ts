@@ -29,8 +29,8 @@ export const PERMISSIONS = {
   ORG_PERMISSION_VIEW: "M11:V",
   ORG_PERMISSION_CONFIGURE: "M11:C",
   AUDIT_VIEW: "M12:V",
-  ALERT_VIEW: "M13:V",
-  ALERT_HANDLE: "M13:E",
+  ALERT_VIEW: "M12:V",
+  ALERT_HANDLE: "M12:E",
 } as const;
 
 export type PermissionCode =
