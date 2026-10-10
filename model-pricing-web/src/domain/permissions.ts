@@ -13,7 +13,11 @@ export const PERMISSIONS = {
   SUPPLIER_QUOTE_EDIT: "M4:E",
   SUPPLIER_QUOTE_PRIVILEGE: "M4:P",
   COST_VIEW: "M5:V",
+  // M5:E = 主供应商锁定（批次 3a 后仅 PROCUREMENT + PLATFORM_ADMIN 持有）
   COST_EDIT: "M5:E",
+  // M5:C = 成本参数配置（批次 3a 后仅 PRICING_OP + PLATFORM_ADMIN 持有）
+  // 后端 PUT /api/internal/cost/params 挂的就是这一个；不要再用 COST_EDIT 守成本参数。
+  COST_CONFIG: "M5:C",
   PRICING_POLICY_VIEW: "M6:V",
   PRICING_POLICY_EDIT: "M6:E",
   PRICE_BOOK_VIEW: "M7:V",

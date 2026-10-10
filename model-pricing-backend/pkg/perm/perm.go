@@ -146,11 +146,19 @@ func ValidateInDB(store permStore) error {
 
 // ---- 角色 code 常量（服务层"按角色 code 收敛"用，pkg/perm 单点） ----
 //
-// 背景（06-cost.md §11-1）：M5:E 权限点在 000007_seed 里被 6 个角色持有
-// （PRICING_OP / PROCUREMENT / FINANCE 应有，MODEL_OPS / RETRO_OP 是历史遗留越权）。
-// 中间件 RequirePerm(M5:E) 只看权限点、无法区分这 6 个角色，服务层必须再按角色 code
-// 收敛一层。如果散落在 service 里逐处写 `roleCode=="PRICING_OP"` 之类的字面值，
-// 很容易漏写或多写——所以集中在本包，并用单测锁住允许/禁止集合。
+// 背景（06-cost.md §11-1 + 批次 3a / 裁决 B2=甲）：
+//
+//	权限点是「模块 × 操作码」粒度（M5:C / M5:E / M10:E），**不含角色维度**。
+//	000030_split_m5_permission 已把原先被 6 个角色共享的 M5:E 按动作拆开：
+//	  成本参数配置 M5:E → M5:C（仅 PRICING_OP 持）
+//	  主供应商锁定 保留   M5:E（仅 PROCUREMENT 持）
+//	  汇率锁定     M5:E → M10:E（仅 FINANCE 持）
+//	但权限点仍无法表达「同一权限点上不同角色的职责边界」——例如 PLATFORM_ADMIN 作为
+//	全权限角色也持 M5:C，却不该直接改成本参数。所以服务层**仍必须**再按角色 code 收敛一层，
+//	此时它的定位是**防御性冗余（第二层）而非唯一防线**：中间件挡掉绝大多数越权，
+//	本层兜住中间件放行但角色不符的残余情况（如 PLATFORM_ADMIN 单人账号）。
+//	如果散落在 service 里逐处写 `roleCode=="PRICING_OP"` 之类的字面值，
+//	很容易漏写或多写——所以集中在本包，并用单测锁住允许/禁止集合。
 const (
 	RolePlatformAdmin = "PLATFORM_ADMIN"
 	RoleModelOps      = "MODEL_OPS"
@@ -162,16 +170,23 @@ const (
 	RoleSupplier      = "SUPPLIER"
 	RoleCustomer      = "CUSTOMER"
 	RoleOpsAdmin      = "OPS_ADMIN"
+	RoleAuditReadOnly = "AUDIT_READONLY"
 )
 
 // CanEditCostParam 成本参数（cost_param 表）只允许 PRICING_OP 编辑。
-// 中间件 RequirePerm(M5:E) 保第一层；本函数保第二层（越权角色即使持 M5:E 也拒绝）。
+// 第一层：中间件 RequirePerm(M5:C)（批次 3a 起；此前是 M5:E）；
+// 第二层（本函数）：防御性冗余——纯 PLATFORM_ADMIN 等全权限角色也持 M5:C，
+// 但角色不符仍拒绝。两层都不能单删。
 func CanEditCostParam(roleCode string) bool { return roleCode == RolePricingOp }
 
 // CanLockPrimary 主供应商锁定（cost_baseline.locked_manual）只允许 PROCUREMENT 调用。
+// 第一层 RequirePerm(M5:E)（批次 3a 后 M5:E 只归 PROCUREMENT + PLATFORM_ADMIN）；
+// 第二层（本函数）同上，是防御性冗余。
 func CanLockPrimary(roleCode string) bool { return roleCode == RoleProcurement }
 
 // CanLockFx 汇率锁定（fx_rate_lock）只允许 FINANCE 调用。
+// 汇率锁定接口属批次 6（尚未实现）；实现时应挂 RequirePerm(M10:E)，
+// 000030 已把 FINANCE 的汇率动作从 M5:E 挪到 M10:E。
 func CanLockFx(roleCode string) bool { return roleCode == RoleFinance }
 
 // CanReadSupplierCommercial 供应商商务字段仅财务或档案归属采购可读。

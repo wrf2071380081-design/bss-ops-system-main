@@ -37,7 +37,7 @@ type lockPrimaryBody struct {
 
 // LockPrimary 手动锁定主供应商。
 //
-// @Summary 手动锁定主供应商（M5:E + 服务层角色收敛：仅 PROCUREMENT）
+// @Summary 手动锁定主供应商（M5:E＝主供应商锁定 + 服务层角色收敛：仅 PROCUREMENT）
 // @Description 覆盖四因子算法结论，新版本 change_reason=MANUAL_LOCK、locked_manual=true。锁定是单向 sticky：后续任何触发（QUOTE_EFFECTIVE/PARAM_CHANGE/EXPIRE_REMOVE 等）都维持该锁定；若被锁供应商失效（冻结/该 SKU 无 EFFECTIVE 报价），后续重算明确报错、绝不自动降级或自动解锁。重复锁定同一家供应商 = 合法 no-op（不产新版本、不重复写审计）。本批不含解锁接口（见 CLAUDE.md 遗留 6d-3-①）。
 // @Tags 成本管理
 // @Accept json
@@ -58,8 +58,10 @@ func (h *CostLockHandler) LockPrimary(c *gin.Context) {
 		response.Error(c, apperr.ErrUnauthorized)
 		return
 	}
-	// 服务层二次鉴权（CLAUDE.md 红线 + 06-cost §11-1）：M5:E 中间件只看权限点，
-	// 6 角色都持 M5:E，必须再按角色 code 收敛到 PROCUREMENT。AnyRoleCan 扫**全角色**——
+	// 服务层二次鉴权（防御性冗余）：第一层是中间件 RequirePerm(M5:E)。
+	// 批次 3a 后 M5:E 的授权已收窄为 PROCUREMENT + PLATFORM_ADMIN（迁移 000030），
+	// 语义也从「成本管理·编辑（3 个动作共用）」收窄为「主供应商锁定」。
+	// 第二层（本分支）再按角色 code 收敛到 PROCUREMENT——权限点不含角色维度，
 	// PLATFORM_ADMIN 即便手持 M5:E 也会被拒（它不持 PROCUREMENT）。
 	if !perm.AnyRoleCan(op.Roles, perm.CanLockPrimary) {
 		response.Error(c, apperr.New(

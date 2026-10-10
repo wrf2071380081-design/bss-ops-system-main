@@ -200,7 +200,8 @@ docs/api/            【可写】**接口契约目录**：前端对接的唯一�
 - **`operatorRoleOf(op)` 只回首个角色**：PLATFORM_ADMIN+MODEL_OPS+PRICING_OP 的账号操作都记成 PLATFORM_ADMIN，与真实审批人角色错位（8b-1 里 audit 落到 PRICES_OP 时就是这样）
 
 **权限类（并入阶段 F「角色权限过宽」专项）**：
-- `M5:E` 被 6 角色持有（PRICING_OP/PROCUREMENT/FINANCE/MODEL_OPS/RETRO_OP/SALES），仅 PRICING/PROCUREMENT 应有
+- `M5:E` 被 6 角色持有（PRICING_OP/PROCUREMENT/FINANCE/MODEL_OPS/RETRO_OP/SALES），仅 PRICING/PROCUREMENT 应有——**批次 3a 已拆分**：成本参数编辑改挂 `M5:C`（仅 PRICING_OP）、主供应商锁定保留 `M5:E`（仅 PROCUREMENT）、汇率锁定改挂 `M10:E`（仅 FINANCE）；迁移 `000030_split_m5_permission`
+- **`M*:C`（配置）操作码此前零接口使用；`M*:P`（特权）仅 `POST /quotes/retro-effective` 一处使用**——属设计预留而非实现缺口（裁决 B1=甲：维持现状）。**后续新增「参数 / 策略配置类」接口应挂 `:C`，不要继续复用 `:E`**（`:E` 已被 3a 证明会被多角色共享、导致语义混淆）
 - `M4:A`/`M4:P` M4:P 发到了 PROCUREMENT（阶段 5b 曾出现 buyer_a 误批准证据）
 - `M7:A` M7:P 两个价格目表权限点可能用处与真实审批错位（8b-1-B2）
 - `M2:V` 发给了 SALES（官方价暂存区对销售可见，非成本机密，留 F 复审）

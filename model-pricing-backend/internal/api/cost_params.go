@@ -53,7 +53,7 @@ func (h *CostParamHandler) ListCostParams(c *gin.Context) {
 
 // UpdateCostParams 成本参数全量替换（只写 overrides）。
 //
-// @Summary 成本参数全量替换（M5:E + 服务层角色收敛：仅 PRICING_OP）
+// @Summary 成本参数全量替换（M5:C + 服务层角色收敛：仅 PRICING_OP）
 // @Description 全量替换语义：body.overrides 是替换后的完整覆盖集（[] 合法清空）；事务内 DELETE MODEL/SUPPLIER 全量 + 逐行 INSERT + 审计 + 逐受影响 SKU 入队 COST_RECALC。body.defaults 本批次只读——传入即 400（绝不静默忽略）；body 必须带 overrides 键（缺失即 400）。费率必须 0~1、小数位 ≤4、能解析为十进制；scope_id 必须在对应表真实存在；同一 (scope_type,scope_id) 重复即 400。所有变更**同步触发**受影响 SKU 的成本重算（PARAM_CHANGE）。
 // @Tags 成本管理
 // @Accept json
@@ -63,7 +63,7 @@ func (h *CostParamHandler) ListCostParams(c *gin.Context) {
 // @Success 200 {object} api.APIResponse "code=0；data={overrides_count,submitted_tasks,task_ids,audit_log_id}"
 // @Failure 400 {object} api.APIResponse "code=10001 参数非法（含 defaults 非空 / overrides 缺失 / scope_type 非 MODEL/SUPPLIER / scope_id 不存在 / 重复 / 费率非法）"
 // @Failure 401 {object} api.APIResponse "code=10002 未认证"
-// @Failure 403 {object} api.APIResponse "code=10003 无 M5:E（中间件）或角色不含 PRICING_OP（服务层）"
+// @Failure 403 {object} api.APIResponse "code=10003 无 M5:C（中间件）或角色不含 PRICING_OP（服务层）"
 // @Router /api/internal/cost/params [put]
 func (h *CostParamHandler) UpdateCostParams(c *gin.Context) {
 	op := middleware.OperatorFrom(c)
@@ -72,15 +72,17 @@ func (h *CostParamHandler) UpdateCostParams(c *gin.Context) {
 		return
 	}
 
-	// 服务层二次鉴权（CLAUDE.md 红线：M5:E 中间件只看权限点，6 角色都持 M5:E，
-	// 必须再按角色 code 收敛到 PRICING_OP）。AnyRoleCan 扫**全角色**——
-	// smoke_admin 的真值形状 [PLATFORM_ADMIN MODEL_OPS PRICING_OP] 正是靠这个放行。
-	// 注意：如果中间件层已 403，这里根本到不了——此分支仅当「中间件放行但角色不含
-	// PRICING_OP」（如 FINANCE / MODEL_OPS 单角色账号）时触发。
+	// 服务层二次鉴权（防御性冗余）。
+	// 第一层是中间件 RequirePerm(M5:C)——批次 3a 起，成本参数配置从 M5:E 挪到 M5:C
+	// （M5:E 被 6 角色共享，无法表达「成本参数 vs 主供应商锁定 vs 汇率锁定」的区别）。
+	// 第二层（本分支）按角色 code 收敛到 PRICING_OP：权限点不含角色维度，
+	// PLATFORM_ADMIN 这类全权限角色同样持 M5:C，仍需在此拦住。
+	// AnyRoleCan 扫**全角色**——smoke_admin 的真值形状 [PLATFORM_ADMIN MODEL_OPS PRICING_OP]
+	// 正是靠这个放行。如果中间件已 403，这里根本到不了。
 	if !perm.AnyRoleCan(op.Roles, perm.CanEditCostParam) {
 		response.Error(c, apperr.New(
 			apperr.ErrForbidden.Code,
-			fmt.Sprintf("角色 %v 不含 PRICING_OP，不允许修改成本参数（M5:E 服务层角色收敛）", op.Roles),
+			fmt.Sprintf("角色 %v 不含 PRICING_OP，不允许修改成本参数（M5:C 服务层角色收敛）", op.Roles),
 			apperr.ErrForbidden.Status,
 		))
 		return

@@ -227,19 +227,26 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 		protected.GET("/cost/baselines/:sku/history", middleware.RequirePerm(perm.M5View), ch.GetCostBaselineHistory)
 	}
 
-	// 业务接口：成本参数读写（06-cost.md §7，内部 M5:V 读 / M5:E 写 + 服务层角色收敛 PRICING_OP）。
+	// 业务接口：成本参数读写（06-cost.md §7，内部 M5:V 读 / M5:C 写 + 服务层角色收敛 PRICING_OP）。
 	// PUT 挂幂等中间件（红线 5：影响成本的写操作必须过 Idempotency-Key）。
+	//
+	// ⚠️ 写权限点由 M5:E 改为 M5:C（批次 3a / 裁决 B2=甲）：
+	//   M5:E 被 6 个角色共享，而它同时承载「成本参数配置 / 主供应商锁定 / 汇率锁定」三个不同动作，
+	//   权限点层面无法区分。现按动作拆开：配置类挂 :C（仅 PRICING_OP），主供应商锁定保留 :E（仅 PROCUREMENT），
+	//   汇率锁定挂 M10:E（仅 FINANCE，批次 6）。迁移 000030_split_m5_permission 同步改了 role_permission。
+	//   服务层 CanEditCostParam 保留为防御性第二层，不是唯一防线。
 	if portal == "internal" && deps.CostParamSvc != nil {
 		ph := NewCostParamHandler(deps.CostParamSvc)
 		protected.GET("/cost/params", middleware.RequirePerm(perm.M5View), ph.ListCostParams)
 		protected.PUT("/cost/params",
-			middleware.RequirePerm(perm.M5Edit),
+			middleware.RequirePerm(perm.M5Config),
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			ph.UpdateCostParams,
 		)
 	}
 
 	// 业务接口：手动锁定主供应商（06-cost.md §6，内部 M5:E + 服务层角色收敛 PROCUREMENT）。
+	// 批次 3a 后 M5:E 只归 PROCUREMENT（+PLATFORM_ADMIN），语义收窄为「主供应商锁定」。
 	// 幂等必挂（红线 5：产生业务新版本的写操作必须过 Idempotency-Key）。
 	// {sku} 解析复用 ReadService（与 §3 历史同一段代码——绝不能自己再写一份）。
 	if portal == "internal" && deps.CostLockSvc != nil && deps.CostReadSvc != nil {

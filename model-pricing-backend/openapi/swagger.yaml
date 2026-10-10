@@ -1262,7 +1262,7 @@ paths:
             $ref: '#/definitions/api.APIResponse'
       security:
       - BearerAuth: []
-      summary: 手动锁定主供应商（M5:E + 服务层角色收敛：仅 PROCUREMENT）
+      summary: 手动锁定主供应商（M5:E＝主供应商锁定 + 服务层角色收敛：仅 PROCUREMENT）
       tags:
       - 成本管理
   /api/internal/cost/opportunities:
@@ -1356,12 +1356,12 @@ paths:
           schema:
             $ref: '#/definitions/api.APIResponse'
         "403":
-          description: code=10003 无 M5:E（中间件）或角色不含 PRICING_OP（服务层）
+          description: code=10003 无 M5:C（中间件）或角色不含 PRICING_OP（服务层）
           schema:
             $ref: '#/definitions/api.APIResponse'
       security:
       - BearerAuth: []
-      summary: 成本参数全量替换（M5:E + 服务层角色收敛：仅 PRICING_OP）
+      summary: 成本参数全量替换（M5:C + 服务层角色收敛：仅 PRICING_OP）
       tags:
       - 成本管理
   /api/internal/customer-quotes:

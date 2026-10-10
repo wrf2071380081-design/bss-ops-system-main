@@ -12,7 +12,9 @@ import { usePermissionStore } from "../../../stores/permission";
 import { PERMISSIONS } from "../../../domain/permissions";
 
 const permission = usePermissionStore();
-const canEditParams = computed(() => permission.canAction(PERMISSIONS.COST_EDIT));
+// 批次 3a：成本参数配置改挂 M5:C（后端 PUT /cost/params 同步改了 RequirePerm）。
+// COST_EDIT（M5:E）现在是「主供应商锁定」专用，不能再守成本参数。
+const canEditParams = computed(() => permission.canAction(PERMISSIONS.COST_CONFIG));
 
 const rows = ref<CurrentCostBaselineDTO[]>([]);
 const loading = ref(false);
