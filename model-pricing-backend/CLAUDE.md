@@ -206,6 +206,8 @@ docs/api/            【可写】**接口契约目录**：前端对接的唯一�
 - `M7:A` M7:P 两个价格目表权限点可能用处与真实审批错位（8b-1-B2）
 - `M2:V` 发给了 SALES（官方价暂存区对销售可见，非成本机密，留 F 复审）
 - `M10` 全权限给了 FINANCE（工作台/审计只读即可，F 复审）
+- `OPS_ADMIN` 曾持 `M11` 全 5 点（含 E/A/C/P，即能改权限树），与需求文档 §1.2「只读为主」冲突——**批次 3b 已收敛**：只删 `M11:E/A/C/P`，保留 `M11:V` 及 `M10:V`/`M12:V`；迁移 `000031_ops_admin_converge`。同批把 `role.name` 从「运维管理员」统一为「运营管理员」（`000007_seed` 与需求文档的命名漂移，同一个 `role.code`）
+- **`M11` 目前零接口挂载**（`router.go` 里搜不到 `M11*`）：组织与权限接口属**批次 5**，尚未实现；前端 `internal.orgPermissions` 路由守卫已配 `M11:V`/`M11:C` 但后端 404。故 3b 的收敛是**预防性**的——批次 5 实现接口时应挂 `M11:*`，届时 OPS_ADMIN 自动只有只读
 
 **文档类**：
 - `approval_step.biz_type` 的 DDL 注释枚举（CHANGE_REQUEST/PRICE_BOOK/...）**与现有约定不符**——约定是 biz_type = change_request.change_type（DEPRECATE/PRICE_UP/PRICE_DOWN/PRICE_BOOK_PUBLISH/PRICE_BOOK_ROLLBACK），注释是旧建议性描述，**阶段 F 更新注释对齐现状，不是改代码对齐注释**
