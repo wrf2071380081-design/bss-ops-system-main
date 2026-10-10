@@ -17,20 +17,27 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"model_bss/internal/domain/finance"
 	"model_bss/internal/infra/db"
 )
 
-// FinanceRepo 实现 finance.ReadStore。
+// FinanceRepo 实现 finance.ReadStore 与 finance.LockStore。
 type FinanceRepo struct {
-	base *gorm.DB
+	base  *gorm.DB
+	audit *AuditRepo
 }
 
 // NewFinanceRepo 构造。
-func NewFinanceRepo(base *gorm.DB) *FinanceRepo { return &FinanceRepo{base: base} }
+func NewFinanceRepo(base *gorm.DB) *FinanceRepo {
+	return &FinanceRepo{base: base, audit: NewAuditRepo(base)}
+}
 
-var _ finance.ReadStore = (*FinanceRepo)(nil)
+var (
+	_ finance.ReadStore = (*FinanceRepo)(nil)
+	_ finance.LockStore = (*FinanceRepo)(nil)
+)
 
 func (r *FinanceRepo) txOf(ctx context.Context) *gorm.DB {
 	if tx := db.FromContext(ctx); tx != nil {
@@ -117,11 +124,12 @@ func (r *FinanceRepo) ListFxLocks(ctx context.Context) ([]finance.FxLockRow, err
 		FxTier       string    `gorm:"column:fx_tier"`
 		LockedByName string    `gorm:"column:locked_by_name"`
 		LockedAt     time.Time `gorm:"column:locked_at"`
+		AdjustReason string    `gorm:"column:adjust_reason"`
 		UpdatedAt    time.Time `gorm:"column:updated_at"`
 	}
 	err := r.txOf(ctx).Table("fx_rate_lock fl").
 		Joins("LEFT JOIN internal_staff st ON st.id = fl.locked_by").
-		Select("fl.id, fl.ym, fl.fx_tier, COALESCE(st.name, '') AS locked_by_name, fl.locked_at, fl.updated_at").
+		Select("fl.id, fl.ym, fl.fx_tier, COALESCE(st.name, '') AS locked_by_name, fl.locked_at, COALESCE(fl.adjust_reason, '') AS adjust_reason, fl.updated_at").
 		Order("fl.ym DESC").
 		Scan(&rows).Error
 	if err != nil {
@@ -135,10 +143,181 @@ func (r *FinanceRepo) ListFxLocks(ctx context.Context) ([]finance.FxLockRow, err
 			FxTier:       rw.FxTier,
 			LockedByName: rw.LockedByName,
 			LockedAt:     rw.LockedAt,
+			AdjustReason: rw.AdjustReason,
 			UpdatedAt:    rw.UpdatedAt,
 		})
 	}
 	return out, nil
+}
+
+// ============================================================
+// §4/§5 汇率锁定（当月状态 + 锁定/调整）
+// ============================================================
+
+// GetFxLock 实现 finance.LockStore.GetFxLock：读指定月的锁定行。
+func (r *FinanceRepo) GetFxLock(ctx context.Context, ym string) (*finance.FxLockRow, bool, error) {
+	var row struct {
+		ID           int64     `gorm:"column:id"`
+		Ym           string    `gorm:"column:ym"`
+		FxTier       string    `gorm:"column:fx_tier"`
+		LockedByName string    `gorm:"column:locked_by_name"`
+		LockedAt     time.Time `gorm:"column:locked_at"`
+		AdjustReason string    `gorm:"column:adjust_reason"`
+		UpdatedAt    time.Time `gorm:"column:updated_at"`
+	}
+	err := r.txOf(ctx).Table("fx_rate_lock fl").
+		Joins("LEFT JOIN internal_staff st ON st.id = fl.locked_by").
+		Select("fl.id, fl.ym, fl.fx_tier, COALESCE(st.name, '') AS locked_by_name, fl.locked_at, COALESCE(fl.adjust_reason, '') AS adjust_reason, fl.updated_at").
+		Where("fl.ym = ?", ym).
+		Take(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("get fx_rate_lock %s: %w", ym, err)
+	}
+	return &finance.FxLockRow{
+		ID:           row.ID,
+		Ym:           row.Ym,
+		FxTier:       row.FxTier,
+		LockedByName: row.LockedByName,
+		LockedAt:     row.LockedAt,
+		AdjustReason: row.AdjustReason,
+		UpdatedAt:    row.UpdatedAt,
+	}, true, nil
+}
+
+// fxLockInsertRow 是 fx_rate_lock 的插入行模型（只用于 INSERT，字段显式声明）。
+type fxLockInsertRow struct {
+	ID           int64     `gorm:"primaryKey"`
+	Ym           string    `gorm:"column:ym"`
+	FxTier       string    `gorm:"column:fx_tier"`
+	LockedBy     int64     `gorm:"column:locked_by"`
+	LockedAt     time.Time `gorm:"column:locked_at"`
+	AdjustReason *string   `gorm:"column:adjust_reason"`
+	CreatedAt    time.Time `gorm:"column:created_at"`
+	UpdatedAt    time.Time `gorm:"column:updated_at"`
+	RequestID    *string   `gorm:"column:request_id"`
+	CreatedBy    *int64    `gorm:"column:created_by"`
+	UpdatedBy    *int64    `gorm:"column:updated_by"`
+}
+
+// UpsertFxLockTx 实现 finance.LockStore.UpsertFxLockTx。
+//
+// 单事务：
+//  1. SELECT ... FOR UPDATE 锁定当月行；
+//  2. 存在 → UPDATE（调整）；不存在 → INSERT（首次锁定）；
+//  3. 读锁定人姓名；
+//  4. audit_log（action=FX_LOCK / FX_LOCK_ADJUST，含档位新旧值与理由）。
+func (r *FinanceRepo) UpsertFxLockTx(ctx context.Context, in finance.LockTxInput) (*finance.LockTxResult, error) {
+	now := time.Now().UTC()
+	var (
+		rowID        int64
+		adjusted     bool
+		lockedByName string
+	)
+
+	txErr := r.txOf(ctx).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. 锁定当月行。
+		var cur struct {
+			ID           int64   `gorm:"column:id"`
+			FxTier       string  `gorm:"column:fx_tier"`
+			AdjustReason *string `gorm:"column:adjust_reason"`
+		}
+		err := tx.Table("fx_rate_lock").
+			Where("ym = ?", in.Ym).
+			Select("id, fx_tier, adjust_reason").
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Take(&cur).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("lock fx_rate_lock %s: %w", in.Ym, err)
+		}
+
+		var before map[string]any
+		if err == nil {
+			// 2a. UPDATE（调整）。
+			adjusted = true
+			rowID = cur.ID
+			before = map[string]any{"fx_tier": cur.FxTier, "adjust_reason": derefString(cur.AdjustReason)}
+			if uerr := tx.Table("fx_rate_lock").Where("id = ?", cur.ID).Updates(map[string]any{
+				"fx_tier":       in.FxTier,
+				"adjust_reason": in.AdjustReason,
+				"locked_by":     in.OperatorID,
+				"locked_at":     now,
+				"updated_at":    now,
+				"updated_by":    in.OperatorID,
+				"request_id":    in.RequestID,
+			}).Error; uerr != nil {
+				return fmt.Errorf("update fx_rate_lock %s: %w", in.Ym, uerr)
+			}
+		} else {
+			// 2b. INSERT（首次锁定；adjust_reason 恒 NULL）。
+			ins := fxLockInsertRow{
+				Ym:        in.Ym,
+				FxTier:    in.FxTier,
+				LockedBy:  in.OperatorID,
+				LockedAt:  now,
+				CreatedAt: now,
+				UpdatedAt: now,
+				RequestID: strPtr(in.RequestID),
+				CreatedBy: int64Ptr(in.OperatorID),
+				UpdatedBy: int64Ptr(in.OperatorID),
+			}
+			if ierr := tx.Table("fx_rate_lock").Create(&ins).Error; ierr != nil {
+				return fmt.Errorf("insert fx_rate_lock %s: %w", in.Ym, ierr)
+			}
+			rowID = ins.ID
+		}
+
+		// 3. 锁定人姓名。
+		if serr := tx.Table("internal_staff").Where("id = ?", in.OperatorID).
+			Select("name").Scan(&lockedByName).Error; serr != nil {
+			return fmt.Errorf("load operator name %d: %w", in.OperatorID, serr)
+		}
+
+		// 4. audit_log（同事务）。
+		action := finance.AuditActionFxLock
+		if adjusted {
+			action = finance.AuditActionFxLockAdjust
+		}
+		if aerr := r.audit.Record(db.WithDB(ctx, tx), AuditEntry{
+			OperatorID:   in.OperatorID,
+			OperatorRole: in.OperatorRole,
+			Action:       action,
+			TargetType:   "FX_RATE_LOCK",
+			TargetID:     rowID,
+			BeforeValue:  before,
+			AfterValue: map[string]any{
+				"ym":            in.Ym,
+				"fx_tier":       in.FxTier,
+				"adjust_reason": in.AdjustReason,
+			},
+			Reason:    in.AdjustReason,
+			RequestID: in.RequestID,
+		}); aerr != nil {
+			return fmt.Errorf("write audit_log: %w", aerr)
+		}
+		return nil
+	})
+	if txErr != nil {
+		return nil, txErr
+	}
+	return &finance.LockTxResult{
+		ID:           rowID,
+		Ym:           in.Ym,
+		FxTier:       in.FxTier,
+		Adjusted:     adjusted,
+		LockedAt:     now,
+		LockedByName: lockedByName,
+	}, nil
+}
+
+// derefString 解引用可空字符串（nil → 空串）。
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // ============================================================

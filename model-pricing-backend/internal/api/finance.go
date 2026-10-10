@@ -10,6 +10,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -17,17 +18,19 @@ import (
 	"model_bss/internal/api/middleware"
 	"model_bss/internal/domain/finance"
 	"model_bss/pkg/apperr"
+	"model_bss/pkg/perm"
 	"model_bss/pkg/response"
 )
 
-// FinanceHandler 是财务中心只读接口处理器。
+// FinanceHandler 是财务中心接口处理器（只读三接口 + 汇率锁定）。
 type FinanceHandler struct {
-	svc *finance.ReadService
+	svc     *finance.ReadService
+	lockSvc *finance.LockService
 }
 
-// NewFinanceHandler 构造。
-func NewFinanceHandler(svc *finance.ReadService) *FinanceHandler {
-	return &FinanceHandler{svc: svc}
+// NewFinanceHandler 构造。lockSvc 为 nil 时不提供锁定接口（路由侧也会跳过）。
+func NewFinanceHandler(svc *finance.ReadService, lockSvc *finance.LockService) *FinanceHandler {
+	return &FinanceHandler{svc: svc, lockSvc: lockSvc}
 }
 
 // financeScopeOf 把 middleware.Operator 投影到 finance.OwnerScope（行级过滤）。
@@ -146,5 +149,101 @@ func (h *FinanceHandler) GetAccount(c *gin.Context) {
 		response.Error(c, financeErrToAppErr(err))
 		return
 	}
+	response.Success(c, res)
+}
+
+// fxLockErrToAppErr 汇率锁定领域错误 → HTTP 错误码。
+func fxLockErrToAppErr(err error) apperr.Error {
+	switch {
+	case errors.Is(err, finance.ErrFxTierInvalid),
+		errors.Is(err, finance.ErrFxAdjustReasonRequired):
+		return apperr.New(apperr.ErrInvalidParams.Code, err.Error(), apperr.ErrInvalidParams.Status) // 400
+	default:
+		return apperr.ErrSystem
+	}
+}
+
+// lockBody 是 POST /fx-lock 请求体。
+type lockBody struct {
+	FxTier       string `json:"fx_tier"`
+	AdjustReason string `json:"adjust_reason"`
+}
+
+// GetFxLock 当月汇率锁定状态。
+//
+// @Summary 当月汇率锁定状态（M10:V；含 8 档可选值）
+// @Description 返回当月锁定状态（LOCKED/PENDING_LOCK）与 8 档可选档位。已锁定时回填 fxTier/lockedAt/lockedBy/adjustReason；未锁定时 fxTier 为空串。
+// @Tags 财务中心
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} api.APIResponse "code=0；data={month,status,fxTier,lockedAt,lockedBy,adjustReason,tiers}"
+// @Failure 401 {object} api.APIResponse "code=10002 未认证"
+// @Failure 403 {object} api.APIResponse "code=10003 无 M10:V"
+// @Router /api/internal/finance/fx-lock [get]
+func (h *FinanceHandler) GetFxLock(c *gin.Context) {
+	if middleware.OperatorFrom(c) == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	if h.lockSvc == nil {
+		response.Error(c, apperr.ErrSystem)
+		return
+	}
+	res, err := h.lockSvc.GetCurrent(c.Request.Context())
+	if err != nil {
+		response.Error(c, apperr.ErrSystem)
+		return
+	}
+	response.Success(c, res)
+}
+
+// PostFxLock 锁定/调整当月汇率档位。
+//
+// @Summary 锁定/调整当月汇率档位（M10:E + 服务层仅 FINANCE；幂等必填 Idempotency-Key）
+// @Description fx_tier 必须 ∈ 固定 8 档（6.5/6.7/6.75/6.8/6.85/6.9/6.95/7.0），否则 400。当月无记录 → 首次锁定（adjust_reason 可空）；当月已有记录 → 视为调整，adjust_reason 必填否则 400。服务层二道校验 perm.CanLockFx 只放行 FINANCE（即使非财务角色被配了 M10:E 也锁不了）。写操作同事务落 audit_log。月中调整本批为简化版（直接写 + 强制理由 + 审计，不含审批链）。
+// @Tags 财务中心
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param Idempotency-Key header string true "幂等键"
+// @Param body body lockBody true "fx_tier 必填（8 档之一）；adjust_reason 调整时必填"
+// @Success 200 {object} api.APIResponse "code=0；data={month,fxTier,status,adjusted,lockedAt,lockedBy}"
+// @Failure 400 {object} api.APIResponse "code=10001 档位非法 / 调整缺理由"
+// @Failure 401 {object} api.APIResponse "code=10002 未认证"
+// @Failure 403 {object} api.APIResponse "code=10003 无 M10:E 或角色非 FINANCE"
+// @Failure 409 {object} api.APIResponse "code=10005 幂等冲突"
+// @Router /api/internal/finance/fx-lock [post]
+func (h *FinanceHandler) PostFxLock(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	// 服务层二道校验：仅 FINANCE 可锁汇率（即使被误配 M10:E 也不放行）。
+	if !perm.AnyRoleCan(op.Roles, perm.CanLockFx) {
+		response.Error(c, apperr.New(
+			apperr.ErrForbidden.Code,
+			fmt.Sprintf("角色 %v 不含 FINANCE，不允许锁定汇率（M10:E 服务层角色收敛）", op.Roles),
+			apperr.ErrForbidden.Status,
+		))
+		return
+	}
+	var body lockBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, fmt.Sprintf("JSON 解析失败：%s", err.Error()), apperr.ErrInvalidParams.Status))
+		return
+	}
+	if h.lockSvc == nil {
+		response.Error(c, apperr.ErrSystem)
+		return
+	}
+	res, err := h.lockSvc.Lock(c.Request.Context(),
+		finance.LockInput{FxTier: body.FxTier, AdjustReason: body.AdjustReason},
+		op.OperatorID, operatorRoleOf(op), requestIDOf(c))
+	if err != nil {
+		response.Error(c, fxLockErrToAppErr(err))
+		return
+	}
+	middleware.SetIdempotencyResult(c, res)
 	response.Success(c, res)
 }
