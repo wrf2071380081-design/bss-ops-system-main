@@ -122,6 +122,72 @@
 
 ---
 
+## 0.7 供应商门户主体档案（批次 7a）
+
+```
+GET /api/supplier/profile
+```
+
+**本批只实现 GET**。`PUT /api/supplier/profile` 与 `/api/supplier/qualifications` 属批次 7b，
+当前未注册（返回 404），前端不要先做写入口。
+
+鉴权与隔离（与内部门户不同，别串）：
+
+- **不挂 `RequirePerm`**。SUPPLIER 角色零内部权限点，挂了必然 403。
+  只走 AuthN，隔离靠「供应商身份只从登录态解析」：
+  `subject_operator.id`（= `account.owner_id`）→ `subject_id` → `supplier_profile.id`
+- **行级过滤键是 `supplier_profile.id`**，不是内部门户的
+  `owner_procurement_operator_id` / `owner_sales_operator_id`
+- 非 SUPPLIER 身份访问（含内部账号跨门户）→ `401`（code 10002）；未带 token → `401`
+
+响应 `data`：
+
+- `id` string —— `supplier_profile.id` 转字符串
+- `legalName` string —— `legal_subject.legal_name`
+- `registrationNoMasked` string —— 统一社会信用代码脱敏：保留前 4 后 2，中间按长度打星
+  （18 位 USCC → 4 + 12 星 + 2）。空值返回空串
+- `status` string —— `supplier_profile.status`（`ACTIVE` / `INACTIVE`）
+- `qualificationStatus` string —— `supplier_profile.qual_status`
+  （`VALID` / `EXPIRING` / `FROZEN`；**`FROZEN` 前端枚举原本缺失，批次 7a 已补**）
+- `contactName` string —— 本主体下 `is_primary=true` 且 `status='ACTIVE'` 的
+  `subject_operator.name`；无主操作员时为空串
+- `contactPhoneMasked` string —— 同上取 `mobile` 后脱敏：保留前 3 后 4，中间 `****`；
+  长度 < 7 返回 `***`，空值返回空串
+- `settlementCurrency` string —— `supplier_profile.settlement_currency`
+- `paymentTerms` string —— **推导字段，库里没有这一列**：
+  `PREPAID` → `预付`；`MONTHLY` → `月结 {billing_cycle} 天`；未知值原样透传
+- `updatedAt` string —— `supplier_profile.updated_at`（ISO 8601 带时区）
+
+**不包含**（DTO 物理不含这些键，无需运行时 fieldmask）：成本 / 毛利 / 平台售价，
+以及 `credit_line` / `credit_used` / `deposit_amount` / `min_recharge` 等商务敏感字段。
+
+**已从前端 DTO 删除的无源字段**（库里没有对应列，后端不返回假字段）：
+`code`、`shortName`、`contactEmail`、`registeredAddressMasked`、`serviceRegions`。
+需要这些字段必须先加列（新迁移），不能靠后端编。
+
+样例：
+
+```json
+{
+  "code": 0, "message": "ok",
+  "data": {
+    "id": "1",
+    "legalName": "供应商甲",
+    "registrationNoMasked": "9131************3X",
+    "status": "ACTIVE",
+    "qualificationStatus": "VALID",
+    "contactName": "甲操作员",
+    "contactPhoneMasked": "138****0001",
+    "settlementCurrency": "CNY",
+    "paymentTerms": "预付",
+    "updatedAt": "2026-09-12T19:35:54.884955+08:00"
+  },
+  "requestId": "95826b0a-..."
+}
+```
+
+---
+
 ## 1. 状态机（报价单）
 
 ```

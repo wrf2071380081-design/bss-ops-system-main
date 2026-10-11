@@ -72,6 +72,8 @@ type Deps struct {
 	OpenTokenStore middleware.OpenTokenStore
 	// 阶段 12：组织与权限 M11 只读视图（批次 5）。
 	OrgPermSvc *orgperm.Service
+	// 阶段 12：供应商门户主体档案只读视图（批次 7a，只做 GET）。
+	SupplierPortalProfileSvc *supplier.PortalProfileService
 }
 
 // New 构建并返回应用使用的 Gin Engine。
@@ -474,6 +476,14 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 				ah.SubmitApplication,
 			)
 			protected.GET("/model-applications", ah.ListApplications)
+		}
+		// 主体档案（批次 7a）：只读 GET。同段其它路由一样**不挂 RequirePerm**
+		// （SUPPLIER 角色零内部权限点），隔离靠身份从登录态解析——
+		// subject_operator.id → subject_id → supplier_profile.id。
+		// ⚠️ PUT /profile 本批不实现（可写字段在库里无列，见批次 7a 报告 §遗留）。
+		if deps.SupplierPortalProfileSvc != nil {
+			ph := NewSupplierPortalProfileHandler(deps.SupplierPortalProfileSvc, deps.SupplierSvc)
+			protected.GET("/profile", ph.GetPortalProfile)
 		}
 	}
 

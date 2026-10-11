@@ -209,6 +209,9 @@ docs/api/            【可写】**接口契约目录**：前端对接的唯一�
 - `OPS_ADMIN` 曾持 `M11` 全 5 点（含 E/A/C/P，即能改权限树），与需求文档 §1.2「只读为主」冲突——**批次 3b 已收敛**：只删 `M11:E/A/C/P`，保留 `M11:V` 及 `M10:V`/`M12:V`；迁移 `000031_ops_admin_converge`。同批把 `role.name` 从「运维管理员」统一为「运营管理员」（`000007_seed` 与需求文档的命名漂移，同一个 `role.code`）
 - ~~**`M11` 目前零接口挂载**~~ → **批次 5 已实现**：`GET /api/internal/org-permissions/organizations` 与 `/roles` 两个**只读**接口挂 `M11:V`（代码 `internal/domain/orgperm/` + `internal/repo/orgperm.go` + `internal/api/org_permissions.go`；契约 `docs/api/12-org-permissions.md`）。**`M11:E/A/C/P` 在 router 里仍零挂载**（本批不做写操作），由 `router_orgperm_perm_test.go` 钉住。组织树按 `parent_id` 建树、**不用 `path`**（库里 `org_unit.path` 有脏值：id=2 的 path 是 `/1/1/` 而非 `/1/2/`，待数据治理）；`code` 用 id 填充（org_unit 无 code 列）；`description` 恒空串（role 表无该列）。遗留：**M11:V 授予了 9 个角色**（含 SALES/PROCUREMENT），即销售也能看到全系统权限矩阵——任务书验收 2 的「buyer_a 无 M11:V」前提与真库不符，是否收敛到管理员类角色待裁决
 
+- **批次 7a 已实现 `GET /api/supplier/profile`**（供应商门户主体档案，只读；代码 `internal/domain/supplier/portal_profile.go` + `internal/repo/supplier_portal.go` + `internal/api/supplier_portal_profile.go`；契约 `docs/api/05-quotes.md` §0.7）。**`PUT /profile` 与 `/supplier/qualifications`（7b）仍未实现**（404）。前端原 DTO 里 `code` / `shortName` / `contactEmail` / `registeredAddressMasked` / `serviceRegions` / `contactAddress` **在三张来源表里无对应列**，已按任务书「不返回假字段」从前端 DTO 删除；`paymentTerms` 由 `settle_type`+`billing_cycle` 推导保留。**若要恢复这些字段必须加新迁移补列**
+- **契约漂移（7a 顺手修）**：`supplier_profile.qual_status` 真实取值含 `FROZEN`，前端 `QUALIFICATION_STATUS` 枚举原先缺它，页面 `QUALIFICATION_STATUS[x].type` 会取到 `undefined` 而渲染报错——已补 `FROZEN`
+
 **文档类**：
 - `approval_step.biz_type` 的 DDL 注释枚举（CHANGE_REQUEST/PRICE_BOOK/...）**与现有约定不符**——约定是 biz_type = change_request.change_type（DEPRECATE/PRICE_UP/PRICE_DOWN/PRICE_BOOK_PUBLISH/PRICE_BOOK_ROLLBACK），注释是旧建议性描述，**阶段 F 更新注释对齐现状，不是改代码对齐注释**
 - `change_type` 注释（NEW_MODEL/CAPABILITY/PRICE_DOWN/PRICE_UP/DEPRECATE）**不含 PRICE_BOOK_PUBLISH/PRICE_BOOK_ROLLBACK/SPECIAL_PRICE**——同上，F 更新注释

@@ -113,9 +113,13 @@ export const SUPPLIER_STATUS = {
 
 export type SupplierStatus = keyof typeof SUPPLIER_STATUS;
 
+// ⚠️ FROZEN 是后端 supplier_profile.qual_status 的真实取值（设计文档 §0.6：
+// VALID / EXPIRING / FROZEN），原枚举缺它 → 资质被冻结时本页渲染会取到 undefined 而报错。
+// 批次 7a 补上；EXPIRED / MISSING 是前端自造值，库里没有，保留仅为兼容。
 export const QUALIFICATION_STATUS = {
   VALID: { label: "有效", type: "success" },
   EXPIRING: { label: "即将到期", type: "warning" },
+  FROZEN: { label: "已冻结", type: "danger" },
   EXPIRED: { label: "已过期", type: "danger" },
   MISSING: { label: "待补充", type: "info" },
 } as const satisfies Record<string, { label: string; type: StatusTagType }>;

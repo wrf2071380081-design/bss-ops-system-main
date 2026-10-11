@@ -5059,6 +5059,43 @@
                 }
             }
         },
+        "/api/supplier/profile": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "返回**登录供应商自己**的主体档案。身份只从登录态解析（subject_operator.id → subject_id → supplier_profile.id），不接受任何请求参数指定主体。脱敏：registrationNoMasked 保留 USCC 前 4 后 2 中间打星；contactPhoneMasked 保留前 3 后 4 中间打星。paymentTerms 由 settle_type + billing_cycle 推导（PREPAID→「预付」、MONTHLY→「月结 N 天」），不是独立字段。响应不含成本/毛利/平台售价，也不含 credit_line 等商务敏感字段。本批只实现 GET，PUT 未开放。",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "供应商门户"
+                ],
+                "summary": "供应商主体档案（供应商门户，只读）",
+                "responses": {
+                    "200": {
+                        "description": "code=0；data=PortalProfile{id,legalName,registrationNoMasked,status,qualificationStatus,contactName,contactPhoneMasked,settlementCurrency,paymentTerms,updatedAt}",
+                        "schema": {
+                            "$ref": "#/definitions/api.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "code=10002 未认证（非 SUPPLIER 身份）",
+                        "schema": {
+                            "$ref": "#/definitions/api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "code=10004 档案不存在",
+                        "schema": {
+                            "$ref": "#/definitions/api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/supplier/quotes": {
             "post": {
                 "security": [
