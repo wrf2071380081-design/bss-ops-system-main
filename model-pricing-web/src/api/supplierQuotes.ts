@@ -18,11 +18,15 @@ export const supplierQuotesApi = {
   list: (params: { page: number; size: number; supplier_id?: import("./quoteContract.types").QuoteId }) =>
     apiRequest<PageResult<import("./quoteContract.types").QuotePendingDTO>>({ url: `${basePath}/pending`, method: "GET", params }).then(data => { data.list.forEach(quote => { assertContractId(quote.id); assertContractId(quote.supplier_id); }); return data; }),
   get: (id: string) => apiRequest<import("./quoteContract.types").QuoteDiffDTO>({ url: `${basePath}/${id}/diff`, method: "GET" }),
-  approve: (id: string) =>
-    apiRequest<SupplierQuoteApproveResultDTO>({
-      url: `${basePath}/${id}/approve`, method: "POST", data: {},
-      idempotency: { scope: `supplier-quote:approve:${id}`, payload: {} },
-    }),
+  // comment 选填；**本单存在毛利预演不满足的明细时后端强制要求非空**（否则 400），
+  // 理由会写入 audit_log.reason 留痕。
+  approve: (id: string, comment?: string) => {
+    const payload = comment?.trim() ? { comment: comment.trim() } : {};
+    return apiRequest<SupplierQuoteApproveResultDTO>({
+      url: `${basePath}/${id}/approve`, method: "POST", data: payload,
+      idempotency: { scope: `supplier-quote:approve:${id}`, payload },
+    });
+  },
   reject: (id: string, reason: string) => {
     const payload = { reason: reason.trim() };
     return apiRequest<SupplierQuoteRejectResultDTO>({

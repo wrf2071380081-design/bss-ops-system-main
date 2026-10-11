@@ -19,6 +19,9 @@ type fakeQuoteStore struct {
 	createParams *CreateQuoteParams
 	createErr    error
 	created      *SubmitQuoteResult
+
+	withdrawParams *WithdrawParams
+	withdrawErr    error
 }
 
 func (f *fakeQuoteStore) FindQuotableSKUs(_ context.Context, skuIDs []int64) (map[int64]QuotableSKU, error) {
@@ -69,6 +72,14 @@ func (f *fakeQuoteStore) ListQuoteHistory(_ context.Context, _ int64, q QuoteHis
 
 func (f *fakeQuoteStore) GetQuoteDetail(_ context.Context, _, _ int64) (*QuoteDetail, error) {
 	return nil, nil
+}
+
+func (f *fakeQuoteStore) WithdrawQuote(_ context.Context, p WithdrawParams) (*WithdrawResult, error) {
+	f.withdrawParams = &p
+	if f.withdrawErr != nil {
+		return nil, f.withdrawErr
+	}
+	return &WithdrawResult{ID: p.QuoteID, Status: QuoteStatusVoided, WithdrawnAt: p.Now}, nil
 }
 
 // dec 是 decimal 字面量的便捷构造。

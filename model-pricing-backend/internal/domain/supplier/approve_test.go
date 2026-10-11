@@ -26,6 +26,7 @@ type fakeApproveStore struct {
 	diffRaw     *QuoteDiffRaw
 	minMargin   decimal.Decimal
 
+	approveParams *ApproveParams // 捕获入参，用于断言审批意见是否透传到仓储
 	approveCalled bool
 	rejectCalled  bool
 	activateCalls []int64
@@ -42,8 +43,9 @@ func (f *fakeApproveStore) CheckQuoteScope(_ context.Context, _ int64, _ OwnerSc
 	return f.scopeFound, f.scopeIn, nil
 }
 
-func (f *fakeApproveStore) ApproveQuote(_ context.Context, _ ApproveParams) (*ApproveResult, error) {
+func (f *fakeApproveStore) ApproveQuote(_ context.Context, p ApproveParams) (*ApproveResult, error) {
 	f.approveCalled = true
+	f.approveParams = &p
 	return f.approveRes, f.approveErr
 }
 
@@ -82,16 +84,82 @@ var scopeALL = OwnerScope{DataScope: "ALL", StaffID: 4, MyOrgID: 1}
 func TestApprove_OK(t *testing.T) {
 	store := &fakeApproveStore{
 		scopeFound: true, scopeIn: true,
+		// diffRaw 给的是「毛利满足」的样本：空审批意见时 service 会先算一次 diff，
+		// 满足 → 放行（这条同时钉住"不该误拦"）
+		diffRaw:    diffRawFixture(),
+		minMargin:  dec("0.15"),
 		approveRes: &ApproveResult{ID: 1, Status: "APPROVED_PENDING", ApprovedAt: time.Now(), ActivateAt: time.Now().Add(24 * time.Hour), Immediate: false},
 	}
 	svc := NewApproveService(store)
-	res, err := svc.Approve(context.Background(), 1, scopeALL, 4, "PROCUREMENT", "req-1")
+	res, err := svc.Approve(context.Background(), 1, scopeALL, 4, "PROCUREMENT", "req-1", ApproveInput{})
 	require.NoError(t, err)
 	require.True(t, store.approveCalled)
 	require.Equal(t, "APPROVED_PENDING", res.Status)
 	require.False(t, res.Immediate)
 	// 非 immediate：不同步激活
 	require.Empty(t, store.activateCalls)
+}
+
+// ---- 毛利预演不满足：不硬拦截，但强制填理由（产品反馈 3 的裁决）----
+
+// TestApprove_MarginViolationRequiresComment 毛利预演不满足 + 空理由 → 拒绝，且不落库。
+//
+// 变异验证：把 service 里的 HasMarginViolation 判定去掉 → 本用例必须失败。
+func TestApprove_MarginViolationRequiresComment(t *testing.T) {
+	raw := diffRawFixture()
+	// 把官方价压到 floor 以下：floor = 2.0/0.85 = 2.3529…，官方价 2.0 < floor → 不满足
+	low := dec("2.0")
+	raw.Items[0].Components[0].OfficialPrice = &low
+
+	store := &fakeApproveStore{
+		scopeFound: true, scopeIn: true,
+		diffRaw:    raw,
+		minMargin:  dec("0.15"),
+		approveRes: &ApproveResult{ID: 1, Status: "APPROVED_PENDING"},
+	}
+	svc := NewApproveService(store)
+
+	_, err := svc.Approve(context.Background(), 1, scopeALL, 4, "PROCUREMENT", "req-1", ApproveInput{})
+	require.ErrorIs(t, err, ErrQuoteMarginCommentRequired)
+	require.False(t, store.approveCalled, "被拦下时不该落库")
+
+	// 填了理由 → 放行，且理由要透传到仓储（写 audit_log.reason）
+	_, err = svc.Approve(context.Background(), 1, scopeALL, 4, "PROCUREMENT", "req-1", ApproveInput{Comment: "市场倒挂，战略亏损承接"})
+	require.NoError(t, err)
+	require.True(t, store.approveCalled)
+	require.Equal(t, "市场倒挂，战略亏损承接", store.approveParams.Comment, "审批理由必须透传到仓储落审计")
+}
+
+// TestApprove_MarginUnknownNotBlocked 毛利「无法判断」（无官方价参照）不算不满足——
+// 不能因为参照数据缺失就把单子卡住逼审批人填理由。
+func TestApprove_MarginUnknownNotBlocked(t *testing.T) {
+	raw := diffRawFixture()
+	raw.Items[0].Components[0].OfficialPrice = nil
+
+	store := &fakeApproveStore{
+		scopeFound: true, scopeIn: true,
+		diffRaw:    raw,
+		minMargin:  dec("0.15"),
+		approveRes: &ApproveResult{ID: 1, Status: "APPROVED_PENDING"},
+	}
+	_, err := NewApproveService(store).Approve(context.Background(), 1, scopeALL, 4, "PROCUREMENT", "req-1", ApproveInput{})
+	require.NoError(t, err, "margin_ok=nil 不应拦")
+}
+
+// TestApprove_CommentTrimmed 纯空白理由按空处理（"   " 不能算填了理由）。
+func TestApprove_CommentTrimmed(t *testing.T) {
+	raw := diffRawFixture()
+	low := dec("2.0")
+	raw.Items[0].Components[0].OfficialPrice = &low
+
+	store := &fakeApproveStore{
+		scopeFound: true, scopeIn: true,
+		diffRaw:    raw,
+		minMargin:  dec("0.15"),
+		approveRes: &ApproveResult{ID: 1, Status: "APPROVED_PENDING"},
+	}
+	_, err := NewApproveService(store).Approve(context.Background(), 1, scopeALL, 4, "PROCUREMENT", "req-1", ApproveInput{Comment: "   \t "})
+	require.ErrorIs(t, err, ErrQuoteMarginCommentRequired)
 }
 
 func TestApprove_ImmediateSyncActivate(t *testing.T) {
@@ -107,7 +175,7 @@ func TestApprove_ImmediateSyncActivate(t *testing.T) {
 		activateErr: map[int64]error{},
 	}
 	svc := NewApproveService(store)
-	res, err := svc.Approve(context.Background(), 1, scopeALL, 4, "PROCUREMENT", "req-1")
+	res, err := svc.Approve(context.Background(), 1, scopeALL, 4, "PROCUREMENT", "req-1", ApproveInput{Comment: "ok"})
 	require.NoError(t, err)
 	require.True(t, res.Immediate)
 	require.Equal(t, []int64{1}, store.activateCalls)
@@ -116,7 +184,7 @@ func TestApprove_ImmediateSyncActivate(t *testing.T) {
 func TestApprove_NotFound_404(t *testing.T) {
 	store := &fakeApproveStore{scopeFound: false}
 	svc := NewApproveService(store)
-	_, err := svc.Approve(context.Background(), 999, scopeALL, 4, "PROCUREMENT", "req-1")
+	_, err := svc.Approve(context.Background(), 999, scopeALL, 4, "PROCUREMENT", "req-1", ApproveInput{Comment: "ok"})
 	require.ErrorIs(t, err, ErrQuoteNotFound)
 	require.False(t, store.approveCalled)
 }
@@ -127,14 +195,14 @@ func TestApprove_NotApprovable_409(t *testing.T) {
 		approveErr: ErrQuoteNotApprovable,
 	}
 	svc := NewApproveService(store)
-	_, err := svc.Approve(context.Background(), 1, scopeALL, 4, "PROCUREMENT", "req-1")
+	_, err := svc.Approve(context.Background(), 1, scopeALL, 4, "PROCUREMENT", "req-1", ApproveInput{Comment: "ok"})
 	require.ErrorIs(t, err, ErrQuoteNotApprovable)
 }
 
 func TestApprove_ForbiddenScope_403(t *testing.T) {
 	store := &fakeApproveStore{scopeFound: true, scopeIn: false}
 	svc := NewApproveService(store)
-	_, err := svc.Approve(context.Background(), 1, OwnerScope{DataScope: "SELF", StaffID: 99}, 99, "PROCUREMENT", "req-1")
+	_, err := svc.Approve(context.Background(), 1, OwnerScope{DataScope: "SELF", StaffID: 99}, 99, "PROCUREMENT", "req-1", ApproveInput{Comment: "ok"})
 	require.ErrorIs(t, err, ErrQuoteScopeForbidden)
 	require.False(t, store.approveCalled)
 }
@@ -269,10 +337,16 @@ func TestDiff_MarginPreview(t *testing.T) {
 	out := buildQuoteDiff(diffRawFixture(), dec("0.15"))
 	mp := out.Items[0].MarginPreview
 	require.NotNil(t, mp)
-	// floor = 2.0 / (1-0.15) = 2.35294117...
-	require.Equal(t, "2.3529411764705882", mp.FloorPrice)
+	// floor = 2.0 / (1-0.15) = 2.3529411764705882…
+	// **必须舍入到 8 位**：早期实现直接输出 DivisionPrecision(16) 的原始尾巴，
+	// 前端原样显示成 16 位小数——产品反馈「毛利 floor 推算公式未知」里那串长数字就是这个 bug。
+	require.Equal(t, "2.35294118", mp.FloorPrice)
 	require.Equal(t, "2.5", *mp.ReferenceSellPrice)
 	require.True(t, *mp.MarginOK) // 2.5 ≥ 2.3529
+	// 自证依据：成本基准 + 公式，审批人能对得上 floor 是怎么来的
+	require.Equal(t, "2", *mp.CostBasis)
+	require.Equal(t, marginFloorFormula, mp.Formula)
+	require.Contains(t, mp.Formula, "min_gross_margin")
 
 	// 无官方价 → reference_sell_price / margin_ok 为 null
 	raw := diffRawFixture()

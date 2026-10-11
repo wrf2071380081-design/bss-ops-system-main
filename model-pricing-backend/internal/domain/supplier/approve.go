@@ -6,6 +6,7 @@ package supplier
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -19,6 +20,11 @@ var (
 	ErrQuoteNotApprovable = errors.New("报价单状态不允许审批（仅审批中可操作）")
 	// ErrQuoteRejectReasonInvalid 驳回原因长度不在 10~500（按 rune 计）。
 	ErrQuoteRejectReasonInvalid = errors.New("驳回原因必填，10~500 字")
+	// ErrQuoteMarginCommentRequired 毛利预演不满足时通过报价必须填写审批意见。
+	//
+	// 业务口径（产品反馈 3 的裁决）：**不硬拦截**——市场行情倒挂时合法业务仍需放行；
+	// 但「明知毛利不满足还放行」必须留下可追溯的理由，理由写入 audit_log.reason。
+	ErrQuoteMarginCommentRequired = errors.New("毛利预演不满足，通过审批时必须填写理由")
 	// ErrQuoteScopeForbidden 归属校验失败：该单不在当前操作员数据域内。
 	ErrQuoteScopeForbidden = errors.New("无权限操作该供应商的报价单")
 )
@@ -81,6 +87,14 @@ type RejectInput struct {
 	Reason string `json:"reason" binding:"required"`
 }
 
+// ApproveInput 是通过审批的输入。
+//
+// Comment 选填，但**毛利预演不满足时必填**（见 ErrQuoteMarginCommentRequired）：
+// 该理由会写入 audit_log.reason 留痕，便于事后核查放行依据。
+type ApproveInput struct {
+	Comment string `json:"comment"`
+}
+
 // RejectResult 是审批驳回的响应。
 type RejectResult struct {
 	ID         int64     `json:"id"`
@@ -113,6 +127,23 @@ type QuoteDiff struct {
 	Items          []DiffItem `json:"items"`
 }
 
+// HasMarginViolation 报告本单是否存在「毛利预演不满足」的明细。
+//
+// 口径：只有 margin_ok 明确为 false 才算不满足；
+// margin_ok 为 nil（无官方价参照 / 无成本参数）**不算**——"无法判断"不等于"不满足"，
+// 否则会把参照数据缺失的单子也逼着填理由。
+func (d *QuoteDiff) HasMarginViolation() bool {
+	if d == nil {
+		return false
+	}
+	for i := range d.Items {
+		if mp := d.Items[i].MarginPreview; mp != nil && mp.MarginOK != nil && !*mp.MarginOK {
+			return true
+		}
+	}
+	return false
+}
+
 // DiffItem 是一个 SKU 的三方对照。
 type DiffItem struct {
 	SKUID         int64           `json:"sku_id"`
@@ -136,12 +167,28 @@ type DiffComponent struct {
 }
 
 // MarginPreview 是毛利简化预演（§14：floor = unit_price / (1 − min_gross_margin)）。
+//
+// 字段口径：
+//   - FloorPrice：**必须舍入到 8 位小数**（与契约 §14 示例 "2.35294118" 一致）。
+//     早期实现直接用 decimal.Div 的原始结果（DivisionPrecision=16），
+//     会把 5/0.85 输出成 "5.8823529411764706"，前端原样显示成 16 位小数——
+//     产品反馈「毛利 floor 推算公式未知」里那一长串数字就是这个 bug。
+//   - CostBasis / Formula：给出可自证的推导依据（成本基准 + 公式），
+//     否则审批人只看到一个 floor 数字，无法核对它怎么来的。
 type MarginPreview struct {
 	FloorPrice         string  `json:"floor_price"`
 	ReferenceSellPrice *string `json:"reference_sell_price"`
 	MarginOK           *bool   `json:"margin_ok"`
+	CostBasis          *string `json:"cost_basis"`
+	Formula            string  `json:"formula"`
 	Note               string  `json:"note"`
 }
+
+// marginFloorFormula 是毛利预演的公式说明（与前端展示、契约 §14 共用同一份文案）。
+const marginFloorFormula = "floor = 供应价 ÷ (1 − min_gross_margin)"
+
+// marginFloorScale 是 floor 的小数位（与契约 §14 示例一致）。
+const marginFloorScale = 8
 
 // ---- 仓储接口 ----
 
@@ -179,6 +226,7 @@ type ApproveParams struct {
 	QuoteID      int64
 	OperatorID   int64 // internal_staff.id（approved_by）
 	OperatorRole string
+	Comment      string // 审批意见，写 audit_log.reason（毛利不满足时由 service 强制非空）
 	RequestID    string
 	Now          time.Time
 }
@@ -284,14 +332,30 @@ func (s *ApproveService) CheckScope(ctx context.Context, quoteID int64, scope Ow
 // Approve 审批通过（§8）。
 // immediate（valid_from<=now）时，**事务提交后**另开事务同步调 ActivateDueQuotes
 // （契约 §8 实现要求：本阶段无 ticker，只入队会永久停在 APPROVED_PENDING）。
-func (s *ApproveService) Approve(ctx context.Context, quoteID int64, scope OwnerScope, operatorID int64, operatorRole, requestID string) (*ApproveResult, error) {
+func (s *ApproveService) Approve(ctx context.Context, quoteID int64, scope OwnerScope, operatorID int64, operatorRole, requestID string, in ApproveInput) (*ApproveResult, error) {
 	if err := s.checkScope(ctx, quoteID, scope); err != nil {
 		return nil, err
 	}
+	// 毛利预演不满足 → 必须写明通过理由（不硬拦截，但要留痕）。
+	//
+	// 为什么放在 service 而不是中间件/前端：UI 只能"提示"，绕过前端直接调接口同样要拦。
+	// 复用 Diff()（与审批页看到的是同一次计算），避免两处各算一份导致"页面说满足、后端说不满足"。
+	comment := strings.TrimSpace(in.Comment)
+	if comment == "" {
+		diff, err := s.Diff(ctx, quoteID, scope)
+		if err != nil {
+			return nil, err
+		}
+		if diff != nil && diff.HasMarginViolation() {
+			return nil, ErrQuoteMarginCommentRequired
+		}
+	}
+
 	res, err := s.store.ApproveQuote(ctx, ApproveParams{
 		QuoteID:      quoteID,
 		OperatorID:   operatorID,
 		OperatorRole: operatorRole,
+		Comment:      comment,
 		RequestID:    requestID,
 		Now:          s.now(),
 	})
@@ -427,9 +491,18 @@ func buildQuoteDiff(raw *QuoteDiffRaw, minGrossMargin decimal.Decimal) *QuoteDif
 		if len(ri.Components) > 0 {
 			costBasis := ri.Components[0].UnitPrice
 			if !minGrossMargin.GreaterThanOrEqual(one) {
+				// StringFixed(8)：契约 §14 的 floor 是 "2.35294118"（8 位），
+				// 不舍入会输出 DivisionPrecision(16) 的原始尾巴，前端直接显示成长串小数；
+				// 用 StringFixed 而不是 Round(8).String()，是为了与变更单侧
+				// （price/confirm_service.go 的 floors）保持同一种 8 位定长口径。
+				// 判定用未舍入的精确值（避免四舍五入把边界情况判成满足），
+				// 展示用 8 位定长字符串。
 				floor := costBasis.Div(one.Sub(minGrossMargin))
+				basis := costBasis.String()
 				mp := &MarginPreview{
-					FloorPrice: floor.String(),
+					FloorPrice: floor.StringFixed(marginFloorScale),
+					CostBasis:  &basis,
+					Formula:    marginFloorFormula,
 					Note:       "按官方价作为售价基准、min_gross_margin=" + minGrossMargin.String() + " 预演",
 				}
 				if ref := ri.Components[0].OfficialPrice; ref != nil {

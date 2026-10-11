@@ -6,6 +6,7 @@ import type { QuoteDetailDTO, QuoteHistoryDTO } from "../../api/quoteContract.ty
 import { SUPPLIER_QUOTE_STATUS } from "../../domain/status";
 import { formatDateTime } from "../../domain/date";
 import { ApiError } from "../../domain/common";
+import { ElMessage, ElMessageBox } from "element-plus";
 const router = useRouter(), route = useRoute(), rows = ref<QuoteHistoryDTO[]>([]), loading = ref(false), error = ref("");
 const filters = reactive({ status: "", sku_id: "", from: "", to: "" });
 const pagination = reactive({ page: 1, size: 10, total: 0 });
@@ -50,6 +51,41 @@ async function openDetail(id: QuoteHistoryDTO["id"]) {
     finally {
         if (current === sequence)
             detailLoading.value = false;
+    }
+}
+// 撤回仅允许审批完成前（SUBMITTED/APPROVING）。与后端 withdraw.go 的白名单同口径：
+// 已批准/已生效/已驳回的单子撤回等于推翻他人决策或改写历史，前端不给入口。
+function canWithdraw(status: string) {
+    return status === "SUBMITTED" || status === "APPROVING";
+}
+const withdrawing = ref(false);
+async function withdraw(id: QuoteHistoryDTO["id"]) {
+    if (withdrawing.value) return;
+    let reason = "";
+    try {
+        const prompt = await ElMessageBox.prompt("撤回后本单作废，可重新提交新版本。可填写撤回原因（选填）。", "撤回报价", {
+            inputPlaceholder: "撤回原因（选填，≤500字）",
+            inputType: "textarea",
+            inputValidator: value => (value && Array.from(value).length > 500 ? "撤回原因不超过500字" : true),
+        });
+        reason = prompt.value ?? "";
+    }
+    catch (value) {
+        if (value !== "cancel" && value !== "close") throw value;
+        return;
+    }
+    withdrawing.value = true;
+    try {
+        await supplierQuoteApi.withdraw(id, reason);
+        ElMessage.success("已撤回，可重新提交新版本。");
+        detailOpen.value = false;
+        await load();
+    }
+    catch (value) {
+        ElMessage.error(value instanceof ApiError ? value.message : "撤回失败，请重试。");
+    }
+    finally {
+        withdrawing.value = false;
     }
 }
 onMounted(() => {
@@ -128,6 +164,7 @@ onMounted(() => {
     <el-table-column label="操作">
       <template #default="{ row }">
         <el-button @click="openDetail(row.id)">查看详情</el-button>
+        <el-button v-if="canWithdraw(row.status)" :loading="withdrawing" @click="withdraw(row.id)">撤回</el-button>
       </template>
     </el-table-column>
   </el-table>
@@ -174,6 +211,13 @@ onMounted(() => {
         v-if="['EFFECTIVE','EXPIRED','VOIDED','REJECTED'].includes(detail.status)"
         @click="router.push(`/supplier/quotes/${detail.id}/renew`)"
       >续报 / 修订新版本</el-button>
+      <el-button
+        v-if="canWithdraw(detail.status)"
+        type="danger"
+        :loading="withdrawing"
+        @click="withdraw(detail.id)"
+      >撤回报价</el-button>
+      <p v-if="canWithdraw(detail.status)" class="muted">审批完成前可撤回；撤回后本单作废（VOIDED），可立即重新提交新版本。</p>
     </template>
   </div>
 </el-drawer>

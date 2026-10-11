@@ -272,6 +272,11 @@ type QuoteStore interface {
 	ListQuoteHistory(ctx context.Context, supplierID int64, q QuoteHistoryQuery) (*QuoteHistoryResult, error)
 	// GetQuoteDetail 按 id + supplier_id 取详情；不属于该供应商时返回 (nil, nil)。
 	GetQuoteDetail(ctx context.Context, supplierID, quoteID int64) (*QuoteDetail, error)
+	// WithdrawQuote 撤回报价（产品反馈 2）：单事务内条件更新
+	// status ∈ (SUBMITTED,APPROVING) → VOIDED（WHERE 带 supplier_id 做行级过滤）
+	// + todo_task 关闭 + audit_log(QUOTE_WITHDRAW)。0 行 → ErrQuoteNotWithdrawable。
+	// 见 withdraw.go；GORM 实现同文件族 supplier_quote.go。
+	WithdrawQuote(ctx context.Context, p WithdrawParams) (*WithdrawResult, error)
 }
 
 // CreateQuoteParams 是 CreateQuoteWithTodo 的落库参数（校验已全部通过后的规范形态）。

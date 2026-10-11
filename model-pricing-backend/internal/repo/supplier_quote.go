@@ -368,6 +368,77 @@ func (r *QuoteRepo) CreateQuoteWithTodo(ctx context.Context, p supplier.CreateQu
 	}, nil
 }
 
+// ---- 撤回（产品反馈 2）----
+
+// withdrawQuoteUpdate 撤回的条件更新构造器（单独拆出来是为了能被 DryRun 断言——
+// 归属键与状态白名单一旦被改坏，测试要能立刻抓到，见 supplier_quote_withdraw_test.go）。
+func withdrawQuoteUpdate(tx *gorm.DB, p supplier.WithdrawParams) *gorm.DB {
+	return tx.Table("quote_sheet").
+		Where("id = ? AND supplier_id = ? AND status IN ?", p.QuoteID, p.SupplierID,
+			[]string{supplier.QuoteStatusSubmitted, supplier.QuoteStatusApproving})
+}
+
+// withdrawQuoteSet 是撤回要写入的字段集合。
+//
+// 与 withdrawQuoteUpdate 配套提取出来，是为了让 DryRun 断言**复用生产代码的字段映射**——
+// 否则测试自己写一份 map，"目标状态被改坏"这类变异永远抓不到（M3 首轮就是这样漏掉的）。
+func withdrawQuoteSet(p supplier.WithdrawParams) map[string]interface{} {
+	return map[string]interface{}{
+		"status":     supplier.QuoteStatusVoided,
+		"updated_at": p.Now,
+		"updated_by": p.OperatorID,
+	}
+}
+
+// WithdrawQuote 撤回报价：条件更新 + 关待办 + 审计，单事务完成。
+//
+// 关键纪律：归属校验**不做先查后改**，而是把 supplier_id 写进 UPDATE 的 WHERE——
+// 「不是自己的单」与「状态已推进」共用同一个 0 行结果，统一返回 ErrQuoteNotWithdrawable，
+// 既避免 TOCTOU，也避免用 403/404 差异泄露他人报价单 ID 的存在性。
+func (r *QuoteRepo) WithdrawQuote(ctx context.Context, p supplier.WithdrawParams) (*supplier.WithdrawResult, error) {
+	tx := r.txOf(ctx)
+
+	res := withdrawQuoteUpdate(tx, p).Updates(withdrawQuoteSet(p))
+	if res.Error != nil {
+		return nil, fmt.Errorf("withdraw quote_sheet: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return nil, supplier.ErrQuoteNotWithdrawable
+	}
+
+	// 审批待办关闭：撤回后审批人不应再看到这条待办。
+	if err := tx.Table("todo_task").
+		Where("biz_type = 'QUOTE' AND biz_id = ? AND status = 'OPEN'", p.QuoteID).
+		Updates(map[string]interface{}{"status": "DONE", "updated_at": p.Now, "updated_by": p.OperatorID}).Error; err != nil {
+		return nil, fmt.Errorf("close todo_task on withdraw: %w", err)
+	}
+
+	// 撤回原因写 audit_log.reason（quote_sheet 没有撤回原因列，与审批意见同口径）。
+	after := map[string]any{"status": supplier.QuoteStatusVoided, "withdrawn_by": p.OperatorID}
+	if p.Reason != "" {
+		after["reason"] = p.Reason
+	}
+	if err := r.audit.Record(ctx, AuditEntry{
+		OperatorID:   p.OperatorID,
+		OperatorRole: p.OperatorRole,
+		Action:       "QUOTE_WITHDRAW",
+		TargetType:   "QUOTE_SHEET",
+		TargetID:     p.QuoteID,
+		AfterValue:   after,
+		Reason:       p.Reason,
+		SourceType:   "HUMAN",
+		RequestID:    p.RequestID,
+	}); err != nil {
+		return nil, err
+	}
+
+	return &supplier.WithdrawResult{
+		ID:          p.QuoteID,
+		Status:      supplier.QuoteStatusVoided,
+		WithdrawnAt: p.Now,
+	}, nil
+}
+
 // ---- 历史与详情 ----
 
 // historyRow 是历史列表的扫描行（列表查询专用，含聚合计数列）。

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { modelsApi } from "../../../api/models";
 import { capabilityLabels, mockModelTypes, modelContractId, toModelListItem, validateModelSkuRequest } from "../../../api/models.catalog";
@@ -23,6 +24,7 @@ import type {
 } from "../../../api/models.types";
 
 const permissions = usePermissionStore();
+const router = useRouter();
 const canPublish = computed(() => permissions.canAction(PERMISSIONS.MODEL_EDIT));
 
 const rows = ref<ModelListItem[]>([]),
@@ -248,14 +250,34 @@ async function save() {
   formSubmitting.value = true;
   try {
     await ElMessageBox.confirm(`确认保存 SKU「${request.sku_code}」？${id ? "不会直接修改生命周期状态。" : "新建后为草稿，仍需提交验证。"}`, "确认保存模型", { confirmButtonText: "确认保存", cancelButtonText: "返回检查" });
+    let createdId = "";
     await act(async () => {
       if (id) await modelsApi.update(id, request);
-      else await modelsApi.create(createRequest);
+      else createdId = String((await modelsApi.create(createRequest)).id);
       editOpen.value = false;
     }, "模型档案已保存");
+    // 产品反馈 4：新建 SKU 后不知道去哪录官方价。
+    // 口径：SKU 档案与价格**保持分离**（档案请求体不含价格，见 CreateModelSkuRequest），
+    // 所以这里不把价格塞进新建表单，而是在保存成功后引导到官方价同步页，并带上新 SKU 预填。
+    if (createdId) await guideOfficialPrice(createdId, request.sku_code, request.native_currency);
   } catch (e) {
     if (e !== "cancel" && e !== "close") formError.value = message(e);
   } finally { formSubmitting.value = false; }
+}
+// guideOfficialPrice 新建成功后的官方价录入引导。
+// 取消引导不视为失败——单子已经建好了，引导只是下一步提示。
+async function guideOfficialPrice(id: string, skuCode: string, currency: string) {
+  try {
+    await ElMessageBox.confirm(
+      `SKU「${skuCode}」（#${id}）已创建为草稿。\n官方价不在本页录入——请在「官方价同步」页完成：创建采集批次 → 录入暂存价格 → 确认入正式版本。\n是否立即前往并带上本 SKU？`,
+      "下一步：录入官方价",
+      { confirmButtonText: "去录入官方价", cancelButtonText: "稍后自己处理", type: "info" },
+    );
+  } catch (e) {
+    if (e !== "cancel" && e !== "close") throw e;
+    return;
+  }
+  void router.push({ path: "/internal/official-prices", query: { new_sku: id, sku_code: skuCode, currency } });
 }
 
 const verifyOpen = ref(false),

@@ -456,6 +456,13 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 			// 静态路由必须先于 /quotes/:id 注册，避免被路径参数吃掉。
 			protected.GET("/quotes/history", h.ListQuoteHistory)
 			protected.GET("/quotes/:id", h.GetQuote)
+			// 撤回报价（产品反馈 2）：写操作挂幂等（红线 5）。
+			// 同段其它路由一样不挂 RequirePerm——SUPPLIER 角色零内部权限点，
+			// 隔离靠仓储层 UPDATE ... WHERE supplier_id = ?（登录态解析）。
+			protected.POST("/quotes/:id/withdraw",
+				middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+				h.WithdrawQuote,
+			)
 		}
 		// 5c 批量导入：模板下载（只读）/ 上传预览（不落库）/ 确认入库（挂幂等）
 		if deps.SupplierImportSvc != nil {

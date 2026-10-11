@@ -119,6 +119,10 @@ export interface QuoteDiffDTO {
             floor_price: string | null;
             reference_sell_price: string | null;
             margin_ok: boolean | null;
+            /** floor 的成本基准（明细行首个组件的供应价），与 floor_price 一起自证推导。 */
+            cost_basis: string | null;
+            /** floor 公式文案，直接展示给审批人。 */
+            formula: string;
             note: string;
         };
     }>;

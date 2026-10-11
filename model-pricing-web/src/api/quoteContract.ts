@@ -32,6 +32,13 @@ export const supplierQuoteApi = {
     }),
     submit: (payload: QuoteSubmitRequest) => apiRequest<QuoteSubmitResult>({ url: "/supplier/quotes", method: "POST", data: payload,
         idempotency: { scope: "supplier-quote:submit", payload } }),
+    // 撤回（产品反馈 2）：仅审批完成前（SUBMITTED/APPROVING）可撤回，撤回后 status=VOIDED 且不再阻塞新提交。
+    // reason 选填——不填时 body 为空对象，后端按空原因处理（写审计时 reason 为空串）。
+    withdraw: (id: QuoteId, reason?: string) => {
+        const payload: { reason?: string } = reason && reason.trim() ? { reason: reason.trim() } : {};
+        return apiRequest<{ id: QuoteId; status: string; withdrawn_at: string }>({ url: `/supplier/quotes/${id}/withdraw`, method: "POST", data: payload,
+            idempotency: { scope: `supplier-quote:withdraw:${id}`, payload } });
+    },
     template: (params: {
         scope: "history" | "active" | "vendor" | "family";
         vendor_id?: QuoteId;

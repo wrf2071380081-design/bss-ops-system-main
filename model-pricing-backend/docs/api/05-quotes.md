@@ -193,9 +193,9 @@ GET /api/supplier/profile
 ```
 DRAFT ──提交──> SUBMITTED ──进入待办──> APPROVING ──通过──> APPROVED_PENDING ──到达生效时间──> EFFECTIVE
                                             │                                                      │
-                                            └──驳回──> REJECTED（终态）                    到期/剔除/被覆盖
-                                                                                                   ↓
-                                                                                               EXPIRED
+                                            ├──驳回──> REJECTED（终态）                    到期/剔除/被覆盖
+                                            │                                                      ↓
+                                            └──撤回──> VOIDED（终态，供应商自助，见 §5.1）      EXPIRED
 ```
 
 | 迁移 | 触发方 | 约束 |
@@ -204,6 +204,7 @@ DRAFT ──提交──> SUBMITTED ──进入待办──> APPROVING ──�
 | `SUBMITTED → APPROVING` | 提交事务内立即完成 | 同事务 INSERT `todo_task` |
 | `APPROVING → APPROVED_PENDING` | 采购通过（§8） | 幂等；`M4:A` + 归属校验 |
 | `APPROVING → REJECTED` | 采购驳回（§9） | 终态；原因必填，供应商可见 |
+| `SUBMITTED / APPROVING → VOIDED` | **供应商自助撤回（§5.1）** | 终态；审批完成前才可撤；归属由 `supplier_id` 硬过滤 |
 | `APPROVED_PENDING → EFFECTIVE` | 激活（§10） | **同事务**关闭旧 `EFFECTIVE` |
 | `EFFECTIVE → EXPIRED` | 到期剔除（§12）/ 被新版本覆盖（§10） | 人工确认，禁止自动剔除 |
 
@@ -216,6 +217,9 @@ DRAFT ──提交──> SUBMITTED ──进入待办──> APPROVING ──�
 
 > DB 层另有 `uk_quote_effective`（最多一条 EFFECTIVE）与 `uk_quote_pending`（最多一条 APPROVED_PENDING）
 > 两个部分唯一索引做并发兜底，命中时返回 409。
+
+> **VOIDED 不参与互斥**：`FindNonTerminalQuote` 只认 `SUBMITTED / APPROVING / APPROVED_PENDING`，
+> 所以撤回后供应商可以**立刻重新提交**新版本——这正是撤回功能的意义（填错重提，不用等审批驳回）。
 
 ---
 
@@ -397,6 +401,57 @@ GET /api/supplier/quotes/{id}
 
 ---
 
+## 5.1 供应商：撤回报价（产品反馈 2）
+
+```
+POST /api/supplier/quotes/{id}/withdraw
+Idempotency-Key: <uuid>
+```
+
+请求体（**整体可省略**；`Content-Length: 0` 时按空原因处理）：
+
+```json
+{ "reason": "output 组件价格填错，撤回重提" }
+```
+
+- 权限：走 AuthN + 供应商身份解析（**不挂 `RequirePerm`**——SUPPLIER 角色零内部权限点，挂了必然 403）。
+- **行级过滤**：`UPDATE ... WHERE id = ? AND supplier_id = ?`，`supplier_id` 只从登录态解析。
+  「不是自己的单」与「状态已推进」**共用同一个 0 行结果**，统一返回 **409**，
+  不区分 403/404——避免用状态码差异泄露他人报价单 ID 是否存在。
+- 前置：`status ∈ {SUBMITTED, APPROVING}`（**审批完成前**）。
+  已 `APPROVED_PENDING` / `EFFECTIVE` / `EXPIRED` / `REJECTED` 一律 409。
+  > 裁决：撤回只解决"我自己提交错了"。已审批/已生效的单子撤回等于推翻他人决策或改写历史，
+  > 属另一条业务流（撤销审批 / 下线），本批不实现。
+- `reason` **选填**（≤500 rune，按 rune 计）。与驳回（10~500 必填）刻意不同——
+  撤回是供应商对自己数据的处置，不该被文本长度卡住。填写则写入 `audit_log.reason`。
+- `SUBMITTED` 保留在白名单里只为兼容历史数据与导入链路；实际落盘几乎恒为 `APPROVING`
+  （`SUBMITTED → APPROVING` 在提交事务内瞬时完成，见 §1）。
+
+**事务内动作**
+
+1. `quote_sheet.status = VOIDED`，`updated_by = 操作员`。
+2. `todo_task` 中该单的 OPEN 待办置 `DONE`（审批人不该再看到它）。
+3. `audit_log(action='QUOTE_WITHDRAW', target_type='QUOTE_SHEET', reason=<撤回原因>)`。
+4. 幂等表 `MarkResult`（路由已挂幂等中间件）。
+
+**响应 `data`**
+
+```json
+{ "id": 164, "status": "VOIDED", "withdrawn_at": "2026-10-12T01:12:29Z" }
+```
+
+**失败码**
+
+| 码 | HTTP | 触发 |
+|---|---|---|
+| `10001` | 400 | `reason` 超过 500 rune |
+| `10009` | 409 | 状态不允许撤回 / 不属于当前供应商 |
+
+> **撤回后可立刻重新提交**：`VOIDED` 不在非终态互斥集合内（见 §1.1），
+> 供应商点完撤回就能提新版本，不必等审批驳回。
+
+---
+
 ## 6. 批量导入（C4）
 
 四步式：**模板下载 → 上传解析 → 逐行校验预览 → 确认入库**。
@@ -539,9 +594,22 @@ POST /api/internal/quotes/{id}/approve
 Idempotency-Key: <uuid>
 ```
 
+请求体（**可选**；`Content-Length: 0` 时按空审批意见处理）：
+
+```json
+{ "comment": "市场倒挂，战略亏损承接" }
+```
+
 - 权限：`M4:A`；**归属校验**：SELF 域下只能批自己引入的供应商（越权 → 403）。
 - 前置：`status = APPROVING`，否则 409。
 - 幂等：重复提交同 key 返回首次结果；已 `APPROVED_PENDING` 后再次 approve（不同 key）→ 409。
+- **`comment` 选填，但毛利预演不满足时必填**（产品反馈 3 的裁决）：
+  - 空意见 + 本单存在 `margin_ok = false` 的明细 → **400 `毛利预演不满足，通过审批时必须填写理由`**，不落库。
+  - `margin_ok = null`（无官方价参照，**无法判断**）**不算不满足**，不拦——参照数据缺失不该把单子卡住。
+  - 判定放在**服务层**而不是前端：UI 只能提示，绕过前端直接调接口同样要拦；
+    且复用 `Diff()` 的同一份计算，避免"页面说满足、后端说不满足"。
+  - 理由写入 `audit_log.reason`（`quote_sheet` 无审批意见列），可被审计页检索。
+  - **不硬拦截**：市场行情倒挂时合法业务仍需放行，只是必须留下可追溯的理由。
 
 **事务内动作**
 
@@ -834,6 +902,8 @@ GET /api/internal/quotes/{id}/diff
         "floor_price": "2.35294118",
         "reference_sell_price": "2.50000000",
         "margin_ok": true,
+        "cost_basis": "2.00000000",
+        "formula": "floor = 供应价 ÷ (1 − min_gross_margin)",
         "note": "按官方价作为售价基准、min_gross_margin=0.15 预演"
       }
     }
@@ -851,6 +921,13 @@ GET /api/internal/quotes/{id}/diff
 - `margin_preview` 为**简化预演**：`floor = unit_price / (1 − min_gross_margin)`，
   `reference_sell_price` 暂取官方价。**真正的毛利预演需 M5 成本参数与 M7 价目表，
   在 Stage 6 补齐**；本阶段 `reference_sell_price` 无官方价时为 `null`，`margin_ok` 为 `null`。
+- **`floor_price` 必须舍入到 8 位小数**（`StringFixed(8)`，与上面示例 `2.35294118` 一致）。
+  早期实现直接输出 `decimal.Div` 的原始结果（DivisionPrecision=16），
+  前端原样显示成 `2.3529411764705882`——产品反馈「毛利 floor 推算公式未知」里那串长数字就是这个 bug。
+  **判定用未舍入的精确值**（避免四舍五入把边界情况判成满足），只有展示串取 8 位。
+- **`cost_basis` / `formula` 是自证依据**：`cost_basis` 是本明细行首个组件的供应价，
+  `formula` 是常量文案 `floor = 供应价 ÷ (1 − min_gross_margin)`（后端 `marginFloorFormula`，
+  前端与契约共用同一份）。只给一个 floor 数字，审批人无法核对它是怎么来的。
 
 ---
 

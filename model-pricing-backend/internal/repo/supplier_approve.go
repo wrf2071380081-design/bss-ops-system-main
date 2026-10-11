@@ -247,6 +247,8 @@ func (r *ApproveRepo) ApproveQuote(ctx context.Context, p supplier.ApproveParams
 		return nil, fmt.Errorf("insert task_job ACTIVATE_QUOTE: %w", err)
 	}
 
+	// 审批意见写 audit_log.reason：quote_sheet 没有审批意见列，
+	// 「毛利预演不满足仍放行」这类关键决策的留痕就落在这里（可被审计页检索）。
 	if err := r.audit.Record(ctx, AuditEntry{
 		OperatorID:   p.OperatorID,
 		OperatorRole: p.OperatorRole,
@@ -256,6 +258,7 @@ func (r *ApproveRepo) ApproveQuote(ctx context.Context, p supplier.ApproveParams
 		AfterValue: map[string]any{
 			"status": "APPROVED_PENDING", "approved_by": p.OperatorID, "approved_at": p.Now,
 		},
+		Reason:     p.Comment,
 		SourceType: "HUMAN",
 		RequestID:  p.RequestID,
 	}); err != nil {

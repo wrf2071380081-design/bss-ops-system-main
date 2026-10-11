@@ -1,6 +1,14 @@
 import { assertContractId } from "../domain/contractId";
 import { apiRequest } from "./http";
-import type { ApprovalStepDTO, ChangeRequestDetailDTO, ChangeRequestItemDTO, ChangeRequestListParams, ChangeRequestPageDTO } from "./changeRequests.types";
+import type {
+  ApprovalStepDTO,
+  ChangeRequestDetailDTO,
+  ChangeRequestItemDTO,
+  ChangeRequestListParams,
+  ChangeRequestPageDTO,
+  DecideChangeRequestRequest,
+  DecideChangeRequestResultDTO,
+} from "./changeRequests.types";
 
 interface ChangeRequestWireDTO {
   id: string | number;
@@ -45,4 +53,18 @@ export const changeRequestsApi = {
     requestId: data.request_id, updatedBy: data.updated_by,
     steps: data.steps.map(step => ({ stepNo: step.step_no, requiredRole: step.required_role, decision: step.decision,
       approverId: step.approver_id === null ? null : id(step.approver_id), comment: step.comment, decidedAt: step.decided_at })) })),
+  // 通用审批入口：官方价变更单 / 价目表发布 / 特价审批共用。
+  // 后端角色匹配 required_role，且禁止同一人连审两步——前端只做「显示与禁用」，
+  // 真正的越权判定在服务层（403 / 400）。
+  decide: (changeRequestId: string, decision: DecideChangeRequestRequest) => {
+    const target = id(changeRequestId.trim());
+    const payload = { step_no: decision.stepNo, decision: decision.decision, comment: decision.comment };
+    return apiRequest<{ change_request_id: string | number; step_no: number; decision: "APPROVED" | "REJECTED"; final_status: DecideChangeRequestResultDTO["finalStatus"] }>({
+      url: `/internal/approvals/${encodeURIComponent(target)}/decision`, method: "POST", data: payload,
+      idempotency: { scope: `change-request:decision:${target}:step:${decision.stepNo}`, payload },
+    }).then((data): DecideChangeRequestResultDTO => ({
+      changeRequestId: id(data.change_request_id), stepNo: data.step_no,
+      decision: data.decision, finalStatus: data.final_status,
+    }));
+  },
 };

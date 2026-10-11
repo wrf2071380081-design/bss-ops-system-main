@@ -184,7 +184,7 @@ function diff(quote: SupplierQuoteDetailDTO): QuoteDiffDTO {
                 const official = available.find(sku => String(sku.id) === String(item.sku_id))?.official_price?.components.find(row => row.component_type === component.component_type)?.unit_price || null;
                 const market = supplierQuoteRecords.filter(row => row.status === "EFFECTIVE").flatMap(row => row.items).filter(row => (row.skuId !== undefined ? String(row.skuId) === String(item.sku_id) : row.skuCode === item.sku_code) && componentType(row.component) === component.component_type).map(row => row.proposedPrice).sort((a, b) => new D(a).cmp(b))[0] || null;
                 return { ...component, prev_price: prev, prev_delta_pct: delta(component.unit_price, prev), official_price: official, official_delta_pct: delta(component.unit_price, official), market_best: market, market_delta_pct: delta(component.unit_price, market) };
-            }), margin_preview: { floor_price: null, reference_sell_price: null, margin_ok: null, note: "演示未实现Go成本引擎，不伪造毛利结论" } })) };
+            }), margin_preview: { floor_price: null, reference_sell_price: null, margin_ok: null, cost_basis: null, formula: "floor = 供应价 ÷ (1 − min_gross_margin)", note: "演示未实现Go成本引擎，不伪造毛利结论" } })) };
 }
 function parseCsv(content: string): string[][] {
     const rows: string[][] = [], row: string[] = [];
@@ -356,6 +356,21 @@ export const quoteContractHandlers = [
     catch (error) {
         return fail(error);
     } }),
+    // 撤回（产品反馈 2）：与后端同口径——只有 APPROVING/SUBMITTED 可撤，越权与状态非法都 409。
+    http.post("/api/supplier/quotes/:id/withdraw", async ({ request, params }) => {
+        try {
+            supplier(request);
+            const quote = findWireQuote(String(params.id));
+            if (!quote || quote.supplierId !== ownSupplier || !["APPROVING", "SUBMITTED"].includes(quote.status))
+                throw new ApiError(409, "报价单状态不允许撤回（仅审批完成前可撤回）");
+            quote.status = "VOIDED";
+            quote.updatedAt = new Date().toISOString();
+            return result({ id: quoteWireId(quote), status: "VOIDED", withdrawn_at: quote.updatedAt });
+        }
+        catch (error) {
+            return fail(error);
+        }
+    }),
     http.get("/api/supplier/quotes/:id", ({ request, params }) => {
         try {
             supplier(request);

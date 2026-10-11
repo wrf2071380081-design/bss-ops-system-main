@@ -52,7 +52,7 @@ func approveErrToAppErr(err error) apperr.Error {
 		return apperr.New(apperr.ErrForbidden.Code, err.Error(), apperr.ErrForbidden.Status)
 	case errors.Is(err, supplier.ErrQuoteNotApprovable), errors.Is(err, supplier.ErrQuoteConflict):
 		return apperr.New(apperr.ErrIdempotency.Code, err.Error(), apperr.ErrIdempotency.Status) // 409
-	case errors.Is(err, supplier.ErrQuoteRejectReasonInvalid):
+	case errors.Is(err, supplier.ErrQuoteRejectReasonInvalid), errors.Is(err, supplier.ErrQuoteMarginCommentRequired):
 		return apperr.New(apperr.ErrInvalidParams.Code, err.Error(), apperr.ErrInvalidParams.Status)
 	default:
 		return apperr.ErrSystem
@@ -91,14 +91,16 @@ func (h *QuoteHandler) ListPendingQuotes(c *gin.Context) {
 // ApproveQuote 审批通过。
 //
 // @Summary 审批通过（幂等）
-// @Description 前置 status=APPROVING（否则 409）；SELF 域只能批自己引入的供应商（越权 403）。事务内：状态推进 + todo DONE + task_job(ACTIVATE_QUOTE) 入队 + 审计。immediate（valid_from≤now）时事务提交后同步激活。
+// @Description 前置 status=APPROVING（否则 409）；SELF 域只能批自己引入的供应商（越权 403）。body.comment 选填，但**本单存在毛利预演不满足（margin_ok=false）的明细时必填**，否则 400（理由写入 audit_log.reason 留痕）——不硬拦截放行，但要求写明依据。margin_ok 为 null（无官方价参照）不算不满足。事务内：状态推进 + todo DONE + task_job(ACTIVATE_QUOTE) 入队 + 审计。immediate（valid_from≤now）时事务提交后同步激活。
 // @Tags 报价审批
 // @Accept json
 // @Produce json
 // @Security BearerAuth
 // @Param id path int64 true "报价单 ID"
 // @Param Idempotency-Key header string true "幂等键"
+// @Param body body supplier.ApproveInput false "审批意见（毛利不满足时必填）"
 // @Success 200 {object} api.APIResponse "code=0；data={id,status,approved_at,activate_at,immediate}"
+// @Failure 400 {object} api.APIResponse "code=10001 毛利预演不满足但未填审批意见"
 // @Failure 401 {object} api.APIResponse "code=10002 未认证"
 // @Failure 403 {object} api.APIResponse "code=10003 无 M4:A / 非归属供应商"
 // @Failure 404 {object} api.APIResponse "code=10004 报价单不存在"
@@ -110,9 +112,17 @@ func (h *QuoteHandler) ApproveQuote(c *gin.Context) {
 		response.Error(c, apperr.ErrInvalidParams)
 		return
 	}
+	// body 可空：老前端不带 body 直接 POST 也要继续可用（只有毛利不满足才必须带）。
+	var in supplier.ApproveInput
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&in); err != nil {
+			response.Error(c, apperr.ErrInvalidParams)
+			return
+		}
+	}
 	op := middleware.OperatorFrom(c)
 	res, err := h.approveSvc.Approve(c.Request.Context(), id, ownerScopeOf(op),
-		op.StaffID, operatorRoleOf(op), requestIDOf(c))
+		op.StaffID, operatorRoleOf(op), requestIDOf(c), in)
 	if err != nil {
 		response.Error(c, approveErrToAppErr(err))
 		return

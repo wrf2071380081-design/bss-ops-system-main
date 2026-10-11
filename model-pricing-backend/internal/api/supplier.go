@@ -66,8 +66,13 @@ func quoteErrToAppErr(err error) apperr.Error {
 		errors.Is(err, supplier.ErrQuotePriceInvalid),
 		errors.Is(err, supplier.ErrQuoteComponentEmpty),
 		errors.Is(err, supplier.ErrQuoteComponentTypeUnknown),
-		errors.Is(err, supplier.ErrQuoteConstraintKeyUnknown):
+		errors.Is(err, supplier.ErrQuoteConstraintKeyUnknown),
+		errors.Is(err, supplier.ErrQuoteWithdrawReasonTooLong):
 		return apperr.New(apperr.ErrInvalidParams.Code, err.Error(), apperr.ErrInvalidParams.Status) // 400
+	case errors.Is(err, supplier.ErrQuoteNotWithdrawable):
+		// 409：与审批侧 ErrQuoteNotApprovable 同口径——状态机冲突，不是参数问题，重试无意义。
+		// 「不是自己的单」与「状态已推进」共用此码，避免用 403/404 差异泄露他人报价单存在性。
+		return apperr.New(apperr.ErrIdempotency.Code, err.Error(), apperr.ErrIdempotency.Status) // 409
 	default:
 		return apperr.ErrSystem
 	}
@@ -248,6 +253,57 @@ func (h *SupplierHandler) GetQuote(c *gin.Context) {
 		return
 	}
 	response.Success(c, detail)
+}
+
+// WithdrawQuote 撤回报价（供应商自助，产品反馈 2）。
+//
+// 口径：仅审批完成前（status ∈ SUBMITTED/APPROVING）可撤回；撤回后状态 VOIDED，
+// 不再阻塞该供应商提交新报价（FindNonTerminalQuote 不含 VOIDED）。
+// 归属由仓储层 UPDATE ... WHERE supplier_id = ? 硬过滤，越权与状态非法同码返回，
+// 不泄露他人报价单是否存在。
+//
+// @Summary 撤回报价
+// @Description 供应商在审批完成前撤回自己提交的报价单。撤回后 status=VOIDED，可重新提交新版本。请求体 reason 选填（≤500 字），写入审计日志。
+// @Tags 供应商门户
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path int64 true "报价单 ID"
+// @Param body body supplier.WithdrawInput false "撤回原因（选填）"
+// @Success 200 {object} api.APIResponse "code=0；data={id,status,withdrawn_at}"
+// @Failure 400 {object} api.APIResponse "code=10001 参数非法（撤回原因超长）"
+// @Failure 409 {object} api.APIResponse "code=10009 状态不允许撤回（已审批/已生效/不属于当前供应商）"
+// @Failure 401 {object} api.APIResponse "code=10002 未认证"
+// @Failure 404 {object} api.APIResponse "code=10004 供应商档案不存在"
+// @Router /api/supplier/quotes/{id}/withdraw [post]
+func (h *SupplierHandler) WithdrawQuote(c *gin.Context) {
+	sup, op, ok := h.resolveSupplier(c)
+	if !ok {
+		return
+	}
+
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+
+	// 请求体可选：完全不带 body（ContentLength=0）时按空原因处理，
+	// 不能走 ShouldBindJSON 的 required 语义，否则"只点撤回不填原因"会 400。
+	var in supplier.WithdrawInput
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&in); err != nil {
+			response.Error(c, apperr.ErrInvalidParams)
+			return
+		}
+	}
+
+	res, err := h.quoteSvc.WithdrawQuote(c.Request.Context(), sup.ID, id, in, op.OperatorID, requestIDOf(c))
+	if err != nil {
+		response.Error(c, quoteErrToAppErr(err))
+		return
+	}
+	response.Success(c, res)
 }
 
 // mustAtoi 解析 int query 参数；失败返回 0（由 service 层规整为默认值）。

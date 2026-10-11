@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { formatDateTime } from "../../../domain/date";
 import { computed, onMounted, reactive, ref } from "vue";
+import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { officialPricesApi } from "../../../api/officialPrices";
 import { changeRequestsApi } from "../../../api/changeRequests";
 import type { ChangeRequestDetailDTO, ChangeRequestItemDTO, ChangeRequestType } from "../../../api/changeRequests.types";
+import { isChangeRequestDecidable } from "../../../api/changeRequests.types";
+import { useSessionStore } from "../../../stores/session";
 import { modelsApi } from "../../../api/models";
 import type { ModelSkuContractDTO } from "../../../api/models.types";
 import type {
@@ -27,11 +30,32 @@ import {
 } from "../../../domain/status";
 
 type TabName = "jobs" | "staging" | "confirmed";
+
+// ---- 新建 SKU 后的官方价录入引导（产品反馈 4）----
+// 模型库新建 SKU 成功后跳到本页并带 ?new_sku=<id>&sku_code=<code>&currency=<ccy>。
+// 口径：SKU 档案与价格分离，档案页不录价；这里只做「带参数引导 + 预填」，不改价格写入链路。
+const newSkuGuide = ref<{ id: string; code: string; currency: string }>();
+function applyNewSkuGuide() {
+  const id = typeof route.query.new_sku === "string" ? route.query.new_sku.trim() : "";
+  if (!/^[1-9]\d*$/.test(id)) return;
+  const code = typeof route.query.sku_code === "string" ? route.query.sku_code.trim() : "";
+  const rawCurrency = typeof route.query.currency === "string" ? route.query.currency.trim().toUpperCase() : "";
+  const currency = rawCurrency.length === 3 ? rawCurrency : "";
+  newSkuGuide.value = { id, code: code || `SKU ${id}`, currency };
+  if (code) guidedSkuLabels.set(id, code);
+  // 预填采集批次表单：有模型查看权限走多选选择器（远程搜索），否则走手工 ID 输入。
+  jobForm.sku_ids = id;
+  jobForm.selectedIds = canReadSkus.value ? [id] : [];
+}
 const permission = usePermissionStore();
+const session = useSessionStore();
+const route = useRoute();
 const canEdit = computed(() => permission.canAction(PERMISSIONS.PRICE_SYNC_EDIT));
 const canReadSkus = computed(() => permission.canAction(PERMISSIONS.MODEL_VIEW));
 const skuOptions = ref<ModelSkuContractDTO[]>([]);
 const selectedSkuOptions = reactive(new Map<string, ModelSkuContractDTO>());
+// guidedSkuLabels 是「新建 SKU 引导」带入的 id → 展示名（只有编码，无厂商/系列）。
+const guidedSkuLabels = reactive(new Map<string, string>());
 const skuKeyword = ref(""), skuLoading = ref(false), skuError = ref(""), skuPage = ref(1), skuTotal = ref(0);
 let skuSequence = 0;
 async function searchSkus(keyword = "", append = false) {
@@ -50,7 +74,11 @@ async function searchSkus(keyword = "", append = false) {
 }
 function skuLabel(id: string) {
   const sku = selectedSkuOptions.get(id) || skuOptions.value.find(row => String(row.id) === id);
-  return sku ? `${sku.vendor_name} / ${sku.family_name} · ${sku.sku_code} · ID ${id}` : `SKU ID ${id}`;
+  if (sku) return `${sku.vendor_name} / ${sku.family_name} · ${sku.sku_code} · ID ${id}`;
+  // 新建 SKU 引导带入的 SKU 尚未被列表接口收录（草稿态），用引导传入的编码兜底展示，
+  // 不伪造厂商/系列——只显示确实拿到的那部分信息。
+  const guided = guidedSkuLabels.get(id);
+  return guided ? `${guided} · ID ${id}` : `SKU ID ${id}`;
 }
 function rememberSku(id: string) {
   const sku = skuOptions.value.find(row => String(row.id) === id);
@@ -113,9 +141,80 @@ async function loadChanges() {
 }
 async function openChangeDetail(id: string) {
   changeDetailOpen.value = true; changeDetailLoading.value = true; error.value = "";
+  decideComment.value = ""; decideError.value = "";
   try { changeDetail.value = await changeRequestsApi.get(id); }
   catch (value) { changeDetail.value = undefined; error.value = errorMessage(value); }
   finally { changeDetailLoading.value = false; }
+}
+
+// ------------------------------------------------------------------
+// 变更单审批（反馈 1）
+// 此前「服务端变更单进度」只读：状态停在 PENDING、进度显示「0/1 · 等待 MODEL_OPS」，
+// 但页面没有任何审批入口，UC-23 主流程第 2、3 步走不下去。
+// 这里补上通过/驳回；是否可点由「当前登录角色是否等于待审角色」决定，
+// 真正的角色匹配与「禁止同一人连审两步」仍由服务端判定。
+// ------------------------------------------------------------------
+const deciding = ref(false);
+const decideComment = ref("");
+const decideError = ref("");
+const roleCodes = computed(() => session.user?.roleCodes ?? []);
+const canDecide = computed(() => {
+  const detail = changeDetail.value;
+  if (!detail || detail.pendingStepNo === null || !detail.pendingRole) return false;
+  if (!isChangeRequestDecidable(detail.status)) return false;
+  return roleCodes.value.includes(detail.pendingRole);
+});
+
+// 不可审批时的原因提示——产品反馈里「审核缺失」最难判断的一点就是
+// 不知道是「没有权限」还是「流程走完了」。
+const decideHint = computed(() => {
+  const detail = changeDetail.value;
+  if (!detail) return "";
+  if (!isChangeRequestDecidable(detail.status)) return `变更单已${detail.status === "REJECTED" ? "驳回" : "终结"}（${detail.status}），无需再审批。`;
+  if (!detail.pendingRole) return "当前没有待审步骤。";
+  return `当前待审角色为 ${detail.pendingRole}，你的角色（${roleCodes.value.join(" / ") || "无"}）不匹配，无法在此审批。`;
+});
+
+// 毛利预演（PRICE_UP 才有；后端 change_request.margin_preview 结构：
+// { floors: { "<sku_id>": { floor_price, note? } }, formula, min_gross_margin }）。
+// 此前详情抽屉只渲染 payload，marginPreview 一直没展示——这正是产品说
+// 「毛利 floor 推算公式未知」的原因：公式一直在响应里，只是没渲染出来。
+const marginPreview = computed(() => {
+  const raw = changeDetail.value?.marginPreview;
+  return raw && typeof raw === "object" ? raw as Record<string, unknown> : undefined;
+});
+const marginFormula = computed(() => typeof marginPreview.value?.formula === "string" ? marginPreview.value.formula : "");
+const marginPreviewRows = computed(() => {
+  const floors = marginPreview.value?.floors;
+  if (!floors || typeof floors !== "object") return [];
+  return Object.entries(floors as Record<string, { floor_price?: string | null; note?: string }>)
+    .map(([key, value]) => ({ key, floorPrice: value?.floor_price ?? null, note: value?.note || "按成本参数与 min_gross_margin 预演" }));
+});
+
+async function decide(decision: "APPROVED" | "REJECTED") {
+  const detail = changeDetail.value;
+  if (!detail || detail.pendingStepNo === null || deciding.value) return;
+  const comment = decideComment.value.trim();
+  decideError.value = "";
+  // 驳回必须写明理由（后端也要求），通过可不填。
+  if (decision === "REJECTED" && !comment) { decideError.value = "请填写驳回理由。"; return; }
+  deciding.value = true;
+  try {
+    await ElMessageBox.confirm(
+      decision === "APPROVED"
+        ? `确认通过变更单 #${detail.id} 第 ${detail.pendingStepNo} 步？通过后按类型触发后续连锁。`
+        : `确认驳回变更单 #${detail.id}？`,
+      decision === "APPROVED" ? "审批通过" : "审批驳回",
+      { confirmButtonText: "确认", cancelButtonText: "取消" },
+    );
+    const result = await changeRequestsApi.decide(detail.id, { stepNo: detail.pendingStepNo, decision, comment: comment || undefined });
+    ElMessage.success(`第 ${result.stepNo} 步已${decision === "APPROVED" ? "通过" : "驳回"}，变更单状态：${result.finalStatus}`);
+    decideComment.value = "";
+    changeDetail.value = await changeRequestsApi.get(detail.id);
+    await loadChanges();
+  } catch (value) {
+    if (value !== "cancel" && value !== "close") decideError.value = errorMessage(value);
+  } finally { deciding.value = false; }
 }
 async function load() {
   const sequence = ++loadSequence;
@@ -189,7 +288,13 @@ const stagingSnapshot = ref<string[]>([]);
 function blankStagingRow(): StagingRowForm { return { sku_id: "", raw_sku_code: "", currency: "USD", components: [{ component_type: "input", unit_price: "" }] }; }
 function openStagingForm() {
   stagingForm.sync_job_id = stagingJobFilter.value ? String(stagingJobFilter.value) : createdJob.value?.id || "";
-  stagingForm.rows = [blankStagingRow()];
+  const first = blankStagingRow();
+  // 新建 SKU 引导：把引导带入的 SKU 预填进第一行，省去手工选一次。
+  if (newSkuGuide.value) {
+    first.sku_id = newSkuGuide.value.id;
+    if (newSkuGuide.value.currency) first.currency = newSkuGuide.value.currency;
+  }
+  stagingForm.rows = [first];
   stagingError.value = ""; stagingOpen.value = true;
 }
 function addStagingRow() { stagingForm.rows.push(blankStagingRow()); }
@@ -269,7 +374,7 @@ async function submitConfirm() {
   finally { submitting.value = false; }
 }
 
-onMounted(load);
+onMounted(() => { applyNewSkuGuide(); load(); });
 </script>
 
 <template>
@@ -278,6 +383,13 @@ onMounted(load);
     <el-button :loading="loading" @click="load">刷新数据</el-button>
   </section>
   <el-alert type="info" :closable="false" title="本页对接后端采集批次 / 暂存区 / 确认建单接口。确认后返回变更单号，审批与激活由后端负责；变更单查询接口暂未提供，本页仅回显本次建单结果。" />
+  <el-alert
+    v-if="newSkuGuide"
+    type="warning"
+    :closable="true"
+    @close="newSkuGuide = undefined"
+    :title="`新建 SKU「${newSkuGuide.code}」（#${newSkuGuide.id}）已带入。官方价需三步：① 在「采集批次」创建批次（已预选本 SKU）→ ② 在「暂存区」录入采集价格（已预填本 SKU）→ ③ 勾选暂存行确认建单进入审批。`"
+   />
 
   <section class="panel sync-panel">
     <el-tabs v-model="tab" @tab-change="switchTab">
@@ -345,14 +457,43 @@ onMounted(load);
         <el-table-column label="状态" width="110" prop="status" />
         <el-table-column label="审批进度" min-width="210"><template #default="{ row }">{{ row.stepsApproved }} / {{ row.stepsTotal }}<span v-if="row.pendingRole" class="muted"> · 等待 {{ row.pendingRole }}</span></template></el-table-column>
         <el-table-column label="更新时间" min-width="180"><template #default="{ row }">{{ formatTime(row.updatedAt) }}</template></el-table-column>
-        <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" @click="openChangeDetail(row.id)">详情</el-button></template></el-table-column>
+        <el-table-column label="操作" width="150"><template #default="{ row }"><el-button link type="primary" @click="openChangeDetail(row.id)">详情</el-button><el-button v-if="row.pendingRole && roleCodes.includes(row.pendingRole) && isChangeRequestDecidable(row.status)" link type="warning" @click="openChangeDetail(row.id)">审批</el-button></template></el-table-column>
       </el-table>
       <div class="catalog-pagination"><el-pagination :current-page="changePage.page" :page-size="changePage.size" :total="changeTotal" layout="total, prev, pager, next" @current-change="changeRequestPage" /></div>
     </template>
   </section>
 
   <el-drawer v-model="changeDetailOpen" title="变更单详情" size="min(720px, 96vw)" v-loading="changeDetailLoading">
-    <template v-if="changeDetail"><el-descriptions :column="1" border><el-descriptions-item label="变更单">#{{ changeDetail.id }}</el-descriptions-item><el-descriptions-item label="类型 / 状态">{{ changeDetail.changeType }} / {{ changeDetail.status }}</el-descriptions-item><el-descriptions-item label="SKU">{{ changeDetail.skuId || '—' }}</el-descriptions-item><el-descriptions-item label="审批进度">{{ changeDetail.stepsApproved }} / {{ changeDetail.stepsTotal }}<span v-if="changeDetail.pendingRole"> · 等待 {{ changeDetail.pendingRole }}</span></el-descriptions-item></el-descriptions><h3>审批步骤</h3><el-timeline><el-timeline-item v-for="step in changeDetail.steps" :key="step.stepNo" :timestamp="formatTime(step.decidedAt)">第 {{ step.stepNo }} 步 · {{ step.requiredRole }} · {{ step.decision || '待审批' }}<div v-if="step.comment" class="muted">{{ step.comment }}</div></el-timeline-item></el-timeline><h3>建单内容</h3><pre class="payload-preview">{{ JSON.stringify(changeDetail.payload ?? {}, null, 2) }}</pre></template>
+    <template v-if="changeDetail">
+      <el-descriptions :column="1" border><el-descriptions-item label="变更单">#{{ changeDetail.id }}</el-descriptions-item><el-descriptions-item label="类型 / 状态">{{ changeDetail.changeType }} / {{ changeDetail.status }}</el-descriptions-item><el-descriptions-item label="SKU">{{ changeDetail.skuId || '—' }}</el-descriptions-item><el-descriptions-item label="审批进度">{{ changeDetail.stepsApproved }} / {{ changeDetail.stepsTotal }}<span v-if="changeDetail.pendingRole"> · 等待 {{ changeDetail.pendingRole }}</span></el-descriptions-item></el-descriptions>
+      <h3>审批步骤</h3>
+      <el-timeline><el-timeline-item v-for="step in changeDetail.steps" :key="step.stepNo" :timestamp="formatTime(step.decidedAt)">第 {{ step.stepNo }} 步 · {{ step.requiredRole }} · {{ step.decision || '待审批' }}<div v-if="step.comment" class="muted">{{ step.comment }}</div></el-timeline-item></el-timeline>
+      <template v-if="marginPreviewRows.length">
+        <h3>毛利预演</h3>
+        <el-table :data="marginPreviewRows" size="small" border>
+          <el-table-column prop="key" label="SKU" width="110" />
+          <el-table-column prop="floorPrice" label="floor" min-width="130"><template #default="{ row }"><span class="mono">{{ row.floorPrice ?? '不可算' }}</span></template></el-table-column>
+          <el-table-column prop="note" label="说明" min-width="200" />
+        </el-table>
+        <el-alert v-if="marginFormula" class="margin-formula" type="info" :closable="false" :title="`floor 公式：${marginFormula}`" />
+      </template>
+      <h3>审批</h3>
+      <el-alert v-if="!canDecide" type="info" :closable="false" :title="decideHint" />
+      <template v-else>
+        <el-form label-position="top">
+          <el-form-item label="审批意见（驳回必填，通过选填）">
+            <el-input v-model="decideComment" type="textarea" :rows="2" maxlength="200" show-word-limit placeholder="填写审批意见" />
+          </el-form-item>
+        </el-form>
+        <el-alert v-if="decideError" type="error" show-icon :closable="false" :title="decideError" />
+        <div class="decide-actions">
+          <el-button :disabled="deciding" @click="decide('REJECTED')">驳回</el-button>
+          <el-button type="primary" :loading="deciding" :disabled="deciding" @click="decide('APPROVED')">通过第 {{ changeDetail.pendingStepNo }} 步</el-button>
+        </div>
+      </template>
+      <h3>建单内容</h3>
+      <pre class="payload-preview">{{ JSON.stringify(changeDetail.payload ?? {}, null, 2) }}</pre>
+    </template>
   </el-drawer>
 
   <!-- 新建采集批次 -->
@@ -426,5 +567,7 @@ onMounted(load);
 .staging-row-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px; }
 .staging-component { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
 .staging-component > .el-input { flex: 1; }
+.margin-formula { margin: 10px 0; }
+.decide-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 10px 0 4px; }
 @media (max-width: 900px) { .staging-row-grid { grid-template-columns: 1fr; } }
 </style>
