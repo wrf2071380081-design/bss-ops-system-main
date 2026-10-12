@@ -2,7 +2,8 @@ import type { PageResult } from "../domain/common";
 import { apiRequest } from "./http";
 import type { FinanceAccountDetailDTO, FinanceAccountListParams, FinanceAccountSummaryDTO, FxRateDTO, FxRateListParams } from "./finance.types";
 
-// PROVISIONAL: paths, query names and DTO fields must be confirmed with the Go backend.
+// 正式契约（批次 4 已实现）：路径与查询参数已由后端路由 /api/internal/finance/* 确认；
+// 契约源头见 model-pricing-backend/docs/api/12-finance.md。
 const basePath = "/internal/finance";
 
 export const financeApi = {

@@ -17,6 +17,7 @@ import (
 	"model_bss/internal/domain/auth"
 	"model_bss/internal/domain/cost"
 	"model_bss/internal/domain/customer"
+	"model_bss/internal/domain/finance"
 	"model_bss/internal/domain/model"
 	"model_bss/internal/domain/openapi"
 	"model_bss/internal/domain/orgperm"
@@ -70,6 +71,8 @@ type Deps struct {
 	// 阶段 11a：开放接口（11-open-api.md §1/§2）。
 	OpenApiSvc     *openapi.Service
 	OpenTokenStore middleware.OpenTokenStore
+	// 批次 4：财务中心只读（12-finance.md §1/§2/§3）。
+	FinanceReadSvc *finance.ReadService
 	// 阶段 12：组织与权限 M11 只读视图（批次 5）。
 	OrgPermSvc *orgperm.Service
 	// 阶段 12：供应商门户主体档案只读视图（批次 7a，只做 GET）。
@@ -533,6 +536,16 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 		uh := NewWorkbenchAuditHandler(deps.AuditSvc)
 		protected.GET("/audit-logs", middleware.RequirePerm(perm.M12View), uh.ListAuditLogs)
 		protected.GET("/audit-logs/export", middleware.RequirePerm(perm.M12View), uh.ExportAuditLogs)
+	}
+
+	// 业务接口：财务中心只读三接口（12-finance.md §1/§2/§3，内部 M10:V，批次 4）。
+	// 客户财务账户按 owner_sales_operator_id 做 SELF/DEPT/DEPT_SUB/ALL 行级过滤（红线 7）。
+	// 静态段 /finance/accounts 先注册，再注册 /finance/accounts/:customerId。
+	if portal == "internal" && deps.FinanceReadSvc != nil {
+		fh := NewFinanceHandler(deps.FinanceReadSvc)
+		protected.GET("/finance/fx-rates", middleware.RequirePerm(perm.M10View), fh.ListFxRates)
+		protected.GET("/finance/accounts", middleware.RequirePerm(perm.M10View), fh.ListAccounts)
+		protected.GET("/finance/accounts/:customerId", middleware.RequirePerm(perm.M10View), fh.GetAccount)
 	}
 
 	// 业务接口：组织与权限 M11（批次 5）。

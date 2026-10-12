@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+
+	"model_bss/pkg/fxtier"
 )
 
 // ---- 领域错误（message 面向供应商可直接展示） ----
@@ -71,47 +73,19 @@ var constraintKeys = map[string]bool{
 	"daily_quota": true, "actual_context": true, "compatibility": true,
 }
 
-// fxTiers 是汇率档位的固定 8 档（§0.4）。
-// 匹配按数值等价（"6.8"/"6.80"/"6.800" 同档），命中后回显规范形式。
-var fxTiers = []struct {
-	Canonical string
-	Value     decimal.Decimal
-}{
-	{"6.5", decimal.RequireFromString("6.5")},
-	{"6.7", decimal.RequireFromString("6.7")},
-	{"6.75", decimal.RequireFromString("6.75")},
-	{"6.8", decimal.RequireFromString("6.8")},
-	{"6.85", decimal.RequireFromString("6.85")},
-	{"6.9", decimal.RequireFromString("6.9")},
-	{"6.95", decimal.RequireFromString("6.95")},
-	{"7.0", decimal.RequireFromString("7.0")},
-}
+// 汇率档位的固定 8 档白名单已抽到 pkg/fxtier（供应商与财务汇率锁定共用同一来源），
+// 本包只保留薄包装，保证既有调用点不变。
 
 // normalizeFxTier 按数值等价匹配 8 档，命中返回规范形式；未命中返回 false。
 func normalizeFxTier(raw string) (string, bool) {
-	v, err := decimal.NewFromString(strings.TrimSpace(raw))
-	if err != nil {
-		return "", false
-	}
-	for _, t := range fxTiers {
-		if v.Equal(t.Value) {
-			return t.Canonical, true
-		}
-	}
-	return "", false
+	return fxtier.Normalize(raw)
 }
 
 // CanonicalFxTier 把库存的 fx_tier 文本（如 "6.800"/"6.80"）规范化为档位回显形式
 // （如 "6.8"）；null 保持 null。历史数据若不在 8 档内则原样返回（不静默改值）。
 // 契约 §0.4：响应回显规范形式。
 func CanonicalFxTier(raw *string) *string {
-	if raw == nil {
-		return nil
-	}
-	if canonical, ok := normalizeFxTier(*raw); ok {
-		return &canonical
-	}
-	return raw
+	return fxtier.Canonical(raw)
 }
 
 // ---- 输入 DTO ----

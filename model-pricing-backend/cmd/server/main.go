@@ -34,6 +34,7 @@ import (
 	"model_bss/internal/domain/auth"
 	"model_bss/internal/domain/cost"
 	"model_bss/internal/domain/customer"
+	"model_bss/internal/domain/finance"
 	"model_bss/internal/domain/model"
 	"model_bss/internal/domain/openapi"
 	"model_bss/internal/domain/orgperm"
@@ -154,6 +155,10 @@ func main() {
 	openApiRepo := repo.NewOpenApiRepo(dbClient.DB)
 	openApiSvc := openapi.NewService(openApiRepo, adaptCalcFunc(costSvc))
 
+	// 批次 4：财务中心只读三接口（12-finance.md §1/§2/§3）。
+	financeRepo := repo.NewFinanceRepo(dbClient.DB)
+	financeReadSvc := finance.NewReadService(financeRepo, nil)
+
 	modelRepo := repo.NewModelRepo(dbClient.DB)
 	modelSvc := model.NewService(modelRepo)
 	modelSvc.ApprovedHook = func(changeType string) func(context.Context, int64, int64, string) error {
@@ -226,6 +231,7 @@ func main() {
 		AuditSvc:                 auditSvc,
 		OpenApiSvc:               openApiSvc,
 		OpenTokenStore:           openApiRepo,
+		FinanceReadSvc:           financeReadSvc,
 		OrgPermSvc:               orgPermSvc,
 	})
 
