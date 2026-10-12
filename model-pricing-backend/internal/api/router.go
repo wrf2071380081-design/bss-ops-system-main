@@ -73,6 +73,8 @@ type Deps struct {
 	OpenTokenStore middleware.OpenTokenStore
 	// 批次 4：财务中心只读（12-finance.md §1/§2/§3）。
 	FinanceReadSvc *finance.ReadService
+	// 批次 6：汇率锁定读写（12-finance.md §4/§5）。
+	FinanceLockSvc *finance.LockService
 	// 阶段 12：组织与权限 M11 只读视图（批次 5）。
 	OrgPermSvc *orgperm.Service
 	// 阶段 12：供应商门户主体档案只读视图（批次 7a，只做 GET）。
@@ -542,10 +544,19 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 	// 客户财务账户按 owner_sales_operator_id 做 SELF/DEPT/DEPT_SUB/ALL 行级过滤（红线 7）。
 	// 静态段 /finance/accounts 先注册，再注册 /finance/accounts/:customerId。
 	if portal == "internal" && deps.FinanceReadSvc != nil {
-		fh := NewFinanceHandler(deps.FinanceReadSvc)
+		fh := NewFinanceHandler(deps.FinanceReadSvc, deps.FinanceLockSvc)
 		protected.GET("/finance/fx-rates", middleware.RequirePerm(perm.M10View), fh.ListFxRates)
 		protected.GET("/finance/accounts", middleware.RequirePerm(perm.M10View), fh.ListAccounts)
 		protected.GET("/finance/accounts/:customerId", middleware.RequirePerm(perm.M10View), fh.GetAccount)
+		// 汇率锁定（批次 6）：GET M10:V；POST M10:E + 幂等 + 服务层仅 FINANCE。
+		if deps.FinanceLockSvc != nil {
+			protected.GET("/finance/fx-lock", middleware.RequirePerm(perm.M10View), fh.GetFxLock)
+			protected.POST("/finance/fx-lock",
+				middleware.RequirePerm(perm.M10Edit),
+				middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+				fh.PostFxLock,
+			)
+		}
 	}
 
 	// 业务接口：组织与权限 M11（批次 5）。

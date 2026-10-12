@@ -155,9 +155,10 @@ func main() {
 	openApiRepo := repo.NewOpenApiRepo(dbClient.DB)
 	openApiSvc := openapi.NewService(openApiRepo, adaptCalcFunc(costSvc))
 
-	// 批次 4：财务中心只读三接口（12-finance.md §1/§2/§3）。
+	// 批次 4/6：财务中心只读三接口（12-finance.md §1/§2/§3）+ 汇率锁定（§4/§5）。
 	financeRepo := repo.NewFinanceRepo(dbClient.DB)
 	financeReadSvc := finance.NewReadService(financeRepo, nil)
+	financeLockSvc := finance.NewLockService(financeRepo, nil)
 
 	modelRepo := repo.NewModelRepo(dbClient.DB)
 	modelSvc := model.NewService(modelRepo)
@@ -232,6 +233,7 @@ func main() {
 		OpenApiSvc:               openApiSvc,
 		OpenTokenStore:           openApiRepo,
 		FinanceReadSvc:           financeReadSvc,
+		FinanceLockSvc:           financeLockSvc,
 		OrgPermSvc:               orgPermSvc,
 	})
 

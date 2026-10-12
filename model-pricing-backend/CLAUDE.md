@@ -347,3 +347,24 @@ docs/api/            【可写】**接口契约目录**：前端对接的唯一�
 - [ ] 11c MCP Server
 
 （每完成一项，在此勾选并注明提交信息）
+
+---
+
+### 9.1 批次系列（财务中心 M10）
+
+> 本系列与上面的阶段编号（0–11）**没有从属关系**——是财务中心（M10）的独立「批次」任务，
+> 与契约文档 `docs/api/12-finance.md` 对应。登记格式同阶段：速览行 + 遗留编号。
+
+- [x] 批次4 财务中心三只读接口 — commit 00d5053
+      速览：3 接口 GET /api/internal/finance/fx-rates|accounts|accounts/:customerId（M10:V）；
+      客户财务账户按 owner_sales_operator_id 做 SELF/DEPT/DEPT_SUB/ALL 行级过滤；fx-rates 三态推导
+      （当月 LOCKED / 早于当月 EXPIRED / 当月无记录补 PENDING_LOCK 占位行）；availableCredit 服务层 decimal；
+      抽 pkg/fxtier 统一 8 档（supplier 报价改用它）；前端 finance DTO/页面/mock 对齐正式契约（删无源字段 source/warningThresholdRate/notes）。
+      单测 18 条（service + repo SQL）+ 变异 3 处全抓回；E2E：FINANCE(ALL) accounts=3 vs smoke_sales(SELF)=1，fx-rates 含当月占位行，越域 403、未认证 401。
+      遗留 批次4-①..③（credit ADJUST/REFUND 归类口径待业务复核 / 契约文档 docs/api/12-finance.md / 前端 11 条场景测试需真实后端，环境性失败非本批引入）。
+- [x] 批次6 汇率锁定读写 — commit 5452727
+      速览：GET /api/internal/finance/fx-lock（M10:V）+ POST（M10:E + Idempotency + 服务层 perm.CanLockFx 仅 FINANCE）；
+      8 档白名单复用 pkg/fxtier；同月已有记录 → 视为调整、adjust_reason 必填；单事务 SELECT…FOR UPDATE upsert + audit_log（FX_LOCK / FX_LOCK_ADJUST，含档位新旧值与理由）。
+      单测 16 条（service + handler 角色门 AnyRoleCan 扫全角色）+ 变异 3 处全抓回；
+      E2E：GET PENDING_LOCK → POST 7.0（adjusted=false）→ DB count=1 → 同 key 重放不产第二行 → 调整 6.9（adjusted=true）→ 缺理由 400 → 非法 7.1 400 → buyer_a 403 → 收尾还原 7.0；audit_log 3 条。
+      遗留 批次6-①..④（**月中调整审批链未实现**——2026-10-09 裁决本批做简化版，仅登记 / 每月 1 号推送锁定待办 + 超时告警未实现 / 工作台 FINANCE「汇率锁定」卡片 fin_fx_pending_month 仍 "0" 占位 / ADJUST/REFUND 归类同上）。

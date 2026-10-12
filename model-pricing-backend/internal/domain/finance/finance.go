@@ -166,6 +166,7 @@ type FxLockRow struct {
 	FxTier       string // numeric(6,3) 文本，如 "6.900"
 	LockedByName string
 	LockedAt     time.Time
+	AdjustReason string
 	UpdatedAt    time.Time
 }
 
