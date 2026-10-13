@@ -148,8 +148,8 @@ func main() {
 	auditRepo := repo.NewWorkbenchAuditRepo(dbClient.DB)
 	auditSvc := workbench.NewAuditService(auditRepo)
 
-	// 阶段 12：组织与权限 M11 只读视图（批次 5）。
-	orgPermSvc := orgperm.NewService(repo.NewOrgPermRepo(dbClient.DB))
+	// 阶段 12：组织与权限 M11 只读视图（批次 5）+ 账号管理写侧（2026-10-13）。
+	orgPermSvc := orgperm.NewService(repo.NewOrgPermRepo(dbClient.DB), repo.NewStaffRepo(dbClient.DB))
 
 	// 阶段 11a：开放接口（11-open-api.md §1/§2）。
 	openApiRepo := repo.NewOpenApiRepo(dbClient.DB)
@@ -235,6 +235,7 @@ func main() {
 		FinanceReadSvc:           financeReadSvc,
 		FinanceLockSvc:           financeLockSvc,
 		OrgPermSvc:               orgPermSvc,
+		StaffStore:               repo.NewStaffRepo(dbClient.DB),
 	})
 
 	// worker 骨架（阶段 6a）：先注册任务，服务启动后 Start，优雅退出时

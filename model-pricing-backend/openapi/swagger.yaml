@@ -66,6 +66,13 @@ definitions:
     - customer_id
     - quote_type
     type: object
+  api.lockBody:
+    properties:
+      adjust_reason:
+        type: string
+      fx_tier:
+        type: string
+    type: object
   api.lockPrimaryBody:
     properties:
       reason:
@@ -337,6 +344,47 @@ definitions:
       tier_tag:
         type: string
     type: object
+  orgperm.CreateStaffInput:
+    properties:
+      login_id:
+        type: string
+      mobile:
+        type: string
+      name:
+        type: string
+      org_unit_id:
+        type: integer
+      password:
+        type: string
+      role_ids:
+        description: 至少 1 个
+        items:
+          type: integer
+        type: array
+    type: object
+  orgperm.GrantRoleInput:
+    properties:
+      role_ids:
+        items:
+          type: integer
+        type: array
+    type: object
+  orgperm.ResetPasswordInput:
+    properties:
+      password:
+        type: string
+    type: object
+  orgperm.UpdateStaffInput:
+    properties:
+      mobile:
+        type: string
+      name:
+        type: string
+      org_unit_id:
+        type: integer
+      status:
+        type: string
+    type: object
   price.ConfirmInput:
     properties:
       effective_time:
@@ -399,6 +447,11 @@ definitions:
             APPROVE → 该 SKU 是为本申请新建/对应的 SKU
             MERGE   → 被合并到的已有 SKU
         type: integer
+    type: object
+  supplier.ApproveInput:
+    properties:
+      comment:
+        type: string
     type: object
   supplier.ConfirmRemoveInput:
     properties:
@@ -482,6 +535,11 @@ definitions:
     required:
     - components
     - sku_id
+    type: object
+  supplier.WithdrawInput:
+    properties:
+      reason:
+        type: string
     type: object
   workbench.AlertActionInput:
     properties:
@@ -1724,6 +1782,207 @@ paths:
       summary: 客户移交（M8:E + 仅主管；双确认；历史报价随迁 + 原归属留档）
       tags:
       - 客户报价
+  /api/internal/finance/accounts:
+    get:
+      description: 返回 customer_profile + legal_subject。availableCredit = credit_limit
+        - credit_used（服务层 decimal 计算）。行级过滤按 owner_sales_operator_id（销售归属）。customerCode
+        = 统一社会信用代码（个人主体空），currency 固定 CNY。不返回成本字段。
+      parameters:
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页（上限 200）
+        in: query
+        name: size
+        type: integer
+      - description: 模糊匹配客户名称或编码（uscc）
+        in: query
+        name: search
+        type: string
+      - description: NORMAL / WARNING / FROZEN
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data={list,total,page,size}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "401":
+          description: code=10002 未认证
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M10:V
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 客户财务账户列表（M10:V；行级过滤：SELF/DEPT/DEPT_SUB/ALL）
+      tags:
+      - 财务中心
+  /api/internal/finance/accounts/{customerId}:
+    get:
+      description: 在账户摘要基础上追加 billingEntity/invoiceTitle/taxNoMasked/settlementCycle/recentTransactions。recentTransactions
+        合并 credit_txn 与 deposit_txn，按时间倒序取最近 10 条；方向映射：CONSUME→CREDIT_USAGE、REPAY→CREDIT_RELEASE、ADJUST→CREDIT_USAGE；PAY→DEPOSIT_IN、DEDUCT/REFUND→DEPOSIT_OUT。越域
+        403，不存在 404。
+      parameters:
+      - description: customer_profile.id
+        format: int64
+        in: path
+        name: customerId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data={...AccountDetail}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "400":
+          description: code=10001 路径参数非法
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "401":
+          description: code=10002 未认证
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M10:V 或客户超出数据域
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "404":
+          description: code=10004 客户不存在
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 客户财务账户详情（M10:V；行级过滤；含近期流水）
+      tags:
+      - 财务中心
+  /api/internal/finance/fx-lock:
+    get:
+      description: 返回当月锁定状态（LOCKED/PENDING_LOCK）与 8 档可选档位。已锁定时回填 fxTier/lockedAt/lockedBy/adjustReason；未锁定时
+        fxTier 为空串。
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data={month,status,fxTier,lockedAt,lockedBy,adjustReason,tiers}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "401":
+          description: code=10002 未认证
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M10:V
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 当月汇率锁定状态（M10:V；含 8 档可选值）
+      tags:
+      - 财务中心
+    post:
+      consumes:
+      - application/json
+      description: fx_tier 必须 ∈ 固定 8 档（6.5/6.7/6.75/6.8/6.85/6.9/6.95/7.0），否则 400。当月无记录
+        → 首次锁定（adjust_reason 可空）；当月已有记录 → 视为调整，adjust_reason 必填否则 400。服务层二道校验 perm.CanLockFx
+        只放行 FINANCE（即使非财务角色被配了 M10:E 也锁不了）。写操作同事务落 audit_log。月中调整本批为简化版（直接写 + 强制理由
+        + 审计，不含审批链）。
+      parameters:
+      - description: 幂等键
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: fx_tier 必填（8 档之一）；adjust_reason 调整时必填
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.lockBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data={month,fxTier,status,adjusted,lockedAt,lockedBy}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "400":
+          description: code=10001 档位非法 / 调整缺理由
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "401":
+          description: code=10002 未认证
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M10:E 或角色非 FINANCE
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "409":
+          description: code=10005 幂等冲突
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 锁定/调整当月汇率档位（M10:E + 服务层仅 FINANCE；幂等必填 Idempotency-Key）
+      tags:
+      - 财务中心
+  /api/internal/finance/fx-rates:
+    get:
+      description: 返回按月锁定的汇率档位。status 三态：当月已锁定=LOCKED（含未来月）、早于当月=EXPIRED、当月无记录=PENDING_LOCK（补一条占位行，非数据库记录）。金额/汇率为字符串。表内无数据时也会返回当月占位行，不造历史演示数据。
+      parameters:
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页（上限 200）
+        in: query
+        name: size
+        type: integer
+      - description: 月份（YYYY-MM）精确匹配
+        in: query
+        name: month
+        type: string
+      - description: LOCKED / PENDING_LOCK / EXPIRED
+        in: query
+        name: status
+        type: string
+      - description: 模糊匹配月份或锁定人姓名
+        in: query
+        name: search
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data={list,total,page,size}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "401":
+          description: code=10002 未认证
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M10:V
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 月度汇率快照（M10:V；美元兑人民币固定按 USD/CNY）
+      tags:
+      - 财务中心
   /api/internal/model-applications:
     get:
       description: 模型运营查看全部供应商的申请，支持按状态与供应商筛选。dup_top3 为提交时的查重候选，供审核参考。
@@ -2363,6 +2622,291 @@ paths:
       summary: 角色权限矩阵（M11:V，只读）
       tags:
       - 组织与权限
+  /api/internal/org-permissions/staff:
+    get:
+      description: 分页列内部员工，含账号登录名/状态与已授角色。keyword 命中 name/mobile/login_id（模糊）；status
+        取 ACTIVE/DISABLED，空=全部。**不做数据域过滤**（账号管理无归属概念）。响应不含 password_hash / token。
+      parameters:
+      - description: 姓名/手机号/登录名模糊搜索
+        in: query
+        name: keyword
+        type: string
+      - description: ACTIVE / DISABLED，空=全部
+        in: query
+        name: status
+        type: string
+      - description: 页码（默认 1）
+        in: query
+        name: page
+        type: integer
+      - description: 每页大小（默认 20，上限 200）
+        in: query
+        name: size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data={list,total,page,size}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "401":
+          description: code=10002 未认证
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M11:E 或角色不含 PLATFORM_ADMIN
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 员工列表（M11:E + PLATFORM_ADMIN）
+      tags:
+      - 账号管理
+    post:
+      consumes:
+      - application/json
+      description: 一体创建 internal_staff + account + role_grant + audit_log。login_id
+        4-32 位小写字母/数字/下划线且小写开头，INTERNAL 门户内唯一；mobile 11 位且唯一；password 8-64 字符；role_ids
+        至少 1 个且必须全部存在、全部为内部角色（SUPPLIER/CUSTOMER 必须走各自入驻流程），且相互不互斥（SALES↔PRICING_OP、SALES↔PROCUREMENT）。org_unit_id
+        必须存在。
+      parameters:
+      - description: 新建员工请求体
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/orgperm.CreateStaffInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data=StaffDetail
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "400":
+          description: code=10001 参数或业务规则非法
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "401":
+          description: code=10002 未认证
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M11:E 或角色不含 PLATFORM_ADMIN
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "409":
+          description: code=10005 幂等冲突
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 新建员工（M11:E + PLATFORM_ADMIN，必挂幂等）
+      tags:
+      - 账号管理
+  /api/internal/org-permissions/staff/{id}:
+    get:
+      description: 按 id 取单个员工，含账号与角色明细。响应不含 password_hash / token。
+      parameters:
+      - description: internal_staff.id
+        format: int64
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data=StaffDetail
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "401":
+          description: code=10002 未认证
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M11:E 或角色不含 PLATFORM_ADMIN
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "404":
+          description: code=10004 员工不存在
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 员工详情（M11:E + PLATFORM_ADMIN）
+      tags:
+      - 账号管理
+    put:
+      consumes:
+      - application/json
+      description: 只改 internal_staff 四列；账号与角色有专门接口。停用保护：唯一在职持 PLATFORM_ADMIN 的员工不允许置为
+        DISABLED。手机号变更时会重新校验唯一性。
+      parameters:
+      - description: internal_staff.id
+        format: int64
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 修改员工请求体
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/orgperm.UpdateStaffInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data=StaffDetail
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "400":
+          description: code=10001 参数非法
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M11:E 或角色不含 PLATFORM_ADMIN
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "404":
+          description: code=10004 员工不存在
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 修改员工（M11:E + PLATFORM_ADMIN，必挂幂等）
+      tags:
+      - 账号管理
+  /api/internal/org-permissions/staff/{id}/password:
+    post:
+      consumes:
+      - application/json
+      description: 管理侧重置，**不校验原口令**（原口令不该到达服务端）。新口令 8-64 字符，bcrypt cost 10 落库。审计只记「已重置」这一事实，不记明文或密文。
+      parameters:
+      - description: internal_staff.id
+        format: int64
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 重置口令请求体
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/orgperm.ResetPasswordInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data={reset:true}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "400":
+          description: code=10001 口令长度非法
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M11:E 或角色不含 PLATFORM_ADMIN
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "404":
+          description: code=10004 员工不存在
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 重置口令（M11:E + PLATFORM_ADMIN，必挂幂等）
+      tags:
+      - 账号管理
+  /api/internal/org-permissions/staff/{id}/roles:
+    post:
+      consumes:
+      - application/json
+      description: 一次可授多个。重复授予已持有的角色 → 400；与外部门户角色 → 400；与已持角色互斥（SALES↔PRICING_OP、SALES↔PROCUREMENT）→
+        400。role_grant 无唯一约束，仓储用 NOT EXISTS 兜底防重复行。
+      parameters:
+      - description: internal_staff.id
+        format: int64
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 授权请求体（role_ids 至少 1 个）
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/orgperm.GrantRoleInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data=StaffDetail
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "400":
+          description: code=10001 角色不存在/外部门户/已授予/互斥
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M11:E 或角色不含 PLATFORM_ADMIN
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "404":
+          description: code=10004 员工不存在
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 授权角色（M11:E + PLATFORM_ADMIN，必挂幂等）
+      tags:
+      - 账号管理
+  /api/internal/org-permissions/staff/{id}/roles/{roleId}:
+    delete:
+      description: 按 role_id 回收该员工的未过期授权。保护：**不允许收掉最后一个 PLATFORM_ADMIN 授权**，否则平台无人可管理。未授予的角色
+        → 400。
+      parameters:
+      - description: internal_staff.id
+        format: int64
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: role.id
+        format: int64
+        in: path
+        name: roleId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data=StaffDetail
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "400":
+          description: code=10001 角色未授予 / 试图收掉唯一平台管理员
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "403":
+          description: code=10003 无 M11:E 或角色不含 PLATFORM_ADMIN
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "404":
+          description: code=10004 员工不存在
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 回收角色（M11:E + PLATFORM_ADMIN，必挂幂等）
+      tags:
+      - 账号管理
   /api/internal/price-books:
     post:
       consumes:
@@ -2839,8 +3383,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: 前置 status=APPROVING（否则 409）；SELF 域只能批自己引入的供应商（越权 403）。事务内：状态推进
-        + todo DONE + task_job(ACTIVATE_QUOTE) 入队 + 审计。immediate（valid_from≤now）时事务提交后同步激活。
+      description: 前置 status=APPROVING（否则 409）；SELF 域只能批自己引入的供应商（越权 403）。body.comment
+        选填，但**本单存在毛利预演不满足（margin_ok=false）的明细时必填**，否则 400（理由写入 audit_log.reason 留痕）——不硬拦截放行，但要求写明依据。margin_ok
+        为 null（无官方价参照）不算不满足。事务内：状态推进 + todo DONE + task_job(ACTIVATE_QUOTE) 入队 + 审计。immediate（valid_from≤now）时事务提交后同步激活。
       parameters:
       - description: 报价单 ID
         format: int64
@@ -2853,11 +3398,20 @@ paths:
         name: Idempotency-Key
         required: true
         type: string
+      - description: 审批意见（毛利不满足时必填）
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/supplier.ApproveInput'
       produces:
       - application/json
       responses:
         "200":
           description: code=0；data={id,status,approved_at,activate_at,immediate}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "400":
+          description: code=10001 毛利预演不满足但未填审批意见
           schema:
             $ref: '#/definitions/api.APIResponse'
         "401":
@@ -3988,6 +4542,52 @@ paths:
       security:
       - BearerAuth: []
       summary: 报价详情
+      tags:
+      - 供应商门户
+  /api/supplier/quotes/{id}/withdraw:
+    post:
+      consumes:
+      - application/json
+      description: 供应商在审批完成前撤回自己提交的报价单。撤回后 status=VOIDED，可重新提交新版本。请求体 reason 选填（≤500
+        字），写入审计日志。
+      parameters:
+      - description: 报价单 ID
+        format: int64
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 撤回原因（选填）
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/supplier.WithdrawInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: code=0；data={id,status,withdrawn_at}
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "400":
+          description: code=10001 参数非法（撤回原因超长）
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "401":
+          description: code=10002 未认证
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "404":
+          description: code=10004 供应商档案不存在
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+        "409":
+          description: code=10009 状态不允许撤回（已审批/已生效/不属于当前供应商）
+          schema:
+            $ref: '#/definitions/api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: 撤回报价
       tags:
       - 供应商门户
   /api/supplier/quotes/history:

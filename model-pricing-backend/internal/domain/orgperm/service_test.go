@@ -81,7 +81,7 @@ func TestListOrganizations_TreeAndCumulativeMemberCount(t *testing.T) {
 		},
 		staffCnt: map[int64]int64{1: 1, 2: 2, 3: 3, 4: 4},
 	}
-	got, err := NewService(st).ListOrganizations(context.Background())
+	got, err := NewService(st, nil).ListOrganizations(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestListOrganizations_OrphanAndSelfParentBecomeRoot(t *testing.T) {
 		},
 		staffCnt: map[int64]int64{5: 2, 7: 1, 9: 3},
 	}
-	got, err := NewService(st).ListOrganizations(context.Background())
+	got, err := NewService(st, nil).ListOrganizations(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestListOrganizations_ParentAppearsAfterChildIsStillAttached(t *testing.T) 
 		},
 		staffCnt: map[int64]int64{10: 1, 20: 2},
 	}
-	got, err := NewService(st).ListOrganizations(context.Background())
+	got, err := NewService(st, nil).ListOrganizations(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestListOrganizations_OwnerNameSingleQuery(t *testing.T) {
 		},
 		names: map[int64]string{11: "顾言"},
 	}
-	got, err := NewService(st).ListOrganizations(context.Background())
+	got, err := NewService(st, nil).ListOrganizations(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestListOrganizations_NoLeaderSkipsQuery(t *testing.T) {
 	st := &fakeStore{
 		orgUnits: []OrgUnitRow{{ID: 1, Name: "公司", UnitType: "COMPANY"}},
 	}
-	if _, err := NewService(st).ListOrganizations(context.Background()); err != nil {
+	if _, err := NewService(st, nil).ListOrganizations(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if st.nameCalls != 0 {
@@ -216,7 +216,7 @@ func TestListOrganizations_NoLeaderSkipsQuery(t *testing.T) {
 
 // TestListOrganizations_EmptyIsEmptySliceNotNil 空数据必须序列化成 []，不是 null。
 func TestListOrganizations_EmptyIsEmptySliceNotNil(t *testing.T) {
-	got, err := NewService(&fakeStore{}).ListOrganizations(context.Background())
+	got, err := NewService(&fakeStore{}, nil).ListOrganizations(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestListOrganizations_EmptyIsEmptySliceNotNil(t *testing.T) {
 func TestListOrganizations_StoreErrorPropagates(t *testing.T) {
 	want := errors.New("boom")
 	st := &fakeStore{err: want, orgUnits: []OrgUnitRow{{ID: 1}}}
-	if _, err := NewService(st).ListOrganizations(context.Background()); !errors.Is(err, want) {
+	if _, err := NewService(st, nil).ListOrganizations(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("错误应原样上抛，实际 %v", err)
 	}
 }
@@ -271,7 +271,7 @@ func TestListRoles_AssemblesAllFields(t *testing.T) {
 		},
 		grants: map[int64]int64{23: 1, 30: 2},
 	}
-	got, err := NewService(st).ListRoles(context.Background())
+	got, err := NewService(st, nil).ListRoles(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestListRoles_PermissionOrderFollowsPermAll(t *testing.T) {
 			{RoleID: 1, Code: perm.M1View, PointName: "模型管理·查看"},
 		},
 	}
-	got, err := NewService(st).ListRoles(context.Background())
+	got, err := NewService(st, nil).ListRoles(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +361,7 @@ func TestListRoles_AllPermCodesAreDeclaredInPerm(t *testing.T) {
 		roles: []RoleRow{{ID: 1, Code: perm.RolePlatformAdmin, Name: "全权限", DataScope: "ALL"}},
 		perms: rows,
 	}
-	got, err := NewService(st).ListRoles(context.Background())
+	got, err := NewService(st, nil).ListRoles(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +380,7 @@ func TestListRoles_AllPermCodesAreDeclaredInPerm(t *testing.T) {
 }
 
 func TestListRoles_EmptyIsEmptySliceNotNil(t *testing.T) {
-	got, err := NewService(&fakeStore{}).ListRoles(context.Background())
+	got, err := NewService(&fakeStore{}, nil).ListRoles(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +391,7 @@ func TestListRoles_EmptyIsEmptySliceNotNil(t *testing.T) {
 
 func TestListRoles_StoreErrorPropagates(t *testing.T) {
 	want := errors.New("boom")
-	if _, err := NewService(&fakeStore{err: want}).ListRoles(context.Background()); !errors.Is(err, want) {
+	if _, err := NewService(&fakeStore{err: want}, nil).ListRoles(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("错误应原样上抛，实际 %v", err)
 	}
 }

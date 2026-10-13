@@ -107,6 +107,22 @@ func TestCanLockFx(t *testing.T) {
 	require.False(t, CanLockFx(""), "空 role 必须拒绝")
 }
 
+// TestCanManageStaff 账号管理只允许 PLATFORM_ADMIN。
+// 这是最高危写操作（能改任何人的权限包），除平台管理员外一律拒绝——
+// 含 OPS_ADMIN（000031 已收掉它的 M11 写权限）、MODEL_OPS、AUDIT_READONLY。
+func TestCanManageStaff(t *testing.T) {
+	for _, role := range allSeedRoles {
+		got := CanManageStaff(role)
+		want := role == RolePlatformAdmin
+		require.Equalf(t, want, got, "CanManageStaff(%s)", role)
+	}
+	require.False(t, CanManageStaff(RoleOpsAdmin), "OPS_ADMIN 不能管理账号（000031 已收敛 M11 写权限）")
+	require.False(t, CanManageStaff(RoleModelOps), "MODEL_OPS 不能管理账号")
+	require.False(t, CanManageStaff(RoleAuditReadOnly), "AUDIT_READONLY 不能管理账号")
+	require.False(t, CanManageStaff(RoleSupplier), "SUPPLIER 不能管理账号")
+	require.False(t, CanManageStaff(""), "空 role 必须拒绝")
+}
+
 // ---- 批次 3a：成本域三个动作的角色矩阵 ----
 //
 // 背景：三个动作（成本参数配置 / 主供应商锁定 / 汇率锁定）曾全部挤在 M5:E 一个权限点上，

@@ -189,6 +189,12 @@ func CanLockPrimary(roleCode string) bool { return roleCode == RoleProcurement }
 // 000030 已把 FINANCE 的汇率动作从 M5:E 挪到 M10:E。
 func CanLockFx(roleCode string) bool { return roleCode == RoleFinance }
 
+// CanManageStaff 账号管理（M11 写侧：建人/改人/重置口令/授权/回收）只允许 PLATFORM_ADMIN。
+// 第一层：中间件 RequirePerm(M11:E)（000031 后仅 PLATFORM_ADMIN 持该点）；
+// 第二层（本函数）：防御性冗余——将来若把 M11:E 授给别的角色，这里仍按角色 code 拦住。
+// 账号管理能改任何人的权限包，属最高危写操作，两层都不能单删。
+func CanManageStaff(roleCode string) bool { return roleCode == RolePlatformAdmin }
+
 // CanReadSupplierCommercial 供应商商务字段仅财务或档案归属采购可读。
 // 归属以登录员工 ID 与档案 owner ID 比较；空 ID 不构成归属。
 func CanReadSupplierCommercial(roleCodes []string, staffID, ownerID int64) bool {

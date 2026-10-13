@@ -9,6 +9,7 @@ package orgperm
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,13 +38,31 @@ type Store interface {
 	CountGrantsByRole(ctx context.Context) (map[int64]int64, error)
 }
 
-// Service 组织与权限只读服务。
+// Service 组织与权限服务（只读侧 + 账号管理写侧共用）。
 type Service struct {
 	store Store
+	// staffStore 是账号管理写侧的仓储。2026-10-13 补写接口时加入；
+	// nil 时写方法会 panic——router 里用 deps.StaffStore != nil 守住了不挂载，
+	// 这里再加一层显式检查，避免将来有人绕过 router 直接调 service。
+	staffStore StaffStore
 }
 
 // NewService 构造。
-func NewService(store Store) *Service { return &Service{store: store} }
+//
+// staffStore 是**必填**参数（不是可选）——漏传编译不过，防止写接口在没接仓储的
+// 环境里被静默启用。这与批次 2b「service 签名加首位 scope」是同一条纪律。
+func NewService(store Store, staffStore StaffStore) *Service {
+	return &Service{store: store, staffStore: staffStore}
+}
+
+// staffStoreOrErr 返回写侧仓储；未注入时返回系统错误而不是 panic。
+// 正常路径下 router 已经拦住（deps.StaffStore == nil 就不挂载写路由）。
+func (s *Service) staffStoreOrErr() (StaffStore, error) {
+	if s.staffStore == nil {
+		return nil, fmt.Errorf("orgperm: StaffStore 未注入，账号管理写接口不可用")
+	}
+	return s.staffStore, nil
+}
 
 // ============================================================
 // 组织树

@@ -77,6 +77,9 @@ type Deps struct {
 	FinanceLockSvc *finance.LockService
 	// 阶段 12：组织与权限 M11 只读视图（批次 5）。
 	OrgPermSvc *orgperm.Service
+	// 2026-10-13：M11 账号管理写侧仓储。nil 时写接口整体不挂载
+	// （与 OrgPermSvc 同一条纪律：没接仓储就不暴露能力）。
+	StaffStore orgperm.StaffStore
 	// 阶段 12：供应商门户主体档案只读视图（批次 7a，只做 GET）。
 	SupplierPortalProfileSvc *supplier.PortalProfileService
 }
@@ -559,14 +562,45 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 		}
 	}
 
-	// 业务接口：组织与权限 M11（批次 5）。
-	// 权限：M11:V。**本批只有只读接口**（任务书：不实现任何写操作）——
-	// 所以 M11:E/A/C/P 在 router 里仍然零挂载（批次 3b 已把 OPS_ADMIN 的这四点收走，
-	// 现在仅 PLATFORM_ADMIN 持有，属预防性收敛）。
+	// 业务接口：组织与权限 M11（批次 5 只读 + 2026-10-13 账号管理写侧）。
+	// 只读两个挂 M11:V；写侧全部挂 M11:E，且服务层再按角色收敛到 PLATFORM_ADMIN
+	// （见 StaffHandler.canManage / pkg/perm.CanManageStaff）。
 	// 路径前缀 /org-permissions 由前端写死（src/api/orgPermissions.ts），不要改。
 	if portal == "internal" && deps.OrgPermSvc != nil {
 		oh := NewOrgPermissionHandler(deps.OrgPermSvc)
 		protected.GET("/org-permissions/organizations", middleware.RequirePerm(perm.M11View), oh.ListOrganizations)
 		protected.GET("/org-permissions/roles", middleware.RequirePerm(perm.M11View), oh.ListRoles)
+
+		// 账号管理（M11:E + PLATFORM_ADMIN）。写接口必挂幂等（红线 5）。
+		if deps.StaffStore != nil {
+			sh := NewStaffHandler(deps.OrgPermSvc)
+			protected.GET("/org-permissions/staff", middleware.RequirePerm(perm.M11Edit), sh.ListStaff)
+			protected.GET("/org-permissions/staff/:id", middleware.RequirePerm(perm.M11Edit), sh.GetStaff)
+			protected.POST("/org-permissions/staff",
+				middleware.RequirePerm(perm.M11Edit),
+				middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+				sh.CreateStaff,
+			)
+			protected.PUT("/org-permissions/staff/:id",
+				middleware.RequirePerm(perm.M11Edit),
+				middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+				sh.UpdateStaff,
+			)
+			protected.POST("/org-permissions/staff/:id/password",
+				middleware.RequirePerm(perm.M11Edit),
+				middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+				sh.ResetStaffPassword,
+			)
+			protected.POST("/org-permissions/staff/:id/roles",
+				middleware.RequirePerm(perm.M11Edit),
+				middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+				sh.GrantStaffRole,
+			)
+			protected.DELETE("/org-permissions/staff/:id/roles/:roleId",
+				middleware.RequirePerm(perm.M11Edit),
+				middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+				sh.RevokeStaffRole,
+			)
+		}
 	}
 }
