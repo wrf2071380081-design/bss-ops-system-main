@@ -200,4 +200,3 @@ GET列表增加 companies/model_types/supplier_ids/regions，每个query值为JS
 供应商和区域筛选必须通过同一资源的EXISTS关联实现，不给standard_model添加region列，也不以两个独立EXISTS分别命中不同资源。过滤和模型去重先于排序/分页，total为符合条件的模型数。未指定供应商/区域时，没有资源的标准模型仍可见。
 
 GET `/api/internal/standard-models/filter-options` 接收keyword、regions（相同JSON数组编码）。返回 companies、suppliers[{id,name,region}]、has_more，每类最多50项。公司来自标准模型全集（包括无资源模型），供应商来自关联资源及有效供应商身份，regions仅限定供应商选项。keyword按名称匹配。达到上限仍有匹配时has_more=true，不从当前列表页构造选项。身份和普通读取相同，全体内部人员可读；缺选项仓储能力503。
-
