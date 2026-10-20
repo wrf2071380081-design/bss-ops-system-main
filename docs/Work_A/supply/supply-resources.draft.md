@@ -146,3 +146,9 @@ GET `/api/internal/resources/filter-options?region=CN&keyword=名称片段`，�
 ResourceCoefficientService.Change接收认证WriteMeta、资源ID/revision、系数和CoefficientSource{Kind:SUBMISSION/PLAN,ID,Revision}。ResourceCoefficientTransaction在同事务读取并核对真实来源授权、目标资源/revision/金额；来源引用不是客户端授权凭证。PLAN按原发起人验证，不错误要求其仍是当前buyer；人工MANUAL入口尚未开放。
 
 实际变化CAS升资源revision，保留测试目标版本与报告，写前后快照日志和系数变更outbox；无变化只追加NOOP日志，保留revision/updated_at。调用方来源完成、资源、日志和outbox原子提交，提交失败返回nil。事件ID由公共outbox分配，C不因该命令被A直接改写原报价。具体端口及当前证据边界见[阶段记录](../TDD/2026-10-20-resource-coefficient-results.md)。
+
+## 12. 直接上下架领域命令
+
+ResourceStateService.Change仅供绑定采购人直接OFFLINE/ONLINE，参数包含external_confirmed和completion_note；未实际确认或无依据拒绝。计划来源不能用客户端plan_id绕过buyer校验，需后续独立的发起人验证执行服务。
+
+ONLINE复用当前安全快照可报价判定，在候选ADMITTED副本重查模型、主体、配置及自身测试；OFFLINE不因上游资料失效而阻止采购人停止资源。两者保留ever_admitted、目标与报告，CAS升revision。操作记录、公告和outbox由同事务效果端口写入，公告影响PENDING。具体证据及未接入项见[上下架领域记录](../TDD/2026-10-20-resource-state-results.md)。

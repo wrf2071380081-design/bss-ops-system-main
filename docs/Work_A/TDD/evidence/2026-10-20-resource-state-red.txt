@@ -1,0 +1,15 @@
+FAIL	model_bss/internal/domain/supply [build failed]
+FAIL
+# model_bss/internal/domain/supply [model_bss/internal/domain/supply.test]
+internal/domain/supply/resource_state_test.go:10:59: undefined: ResourceStateEffect
+internal/domain/supply/resource_state_test.go:11:70: undefined: ResourceStateTransaction
+internal/domain/supply/resource_state_test.go:11:184: undefined: ResourceStateEffect
+internal/domain/supply/resource_state_test.go:14:68: undefined: ResourceStateEffect
+internal/domain/supply/resource_state_test.go:17:20: undefined: ResourceStateCommand
+internal/domain/supply/resource_state_test.go:17:48: undefined: ResourceStateCommand
+internal/domain/supply/resource_state_test.go:19:61: undefined: NewResourceStateService
+internal/domain/supply/resource_state_test.go:29:36: undefined: NewResourceStateService
+internal/domain/supply/resource_state_test.go:33:229: undefined: NewResourceStateService
+internal/domain/supply/resource_state_test.go:34:172: undefined: NewResourceStateService
+internal/domain/supply/resource_state_test.go:34:172: too many errors
+ExitCode=1
