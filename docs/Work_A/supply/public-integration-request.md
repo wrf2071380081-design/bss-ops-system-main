@@ -12,8 +12,10 @@
 - `ModelService.Verify(ctx, WriteMeta, id, expectedRevision, checkedAt)`。
 - `StandardModel.MissingFields()`、`Readiness()` 和独立副本 `Clone()`。
 - `ModelUnitOfWork`、`ModelTransaction`、`OfficialSourcePolicy` 的准确 Go 签名见 `ports.go`。
+- `ModelReadStore`、`ModelReader.List/Get/Versions/Snapshot` 见 `model_read.go`；读取查询不携带旧角色/维护人过滤，历史快照不用于新报价。
+- HTTP 接入入口为 A 的 `internal/api/router_supply.go` 中 `RegisterSupplyRoutes(group, SupplyDeps)`；提供 Reader/Writer/IdemStore，组前缀 `/api/internal` 并已有 AuthN/RequestID。注册器会额外检查 INTERNAL/STAFF、使用 StaffID，读取不附加旧角色权限点。
 
-领域不引用旧 model_sku、supplier_profile、审批或成本重算；本次没有创建业务迁移、SQL 仓储、HTTP 路由或公共能力的替代实现。
+领域不引用旧 model_sku、supplier_profile、审批或成本重算。A 已提供独立 HTTP 注册入口和 Swagger 源注释，但未修改公共 router.go/main.go，也没有创建业务迁移、SQL 仓储或公共能力的替代实现。
 
 ## 2. 目标 schema 需核对
 
@@ -34,6 +36,8 @@
 
 事务适配提供：分配 ID、锁定模型、创建/CAS 更新、追加完整版本、追加操作记录。任一业务校验、唯一性、快照、日志或 commit 失败时整体回滚；原错误保留给 HTTP 错误映射。
 
+新请求无资料变化时只追加 UPDATE_NOOP / VERIFY_NOOP 操作记录，保留原版本和资料更新时间；幂等重放不重复执行。日志失败不得将无变化写入视为成功。
+
 当前 `db.WithDB/FromContext` 是可复用的上下文基础，不等于事务和日志适配已交付。A 的内存事务测试只验证服务将这些动作放进同一个端口回调，不能证明 SQL 实现的隔离和回滚。
 
 ## 4. 官方来源策略
@@ -52,6 +56,9 @@
 - 领域错误分为 FieldError、ErrForbidden、ErrRevisionConflict、ErrIncomplete、ErrInactive、ErrNotFound、ErrIdentityConflict、ErrDependencyUnavailable、ErrSourceRejected。公共 HTTP 层负责映射，不在 A 领域自行分配数字 code。
 - 写 HTTP 入口继续要求 Idempotency-Key，领域服务不另外实现一个幂等存储。接口幂等重放与真实事务接入后还需验证。
 - 统一 errors[]/fieldErrors 结构及错误原因机器码仍由公共契约固定。
+- 当前公共幂等同键异body返回400，与附01的409待统一；FAILED状态后的重试策略也需与前端“保留原键重试”对齐。
+- 当前公共中间件在 handler 写响应后执行 MarkResult/Commit；真实失败时的响应状态/提交状态一致性须由公共负责人验证并处理，必要时先缓冲响应再在提交后发出。A 的无库幂等测试不能证明 SQL commit 失败时仍正确响应。
+- 读取适配器需真实实现白名单排序、双向 NULLS LAST 和稳定 id 次序，以及排序/过滤先于分页；端口查询标记本身不能作为 SQL 验收证据。
 
 ## 6. 接入验收
 

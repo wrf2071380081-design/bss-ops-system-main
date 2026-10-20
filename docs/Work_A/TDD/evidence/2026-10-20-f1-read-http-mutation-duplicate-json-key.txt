@@ -1,0 +1,6 @@
+--- FAIL: TestSupplyHTTPStrictCreateInputAndAuthenticatedStaffBinding (0.00s)
+    supply_model_test.go:214: invalid body accepted (2): 200 {"code":0,"message":"ok","data":{"company":"","name":"second","official_id":"","model_type":"","input_modalities":null,"output_modalities":null,"capacity":null,"abilities":null,"price_items":null,"api_access":null,"lifecycle":null,"sources":null,"checked_at":"","id":"9007199254740993","maintainer_id":"7","status":"ACTIVE","verify_status":"INCOMPLETE","checked_by":"","version_no":"1","current_version_no":"1","revision":"1","created_at":"2026-10-20T01:00:00Z","updated_at":"2026-10-20T01:00:00Z","missing_fields":["abilities","api_access","capacity","checked_at","company","input_modalities","lifecycle","model_type","official_id","output_modalities","price_items","sources"],"quote_readiness":{"ready":false,"reasons":["MODEL_INCOMPLETE","MODEL_UNVERIFIED"],"standard_model_version_no":"1"},"permissions":{"can_edit":true,"can_verify":false}},"requestId":"trace-invalid"}
+FAIL
+FAIL	model_bss/internal/api	0.019s
+FAIL
+ExpectedTestExitCode=1

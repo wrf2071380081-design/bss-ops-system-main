@@ -160,7 +160,7 @@ func TestModelServiceStoresVersionsAndOperationAtomically(t *testing.T) {
 	}
 }
 
-func TestModelServiceNoOpDoesNotCreateVersionOrLog(t *testing.T) {
+func TestModelServiceNoOpRecordsOperationWithoutNewVersion(t *testing.T) {
 	db := newMemoryDB()
 	svc := newService(db)
 	m, err := svc.Create(context.Background(), writeMeta("7"), completeModelData())
@@ -169,9 +169,54 @@ func TestModelServiceNoOpDoesNotCreateVersionOrLog(t *testing.T) {
 	}
 	d := cloneData(m.Data)
 	d.PriceItems[0].Amount = "2" // Same decimal amount, not an official price change.
+	svc.now = func() time.Time { return modelNow.Add(time.Hour) }
 	same, err := svc.Update(context.Background(), writeMeta("7"), m.ID, 1, d)
-	if err != nil || same.Revision != 1 || len(db.state.versions[m.ID]) != 1 || len(db.state.operations) != 1 {
-		t.Fatalf("semantic no-op persisted: %v", err)
+	if err != nil || same.Revision != 1 || len(db.state.versions[m.ID]) != 1 || len(db.state.operations) != 2 {
+		t.Fatalf("no-op must preserve version and record intent: %v", err)
+	}
+	op := db.state.operations[1]
+	if op.Action != "UPDATE_NOOP" || op.ActorID != "7" || op.RequestID != "request-test" || op.Reason != "人工维护官方资料" || op.Before.Revision != 1 || op.After.Revision != 1 || !op.OccurredAt.Equal(modelNow.Add(time.Hour)) || !same.UpdatedAt.Equal(m.UpdatedAt) {
+		t.Fatalf("no-op lost trace or changed model timestamp: %+v", op)
+	}
+}
+
+func TestModelServiceRepeatedVerificationRecordsOperationWithoutNewVersion(t *testing.T) {
+	db := newMemoryDB()
+	svc := newService(db)
+	ctx := context.Background()
+	m, err := svc.Create(ctx, writeMeta("7"), completeModelData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := svc.Verify(ctx, writeMeta("7"), m.ID, 1, "2026-10-20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.now = func() time.Time { return modelNow.Add(time.Hour) }
+	same, err := svc.Verify(ctx, writeMeta("7"), m.ID, 2, "2026-10-20")
+	if err != nil || same.Revision != 2 || len(db.state.versions[m.ID]) != 2 || len(db.state.operations) != 3 {
+		t.Fatalf("repeated verification lost audit or created a version: %v", err)
+	}
+	op := db.state.operations[2]
+	if op.Action != "VERIFY_NOOP" || op.Before.Revision != 2 || op.After.Revision != 2 || op.RequestID != "request-test" || !op.OccurredAt.Equal(modelNow.Add(time.Hour)) || !same.UpdatedAt.Equal(verified.UpdatedAt) {
+		t.Fatalf("repeated verification lost trace: %+v", op)
+	}
+}
+
+func TestModelServiceNoOpLogFailureReturnsNoSuccess(t *testing.T) {
+	db := newMemoryDB()
+	svc := newService(db)
+	ctx := context.Background()
+	m, err := svc.Create(ctx, writeMeta("7"), completeModelData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.failLog = true
+	if result, err := svc.Update(ctx, writeMeta("7"), m.ID, 1, m.Data); result != nil || !errors.Is(err, errOperationLog) {
+		t.Fatalf("no-op log failure returned success: result=%+v error=%v", result, err)
+	}
+	if len(db.state.versions[m.ID]) != 1 || len(db.state.operations) != 1 || db.state.models[m.ID].Revision != 1 {
+		t.Fatal("failed no-op partially committed")
 	}
 }
 

@@ -1,6 +1,6 @@
 # A / F1 标准模型接口评审草案
 
-状态：评审草案，尚未冻结或接入运行服务。
+状态：独立领域、读取端口和 HTTP 注册入口已实现；主应用尚未装配，公共契约仍待共同冻结。
 日期：2026-10-20。
 依据：`01-A主数据与供应侧-详细设计-v1.0.md` §3、§4、§8.1、§10、§15、§16。
 
@@ -120,7 +120,7 @@ PUT 为可编辑资料整体替换；省略请求结构要求的字段返回 400
 - 与 C 核对模型/价格快照、价格任务和单位字典，以及完整性对具体报价场景的要求。
 - 固定来源白名单及来源过期判定；当前不自行设定抓取频率或来源有效天数。
 - 公共方固定错误结构、幂等冲突码、事务日志调用及认证 staff ID 类型。
-- 用户完成 F1 设计评审后，补齐嵌套 schema、请求/响应样例和排序字段白名单，再进入实现。
+- A 的类型化资料、严格请求解码和排序白名单已在下节落地；公共方和 B/C 接入前仍需共同冻结映射与错误契约。
 
 ## 9. 独立领域切片的实现映射
 
@@ -134,4 +134,50 @@ PUT 为可编辑资料整体替换；省略请求结构要求的字段返回 400
 - 金额规范为八位小数字符串，以相同数值不同尾零格式重提不会制造价格变更版本；不同稳定键/条件保留为独立价格项。
 - 来源策略同时检查模型级与价格项级来源；构造/保存不代表来源已核验。
 
-准确公共适配需求见[接入请求](./public-integration-request.md)。HTTP 层仍须固定嵌套 schema、分页排序和错误包络，并验证未知输入拒绝、幂等和真库事务；独立领域测试不代替这些验收。
+准确公共适配需求见[接入请求](./public-integration-request.md)。HTTP 层已有类型化资料、查询及未知输入/幂等路由测试；真实仓储分页排序、统一 errors[] 和真库事务仍需公共接入验证。
+
+## 10. 已实现的 HTTP 契约
+
+注册入口：`api.RegisterSupplyRoutes(internalGroup, api.SupplyDeps{Reader, Writer, IdemStore})`。调用方提供前缀为 `/api/internal`、带 AuthN/RequestID 的组；当前主应用还没有调用此入口。不能据测试中的路由存在认定运行服务已上线。
+
+已注册方法：GET 列表、GET `/:id`、GET `/:id/versions`、POST 新建、PUT `/:id`、POST `/:id/verify`。仅接受已认证 INTERNAL/STAFF，使用 StaffID 而非 AccountID/OperatorID 作为模型维护人。读取不检查旧角色权限点。
+
+### 10.1 请求结构
+
+模型资料字段为 company/name/official_id/model_type/input_modalities/output_modalities/capacity/abilities/price_items/api_access/lifecycle/sources/checked_at，详细结构见 §9 和领域类型。
+
+- POST 允许只传待补齐资料及 reason；不能传 id、maintainer_id、status、verify_status 等服务端元数据。
+- PUT 需显式包含全部13个资料字段（空资料可以用空字符串、空数组/null表达），再带字符串 expected_revision 和 reason，不能用部分 PUT 静默清空其余字段。
+- verify 请求只含字符串 expected_revision、checked_at 和 reason。
+- revision 必须在正 bigint 范围内；金额字段按 string 解码。
+- 未知字段、非规范大小写、重复键（含嵌套对象）、尾随 JSON、根 null/数组拒绝；body 上限1MiB，嵌套深度上限64。
+
+新增草稿示例：
+
+```json
+{"name":"待补齐模型","reason":"登记待完善的官方模型资料"}
+```
+
+人工核验示例：
+
+```json
+{"expected_revision":"1","checked_at":"2026-10-20","reason":"人工对照官方资料完成核验"}
+```
+
+### 10.2 查询、DTO 与历史版本
+
+- 列表只接受 page/size/keyword/company/model_type/status/verify_status/sort_by/order；重复或未知参数400。page默认1，size默认20，上限100。
+- sort_by 白名单：id/name/company/model_type/verify_status/checked_at/updated_at；默认updated_at desc。读取端口要求 NULLS LAST 和稳定 id 次序，实际 SQL 由仓储验证。
+- 标准模型没有单一区域字段；原型基于供应资源关联的地区筛选需与 F3 联动，不把 region 写成全球模型固有属性。基础 F1 查询暂不接收 region。
+- DTO 将 ModelData 字段扁平展开，不暴露内部 data 包裹；返回字符串 id/maintainer_id/revision/version_no，当前资料还带 current_version_no，以及 missing_fields/quote_readiness/permissions。
+- 历史版本响应不提供 can_edit/can_verify 操作资格，不能用于新报价。B/C 的 `ModelReader.Snapshot(id, version)` 返回不可变资料、IsCurrent 和 CurrentVersionNo，显式区分历史消费与当前可报价判断。
+- PUT/verify 返回 changed，修订号未改变表示无实际版本变化。
+- 无实际变化的新保存/核验请求仍写 operation_log（UPDATE_NOOP / VERIFY_NOOP），不增版、不改变资料更新时间；日志失败整体失败。同幂等键重放不再次执行业务或追加日志。
+
+### 10.3 错误与公共幂等边界
+
+继续使用统一 response.Body：错误 data=null，requestId 来自本次请求，内部异常不回显原错误。字段/不完整400、绑定403、不存在404、身份/revision/来源冲突409、依赖缺失503。
+
+写路由使用现有公共 Idempotency；缺键400，同键同body重放保持本次requestId，同键异body沿用当前公共实现400。附01期望的异体409、FAILED重试及真实commit失败的响应一致性，仍需公共方统一；A 不另写一套中间件。缺少幂等存储时写入口503，不开放无保护的替代路径。
+
+Swagger注释已写在 A 自己的 handler 源码中，公共 openapi 产物未生成或替换。验证范围见[F1 读取与 HTTP 执行记录](../TDD/2026-10-20-f1-read-http-results.md)。

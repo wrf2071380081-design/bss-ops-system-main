@@ -43,7 +43,11 @@ func appendModelChange(ctx context.Context, tx ModelTransaction, before, after *
 	if err := tx.AppendVersion(ctx, after.Clone()); err != nil {
 		return err
 	}
-	return tx.AppendOperation(ctx, ModelOperation{EntityType: "standard_model", EntityID: after.ID, Action: action, ActorID: meta.ActorID, Reason: meta.Reason, RequestID: meta.RequestID, Before: before.Clone(), After: after.Clone(), OccurredAt: after.UpdatedAt})
+	return appendModelOperation(ctx, tx, before, after, meta, action, after.UpdatedAt)
+}
+
+func appendModelOperation(ctx context.Context, tx ModelTransaction, before, after *StandardModel, meta WriteMeta, action string, occurredAt time.Time) error {
+	return tx.AppendOperation(ctx, ModelOperation{EntityType: "standard_model", EntityID: after.ID, Action: action, ActorID: meta.ActorID, Reason: meta.Reason, RequestID: meta.RequestID, Before: before.Clone(), After: after.Clone(), OccurredAt: occurredAt.UTC()})
 }
 
 func (s *ModelService) Create(ctx context.Context, meta WriteMeta, data ModelData) (*StandardModel, error) {
@@ -113,6 +117,8 @@ func (s *ModelService) Update(ctx context.Context, meta WriteMeta, id string, ex
 			if err = appendModelChange(ctx, tx, current, next, meta, "UPDATE"); err != nil {
 				return err
 			}
+		} else if err = appendModelOperation(ctx, tx, current, next, meta, "UPDATE_NOOP", now); err != nil {
+			return err
 		}
 		result = next.Clone()
 		return nil
@@ -171,6 +177,8 @@ func (s *ModelService) Verify(ctx context.Context, meta WriteMeta, id string, ex
 			if err = appendModelChange(ctx, tx, current, next, meta, "VERIFY"); err != nil {
 				return err
 			}
+		} else if err = appendModelOperation(ctx, tx, current, next, meta, "VERIFY_NOOP", now); err != nil {
+			return err
 		}
 		result = next.Clone()
 		return nil
