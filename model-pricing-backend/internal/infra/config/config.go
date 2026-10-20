@@ -16,6 +16,54 @@ type Config struct {
 	Log      Log      `mapstructure:"log"`
 	Worker   Worker   `mapstructure:"worker"`
 	Docs     Docs     `mapstructure:"docs"`
+	Features Features `mapstructure:"features"`
+}
+
+// Features 是"模块开关"（重构收敛用）：true = 对外保留，false = 不暴露（路由返回 404）。
+//
+// 设计原则：
+//   - 代码里默认 true（保持现有行为，不让配置缺失导致接口凭空消失）；
+//   - configs/config.yaml 里把原型 v0.19 用不到的模块显式置 false；
+//   - 只"隐藏入口"，不删代码、不删表——未来要回归时改回 true 即可。
+//
+// 开关按"业务模块"分组，不按单个接口；但拦截时精确到路由 pattern（c.FullPath()），
+// 避免误伤同前缀下仍要保留的接口（例如 /model-applications 的提交保留、只关 decision）。
+type Features struct {
+	Approval              bool `mapstructure:"approval"`                // 审批/变更单/model-application 决策
+	Cost                  bool `mapstructure:"cost"`                    // 成本四因子/成本基线/机会/对比/锁主供
+	LegacyPriceSync       bool `mapstructure:"legacy_price_sync"`       // 旧官方价同步 job/staging
+	PricingPolicy         bool `mapstructure:"pricing_policy"`          // 定价策略 M6
+	PriceUpconduction     bool `mapstructure:"price_upconduction"`      // 涨价传导
+	SupplierQuoteApproval bool `mapstructure:"supplier_quote_approval"` // 供应商报价的审批/异常/追溯动作
+	SpecialPrice          bool `mapstructure:"special_price"`           // 客户特价审批/刷新
+	FinanceLegacy         bool `mapstructure:"finance_legacy"`          // 汇率/账户/汇率锁
+	CustomerPortal        bool `mapstructure:"customer_portal"`         // 客户自助门户（登录保留）
+}
+
+// IsEnabled 按模块名取开关；未知模块默认 true（宁可不误关）。
+func (f Features) IsEnabled(name string) bool {
+	switch name {
+	case "approval":
+		return f.Approval
+	case "cost":
+		return f.Cost
+	case "legacy_price_sync":
+		return f.LegacyPriceSync
+	case "pricing_policy":
+		return f.PricingPolicy
+	case "price_upconduction":
+		return f.PriceUpconduction
+	case "supplier_quote_approval":
+		return f.SupplierQuoteApproval
+	case "special_price":
+		return f.SpecialPrice
+	case "finance_legacy":
+		return f.FinanceLegacy
+	case "customer_portal":
+		return f.CustomerPortal
+	default:
+		return true
+	}
 }
 
 // Docs 在线接口调试页（Swagger UI）配置。

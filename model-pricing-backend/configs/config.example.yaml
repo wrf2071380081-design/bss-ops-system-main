@@ -47,3 +47,20 @@ log:
 #  production 建议 false —— 该页会列出全部接口与参数，属内部调试资产。
 docs:
   enable: true
+
+# ============================================================
+# 模块开关（重构收敛用）
+#   true  = 对外保留；false = 路由返回 404（只隐藏入口，代码与表都还在）。
+#   代码里的默认值见 internal/infra/config/env.go：原型 v0.19 用不到的模块默认 false。
+#   可用环境变量覆盖：MODEL_BSS_FEATURES_COST=true 等。
+# ============================================================
+features:
+  approval: false                # 审批/变更单/model-application 决策
+  cost: false                    # 成本四因子/基线/机会/对比/锁主供
+  legacy_price_sync: false       # 旧官方价同步（新方案是人工核验+自动拉取）
+  pricing_policy: false          # 定价策略
+  price_upconduction: false      # 涨价传导
+  supplier_quote_approval: false # 供应商报价的审批/异常/追溯动作
+  special_price: false           # 客户特价/刷新
+  finance_legacy: false          # 汇率/账户/汇率锁
+  customer_portal: false         # 客户自助门户（登录接口保留）
