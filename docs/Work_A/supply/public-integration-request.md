@@ -110,3 +110,14 @@ B报告适配须提供report_id、可空resource_id、supplier/model/region、�
 现有ResourceReader新增Options能力，注册器增加GET `/resources/filter-options`；实际store实现可选接口ResourceFilterOptionsStore，查询region/keyword，Limit=50，每类至多50项，更多匹配返回HasMore。A真实仓储接新表；公共方提供目标DDL、人员/区域与主装配能力。选项缺失返回503，不能从当前资源页或旧profile猜测身份。
 
 当前只读页面已按新GET契约验证；公共区域联动、采购人名称、日志/计划/历史报告面板及资源状态写入仍需继续接入。完整证据见[F3前端记录](../TDD/2026-10-20-f3-frontend-results.md)。
+
+## 11. 工作台公告与计划摘要装配
+
+`SupplyDeps.Notices = supply.NewNoticeReader(store)`、`NoticeWriter = supply.NewNoticeService(work, clock)`、`Plans = supply.NewPlanReader(store)`；具体构造签名以源码为准。A注册器提供公告读取、跨人员阅读状态、本人标记已读及计划摘要路由，接口见[工作台契约](./supply-workbench.draft.md)。
+
+- 公共方提供新表、内部人员目录和主路由；A仓储映射 Notice/NoticeRead/ResourcePlan 及查询端口。Notice的影响状态/数量映射已有 affected_summary JSON，不增加平行数据库列。
+- 阅读状态以公告/人员组合分页，过滤先于分页，published_at DESC、notice_id DESC、staff_id ASC稳定排序；all_staff以真实内部人员目录为准。查看其他人不更换认证上下文、不创建阅读记录。
+- 阅读表要求 notice_id/staff_id 唯一约束。写入先锁公告、确认内部人员，再读取/创建个人状态；加入外层幂等事务，阅读记录和操作日志原子提交。重复阅读保留首次时间，新操作意图追加READ_NOOP，幂等重放不追加。
+- POST已读使用认证StaffID，原因由服务端固定为“阅读公告”。禁止调用方通过body或query指定阅读者。
+- 计划仓储返回计划与当前资源的同一一致性快照；发起人取created_by，不从当前buyer_id推断。所有摘要只读，revision比较仅为提示，不是执行授权或完整执行前置校验。
+- 真实约束、并发、日志失败、提交失败及公共幂等响应提交顺序仍需联调。测试替身通过不代表现有运行容器已接入，见[阶段证据](../TDD/2026-10-20-workbench-a-results.md)。

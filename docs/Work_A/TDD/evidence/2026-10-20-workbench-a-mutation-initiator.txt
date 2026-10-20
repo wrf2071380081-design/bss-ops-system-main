@@ -1,0 +1,7 @@
+=== RUN   TestPlanSummaryUsesInitiatorAndDoesNotExecuteOrBlockFutureDueTime
+    plan_read_test.go:19: current buyer got initiator rights or future plan was blocked: &{ResourcePlan:0x1ee4921885b0 IsInitiator:true ReadOnly:true PreconditionMatches:true CurrentResourceRevision:3 BlockedReasons:[]} <nil>
+--- FAIL: TestPlanSummaryUsesInitiatorAndDoesNotExecuteOrBlockFutureDueTime (0.00s)
+FAIL
+FAIL	model_bss/internal/domain/supply	0.007s
+FAIL
+ExitCode=1

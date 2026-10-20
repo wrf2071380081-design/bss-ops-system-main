@@ -1,0 +1,9 @@
+=== RUN   TestSupplyWorkbenchHTTPReadsOtherPeopleWithoutImpersonation
+--- PASS: TestSupplyWorkbenchHTTPReadsOtherPeopleWithoutImpersonation (0.00s)
+=== RUN   TestSupplyWorkbenchHTTPMarkReadUsesStaffIdentityAndIdempotency
+--- PASS: TestSupplyWorkbenchHTTPMarkReadUsesStaffIdentityAndIdempotency (0.00s)
+=== RUN   TestSupplyWorkbenchHTTPRejectsInvalidSelectorsAndMissingDependencies
+--- PASS: TestSupplyWorkbenchHTTPRejectsInvalidSelectorsAndMissingDependencies (0.00s)
+PASS
+ok  	model_bss/internal/api	0.023s
+ExitCode=0
