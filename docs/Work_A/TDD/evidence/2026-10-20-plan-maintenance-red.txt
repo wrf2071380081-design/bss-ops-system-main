@@ -1,0 +1,12 @@
+FAIL	model_bss/internal/domain/supply [build failed]
+FAIL
+# model_bss/internal/domain/supply [model_bss/internal/domain/supply.test]
+internal/domain/supply/plan_maintenance_test.go:9:80: undefined: PlanMaintenanceEffect
+internal/domain/supply/plan_maintenance_test.go:10:82: undefined: PlanMaintenanceTransaction
+internal/domain/supply/plan_maintenance_test.go:10:176: undefined: PlanMaintenanceEffect
+internal/domain/supply/plan_maintenance_test.go:17:80: undefined: PlanMaintenanceEffect
+internal/domain/supply/plan_maintenance_test.go:21:46: undefined: NewPlanMaintenanceService
+internal/domain/supply/plan_maintenance_test.go:28:27: undefined: NewPlanMaintenanceService
+internal/domain/supply/plan_maintenance_test.go:36:27: undefined: NewPlanMaintenanceService
+internal/domain/supply/plan_maintenance_test.go:41:99: undefined: NewPlanMaintenanceService
+ExitCode=1

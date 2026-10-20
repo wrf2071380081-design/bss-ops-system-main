@@ -138,6 +138,8 @@ ModelReadStore实现可选ModelFilterOptionsStore后可使用标准模型filter-
 
 ## 14. 资源直接上下架装配
 
+当前计划创建/维护服务为PlanMaintenanceService，事务端口需锁资源→计划、强制状态维度唯一、CAS写入，并把不可变修订、操作日志与提醒outbox同事务提交。提醒按plan revision防陈旧，due_at不触发实际状态变化。真实适配仍待完成，见[维护服务记录](../TDD/2026-10-20-plan-maintenance-results.md)。
+
 > 本节原装配方案已被DEC-010取代，当前不得按此装配直接HTTP入口。上下架必须先创建计划，再由原发起人登记完成，见[纠正记录](../TDD/2026-10-20-plan-only-correction.md)。以下保留历史接口说明。
 
 当前执行方案为PlanExecutionService及PlanExecutionUnitOfWork，不注册直接state HTTP。执行结果Conflict=true必须在外层幂等事务提交后返回409并保存幂等响应，不能让BLOCKED跟随业务错误回滚；日志或提交失败则返回技术错误且没有部分写入。计划/资源加锁及同维度唯一规则见[计划执行记录](../TDD/2026-10-20-plan-execute-results.md)，需要公共响应提交机制配合验收。
