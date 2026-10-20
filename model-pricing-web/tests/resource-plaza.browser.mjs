@@ -17,6 +17,7 @@ try {
   server = await createServer({ plugins: [plugin], server: { host: "127.0.0.1", port: 0 }, logLevel: "error" }); await server.listen();
   browser = await chromium.launch({ headless: true, channel: "msedge" });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } }); page.setDefaultTimeout(20000); page.on("pageerror", error => errors.push(error.message));
+  await page.route("**/api/internal/notices?**", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data: { list: [], total: 0, page: 1, size: 10 }, requestId: "resource-notices-fixture" }) }));
   await page.route("**/api/internal/resources**", async route => {
     const url = new URL(route.request().url()), q = url.searchParams;
     const send = (data, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ code: status === 200 ? 0 : 10000, message: status === 200 ? "ok" : "暂时不可用", data, requestId: "resource-browser-fixture" }) });
@@ -55,6 +56,8 @@ try {
   await drawer.getByText("重复前缀测试", { exact: true }).waitFor();
   await drawer.getByText("12.34%", { exact: true }).waitFor();
   await page.screenshot({ path: ".qa/resource-detail-report.png", fullPage: true, animations: "disabled" });
+  await drawer.getByRole("tab", { name: "公告", exact: true }).click();
+  await drawer.getByText("暂无符合条件的公告", { exact: true }).waitFor();
   await drawer.getByRole("button", { name: "关闭资源详情", exact: true }).click();
   await sources.getByRole("button", { name: "关闭供应来源", exact: true }).click();
   await page.locator(".el-select").filter({ has: page.getByRole("combobox", { name: "部署节点", exact: true }) }).click();

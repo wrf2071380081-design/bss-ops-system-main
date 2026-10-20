@@ -121,3 +121,11 @@ B报告适配须提供report_id、可空resource_id、supplier/model/region、�
 - POST已读使用认证StaffID，原因由服务端固定为“阅读公告”。禁止调用方通过body或query指定阅读者。
 - 计划仓储返回计划与当前资源的同一一致性快照；发起人取created_by，不从当前buyer_id推断。所有摘要只读，revision比较仅为提示，不是执行授权或完整执行前置校验。
 - 真实约束、并发、日志失败、提交失败及公共幂等响应提交顺序仍需联调。测试替身通过不代表现有运行容器已接入，见[阶段证据](../TDD/2026-10-20-workbench-a-results.md)。
+
+## 12. 工作台 A 详情组件装配
+
+`model-pricing-web/src/views/internal/resources/NoticeDetailDialog.vue` 接收 id、可选 selectedStaffID、可选 readOnly；监听 close 关闭、read 刷新公共工作台计数。公共人员选择必须传真实StaffID，查看他人时同时传 readOnly=true。组件仅显式点击写入，GET不自动标已读，服务端仍承担身份与权限判断。
+
+`PlanSummaryDialog.vue` 接收 id 和 close 事件，仅用于已知计划ID的只读详情；未实现的执行接口不能通过该组件绕过。公共方待办办理入口仍需后续F13写能力支持。
+
+资源详情已内部挂载 `ResourceNoticesPanel.vue`，按 resourceID/region 查询当前人员公告，不需新增公共菜单。组件、截图和实际验证边界见[前端记录](../TDD/2026-10-20-workbench-a-frontend-results.md)。
