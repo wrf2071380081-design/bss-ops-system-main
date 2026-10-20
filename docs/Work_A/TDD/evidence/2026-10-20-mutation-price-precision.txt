@@ -1,0 +1,6 @@
+--- FAIL: TestPriceItemsRejectInvalidValuesWithFieldPath (0.00s)
+    --- FAIL: TestPriceItemsRejectInvalidValuesWithFieldPath/too_precise (0.00s)
+        price_test.go:55: want field price_items[0].amount, got <nil>
+FAIL
+FAIL	model_bss/internal/domain/supply	0.008s
+FAIL
