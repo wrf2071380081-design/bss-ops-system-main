@@ -1,0 +1,27 @@
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/confirmation
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_scope
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/missing_key
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_key
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_scheme
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_credentials
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_key
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/other_buyer
+    formal_config_test.go:171: invalid write accepted: view=&{ID:101 SupplierID:11 Region:CN Scope:文本服务 BaseURL:https://api.vendor.example/v1 HasAPIKey:true APIKeyMask:******** Status:ACTIVE Revision:1 CreatedBy:8 UpdatedBy:8 CreatedAt:2026-10-20 01:00:00 +0000 UTC UpdatedAt:2026-10-20 01:00:00 +0000 UTC ConfirmedBy:8 ConfirmedAt:2026-10-20 01:00:00 +0000 UTC ConfirmedRevision:1} err=<nil>
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/unknown_supplier
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/bad_actor
+--- FAIL: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/confirmation (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_scope (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/missing_key (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_key (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_scheme (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_credentials (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_key (0.00s)
+    --- FAIL: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/other_buyer (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/unknown_supplier (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/bad_actor (0.00s)
+FAIL
+FAIL	model_bss/internal/domain/supply	0.008s
+FAIL
+ExitCode=1

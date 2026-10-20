@@ -69,3 +69,14 @@
 5. 原型前端在上述冻结 API 之上接入；公共路由和布局归公共负责人，A 页面归 A。
 
 F4/F3 及后续阶段所需 schema/接口在对应切片继续补充，不因 F1 独立代码可测试而视作全部 A 功能完成。
+
+## 7. F4 正式配置接入补充
+
+独立服务 `NewFormalConfigService(work, sealer, urls, clock)` 已提供 Create/Update/Disable；具体 Go 端口位于 `internal/domain/supply/formal_config.go`，业务依据见[F4 契约](./supply-suppliers.draft.md)。
+
+- `FormalConfigUnitOfWork.Within` 加入调用方事务；端口包括 SupplierForUpdate、ConfigForUpdate、ID分配、创建/CAS更新、资源引用查询及安全日志追加。
+- `SecretSealer.Seal(ctx, plaintext, SecretBinding)` 必须采用版本化认证加密，并以 purpose/supplier/config 绑定认证附加数据。主密钥由环境/密钥管理能力提供，不能从普通数据库配置读取或硬编码。测试替身不可部署。
+- 密文及密钥版本仅用于持久化，安全投影 `FormalConfigView` 用于返回和操作日志；普通查询不得直接序列化持久化对象。加密器及基础设施也不得自行记录明文输入。
+- `FormalURLPolicy` 负责本地环境策略，可要求HTTPS；不在事务锁内执行网络探测。
+- schema需核对区域来源、状态、revision、确认人员/时间/对应版本及密文版本字段。绑定配置、修改供应商区域和停用配置必须采用一致锁顺序与资源引用约束；单靠先查引用数量不足以证明并发正确性。
+- 当前仅有独立领域实现，正式配置 HTTP/读取与真库适配尚未装配；供应商主体、网站账户、资质和附件仍需继续交付。

@@ -8,6 +8,7 @@
 | [业务决策记录](./decisions.md) | 用户已确认的规则及适用边界 | 随确认结果更新 |
 | [F1 标准模型契约](./supply-standard-models.draft.md) | 标准模型资料、价格项、版本、核验及接口 | 评审草案 |
 | [F3 资源对接契约](./supply-resources.draft.md) | 资源、模型广场及 A/B/C 对接 | 评审草案 |
+| [F4 供应商与正式配置契约](./supply-suppliers.draft.md) | 主体边界、正式配置、密钥安全与事务 | 评审草案 |
 | [F1 公共接入需求](./public-integration-request.md) | 目标 schema、事务/日志、认证和来源策略适配 | 待公共接入 |
 
 实施计划和阶段验证记录统一放在相邻的 [TDD 目录](../TDD/README.md)。F1 独立领域、读取和可注册 HTTP 接口已产出代码与测试记录；真实数据库、主路由装配和页面仍按后续接入验收。测试源码随业务代码维护，不放在文档目录。

@@ -1,0 +1,65 @@
+=== RUN   TestFormalConfigEncryptsWithEntityBindingAndReturnsSafeViews
+--- PASS: TestFormalConfigEncryptsWithEntityBindingAndReturnsSafeViews (0.00s)
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/confirmation
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_scope
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/missing_key
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_key
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_scheme
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_credentials
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_key
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/other_buyer
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/unknown_supplier
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/bad_actor
+--- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/confirmation (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_scope (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/missing_key (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_key (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_scheme (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_credentials (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_key (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/other_buyer (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/unknown_supplier (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/bad_actor (0.00s)
+=== RUN   TestFormalConfigPreservesOmittedKeyAndRotatesProvidedKey
+--- PASS: TestFormalConfigPreservesOmittedKeyAndRotatesProvidedKey (0.00s)
+=== RUN   TestFormalConfigNoOpKeepsRevisionButRecordsNewIntent
+--- PASS: TestFormalConfigNoOpKeepsRevisionButRecordsNewIntent (0.00s)
+=== RUN   TestFormalConfigRejectsCrossSupplierAndStaleWrites
+--- PASS: TestFormalConfigRejectsCrossSupplierAndStaleWrites (0.00s)
+=== RUN   TestFormalConfigReferencedCannotDisable
+--- PASS: TestFormalConfigReferencedCannotDisable (0.00s)
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_work
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_cipher
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_policy
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/cipher_error
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/bad_envelope
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/policy_reject
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/inactive_supplier
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/bad_supplier_identity
+--- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_work (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_cipher (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_policy (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/cipher_error (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/bad_envelope (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/policy_reject (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/inactive_supplier (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/bad_supplier_identity (0.00s)
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite/create
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite/update
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite/rotate
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite/noop
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite/disable
+--- PASS: TestFormalConfigLogFailureRollsBackEveryWrite (0.00s)
+    --- PASS: TestFormalConfigLogFailureRollsBackEveryWrite/create (0.00s)
+    --- PASS: TestFormalConfigLogFailureRollsBackEveryWrite/update (0.00s)
+    --- PASS: TestFormalConfigLogFailureRollsBackEveryWrite/rotate (0.00s)
+    --- PASS: TestFormalConfigLogFailureRollsBackEveryWrite/noop (0.00s)
+    --- PASS: TestFormalConfigLogFailureRollsBackEveryWrite/disable (0.00s)
+PASS
+ok  	model_bss/internal/domain/supply	0.011s
+ExitCode=0
