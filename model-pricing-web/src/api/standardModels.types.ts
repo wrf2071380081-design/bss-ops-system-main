@@ -19,6 +19,8 @@ export interface StandardModelDTO extends StandardModelData {
 }
 export interface StandardModelPage { list: StandardModelDTO[]; total: number; page: number; size: number }
 export interface StandardModelQuery {
+  companies?: string[]; model_types?: string[]; supplier_ids?: string[]; regions?: string[];
   page: number; size: number; keyword?: string; company?: string; model_type?: string;
   status?: string; verify_status?: string; sort_by?: string; order?: string;
 }
+export interface ModelFilterOptions { companies: string[]; suppliers: { id: string; name: string; region: string }[]; has_more: boolean }

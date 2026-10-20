@@ -2,14 +2,24 @@
 import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { standardModelsApi } from "../../../api/standardModels";
 import { abilityLabels, factLabels, formatStandardPrice, isOfficialURL, modelTypeLabels, standardFieldLabel } from "../../../api/standardModels.contract";
-import type { StandardFact, StandardModelDTO, StandardModelPage, StandardModelQuery } from "../../../api/standardModels.types";
+import type { ModelFilterOptions, StandardFact, StandardModelDTO, StandardModelPage, StandardModelQuery } from "../../../api/standardModels.types";
 import StandardModelMaintainDialog from "./StandardModelMaintainDialog.vue";
 
-const query = reactive<StandardModelQuery>({ page: 1, size: 20, keyword: "", company: "", model_type: "", verify_status: "", sort_by: "updated_at", order: "desc" });
+const query = reactive<StandardModelQuery>({ page: 1, size: 20, keyword: "", companies: [], model_types: [], supplier_ids: [], regions: [], verify_status: "", sort_by: "updated_at", order: "desc" });
 const data = ref<StandardModelPage>(), loading = ref(false), error = ref(""), editorOpen = ref(false), editID = ref<string>();
 const verificationLabels: Record<string, string> = { INCOMPLETE: "资料待补齐", UNVERIFIED: "待人工核验", VERIFIED: "已人工核验" };
 let request: AbortController | undefined;
 let active = true;
+const options = ref<ModelFilterOptions>({ companies: [], suppliers: [], has_more: false }), optionsLoading = ref(false), optionsError = ref("");
+let optionsRequest: AbortController | undefined;
+async function loadOptions(keyword = "") {
+  optionsRequest?.abort(); const current = optionsRequest = new AbortController();
+  optionsLoading.value = true; optionsError.value = "";
+  try { const result = await standardModelsApi.options(keyword, [...(query.regions || [])], current.signal); if (active && !current.signal.aborted) options.value = result; }
+  catch (value) { if (active && !current.signal.aborted) { options.value = { companies: [], suppliers: [], has_more: false }; optionsError.value = value instanceof Error ? value.message : "筛选选项暂时无法加载。"; } }
+  finally { if (active && !current.signal.aborted) optionsLoading.value = false; }
+}
+function regionChanged() { query.supplier_ids = []; void loadOptions(); }
 async function load(reset = false) {
   if (reset) query.page = 1;
   request?.abort(); const currentRequest = request = new AbortController();
@@ -18,12 +28,12 @@ async function load(reset = false) {
   catch (value) { if (active && !currentRequest.signal.aborted) { data.value = undefined; error.value = value instanceof Error ? value.message : "模型资料暂时无法加载，请重试。"; } }
   finally { if (active && !currentRequest.signal.aborted) loading.value = false; }
 }
-function reset() { Object.assign(query, { page: 1, size: 20, keyword: "", company: "", model_type: "", verify_status: "", sort_by: "updated_at", order: "desc" }); void load(); }
+function reset() { Object.assign(query, { page: 1, size: 20, keyword: "", companies: [], model_types: [], supplier_ids: [], regions: [], verify_status: "", sort_by: "updated_at", order: "desc" }); void load(); void loadOptions(); }
 function sort(key: string) { query.order = query.sort_by === key && query.order === "asc" ? "desc" : "asc"; query.sort_by = key; void load(true); }
 function open(model?: StandardModelDTO) { editID.value = model?.id; editorOpen.value = true; }
 const factText = (fact: StandardFact) => fact.disclosure === "DISCLOSED" ? fact.value : factLabels[fact.disclosure] || "未核实";
-onMounted(() => { void load(); });
-onBeforeUnmount(() => { active = false; request?.abort(); });
+onMounted(() => { void load(); void loadOptions(); });
+onBeforeUnmount(() => { active = false; request?.abort(); optionsRequest?.abort(); });
 </script>
 
 <template>
@@ -33,11 +43,15 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
       <header class="catalog-heading"><h2>官方模型参数表</h2><span>未核实 ≠ 不支持 · 价格币种和特殊单位逐项标注</span></header>
       <form class="catalog-filters" @submit.prevent="load(true)">
         <label>搜索<el-input v-model="query.keyword" clearable placeholder="模型名称 / 官方 ID" /></label>
-        <label>模型公司<el-input v-model="query.company" clearable placeholder="输入公司名称" /></label>
-        <label>模型类型<el-select v-model="query.model_type" clearable placeholder="全部类型"><el-option v-for="(text, key) in modelTypeLabels" :key="key" :label="text" :value="key" /></el-select></label>
+        <label>模型公司<el-select v-model="query.companies" multiple collapse-tags collapse-tags-tooltip filterable remote :remote-method="loadOptions" :loading="optionsLoading" clearable aria-label="模型公司" placeholder="全部公司"><el-option v-for="company in options.companies" :key="company" :label="company" :value="company" /></el-select></label>
+        <label>模型类型<el-select v-model="query.model_types" multiple collapse-tags collapse-tags-tooltip aria-label="模型类型" clearable placeholder="全部类型"><el-option v-for="(text, key) in modelTypeLabels" :key="key" :label="text" :value="key" /></el-select></label>
+        <label>部署节点<el-select v-model="query.regions" multiple clearable aria-label="部署节点" placeholder="全部节点" @change="regionChanged"><el-option label="国内" value="CN" /><el-option label="海外" value="OVERSEAS" /></el-select></label>
+        <label>供应商<el-select v-model="query.supplier_ids" multiple collapse-tags collapse-tags-tooltip filterable remote :remote-method="loadOptions" :loading="optionsLoading" clearable aria-label="供应商" placeholder="全部供应商"><el-option v-for="supplier in options.suppliers" :key="supplier.id" :label="`${supplier.name} · ${supplier.region === 'CN' ? '国内' : '海外'}`" :value="supplier.id" /></el-select></label>
         <label>资料状态<el-select v-model="query.verify_status" clearable placeholder="全部状态"><el-option v-for="(text, key) in verificationLabels" :key="key" :label="text" :value="key" /></el-select></label>
         <el-button native-type="submit" type="primary" :loading="loading">查询</el-button><el-button @click="reset">重置</el-button>
       </form>
+      <el-alert v-if="optionsError" :title="optionsError" type="warning" :closable="false"><el-button text @click="loadOptions()">重新加载筛选选项</el-button></el-alert>
+      <p v-if="options.has_more" class="catalog-note">还有更多选项，请输入名称缩小搜索范围。</p>
       <div class="catalog-note"><span>{{ data ? `${data.total} 个模型 · 官方参数快照` : '官方参数快照' }}</span><div class="catalog-sort"><label>排序<el-select v-model="query.sort_by" aria-label="排序字段" @change="load(true)"><el-option label="最近更新" value="updated_at" /><el-option label="模型名称" value="name" /><el-option label="模型公司" value="company" /><el-option label="模型类型" value="model_type" /><el-option label="核对日期" value="checked_at" /></el-select></label><el-select v-model="query.order" aria-label="排序方向" @change="load(true)"><el-option label="降序" value="desc" /><el-option label="升序" value="asc" /></el-select></div><span>空值末尾，窄屏可横向滚动</span></div>
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="false"><el-button text @click="load()">重新加载</el-button></el-alert>
       <div v-loading="loading" class="official-scroll" tabindex="0" role="region" aria-label="官方模型参数表，可横向滚动">

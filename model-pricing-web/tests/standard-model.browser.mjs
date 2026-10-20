@@ -15,6 +15,8 @@ const plugin = { name: "standard-model-page-test", resolveId(id) { if (id === "/
 let server, browser;
 const errors = [];
 let puts = 0, creates = 0, verifies = 0;
+let failOptions = true;
+const listQueries = [];
 const data = { company: "示例模型公司", name: "示例标准模型", official_id: "example-v1", model_type: "TEXT", input_modalities: ["TEXT"], output_modalities: ["TEXT"], capacity: [{ key: "context_window", disclosure: "DISCLOSED", value: "128000 tokens" }], abilities: [{ key: "tool_call", state: "UNDISCLOSED", description: "" }], price_items: [{ item_key: "text_input", label: "文本输入", task_type: "TEXT_INPUT", amount: "0.00000000", currency: "USD", unit_code: "TOKEN", unit_quantity: "1000000", condition: "标准请求", dimensions: {}, source_url: "https://vendor.example/pricing" }, { item_key: "text_output", label: "文本输出", task_type: "TEXT_OUTPUT", amount: "8.00000000", currency: "USD", unit_code: "TOKEN", unit_quantity: "1000000", condition: "标准请求", dimensions: {}, source_url: "https://vendor.example/pricing" }], api_access: [{ key: "protocol", disclosure: "DISCLOSED", value: "HTTPS API" }], lifecycle: [{ key: "release", disclosure: "UNDISCLOSED", value: "" }], sources: [{ label: "官方价格", url: "https://vendor.example/pricing", source_kind: "OFFICIAL_PRICING" }], checked_at: "2026-10-20" };
 const dto = (fields = data) => ({ ...structuredClone(fields), id: "9007199254740993", maintainer_id: "7", revision: "1", version_no: "1", current_version_no: "1", status: "ACTIVE", verify_status: "UNVERIFIED", checked_by: "", created_at: "2026-10-20T01:00:00Z", updated_at: "2026-10-20T01:00:00Z", missing_fields: [], quote_readiness: { ready: false, reasons: ["UNVERIFIED"], standard_model_version_no: "1" }, permissions: { can_edit: true, can_verify: true } });
 let current = dto();
@@ -30,6 +32,10 @@ try {
   await page.route("**/api/internal/**", async route => {
     const request = route.request(), url = new URL(request.url());
     const send = (value, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ code: status === 200 ? 0 : 10005, message: status === 200 ? "ok" : "记录已更新", data: value, requestId: "browser-fixture" }) });
+    if (url.pathname.endsWith("/filter-options")) {
+      if (failOptions) { failOptions = false; return send(null, 503); }
+      return send({ companies: ["Company, LLC", "OpenAI", "无资源模型公司"], suppliers: [{ id: "9007199254740993", name: "供应商甲", region: "CN" }], has_more: true });
+    }
     if (url.pathname.endsWith("operation-logs")) return send({ list: [{ action: "VERIFY", reason: "人工核验", operator_id: "7", request_id: "trace-test", occurred_at: "2026-10-20T01:00:00Z" }] });
     if (url.pathname.endsWith("/versions")) return send({ list: [{ ...original, permissions: { can_edit: false, can_verify: false } }], page: 1, size: 20, total: 1 });
     if (request.method() === "PUT") {
@@ -59,11 +65,30 @@ try {
       return send({ ...dto(fields), id: "101", missing_fields: ["price_items", "sources"], verify_status: "INCOMPLETE", permissions: { can_edit: true, can_verify: false } });
     }
     if (/\/standard-models\/[0-9]+$/.test(url.pathname)) return send(current);
+    listQueries.push(Object.fromEntries(url.searchParams));
     return send({ list: [current], page: 1, size: 20, total: 1 });
   });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__standard-model-test`);
   await page.getByRole("heading", { name: "标准模型库", exact: true }).waitFor();
   await page.getByRole("button", { name: "维护", exact: true }).waitFor();
+  await page.getByRole("button", { name: "重新加载筛选选项", exact: true }).click();
+  await page.getByText("还有更多选项，请输入名称缩小搜索范围。", { exact: true }).waitFor();
+  const select = async (label, option) => {
+    await page.locator(".el-select").filter({ has: page.getByRole("combobox", { name: label, exact: true }) }).click();
+    await page.getByRole("option", { name: option, exact: true }).click();
+    await page.getByRole("heading", { name: "标准模型库", exact: true }).click();
+  };
+  await select("模型公司", "Company, LLC"); await select("模型公司", "OpenAI");
+  await select("模型类型", "文本");
+  await select("部署节点", "国内");
+  await select("供应商", "供应商甲 · 国内");
+  await Promise.all([page.waitForResponse(response => response.url().includes("companies=") && !response.url().includes("filter-options")), page.getByRole("button", { name: "查询", exact: true }).click()]);
+  assert.deepEqual(JSON.parse(listQueries.at(-1).companies), ["Company, LLC", "OpenAI"]);
+  assert.deepEqual(JSON.parse(listQueries.at(-1).supplier_ids), ["9007199254740993"]);
+  assert.deepEqual(JSON.parse(listQueries.at(-1).regions), ["CN"]);
+  await page.screenshot({ path: ".qa/standard-model-multi-filters.png", fullPage: true, animations: "disabled" });
+  await Promise.all([page.waitForResponse(response => response.url().includes("standard-models?") && !response.url().includes("companies=") && !response.url().includes("filter-options")), page.getByRole("button", { name: "重置", exact: true }).click()]);
+  assert.equal(listQueries.at(-1).supplier_ids, undefined);
   assert.equal(await page.getByRole("button", { name: "维护", exact: true }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "示例标准模型", exact: true }).count(), 0);
   await page.getByText("文本输入：0.00000000 USD / 1000000 Token", { exact: true }).waitFor();
