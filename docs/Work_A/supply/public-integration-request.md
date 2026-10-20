@@ -90,3 +90,15 @@ A 页面组件为 `model-pricing-web/src/views/internal/models/StandardModelList
 详情记录读取附01的 `entityType/ entityId` 查询参数，预期列表包含 action、operator_id、reason、request_id、occurred_at（或公共映射后的created_at）。最终DTO、操作人显示名和分页待公共方固定；当前UI显示最近100条，不将其声称为日志平台已接入。
 
 多值公司/类型及供应商/部署节点关联筛选、模型库级记录侧栏需继续冻结查询契约；不从当前分页结果推断全部可选值，也不将标准模型硬设单一区域。阶段截图与未完成项见[F1前端执行记录](../TDD/2026-10-20-f1-frontend-results.md)。
+
+## 9. F3 资源读取装配
+
+`SupplyDeps.Resources = supply.NewResourceReader(store)`；已有A注册器提供GET resources及/:id。缺读取依赖503，匿名401，其他门户403；内部人员全员读取，返回的can_edit仅依据当前StaffID与资源buyer_id，不套旧角色权限点或owner读取过滤。
+
+`ResourceReadStore` 提供ListResourceGroups/ListResourceRows/GetResource；Get/Group需返回当前模型、供应商安全事实、配置安全事实和所选B报告的同一一致性快照。在报价/开通调用中加入现有事务，不另开独立提交。目标字段映射见Resource/ResourceRecord类型，不读取旧SKU/供应商profile表。
+
+`ListResourceGroups`先对符合过滤条件的模型ID分页，再返回该页模型完整成员；领域会再过滤成员以保护区域聚合，但无法修复漏成员、错误SQL总数和排序。flat按资源分页。两者都必须实现双向NULLS LAST与稳定ID；指标按数值排序，缓存按原始计数比例比较，过期目标报告的指标为空。
+
+B报告适配须提供report_id、可空resource_id、supplier/model/region、来源申报行及版本、不可变目标版本、自身连通/压力结论、有效性、可选毫秒/RPS/TPS字符串和cache_stats原始计数/场景。选定报告缺失/依赖失败必须区分，不借其他报告或原始测试凭据填充。
+
+新字段需求包括resource的supplier_model_id、origin_row/version、target_version、latest_report_id及正式配置引用版本；B的报告需保留资源创建前的行关联。报告选择的任务顺序与迟到回调保护后续写切片继续冻结。样例及验证边界见[F3读取记录](../TDD/2026-10-20-f3-read-results.md)。

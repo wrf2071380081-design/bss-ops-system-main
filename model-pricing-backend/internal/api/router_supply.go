@@ -18,6 +18,7 @@ type SupplyDeps struct {
 	Reader    *supply.ModelReader
 	Writer    SupplyModelWriter
 	IdemStore middleware.IdempotencyStore
+	Resources *supply.ResourceReader
 }
 
 // RegisterSupplyRoutes is A's integration entry point. The public assembler passes an
@@ -25,20 +26,7 @@ type SupplyDeps struct {
 // It deliberately does not attach legacy role permissions or owner read scopes.
 func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	group := internal.Group("/standard-models")
-	group.Use(func(c *gin.Context) {
-		op := middleware.OperatorFrom(c)
-		if op == nil {
-			response.Error(c, apperr.ErrUnauthorized)
-			c.Abort()
-			return
-		}
-		if op.PortalType != "INTERNAL" || op.OperatorType != "STAFF" || op.StaffID <= 0 {
-			response.Error(c, apperr.ErrForbidden)
-			c.Abort()
-			return
-		}
-		c.Next()
-	})
+	group.Use(requireSupplyInternalStaff)
 	h := &supplyModelHandler{reader: deps.Reader, writer: deps.Writer}
 	group.GET("", h.list)
 	group.GET("/:id/versions", h.versions)
@@ -52,4 +40,24 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	group.POST("", idem, h.create)
 	group.PUT("/:id", idem, h.update)
 	group.POST("/:id/verify", idem, h.verify)
+	resources := internal.Group("/resources")
+	resources.Use(requireSupplyInternalStaff)
+	rh := &supplyResourceHandler{reader: deps.Resources}
+	resources.GET("", rh.list)
+	resources.GET("/:id", rh.get)
+}
+
+func requireSupplyInternalStaff(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		c.Abort()
+		return
+	}
+	if op.PortalType != "INTERNAL" || op.OperatorType != "STAFF" || op.StaffID <= 0 {
+		response.Error(c, apperr.ErrForbidden)
+		c.Abort()
+		return
+	}
+	c.Next()
 }

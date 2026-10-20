@@ -1,0 +1,25 @@
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/pressure_failed
+    resource_read_test.go:64: ineligible resource accepted: &{ID:31 SupplierID:21 SupplierName:供应商21 StandardModelID:11 ModelName:Example Model OfficialID:example-v1 Company:Example ModelType:TEXT Region:CN SupplierModelID:vendor-model-v1 Coefficient:0.6800 BuyerID:7 State:ADMITTED EverAdmitted:true Revision:1 FormalConfigID:2199 FormalConfigRevision:1 Test:{ReportID:3100 Status:COMPLETED ConnectivityPassed:true PressurePassed:false Valid:true CacheStats:{ReportID:3100 Status:PROVIDED HitTokens:1200 InputTokens:2000 HitRate:0.600000 HitPercent:60.00 Scene:重复前缀} Metrics:{ConnectionMS:<nil> RPS:<nil> TPS:<nil>}} OfficialPriceItems:[{ItemKey:text_input_standard Label:输入 TaskType:TEXT_INPUT Amount:2.00000000 Currency:USD UnitCode:TOKEN UnitQuantity:1000000 Condition:标准 API 计费 Dimensions:map[] SourceURL:https://vendor.example/pricing} {ItemKey:text_output_standard Label:输出 TaskType:TEXT_OUTPUT Amount:8.00000000 Currency:USD UnitCode:TOKEN UnitQuantity:1000000 Condition:标准 API 计费 Dimensions:map[] SourceURL:https://vendor.example/pricing}] QuoteReadiness:{Eligible:true BlockedReasons:[] ResourceRevision:1 ModelVersionNo:1 FormalConfigRevision:1 TestEvidenceRef:3100} CreatedAt:2026-10-20 01:00:00 +0000 UTC UpdatedAt:2026-10-20 01:00:00 +0000 UTC} <nil>
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/connection_failed
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/stale_target
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/config_changed
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/no_key
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/unverified_model
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/inactive_supplier
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/not_admitted
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/invalid_report
+--- FAIL: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration (0.00s)
+    --- FAIL: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/pressure_failed (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/connection_failed (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/stale_target (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/config_changed (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/no_key (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/unverified_model (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/inactive_supplier (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/not_admitted (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/invalid_report (0.00s)
+FAIL
+FAIL	model_bss/internal/domain/supply	0.011s
+FAIL
+ExitCode=1

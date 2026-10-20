@@ -1,0 +1,7 @@
+=== RUN   TestResourceReaderGroupsAfterFilteringAndPagesModels
+    resource_read_test.go:137: group leaked excluded region or counted resource page: &{ID:11 Name:Example Model OfficialID:example-v1 Company:Example ModelType:TEXT SupplierCount:3 ResourceCount:3 AvailableCount:2 CoefficientMin:0.1000 CoefficientMax:0.7000 Regions:[CN OVERSEAS] StateCounts:map[ADMITTED:3]}
+--- FAIL: TestResourceReaderGroupsAfterFilteringAndPagesModels (0.00s)
+FAIL
+FAIL	model_bss/internal/domain/supply	0.007s
+FAIL
+ExitCode=1

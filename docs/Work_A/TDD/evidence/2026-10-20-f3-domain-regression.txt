@@ -1,0 +1,274 @@
+=== RUN   TestFormalConfigEncryptsWithEntityBindingAndReturnsSafeViews
+--- PASS: TestFormalConfigEncryptsWithEntityBindingAndReturnsSafeViews (0.00s)
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/confirmation
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_scope
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/missing_key
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_key
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_scheme
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_credentials
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_key
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/other_buyer
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/unknown_supplier
+=== RUN   TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/bad_actor
+--- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/confirmation (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_scope (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/missing_key (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/empty_key (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_scheme (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_credentials (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/url_key (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/other_buyer (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/unknown_supplier (0.00s)
+    --- PASS: TestFormalConfigRejectsInvalidInputAndUntrustedIdentity/bad_actor (0.00s)
+=== RUN   TestFormalConfigPreservesOmittedKeyAndRotatesProvidedKey
+--- PASS: TestFormalConfigPreservesOmittedKeyAndRotatesProvidedKey (0.00s)
+=== RUN   TestFormalConfigNoOpKeepsRevisionButRecordsNewIntent
+--- PASS: TestFormalConfigNoOpKeepsRevisionButRecordsNewIntent (0.00s)
+=== RUN   TestFormalConfigRejectsCrossSupplierAndStaleWrites
+--- PASS: TestFormalConfigRejectsCrossSupplierAndStaleWrites (0.00s)
+=== RUN   TestFormalConfigReferencedCannotDisable
+--- PASS: TestFormalConfigReferencedCannotDisable (0.00s)
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_work
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_cipher
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_policy
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/cipher_error
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/bad_envelope
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/policy_reject
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/inactive_supplier
+=== RUN   TestFormalConfigDependenciesFailClosedAndHideSecretErrors/bad_supplier_identity
+--- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_work (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_cipher (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/no_policy (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/cipher_error (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/bad_envelope (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/policy_reject (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/inactive_supplier (0.00s)
+    --- PASS: TestFormalConfigDependenciesFailClosedAndHideSecretErrors/bad_supplier_identity (0.00s)
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite/create
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite/update
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite/rotate
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite/noop
+=== RUN   TestFormalConfigLogFailureRollsBackEveryWrite/disable
+--- PASS: TestFormalConfigLogFailureRollsBackEveryWrite (0.00s)
+    --- PASS: TestFormalConfigLogFailureRollsBackEveryWrite/create (0.00s)
+    --- PASS: TestFormalConfigLogFailureRollsBackEveryWrite/update (0.00s)
+    --- PASS: TestFormalConfigLogFailureRollsBackEveryWrite/rotate (0.00s)
+    --- PASS: TestFormalConfigLogFailureRollsBackEveryWrite/noop (0.00s)
+    --- PASS: TestFormalConfigLogFailureRollsBackEveryWrite/disable (0.00s)
+=== RUN   TestModelReaderNormalizesSafeGlobalQuery
+--- PASS: TestModelReaderNormalizesSafeGlobalQuery (0.00s)
+=== RUN   TestModelReaderRejectsInvalidQueriesBeforeStore
+--- PASS: TestModelReaderRejectsInvalidQueriesBeforeStore (0.00s)
+=== RUN   TestModelReaderHistoricalSnapshotPreservesPriceAndBlocksNewQuotes
+--- PASS: TestModelReaderHistoricalSnapshotPreservesPriceAndBlocksNewQuotes (0.00s)
+=== RUN   TestModelReaderMissingDependencyInvalidIDAndUnknownVersion
+--- PASS: TestModelReaderMissingDependencyInvalidIDAndUnknownVersion (0.00s)
+=== RUN   TestIncompleteModelCanBeSavedButCannotQuote
+--- PASS: TestIncompleteModelCanBeSavedButCannotQuote (0.00s)
+=== RUN   TestCompleteModelRequiresHumanVerification
+--- PASS: TestCompleteModelRequiresHumanVerification (0.00s)
+=== RUN   TestModalitySpecificPricesAndUnknownFactsBlockVerification
+=== RUN   TestModalitySpecificPricesAndUnknownFactsBlockVerification/text_output
+=== RUN   TestModalitySpecificPricesAndUnknownFactsBlockVerification/image_generation
+=== RUN   TestModalitySpecificPricesAndUnknownFactsBlockVerification/video_generation
+=== RUN   TestModalitySpecificPricesAndUnknownFactsBlockVerification/audio_task
+=== RUN   TestModalitySpecificPricesAndUnknownFactsBlockVerification/unverified_ability
+--- PASS: TestModalitySpecificPricesAndUnknownFactsBlockVerification (0.00s)
+    --- PASS: TestModalitySpecificPricesAndUnknownFactsBlockVerification/text_output (0.00s)
+    --- PASS: TestModalitySpecificPricesAndUnknownFactsBlockVerification/image_generation (0.00s)
+    --- PASS: TestModalitySpecificPricesAndUnknownFactsBlockVerification/video_generation (0.00s)
+    --- PASS: TestModalitySpecificPricesAndUnknownFactsBlockVerification/audio_task (0.00s)
+    --- PASS: TestModalitySpecificPricesAndUnknownFactsBlockVerification/unverified_ability (0.00s)
+=== RUN   TestModelRejectsIllegalSuppliedFieldsAndFutureDates
+=== RUN   TestModelRejectsIllegalSuppliedFieldsAndFutureDates/calendar_date
+=== RUN   TestModelRejectsIllegalSuppliedFieldsAndFutureDates/future_in_Shanghai
+=== RUN   TestModelRejectsIllegalSuppliedFieldsAndFutureDates/unknown_modality
+=== RUN   TestModelRejectsIllegalSuppliedFieldsAndFutureDates/unknown_fact_state
+=== RUN   TestModelRejectsIllegalSuppliedFieldsAndFutureDates/disclosed_without_value
+=== RUN   TestModelRejectsIllegalSuppliedFieldsAndFutureDates/duplicate_capability
+--- PASS: TestModelRejectsIllegalSuppliedFieldsAndFutureDates (0.00s)
+    --- PASS: TestModelRejectsIllegalSuppliedFieldsAndFutureDates/calendar_date (0.00s)
+    --- PASS: TestModelRejectsIllegalSuppliedFieldsAndFutureDates/future_in_Shanghai (0.00s)
+    --- PASS: TestModelRejectsIllegalSuppliedFieldsAndFutureDates/unknown_modality (0.00s)
+    --- PASS: TestModelRejectsIllegalSuppliedFieldsAndFutureDates/unknown_fact_state (0.00s)
+    --- PASS: TestModelRejectsIllegalSuppliedFieldsAndFutureDates/disclosed_without_value (0.00s)
+    --- PASS: TestModelRejectsIllegalSuppliedFieldsAndFutureDates/duplicate_capability (0.00s)
+=== RUN   TestModelUpdateProtectsOwnerRevisionAndSnapshots
+--- PASS: TestModelUpdateProtectsOwnerRevisionAndSnapshots (0.00s)
+=== RUN   TestInactiveModelCannotQuoteOrVerify
+--- PASS: TestInactiveModelCannotQuoteOrVerify (0.00s)
+=== RUN   TestNonTextModelsVerifyWithTheirOwnBillingTasks
+=== RUN   TestNonTextModelsVerifyWithTheirOwnBillingTasks/IMAGE
+=== RUN   TestNonTextModelsVerifyWithTheirOwnBillingTasks/VIDEO
+=== RUN   TestNonTextModelsVerifyWithTheirOwnBillingTasks/AUDIO
+--- PASS: TestNonTextModelsVerifyWithTheirOwnBillingTasks (0.00s)
+    --- PASS: TestNonTextModelsVerifyWithTheirOwnBillingTasks/IMAGE (0.00s)
+    --- PASS: TestNonTextModelsVerifyWithTheirOwnBillingTasks/VIDEO (0.00s)
+    --- PASS: TestNonTextModelsVerifyWithTheirOwnBillingTasks/AUDIO (0.00s)
+=== RUN   TestPriceItemsPreserveZeroAndConditionalTiers
+--- PASS: TestPriceItemsPreserveZeroAndConditionalTiers (0.00s)
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/negative
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/too_precise
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/overflow
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/exponent
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/missing_is_not_zero
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/currency
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/zero_unit
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/negative_unit
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/unknown_task
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/unknown_unit
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/condition
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/unknown_dimension
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/credential_URL
+=== RUN   TestPriceItemsRejectInvalidValuesWithFieldPath/secret_query_URL
+--- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/negative (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/too_precise (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/overflow (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/exponent (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/missing_is_not_zero (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/currency (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/zero_unit (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/negative_unit (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/unknown_task (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/unknown_unit (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/condition (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/unknown_dimension (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/credential_URL (0.00s)
+    --- PASS: TestPriceItemsRejectInvalidValuesWithFieldPath/secret_query_URL (0.00s)
+=== RUN   TestPriceItemsRejectDuplicateStableKey
+--- PASS: TestPriceItemsRejectDuplicateStableKey (0.00s)
+=== RUN   TestResourceCacheStatisticsUseOriginalCountsAndPreserveMissingStates
+--- PASS: TestResourceCacheStatisticsUseOriginalCountsAndPreserveMissingStates (0.00s)
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/pressure_failed
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/connection_failed
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/stale_target
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/config_changed
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/no_key
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/unverified_model
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/inactive_supplier
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/not_admitted
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/invalid_report
+--- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/pressure_failed (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/connection_failed (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/stale_target (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/config_changed (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/no_key (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/unverified_model (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/inactive_supplier (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/not_admitted (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/invalid_report (0.00s)
+=== RUN   TestResourceProjectionRejectsWrongIdentityAndInvalidCoefficients
+--- PASS: TestResourceProjectionRejectsWrongIdentityAndInvalidCoefficients (0.00s)
+=== RUN   TestResourceReaderGroupsAfterFilteringAndPagesModels
+--- PASS: TestResourceReaderGroupsAfterFilteringAndPagesModels (0.00s)
+=== RUN   TestResourceReaderRejectsBadQueriesAndMissingDependencies
+--- PASS: TestResourceReaderRejectsBadQueriesAndMissingDependencies (0.00s)
+=== RUN   TestResourceRejectsMalformedOfficialModel
+--- PASS: TestResourceRejectsMalformedOfficialModel (0.00s)
+=== RUN   TestResourceMetricsPreserveStringsAndExcludeStaleTargets
+--- PASS: TestResourceMetricsPreserveStringsAndExcludeStaleTargets (0.00s)
+=== RUN   TestResourceDraftReportUsesOwnRowAndVersion
+--- PASS: TestResourceDraftReportUsesOwnRowAndVersion (0.00s)
+=== RUN   TestModelServiceStoresVersionsAndOperationAtomically
+--- PASS: TestModelServiceStoresVersionsAndOperationAtomically (0.00s)
+=== RUN   TestModelServiceNoOpRecordsOperationWithoutNewVersion
+--- PASS: TestModelServiceNoOpRecordsOperationWithoutNewVersion (0.00s)
+=== RUN   TestModelServiceRepeatedVerificationRecordsOperationWithoutNewVersion
+--- PASS: TestModelServiceRepeatedVerificationRecordsOperationWithoutNewVersion (0.00s)
+=== RUN   TestModelServiceNoOpLogFailureReturnsNoSuccess
+--- PASS: TestModelServiceNoOpLogFailureReturnsNoSuccess (0.00s)
+=== RUN   TestModelServiceRejectsNonOwnerAndStaleRevisionWithoutWrites
+--- PASS: TestModelServiceRejectsNonOwnerAndStaleRevisionWithoutWrites (0.00s)
+=== RUN   TestModelServiceLogFailureRollsBackCreateAndUpdate
+--- PASS: TestModelServiceLogFailureRollsBackCreateAndUpdate (0.00s)
+=== RUN   TestModelServiceConcurrentRevisionOnlyOneWins
+--- PASS: TestModelServiceConcurrentRevisionOnlyOneWins (0.00s)
+=== RUN   TestModelServiceVerificationFailsClosed
+--- PASS: TestModelServiceVerificationFailsClosed (0.00s)
+=== RUN   TestModelServiceIdentityCollisionAndMissingTraceDoNotWrite
+--- PASS: TestModelServiceIdentityCollisionAndMissingTraceDoNotWrite (0.00s)
+=== RUN   TestModelServiceChecksEachPriceSourceAgainstOfficialPolicy
+--- PASS: TestModelServiceChecksEachPriceSourceAgainstOfficialPolicy (0.00s)
+=== RUN   TestModelServiceRejectsEmptyTargetID
+--- PASS: TestModelServiceRejectsEmptyTargetID (0.00s)
+=== RUN   TestSupplierTaxRateUsesExactRatioAndExplicitCurrency
+=== RUN   TestSupplierTaxRateUsesExactRatioAndExplicitCurrency/0
+=== RUN   TestSupplierTaxRateUsesExactRatioAndExplicitCurrency/0.06
+=== RUN   TestSupplierTaxRateUsesExactRatioAndExplicitCurrency/1
+=== RUN   TestSupplierTaxRateUsesExactRatioAndExplicitCurrency/0.00000001
+=== RUN   TestSupplierTaxRateUsesExactRatioAndExplicitCurrency/1.00000000
+--- PASS: TestSupplierTaxRateUsesExactRatioAndExplicitCurrency (0.00s)
+    --- PASS: TestSupplierTaxRateUsesExactRatioAndExplicitCurrency/0 (0.00s)
+    --- PASS: TestSupplierTaxRateUsesExactRatioAndExplicitCurrency/0.06 (0.00s)
+    --- PASS: TestSupplierTaxRateUsesExactRatioAndExplicitCurrency/1 (0.00s)
+    --- PASS: TestSupplierTaxRateUsesExactRatioAndExplicitCurrency/0.00000001 (0.00s)
+    --- PASS: TestSupplierTaxRateUsesExactRatioAndExplicitCurrency/1.00000000 (0.00s)
+=== RUN   TestSupplierRejectsInvalidSuppliedDataWithoutRounding
+=== RUN   TestSupplierRejectsInvalidSuppliedDataWithoutRounding/missing_tax
+=== RUN   TestSupplierRejectsInvalidSuppliedDataWithoutRounding/percent_instead_of_ratio
+=== RUN   TestSupplierRejectsInvalidSuppliedDataWithoutRounding/negative
+=== RUN   TestSupplierRejectsInvalidSuppliedDataWithoutRounding/exponent
+=== RUN   TestSupplierRejectsInvalidSuppliedDataWithoutRounding/over_precision
+=== RUN   TestSupplierRejectsInvalidSuppliedDataWithoutRounding/over_one
+=== RUN   TestSupplierRejectsInvalidSuppliedDataWithoutRounding/empty_name
+=== RUN   TestSupplierRejectsInvalidSuppliedDataWithoutRounding/invalid_region
+=== RUN   TestSupplierRejectsInvalidSuppliedDataWithoutRounding/missing_currency
+=== RUN   TestSupplierRejectsInvalidSuppliedDataWithoutRounding/currency_case
+--- PASS: TestSupplierRejectsInvalidSuppliedDataWithoutRounding (0.00s)
+    --- PASS: TestSupplierRejectsInvalidSuppliedDataWithoutRounding/missing_tax (0.00s)
+    --- PASS: TestSupplierRejectsInvalidSuppliedDataWithoutRounding/percent_instead_of_ratio (0.00s)
+    --- PASS: TestSupplierRejectsInvalidSuppliedDataWithoutRounding/negative (0.00s)
+    --- PASS: TestSupplierRejectsInvalidSuppliedDataWithoutRounding/exponent (0.00s)
+    --- PASS: TestSupplierRejectsInvalidSuppliedDataWithoutRounding/over_precision (0.00s)
+    --- PASS: TestSupplierRejectsInvalidSuppliedDataWithoutRounding/over_one (0.00s)
+    --- PASS: TestSupplierRejectsInvalidSuppliedDataWithoutRounding/empty_name (0.00s)
+    --- PASS: TestSupplierRejectsInvalidSuppliedDataWithoutRounding/invalid_region (0.00s)
+    --- PASS: TestSupplierRejectsInvalidSuppliedDataWithoutRounding/missing_currency (0.00s)
+    --- PASS: TestSupplierRejectsInvalidSuppliedDataWithoutRounding/currency_case (0.00s)
+=== RUN   TestSupplierUpdatePreservesBindingAndDerivedFacts
+--- PASS: TestSupplierUpdatePreservesBindingAndDerivedFacts (0.00s)
+=== RUN   TestSupplierRegionLocksOnAnyHistoricalUse
+=== RUN   TestSupplierRegionLocksOnAnyHistoricalUse/submission
+=== RUN   TestSupplierRegionLocksOnAnyHistoricalUse/resource
+=== RUN   TestSupplierRegionLocksOnAnyHistoricalUse/contract
+--- PASS: TestSupplierRegionLocksOnAnyHistoricalUse (0.00s)
+    --- PASS: TestSupplierRegionLocksOnAnyHistoricalUse/submission (0.00s)
+    --- PASS: TestSupplierRegionLocksOnAnyHistoricalUse/resource (0.00s)
+    --- PASS: TestSupplierRegionLocksOnAnyHistoricalUse/contract (0.00s)
+=== RUN   TestSupplierRejectsUnboundStaleAndUnknownCurrency
+=== RUN   TestSupplierRejectsUnboundStaleAndUnknownCurrency/unbound
+=== RUN   TestSupplierRejectsUnboundStaleAndUnknownCurrency/stale
+=== RUN   TestSupplierRejectsUnboundStaleAndUnknownCurrency/zero
+=== RUN   TestSupplierRejectsUnboundStaleAndUnknownCurrency/unknown_currency
+--- PASS: TestSupplierRejectsUnboundStaleAndUnknownCurrency (0.00s)
+    --- PASS: TestSupplierRejectsUnboundStaleAndUnknownCurrency/unbound (0.00s)
+    --- PASS: TestSupplierRejectsUnboundStaleAndUnknownCurrency/stale (0.00s)
+    --- PASS: TestSupplierRejectsUnboundStaleAndUnknownCurrency/zero (0.00s)
+    --- PASS: TestSupplierRejectsUnboundStaleAndUnknownCurrency/unknown_currency (0.00s)
+=== RUN   TestSupplierNoOpPreservesRevisionAndWritesAudit
+--- PASS: TestSupplierNoOpPreservesRevisionAndWritesAudit (0.00s)
+=== RUN   TestSupplierWriteFailuresLeaveNoPartialState
+=== RUN   TestSupplierWriteFailuresLeaveNoPartialState/log
+=== RUN   TestSupplierWriteFailuresLeaveNoPartialState/noop_log
+=== RUN   TestSupplierWriteFailuresLeaveNoPartialState/usage_unavailable
+=== RUN   TestSupplierWriteFailuresLeaveNoPartialState/currency_unavailable
+=== RUN   TestSupplierWriteFailuresLeaveNoPartialState/inactive_staff
+--- PASS: TestSupplierWriteFailuresLeaveNoPartialState (0.00s)
+    --- PASS: TestSupplierWriteFailuresLeaveNoPartialState/log (0.00s)
+    --- PASS: TestSupplierWriteFailuresLeaveNoPartialState/noop_log (0.00s)
+    --- PASS: TestSupplierWriteFailuresLeaveNoPartialState/usage_unavailable (0.00s)
+    --- PASS: TestSupplierWriteFailuresLeaveNoPartialState/currency_unavailable (0.00s)
+    --- PASS: TestSupplierWriteFailuresLeaveNoPartialState/inactive_staff (0.00s)
+PASS
+coverage: 86.0% of statements
+ok  	model_bss/internal/domain/supply	0.031s	coverage: 86.0% of statements
+ExitCode=0

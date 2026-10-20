@@ -118,3 +118,17 @@ flat 表示每条资源。其排序、分页及 total 不套用 grouped 的模�
 列表只使用当前选定报告的统计；历史详情按所查 report_id 返回，不从其他报告借值。B 负责原始报告写入和校验，A 不新增可独立编辑的资源缓存统计。该指标不增加接入或报价的数值门槛。
 
 模型广场和供应来源导航集中在“详情”列，真实状态操作独立保留；按过滤结果聚合并按模型分页。工作台的人员查看不会改变资源操作身份。
+
+## 9. 读取切片的具体端口
+
+GET resources 新增 `standard_model_id` 过滤用于展开单个模型的资源来源；展开时保留原区域/供应商等过滤条件。grouped默认按name升序，flat默认按coefficient升序；双向空值末尾，稳定ID打破同值。精确排序白名单见ResourceListQuery校验。
+
+每条读取投影由resource、当前standard_model、供应商安全事实、正式配置安全事实、选定报告摘要构成。目标版本、来源申报行及版本必须与报告对应；旧目标报告不作为当前测试或缓存依据。B适配失败返回依赖错误，只有确知未测试才允许空报告。
+
+缓存 hit_rate 保留6位比例，另返回直接由原始计数一次舍入的 hit_percent（两位百分数）。例如246899/2000000的比例摘要0.123450，百分数应为12.34而非对已舍入比例再乘100得到12.35。
+
+grouped响应为模型id/name/official_id/company/model_type、supplier_count/resource_count/available_count、coefficient_min/max、regions及state_counts。flat响应为资源安全详情，不含正式base_url、密钥或网站账户。grouped的total表示模型数，flat的total表示资源数。资源写命令、计划及B报告历史读取后续切片接入，不因读代码完成而视作F3整体完成。
+
+测试摘要增加 `test.metrics.connection_ms/rps/tps`，为可空十进制字符串；真实0保留原字符串，缺失为null。flat排序白名单包括id/supplier_name/region/coefficient/state/updated_at/connection_ms/rps/tps/cache_hit_rate；grouped包括id/name/company/model_type/supplier_count/resource_count/available_count/coefficient_min/coefficient_max。API统一包络data含view/list/total/page/size。
+
+读取代码与HTTP注册器已新增，尚未装配真实仓储/主入口；实际交付及未完成项见[F3读取记录](../TDD/2026-10-20-f3-read-results.md)。
