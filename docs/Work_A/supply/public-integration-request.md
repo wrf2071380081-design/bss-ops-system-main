@@ -135,3 +135,9 @@ B报告适配须提供report_id、可空resource_id、supplier/model/region、�
 ModelListQuery新增Companies/ModelTypes/SupplierIDs/Regions；规范化后复数条件为准，旧Company/ModelType被转入并清空。仓储不能继续只读取旧单值字段。供应商/区域必须通过同一资源EXISTS匹配；未指定关联条件保留无资源模型，过滤和模型去重先于分页。
 
 ModelReadStore实现可选ModelFilterOptionsStore后可使用标准模型filter-options路由，缺该能力503。公司取全部标准模型，供应商取关联资源身份；不要用资源选项接口代替，避免丢失无资源公司的模型。具体字段与边界见[F1契约](./supply-standard-models.draft.md)和[后端记录](../TDD/2026-10-20-f1-filters-results.md)。
+
+## 14. 资源直接上下架装配
+
+SupplyDeps.ResourceStates注入NewResourceStateService(work,clock)，A注册器提供POST resources/:id/state。work实现ResourceStateUnitOfWork，加入现有幂等事务；资源锁定和当前模型/配置/B证据同快照读取，CAS更新与日志、公告、outbox同事务写入。公共方提供工具，A提供真实资源映射，B提供当前报告事实。
+
+效果端口分配唯一event_id，并将其用于自动公告source_event_id防重；未知客户影响写PENDING，C消费后计算。不直接修改客户关系，上架不自动恢复。并发锁顺序及commit失败响应需共同真库验收。接口字段与当前测试边界见[HTTP记录](../TDD/2026-10-20-resource-state-http-results.md)。

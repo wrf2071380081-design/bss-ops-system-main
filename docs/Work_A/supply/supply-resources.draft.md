@@ -152,3 +152,5 @@ ResourceCoefficientService.Change接收认证WriteMeta、资源ID/revision、系
 ResourceStateService.Change仅供绑定采购人直接OFFLINE/ONLINE，参数包含external_confirmed和completion_note；未实际确认或无依据拒绝。计划来源不能用客户端plan_id绕过buyer校验，需后续独立的发起人验证执行服务。
 
 ONLINE复用当前安全快照可报价判定，在候选ADMITTED副本重查模型、主体、配置及自身测试；OFFLINE不因上游资料失效而阻止采购人停止资源。两者保留ever_admitted、目标与报告，CAS升revision。操作记录、公告和outbox由同事务效果端口写入，公告影响PENDING。具体证据及未接入项见[上下架领域记录](../TDD/2026-10-20-resource-state-results.md)。
+
+POST `/api/internal/resources/:id/state` 已在A注册器提供，当前仅OFFLINE/ONLINE。请求为expected_revision字符串、action、external_confirmed=true、completion_note、reason；拒绝查询参数及自报操作者/计划授权。返回安全收据id/state/revision/ever_admitted/updated_at；客户端成功后重读资源详情。缺writer503，版本/状态前提冲突409，非绑定403。页面与真实装配尚未完成，见[HTTP记录](../TDD/2026-10-20-resource-state-http-results.md)。
