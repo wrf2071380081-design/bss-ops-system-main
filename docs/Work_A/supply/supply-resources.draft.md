@@ -140,3 +140,9 @@ GET `/api/internal/resources/filter-options?region=CN&keyword=名称片段`，�
 每种选项最多50项，截断时has_more=true；应在完整新资源/模型/供应商关联上按区域和名称过滤后取有限匹配，不从资源当前页猜测全集。仓储实现独立的可选能力ResourceFilterOptionsStore；未提供时503，不回退旧supplier_profile。
 
 前端按名称查找并提交已选择供应商ID，展开来源时固定继承已应用筛选并重置资源页码/排序。独立ModelPlaza及来源/详情组件已新增；真实装配和状态写流程仍待完成，见[F3前端记录](../TDD/2026-10-20-f3-frontend-results.md)。
+
+## 11. 统一改系数命令独立实现
+
+ResourceCoefficientService.Change接收认证WriteMeta、资源ID/revision、系数和CoefficientSource{Kind:SUBMISSION/PLAN,ID,Revision}。ResourceCoefficientTransaction在同事务读取并核对真实来源授权、目标资源/revision/金额；来源引用不是客户端授权凭证。PLAN按原发起人验证，不错误要求其仍是当前buyer；人工MANUAL入口尚未开放。
+
+实际变化CAS升资源revision，保留测试目标版本与报告，写前后快照日志和系数变更outbox；无变化只追加NOOP日志，保留revision/updated_at。调用方来源完成、资源、日志和outbox原子提交，提交失败返回nil。事件ID由公共outbox分配，C不因该命令被A直接改写原报价。具体端口及当前证据边界见[阶段记录](../TDD/2026-10-20-resource-coefficient-results.md)。
