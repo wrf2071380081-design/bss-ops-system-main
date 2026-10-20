@@ -65,6 +65,8 @@ type Deps struct {
 	CustomerPortalSvc *customer.PortalService
 	// 阶段 10a：工作台（10-workbench-audit.md §2/§3）。
 	WorkbenchSvc *workbench.Service
+	// 2026-10-20：工作台统一收件箱（F0）。
+	WorkbenchInboxSvc *workbench.InboxService
 	// 阶段 10b：告警处理 + 审计日志（10-workbench-audit.md §4/§5）。
 	AlertSvc *workbench.AlertService
 	AuditSvc *workbench.AuditService

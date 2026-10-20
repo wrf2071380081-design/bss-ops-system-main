@@ -2,6 +2,8 @@ package api
 
 import (
 	"github.com/gin-gonic/gin"
+
+	"model_bss/internal/api/middleware"
 )
 
 // registerTradeRoutes 注册 C（客户 / 报价 / 留痕）的路由。
@@ -18,5 +20,18 @@ func registerTradeRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, portal 
 	if portal != "internal" {
 		return
 	}
+
+	// F0 工作台：统一收件箱 + 人员选择 + 操作记录 + 公告已读。
+	if deps.WorkbenchInboxSvc != nil {
+		wh := NewWorkbenchInboxHandler(deps.WorkbenchInboxSvc)
+		protected.GET("/workbench/inbox", wh.Inbox)
+		protected.GET("/workbench/people", wh.People)
+		protected.GET("/workbench/operations", wh.Operations)
+		protected.POST("/workbench/notices/:id/read",
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			wh.MarkNoticeRead,
+		)
+	}
+
 	// 新路由加在这里。
 }

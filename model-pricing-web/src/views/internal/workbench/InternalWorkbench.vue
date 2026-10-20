@@ -1,84 +1,303 @@
 <script setup lang="ts">
-import { formatDateTime } from "../../../domain/date";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { workbenchApi, type WorkbenchDTO, type WorkbenchMetricDTO, type WorkbenchTaskDTO } from "../../../modules/workbench/api/workbench";
+import { ElMessage } from "element-plus";
+import { formatDateTime } from "../../../domain/date";
 import { ApiError } from "../../../domain/common";
-import { usePermissionStore } from "../../../stores/permission";
-import { useSessionStore } from "../../../stores/session";
+import {
+  workbenchApi,
+  type InboxItemDTO,
+  type InboxState,
+  type OperationItemDTO,
+  type WorkbenchPersonDTO,
+} from "../../../modules/workbench/api/workbench";
 
 const router = useRouter();
-const permissions = usePermissionStore();
-const session = useSessionStore();
-const data = ref<WorkbenchDTO>();
+
+const activeTab = ref<"todo" | "operations">("todo");
+const stateTab = ref<InboxState>("TODO");
+const assigneeId = ref(0);
+const region = ref("");
+const keyword = ref("");
+const page = ref(1);
+const size = ref(20);
+const total = ref(0);
+const list = ref<InboxItemDTO[]>([]);
+const people = ref<WorkbenchPersonDTO[]>([]);
 const loading = ref(false);
 const error = ref("");
 
-const quickLinks = [
-  { routeKey: "internal.models", path: "/internal/models", title: "模型管理", description: "模型主数据与状态" },
-  { routeKey: "internal.modelApplications", path: "/internal/model-applications", title: "模型申请审批", description: "审核供应商新模型申请" },
-  { routeKey: "internal.suppliers", path: "/internal/suppliers", title: "供应商管理", description: "档案、资质与供给" },
-  { routeKey: "internal.supplierQuotes", path: "/internal/supplier-quotes", title: "供应商报价", description: "报价查询与审批" },
-  { routeKey: "internal.cost", path: "/internal/cost", title: "成本管理", description: "成本基线与比价" },
-  { routeKey: "internal.pricingPolicies", path: "/internal/pricing/policies", title: "定价策略", description: "策略规则与版本" },
-  { routeKey: "internal.priceBooks", path: "/internal/price-books", title: "价目表", description: "售价草稿与审批" },
-  { routeKey: "internal.customers", path: "/internal/customers", title: "客户与报价", description: "客户、报价与合同" },
-  { routeKey: "internal.finance", path: "/internal/finance", title: "财务信息", description: "汇率、授信与押金" },
-  { routeKey: "internal.alerts", path: "/internal/alerts", title: "告警中心", description: "业务异常与处理" },
-  { routeKey: "internal.audit", path: "/internal/audit", title: "审计日志", description: "操作记录与影响" },
-];
-const accessibleQuickLinks = computed(() => quickLinks.filter((item) => permissions.canRoute(item.routeKey)));
-const visibleTasks = computed(() => data.value?.tasks || []);
-const errorMessage = (value: unknown) => value instanceof ApiError ? value.message : value instanceof Error ? value.message : "工作台加载失败，请稍后重试。";
-const formatTime = (value?: string | null) => formatDateTime(value, "暂缺", false);
-const metricClass = (tone: WorkbenchMetricDTO["tone"]) => `metric-${tone.toLowerCase()}`;
-const taskType = (level: WorkbenchTaskDTO["level"]) => level === "URGENT" ? "danger" : level === "WARNING" ? "warning" : "info";
+const opPage = ref(1);
+const opSize = ref(20);
+const opTotal = ref(0);
+const operations = ref<OperationItemDTO[]>([]);
+const opLoading = ref(false);
 
-async function load() {
-  loading.value = true; error.value = "";
-  try { data.value = await workbenchApi.get(); }
-  catch (value) { data.value = undefined; error.value = errorMessage(value); }
-  finally { loading.value = false; }
+const stateTabs: { value: InboxState; label: string }[] = [
+  { value: "TODO", label: "待办" },
+  { value: "READ", label: "待阅" },
+  { value: "DONE", label: "已办" },
+  { value: "READ_DONE", label: "已阅" },
+];
+
+const NOTICE_LABELS: Record<string, string> = {
+  ONLINE_OFFLINE_PLAN: "上下架计划公告",
+  RESOURCE_CHANGE: "资源变动公告",
+  COST_CHANGE: "采购成本变化公告",
+};
+const NODE_LABELS: Record<string, string> = {
+  PREP: "账户与接口准备",
+  CONFIG: "资源配置",
+  TEST: "模型测试",
+  CONTRACT: "合同签署",
+  CREDIT: "授信开具",
+  ACCOUNT: "账户开通",
+  EXECUTE: "执行操作",
+};
+const PLAN_LABELS: Record<string, string> = {
+  ONLINE: "上架计划",
+  OFFLINE: "下架计划",
+  PRICE_CHANGE: "价格变更计划",
+};
+const isViewingOther = computed(() => assigneeId.value !== 0);
+const displayTitle = (item: InboxItemDTO) => {
+  if (item.biz_type === "NOTICE") return NOTICE_LABELS[item.title] || item.title;
+  if (item.biz_type === "ONBOARDING_NODE") return NODE_LABELS[item.title] || item.title;
+  if (item.biz_type === "PLAN") return PLAN_LABELS[item.title] || item.title;
+  return item.title;
+};
+const stateLabel = (state: InboxState) => stateTabs.find(item => item.value === state)?.label || state;
+const stateTagType = (state: InboxState) => state === "TODO" ? "warning" : state === "DONE" ? "success" : "info";
+const formatTime = (value?: string | null) => formatDateTime(value, "—", false);
+const errorMessage = (value: unknown) => value instanceof ApiError ? value.message : value instanceof Error ? value.message : "工作台加载失败，请稍后重试。";
+
+async function loadPeople() {
+  try {
+    people.value = await workbenchApi.people();
+  } catch {
+    // 人员选择器是辅助能力，失败不影响本人收件箱。
+    people.value = [];
+  }
 }
-function go(path: string) { void router.push(path); }
-onMounted(load);
+
+async function loadInbox() {
+  loading.value = true;
+  error.value = "";
+  try {
+    const res = await workbenchApi.inbox({
+      state: stateTab.value,
+      assigneeId: assigneeId.value || undefined,
+      region: region.value || undefined,
+      keyword: keyword.value || undefined,
+      page: page.value,
+      size: size.value,
+    });
+    list.value = res.list;
+    total.value = res.total;
+  } catch (value) {
+    list.value = [];
+    total.value = 0;
+    error.value = errorMessage(value);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function loadOperations() {
+  opLoading.value = true;
+  error.value = "";
+  try {
+    const res = await workbenchApi.operations({ page: opPage.value, size: opSize.value });
+    operations.value = res.list;
+    opTotal.value = res.total;
+  } catch (value) {
+    operations.value = [];
+    opTotal.value = 0;
+    error.value = errorMessage(value);
+  } finally {
+    opLoading.value = false;
+  }
+}
+
+function resetAndLoad() {
+  page.value = 1;
+  void loadInbox();
+}
+
+function changeState(state: InboxState) {
+  stateTab.value = state;
+  resetAndLoad();
+}
+
+function changeAssignee() {
+  page.value = 1;
+  void loadInbox();
+}
+
+function changeRegion() {
+  page.value = 1;
+  void loadInbox();
+}
+
+function search() {
+  page.value = 1;
+  void loadInbox();
+}
+
+function refresh() {
+  if (activeTab.value === "todo") void loadInbox();
+  else void loadOperations();
+}
+
+async function markRead(item: InboxItemDTO) {
+  if (!item.readable) return;
+  try {
+    await workbenchApi.markRead(item.biz_id);
+    ElMessage.success("已标记为已阅");
+    void loadInbox();
+  } catch (value) {
+    ElMessage.error(errorMessage(value));
+  }
+}
+
+function openItem(item: InboxItemDTO) {
+  if (item.deeplink) {
+    void router.push(item.deeplink);
+    return;
+  }
+  ElMessage.info(item.biz_type === "NOTICE" ? "公告详情页建设中；待阅可点「标记已读」" : "详情页建设中");
+}
+
+watch(activeTab, (tab) => {
+  if (tab === "operations" && operations.value.length === 0) void loadOperations();
+});
+
+onMounted(() => {
+  void loadPeople();
+  void loadInbox();
+});
 </script>
 
 <template>
   <section class="page-heading">
-    <div><div class="eyebrow">INTERNAL WORKBENCH</div><h1>{{ session.user?.name }}，你好</h1><p>这里汇总当前身份可见的关键指标、待办和业务入口。</p></div>
-    <el-button :loading="loading" @click="load">刷新工作台</el-button>
+    <div>
+      <div class="eyebrow">INTERNAL WORKBENCH</div>
+      <h1>工作台</h1>
+      <p>汇总分配给我的办理事项与阅读公告，点击进入原业务模块。</p>
+    </div>
+    <el-button :loading="loading || opLoading" @click="refresh">刷新</el-button>
   </section>
 
-  <el-alert v-if="error" :title="error" type="error" show-icon :closable="false"><el-button text @click="load">重新加载</el-button></el-alert>
-  <div v-loading="loading" class="workbench-body">
-    <template v-if="data">
-      <div class="workbench-metrics">
-        <div v-for="metric in data.metrics" :key="metric.id" class="workbench-metric" :class="metricClass(metric.tone)"><span>{{ metric.label }}</span><strong>{{ metric.value }}<small>{{ metric.suffix }}</small></strong><p>{{ metric.hint }}</p></div>
-      </div>
+  <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
 
-      <div class="workbench-grid">
-        <section class="panel workbench-panel">
-          <div class="section-title"><h2>我的待办 <span>{{ visibleTasks.length }}</span></h2><span class="muted">按当前身份返回</span></div>
-          <el-empty v-if="!visibleTasks.length" description="当前没有需要处理的待办" :image-size="72" />
-          <button v-for="task in visibleTasks" :key="task.id" type="button" class="task-row" @click="go(task.routePath)"><span class="task-count">{{ task.count }}</span><span class="task-copy"><b>{{ task.title }}</b><small>{{ task.module }} · {{ task.description }}</small></span><el-tag :type="taskType(task.level)" size="small">{{ task.level === 'URGENT' ? '优先处理' : task.level === 'WARNING' ? '需关注' : '普通' }}</el-tag><span class="task-arrow">→</span></button>
-        </section>
+  <section class="panel wb-panel">
+    <div class="wb-toolbar">
+      <el-select v-model="assigneeId" style="width: 200px" @change="changeAssignee">
+        <el-option :value="0" label="我（当前登录）" />
+        <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.name" />
+      </el-select>
+      <el-select v-model="region" style="width: 140px" @change="changeRegion">
+        <el-option value="" label="全部平台" />
+        <el-option value="CN" label="国内平台" />
+        <el-option value="OVERSEAS" label="海外平台" />
+      </el-select>
+      <el-input v-model="keyword" placeholder="搜索事项 / 业务对象" clearable style="width: 240px" @keyup.enter="search" />
+      <el-button @click="search">搜索</el-button>
+      <span v-if="isViewingOther" class="wb-readonly">只读查看他人收件箱；操作请切换回本人</span>
+    </div>
 
-        <section class="panel workbench-panel">
-          <div class="section-title"><h2>业务提醒</h2><span class="muted">{{ formatTime(data.generatedAt) }}</span></div>
-          <div v-for="notice in data.notices" :key="notice.id" class="notice-row"><span class="notice-dot"></span><div><b>{{ notice.title }}</b><p>{{ notice.description }}</p><small>{{ formatTime(notice.occurredAt) }}</small></div></div>
-        </section>
-      </div>
+    <el-tabs v-model="activeTab">
+      <el-tab-pane label="我的待办" name="todo">
+        <div class="wb-state-tabs">
+          <button
+            v-for="tab in stateTabs"
+            :key="tab.value"
+            type="button"
+            class="wb-state"
+            :class="{ active: stateTab === tab.value }"
+            @click="changeState(tab.value)"
+          >
+            {{ tab.label }}
+          </button>
+        </div>
 
-      <section class="panel shortcut-panel">
-        <div class="section-title"><h2>快捷入口</h2><span class="muted">仅显示当前身份允许进入的模块</span></div>
-        <div class="shortcut-grid"><button v-for="item in accessibleQuickLinks" :key="item.routeKey" type="button" class="shortcut-card" @click="go(item.path)"><span class="shortcut-mark">◇</span><span><b>{{ item.title }}</b><small>{{ item.description }}</small></span><span>→</span></button></div>
-      </section>
-    </template>
-    <el-empty v-else-if="!loading && !error" description="当前没有可展示的工作台数据" />
-  </div>
+        <el-table v-loading="loading" :data="list" style="width: 100%" @row-click="openItem">
+          <el-table-column label="事项" min-width="200">
+            <template #default="{ row }">{{ displayTitle(row) }}</template>
+          </el-table-column>
+          <el-table-column prop="biz_object" label="业务对象" min-width="240" />
+          <el-table-column label="时间" width="180">
+            <template #default="{ row }">{{ formatTime(row.occurred_at) }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="100">
+            <template #default="{ row }">
+              <el-tag :type="stateTagType(row.state)" size="small">{{ stateLabel(row.state) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="120">
+            <template #default="{ row }">
+              <el-button v-if="row.readable" text type="primary" @click.stop="markRead(row)">标记已读</el-button>
+              <span v-else class="wb-muted">—</span>
+            </template>
+          </el-table-column>
+          <template #empty>
+            <el-empty description="当前没有事项" :image-size="64" />
+          </template>
+        </el-table>
+
+        <div class="wb-pager">
+          <el-pagination
+            v-model:current-page="page"
+            v-model:page-size="size"
+            :total="total"
+            :page-sizes="[20, 50]"
+            layout="total, sizes, prev, pager, next"
+            @current-change="loadInbox"
+            @size-change="resetAndLoad"
+          />
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="操作记录" name="operations">
+        <el-table v-loading="opLoading" :data="operations" style="width: 100%">
+          <el-table-column prop="action" label="操作" width="180" />
+          <el-table-column label="对象" min-width="240">
+            <template #default="{ row }">{{ row.entity_type }} #{{ row.entity_id }}</template>
+          </el-table-column>
+          <el-table-column prop="operator_name" label="操作人" width="140" />
+          <el-table-column label="时间" width="180">
+            <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column prop="reason" label="说明" min-width="180" show-overflow-tooltip />
+          <template #empty>
+            <el-empty description="暂无操作记录" :image-size="64" />
+          </template>
+        </el-table>
+
+        <div class="wb-pager">
+          <el-pagination
+            v-model:current-page="opPage"
+            v-model:page-size="opSize"
+            :total="opTotal"
+            :page-sizes="[20, 50]"
+            layout="total, sizes, prev, pager, next"
+            @current-change="loadOperations"
+            @size-change="loadOperations"
+          />
+        </div>
+      </el-tab-pane>
+    </el-tabs>
+  </section>
 </template>
 
 <style scoped>
-.workbench-body { min-height: 420px; }.workbench-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 17px; margin-bottom: 22px; }.workbench-metric { padding: 20px 22px; border: 1px solid var(--app-border); border-top: 3px solid var(--app-accent); border-radius: 12px; background: var(--app-surface); }.workbench-metric > span,.workbench-metric p { color: var(--app-text-muted); font-size: 12px; }.workbench-metric strong { display: block; margin: 13px 0 8px; font-size: 29px; }.workbench-metric strong small { margin-left: 7px; color: var(--app-text-muted); font-size: 12px; font-weight: 400; }.workbench-metric p { margin: 0; }.metric-success { border-top-color: var(--app-success); }.metric-warning { border-top-color: var(--app-warning); }.metric-danger { border-top-color: var(--app-danger); }.workbench-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 20px; margin-bottom: 20px; }.workbench-panel,.shortcut-panel { padding: 22px; }.task-row { display: flex; width: 100%; align-items: center; gap: 14px; padding: 15px 4px; border: 0; border-bottom: 1px solid var(--app-border); background: transparent; color: var(--app-text-primary); text-align: left; }.task-row:hover { background: var(--app-surface-muted); }.task-count { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 9px; background: var(--app-hover-bg); color: var(--app-accent); font-weight: 700; }.task-copy { display: grid; flex: 1; gap: 5px; }.task-copy small,.notice-row p,.notice-row small,.shortcut-card small { color: var(--app-text-muted); }.task-arrow { color: var(--app-text-muted); }.notice-row { display: flex; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--app-border); }.notice-dot { flex: 0 0 8px; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--app-accent); }.notice-row p { margin: 6px 0; font-size: 12px; line-height: 1.6; }.notice-row small { font-size: 11px; }.shortcut-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }.shortcut-card { display: flex; align-items: center; gap: 10px; padding: 16px; border: 1px solid var(--app-border); border-radius: 9px; background: var(--app-surface); color: var(--app-text-primary); text-align: left; }.shortcut-card:hover { border-color: var(--app-accent); background: var(--app-hover-bg); }.shortcut-card > span:nth-child(2) { display: grid; flex: 1; gap: 5px; }.shortcut-mark { color: var(--app-accent); font-size: 18px; }@media (max-width: 1100px) { .workbench-metrics,.shortcut-grid { grid-template-columns: repeat(2, 1fr); }.workbench-grid { grid-template-columns: 1fr; } }@media (max-width: 700px) { .workbench-metrics,.shortcut-grid { grid-template-columns: 1fr; } }
+.wb-panel { padding: 20px 22px; }
+.wb-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.wb-readonly { color: var(--app-warning); font-size: 12px; }
+.wb-state-tabs { display: flex; gap: 6px; margin: 4px 0 14px; }
+.wb-state { padding: 6px 14px; border: 1px solid var(--app-border); border-radius: 999px; background: var(--app-surface); color: var(--app-text-primary); cursor: pointer; }
+.wb-state:hover { background: var(--app-surface-muted); }
+.wb-state.active { border-color: var(--app-accent); background: var(--app-hover-bg); color: var(--app-accent); }
+.wb-pager { display: flex; justify-content: flex-end; margin-top: 14px; }
+.wb-muted { color: var(--app-text-muted); }
 </style>
