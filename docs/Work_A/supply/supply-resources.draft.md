@@ -132,3 +132,11 @@ grouped响应为模型id/name/official_id/company/model_type、supplier_count/re
 测试摘要增加 `test.metrics.connection_ms/rps/tps`，为可空十进制字符串；真实0保留原字符串，缺失为null。flat排序白名单包括id/supplier_name/region/coefficient/state/updated_at/connection_ms/rps/tps/cache_hit_rate；grouped包括id/name/company/model_type/supplier_count/resource_count/available_count/coefficient_min/coefficient_max。API统一包络data含view/list/total/page/size。
 
 读取代码与HTTP注册器已新增，尚未装配真实仓储/主入口；实际交付及未完成项见[F3读取记录](../TDD/2026-10-20-f3-read-results.md)。
+
+## 10. 广场远程筛选选项
+
+GET `/api/internal/resources/filter-options?region=CN&keyword=名称片段`，仅内部人员读取。data为 `{companies: string[], suppliers: [{id,name,region}], has_more: boolean}`；ID字符串，不含配置或凭据。region可空，keyword按公司/供应商各自名称匹配。
+
+每种选项最多50项，截断时has_more=true；应在完整新资源/模型/供应商关联上按区域和名称过滤后取有限匹配，不从资源当前页猜测全集。仓储实现独立的可选能力ResourceFilterOptionsStore；未提供时503，不回退旧supplier_profile。
+
+前端按名称查找并提交已选择供应商ID，展开来源时固定继承已应用筛选并重置资源页码/排序。独立ModelPlaza及来源/详情组件已新增；真实装配和状态写流程仍待完成，见[F3前端记录](../TDD/2026-10-20-f3-frontend-results.md)。

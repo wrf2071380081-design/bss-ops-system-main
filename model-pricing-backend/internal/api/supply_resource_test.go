@@ -20,6 +20,10 @@ type resourceHTTPStore struct {
 	query supply.ResourceListQuery
 }
 
+func (s *resourceHTTPStore) ResourceFilterOptions(_ context.Context, q supply.ResourceOptionsQuery) (supply.ResourceFilterOptions, error) {
+	return supply.ResourceFilterOptions{Companies: []string{"示例公司"}, Suppliers: []supply.ResourceSupplierOption{{ID: "21", Name: "示例供应商", Region: "CN"}}}, nil
+}
+
 func (s *resourceHTTPStore) ListResourceGroups(_ context.Context, q supply.ResourceListQuery) ([][]*supply.ResourceRecord, int64, error) {
 	s.query = q
 	return [][]*supply.ResourceRecord{{s.row}}, 1, nil
@@ -109,5 +113,28 @@ func TestSupplyResourceHTTPReadViewsAndIdentity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSupplyResourceHTTPFilterOptions(t *testing.T) {
+	for _, tc := range []struct {
+		identity, path string
+		status         int
+		missing        bool
+	}{{"staff", "/resources/filter-options?region=CN&keyword=示例", 200, false}, {"anonymous", "/resources/filter-options", 401, false}, {"supplier", "/resources/filter-options", 403, false}, {"staff", "/resources/filter-options", 503, true}, {"staff", "/resources/filter-options?unknown=1", 400, false}} {
+		router := resourceHTTPRouter(resourceHTTPFixture(t), tc.identity, tc.missing)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/internal"+tc.path, nil))
+		if w.Code != tc.status {
+			t.Fatalf("options returned %d want%d: %s", w.Code, tc.status, w.Body.String())
+		}
+		if tc.status == 200 {
+			var body struct {
+				Data supply.ResourceFilterOptions `json:"data"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || len(body.Data.Suppliers) != 1 || body.Data.Suppliers[0].ID != "21" {
+				t.Fatalf("unsafe option shape: %+v %v", body, err)
+			}
+		}
 	}
 }

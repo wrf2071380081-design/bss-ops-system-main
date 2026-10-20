@@ -1,0 +1,513 @@
+
+> model-pricing-web@0.1.0 test
+> node tests/run.mjs
+
+TAP version 13
+# Subtest: real-auth mode logs in all portals, injects only server permissions, keeps credentials in memory and accepts logout 204
+ok 1 - real-auth mode logs in all portals, injects only server permissions, keeps credentials in memory and accepts logout 204
+  ---
+  duration_ms: 249.7519
+  type: 'test'
+  ...
+# Subtest: login rejection preserves current session, protected 401 redirects, and portals remain isolated
+ok 2 - login rejection preserves current session, protected 401 redirects, and portals remain isolated
+  ---
+  duration_ms: 54.3367
+  type: 'test'
+  ...
+# Subtest: accepted customer quote stays effective after refresh and rejects another submission
+ok 3 - accepted customer quote stays effective after refresh and rejects another submission
+  ---
+  duration_ms: 168.1149
+  type: 'test'
+  ...
+# Subtest: stage 9a customer APIs use the real wire contract, permissions boundary and structured floor errors
+ok 4 - stage 9a customer APIs use the real wire contract, permissions boundary and structured floor errors
+  ---
+  duration_ms: 424.5436
+  type: 'test'
+  ...
+# Subtest: latest change-request, customer kind and model-application contracts map without browser state
+ok 5 - latest change-request, customer kind and model-application contracts map without browser state
+  ---
+  duration_ms: 275.3236
+  type: 'test'
+  ...
+# Subtest: PRICE_BOOK_QUOTE 保留旧 Run，未知结果重试同一创建，且只推进匹配对象
+ok 6 - PRICE_BOOK_QUOTE 保留旧 Run，未知结果重试同一创建，且只推进匹配对象
+  ---
+  duration_ms: 32.3499
+  type: 'test'
+  ...
+# Subtest: pricing policy draft maps to the Go wire contract
+ok 7 - pricing policy draft maps to the Go wire contract
+  ---
+  duration_ms: 4.8999
+  type: 'test'
+  ...
+# Subtest: Go list rows map back to the page model
+ok 8 - Go list rows map back to the page model
+  ---
+  duration_ms: 1.4
+  type: 'test'
+  ...
+# Subtest: pricing policy status updates expose only DRAFT to ACTIVE and ACTIVE to ARCHIVED
+ok 9 - pricing policy status updates expose only DRAFT to ACTIVE and ACTIVE to ARCHIVED
+  ---
+  duration_ms: 1.6209
+  type: 'test'
+  ...
+# Subtest: pricing policy idempotency key belongs to one exact status transition
+ok 10 - pricing policy idempotency key belongs to one exact status transition
+  ---
+  duration_ms: 3.865
+  type: 'test'
+  ...
+# Subtest: price book mock exposes only real generate and IMMEDIATE publish contracts
+ok 11 - price book mock exposes only real generate and IMMEDIATE publish contracts
+  ---
+  duration_ms: 74.5043
+  type: 'test'
+  ...
+# Subtest: price book API maps page fields to Go wire DTOs and uses idempotency
+ok 12 - price book API maps page fields to Go wire DTOs and uses idempotency
+  ---
+  duration_ms: 173.8778
+  type: 'test'
+  ...
+# Subtest: price book approvals use the real decision contract and a new key for each step
+ok 13 - price book approvals use the real decision contract and a new key for each step
+  ---
+  duration_ms: 35.1582
+  type: 'test'
+  ...
+# Subtest: single-step quote approval enforces wire actions, rejection length, replay and actual activation state
+ok 14 - single-step quote approval enforces wire actions, rejection length, replay and actual activation state
+  ---
+  duration_ms: 135.9838
+  type: 'test'
+  ...
+# Subtest: retirement uses wire field names while Mock keeps approval-first lifecycle
+ok 15 - retirement uses wire field names while Mock keeps approval-first lifecycle
+  ---
+  duration_ms: 35.5662
+  type: 'test'
+  ...
+# Subtest: real API module/Axios path retains timeout keys, masks diagnostic data and clears 401 sessions
+ok 16 - real API module/Axios path retains timeout keys, masks diagnostic data and clears 401 sessions
+  ---
+  duration_ms: 71.2888
+  type: 'test'
+  ...
+# Subtest: price-book generic idempotency conflict keeps the key, but a specific business conflict clears it
+ok 17 - price-book generic idempotency conflict keeps the key, but a specific business conflict clears it
+  ---
+  duration_ms: 19.1478
+  type: 'test'
+  ...
+# Subtest: FINANCE can open the price-book approval page without gaining create or publish permission
+ok 18 - FINANCE can open the price-book approval page without gaining create or publish permission
+  ---
+  duration_ms: 0.725
+  type: 'test'
+  ...
+# Subtest: stage-5 SKU and quote writes preserve IDs, aggregate components, enforce isolation and reject legacy payloads atomically
+ok 19 - stage-5 SKU and quote writes preserve IDs, aggregate components, enforce isolation and reject legacy payloads atomically
+  ---
+  duration_ms: 266.1238
+  type: 'test'
+  ...
+# Subtest: CSV stream, multipart preview and full import confirmation share current price validation without batch persistence
+ok 20 - CSV stream, multipart preview and full import confirmation share current price validation without batch persistence
+  ---
+  duration_ms: 81.6515
+  type: 'test'
+  ...
+# Subtest: model HTTP bridge uses documented update and alias suggestion paths and optional publication remark
+ok 21 - model HTTP bridge uses documented update and alias suggestion paths and optional publication remark
+  ---
+  duration_ms: 69.1104
+  type: 'test'
+  ...
+# Subtest: Axios quote calls use documented paths, nested write DTOs, multipart and stream responses without Mock identity
+ok 22 - Axios quote calls use documented paths, nested write DTOs, multipart and stream responses without Mock identity
+  ---
+  duration_ms: 209.2639
+  type: 'test'
+  ...
+# Subtest: HTTP quote renewal, constraints, template pricing and customer cloning share records safely
+ok 23 - HTTP quote renewal, constraints, template pricing and customer cloning share records safely
+  ---
+  duration_ms: 711.9717
+  type: 'test'
+  ...
+# Subtest: stage 9b/9c and stage 10 APIs use the merged backend wire contract
+ok 24 - stage 9b/9c and stage 10 APIs use the merged backend wire contract
+  ---
+  duration_ms: 435.5218
+  type: 'test'
+  ...
+# Subtest: supplier list and detail use real wire fields and preserve omitted commercial fields
+ok 25 - supplier list and detail use real wire fields and preserve omitted commercial fields
+  ---
+  duration_ms: 225.4018
+  type: 'test'
+  ...
+# Subtest: customer acceptance can share its receipt with internal queries without altering quote status
+ok 26 - customer acceptance can share its receipt with internal queries without altering quote status
+  ---
+  duration_ms: 6.8072
+  type: 'test'
+  ...
+# Subtest: customer queries filter drafts and foreign records and project out internal fields
+ok 27 - customer queries filter drafts and foreign records and project out internal fields
+  ---
+  duration_ms: 6.6971
+  type: 'test'
+  ...
+# Subtest: quote acceptance is time checked and idempotent without changing lifecycle or creating contracts
+ok 28 - quote acceptance is time checked and idempotent without changing lifecycle or creating contracts
+  ---
+  duration_ms: 6.3356
+  type: 'test'
+  ...
+# Subtest: future or expired formal quotes cannot be accepted, read-only pages return independent string-money samples
+ok 29 - future or expired formal quotes cannot be accepted, read-only pages return independent string-money samples
+  ---
+  duration_ms: 2.058
+  type: 'test'
+  ...
+# Subtest: idempotency keeps Web Crypto digest and randomUUID when both are available
+ok 30 - idempotency keeps Web Crypto digest and randomUUID when both are available
+  ---
+  duration_ms: 98.1847
+  type: 'test'
+  ...
+# Subtest: idempotency uses a deterministic fingerprint when subtle is unavailable
+ok 31 - idempotency uses a deterministic fingerprint when subtle is unavailable
+  ---
+  duration_ms: 1.5793
+  type: 'test'
+  ...
+# Subtest: idempotency fallback fingerprint changes with the payload
+ok 32 - idempotency fallback fingerprint changes with the payload
+  ---
+  duration_ms: 0.8596
+  type: 'test'
+  ...
+# Subtest: idempotency creates an RFC 4122 v4 key with getRandomValues when randomUUID is unavailable
+ok 33 - idempotency creates an RFC 4122 v4 key with getRandomValues when randomUUID is unavailable
+  ---
+  duration_ms: 6.4232
+  type: 'test'
+  ...
+# Subtest: idempotency supports an insecure context without subtle or randomUUID
+ok 34 - idempotency supports an insecure context without subtle or randomUUID
+  ---
+  duration_ms: 1.2313
+  type: 'test'
+  ...
+# Subtest: idempotency reuses a stored key without generating a replacement
+ok 35 - idempotency reuses a stored key without generating a replacement
+  ---
+  duration_ms: 2.2965
+  type: 'test'
+  ...
+# Subtest: price-book operation changes and changes back without reviving an old key
+ok 36 - price-book operation changes and changes back without reviving an old key
+  ---
+  duration_ms: 1.6004
+  type: 'test'
+  ...
+# Subtest: GET cannot mutate state
+ok 37 - GET cannot mutate state
+  ---
+  duration_ms: 5.537
+  type: 'test'
+  ...
+# Subtest: role redaction and write authorization apply at the transport boundary
+ok 38 - role redaction and write authorization apply at the transport boundary
+  ---
+  duration_ms: 3.6692
+  type: 'test'
+  ...
+# Subtest: create/edit preserves string identifiers and price precision; duplicate code conflicts
+ok 39 - create/edit preserves string identifiers and price precision; duplicate code conflicts
+  ---
+  duration_ms: 3.3215
+  type: 'test'
+  ...
+# Subtest: verification requires pending status; publishing requires pricing role and purchasable
+ok 40 - verification requires pending status; publishing requires pricing role and purchasable
+  ---
+  duration_ms: 4.0951
+  type: 'test'
+  ...
+# Subtest: batch reports partial failure and cannot bypass publishing
+ok 41 - batch reports partial failure and cannot bypass publishing
+  ---
+  duration_ms: 2.537
+  type: 'test'
+  ...
+# Subtest: alias uniqueness is global, merge attaches new name without deleting SKU
+ok 42 - alias uniqueness is global, merge attaches new name without deleting SKU
+  ---
+  duration_ms: 5.5028
+  type: 'test'
+  ...
+# Subtest: retirement requires report, future date, reason and published status; first approver is pricing
+ok 43 - retirement requires report, future date, reason and published status; first approver is pricing
+  ---
+  duration_ms: 3.1997
+  type: 'test'
+  ...
+# Subtest: contract batches enforce limits and return partial failure summaries
+ok 44 - contract batches enforce limits and return partial failure summaries
+  ---
+  duration_ms: 3.8522
+  type: 'test'
+  ...
+# Subtest: publish contract response preserves its timestamp on idempotent replay
+ok 45 - publish contract response preserves its timestamp on idempotent replay
+  ---
+  duration_ms: 1.6545
+  type: 'test'
+  ...
+# Subtest: full alias replacement is atomic, supports clearing and rejects duplicate ownership
+ok 46 - full alias replacement is atomic, supports clearing and rejects duplicate ownership
+  ---
+  duration_ms: 5.4504
+  type: 'test'
+  ...
+# Subtest: idempotent retry returns same result, semantic conflict rejected, transient failure does not mutate
+ok 47 - idempotent retry returns same result, semantic conflict rejected, transient failure does not mutate
+  ---
+  duration_ms: 2.8256
+  type: 'test'
+  ...
+# Subtest: catalog paginates SKUs and complete families using contract fields
+ok 48 - catalog paginates SKUs and complete families using contract fields
+  ---
+  duration_ms: 24.9585
+  type: 'test'
+  ...
+# Subtest: catalog filters by IDs, keyword, type, status and tier before pagination
+ok 49 - catalog filters by IDs, keyword, type, status and tier before pagination
+  ---
+  duration_ms: 23.9991
+  type: 'test'
+  ...
+# Subtest: catalog rejects invalid query and preserves ID/null fields without inventing metadata
+ok 50 - catalog rejects invalid query and preserves ID/null fields without inventing metadata
+  ---
+  duration_ms: 7.2605
+  type: 'test'
+  ...
+# Subtest: model reads ignore unknown capability fields but keep known-field validation
+ok 51 - model reads ignore unknown capability fields but keep known-field validation
+  ---
+  duration_ms: 17.3939
+  type: 'test'
+  ...
+# Subtest: detail separates SKU from provisional extensions and keeps null, zero and complete capability
+ok 52 - detail separates SKU from provisional extensions and keeps null, zero and complete capability
+  ---
+  duration_ms: 8.264
+  type: 'test'
+  ...
+# Subtest: detail rejects wrong object, malformed capability, states and extensions
+ok 53 - detail rejects wrong object, malformed capability, states and extensions
+  ---
+  duration_ms: 7.5855
+  type: 'test'
+  ...
+# Subtest: verification rejects malformed writes atomically and replays a single trimmed record
+ok 54 - verification rejects malformed writes atomically and replays a single trimmed record
+  ---
+  duration_ms: 22.739
+  type: 'test'
+  ...
+# Subtest: publish rejects injected payload and wrong method before lifecycle mutation
+ok 55 - publish rejects injected payload and wrong method before lifecycle mutation
+  ---
+  duration_ms: 4.3924
+  type: 'test'
+  ...
+# Subtest: retirement validates report ownership and input atomically, with idempotent application replay
+ok 56 - retirement validates report ownership and input atomically, with idempotent application replay
+  ---
+  duration_ms: 9.326
+  type: 'test'
+  ...
+# Subtest: retirement notice period starts at notification, not submission, and enforces the 30-day boundary
+ok 57 - retirement notice period starts at notification, not submission, and enforces the 30-day boundary
+  ---
+  duration_ms: 54.625
+  type: 'test'
+  ...
+# Subtest: rejecting a retirement changes only the request and pending marker, and is safe to replay
+ok 58 - rejecting a retirement changes only the request and pending marker, and is safe to replay
+  ---
+  duration_ms: 4.6233
+  type: 'test'
+  ...
+# Subtest: wire alias merge validates source, preserves lifecycle and replays without duplicate writes
+ok 59 - wire alias merge validates source, preserves lifecycle and replays without duplicate writes
+  ---
+  duration_ms: 25.9608
+  type: 'test'
+  ...
+# Subtest: wire create returns a full draft SKU and preserves zero context, currency and capability precision
+ok 60 - wire create returns a full draft SKU and preserves zero context, currency and capability precision
+  ---
+  duration_ms: 16.0192
+  type: 'test'
+  ...
+# Subtest: optional write fields remain null and omitted update fields preserve existing capability and aliases
+ok 61 - optional write fields remain null and omitted update fields preserve existing capability and aliases
+  ---
+  duration_ms: 3.9832
+  type: 'test'
+  ...
+# Subtest: wire validation rejects invalid ownership, duplicate identifiers and unknown fields without partial writes
+ok 62 - wire validation rejects invalid ownership, duplicate identifiers and unknown fields without partial writes
+  ---
+  duration_ms: 10.1933
+  type: 'test'
+  ...
+# Subtest: unknown attempts retain identity across edits and are isolated by actor, scope and payload
+ok 63 - unknown attempts retain identity across edits and are isolated by actor, scope and payload
+  ---
+  duration_ms: 59.9315
+  type: 'test'
+  ...
+# Subtest: money validation rejects nonfinite/scientific/overprecision input and time display tolerates invalid data
+ok 64 - money validation rejects nonfinite/scientific/overprecision input and time display tolerates invalid data
+  ---
+  duration_ms: 200.4649
+  type: 'test'
+  ...
+# Subtest: credential redaction covers nested objects, arrays, bearer strings and URL parameters without mutating source
+ok 65 - credential redaction covers nested objects, arrays, bearer strings and URL parameters without mutating source
+  ---
+  duration_ms: 3.587
+  type: 'test'
+  ...
+# Subtest: quote import derives stable vendor and family selectors from supplier SKUs
+ok 66 - quote import derives stable vendor and family selectors from supplier SKUs
+  ---
+  duration_ms: 27.5449
+  type: 'test'
+  ...
+# Subtest: quote import filters a mixed CSV preview by the selected vendor or family
+ok 67 - quote import filters a mixed CSV preview by the selected vendor or family
+  ---
+  duration_ms: 1.0687
+  type: 'test'
+  ...
+# Subtest: quote import submits only non-excluded preview items
+ok 68 - quote import submits only non-excluded preview items
+  ---
+  duration_ms: 0.7936
+  type: 'test'
+  ...
+# Subtest: quote import multiplier uses current official price with fixed precision
+ok 69 - quote import multiplier uses current official price with fixed precision
+  ---
+  duration_ms: 3.6003
+  type: 'test'
+  ...
+# Subtest: quote submit detects a past effective time before confirmation
+ok 70 - quote submit detects a past effective time before confirmation
+  ---
+  duration_ms: 0.4293
+  type: 'test'
+  ...
+# Subtest: renewal preserves source and increments only the same supplier quote's version
+ok 71 - renewal preserves source and increments only the same supplier quote's version
+  ---
+  duration_ms: 2.8453
+  type: 'test'
+  ...
+# Subtest: supply constraints validate positive integer strings and reject unknown fields
+ok 72 - supply constraints validate positive integer strings and reject unknown fields
+  ---
+  duration_ms: 2.5738
+  type: 'test'
+  ...
+# Subtest: customer template uses the assigned effective price book and returns independent price strings
+ok 73 - customer template uses the assigned effective price book and returns independent price strings
+  ---
+  duration_ms: 2.2996
+  type: 'test'
+  ...
+# Subtest: group expansion keeps applied filters and resets resource pagination and sorting
+ok 74 - group expansion keeps applied filters and resets resource pagination and sorting
+  ---
+  duration_ms: 4.8429
+  type: 'test'
+  ...
+# Subtest: cache formatting derives percentage once from original integer strings
+ok 75 - cache formatting derives percentage once from original integer strings
+  ---
+  duration_ms: 1.1635
+  type: 'test'
+  ...
+# Subtest: resource metrics distinguish exact zero from missing and preserve large values
+ok 76 - resource metrics distinguish exact zero from missing and preserve large values
+  ---
+  duration_ms: 0.9415
+  type: 'test'
+  ...
+# Subtest: wire validation rejects numeric IDs, bad group counts and borrowed report cache
+ok 77 - wire validation rejects numeric IDs, bad group counts and borrowed report cache
+  ---
+  duration_ms: 6.4726
+  type: 'test'
+  ...
+# Subtest: standard model draft saves a complete replacement without ownership or response metadata
+ok 78 - standard model draft saves a complete replacement without ownership or response metadata
+  ---
+  duration_ms: 5.7909
+  type: 'test'
+  ...
+# Subtest: prices preserve decimal strings and zero, reject invalid precision, units and key duplicates
+ok 79 - prices preserve decimal strings and zero, reject invalid precision, units and key duplicates
+  ---
+  duration_ms: 4.439
+  type: 'test'
+  ...
+# Subtest: request snapshots cannot mutate draft and source URLs reject credentials
+ok 80 - request snapshots cannot mutate draft and source URLs reject credentials
+  ---
+  duration_ms: 1.6649
+  type: 'test'
+  ...
+# Subtest: provided facts validate structural truth without interpreting undisclosed as unsupported
+ok 81 - provided facts validate structural truth without interpreting undisclosed as unsupported
+  ---
+  duration_ms: 1.84
+  type: 'test'
+  ...
+# Subtest: wire responses reject wrong identity and numeric prices, normalize backend null draft arrays
+ok 82 - wire responses reject wrong identity and numeric prices, normalize backend null draft arrays
+  ---
+  duration_ms: 1.5905
+  type: 'test'
+  ...
+# Subtest: internal qualification review writes the supplier record and replays idempotently
+ok 83 - internal qualification review writes the supplier record and replays idempotently
+  ---
+  duration_ms: 14.0605
+  type: 'test'
+  ...
+1..83
+# tests 83
+# suites 0
+# pass 83
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3394.6767
+ExitCode=0

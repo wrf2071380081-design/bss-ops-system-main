@@ -102,3 +102,11 @@ A 页面组件为 `model-pricing-web/src/views/internal/models/StandardModelList
 B报告适配须提供report_id、可空resource_id、supplier/model/region、来源申报行及版本、不可变目标版本、自身连通/压力结论、有效性、可选毫秒/RPS/TPS字符串和cache_stats原始计数/场景。选定报告缺失/依赖失败必须区分，不借其他报告或原始测试凭据填充。
 
 新字段需求包括resource的supplier_model_id、origin_row/version、target_version、latest_report_id及正式配置引用版本；B的报告需保留资源创建前的行关联。报告选择的任务顺序与迟到回调保护后续写切片继续冻结。样例及验证边界见[F3读取记录](../TDD/2026-10-20-f3-read-results.md)。
+
+## 10. 模型广场页面与选项装配
+
+页面组件 `model-pricing-web/src/views/internal/resources/ModelPlaza.vue`，建议公共菜单“模型广场”、路径 `/internal/resources`；供应来源弹窗及资源详情抽屉在A页面内部，不需要公共路由再造多套对象跳转。新菜单与工作台、标准模型库按最新原型排序。
+
+现有ResourceReader新增Options能力，注册器增加GET `/resources/filter-options`；实际store实现可选接口ResourceFilterOptionsStore，查询region/keyword，Limit=50，每类至多50项，更多匹配返回HasMore。A真实仓储接新表；公共方提供目标DDL、人员/区域与主装配能力。选项缺失返回503，不能从当前资源页或旧profile猜测身份。
+
+当前只读页面已按新GET契约验证；公共区域联动、采购人名称、日志/计划/历史报告面板及资源状态写入仍需继续接入。完整证据见[F3前端记录](../TDD/2026-10-20-f3-frontend-results.md)。

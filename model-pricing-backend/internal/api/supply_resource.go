@@ -7,6 +7,29 @@ import (
 )
 
 type supplyResourceHandler struct{ reader *supply.ResourceReader }
+
+// @Summary 模型广场远程筛选选项
+// @Tags supply-resources
+// @Security BearerAuth
+// @Param region query string false "CN/OVERSEAS"
+// @Param keyword query string false "名称匹配；每类至多50项，has_more表示仍有匹配"
+// @Success 200 {object} response.Body{data=supply.ResourceFilterOptions}
+// @Failure 400,401,403,503 {object} response.Body
+// @Router /api/internal/resources/filter-options [get]
+func (h *supplyResourceHandler) options(c *gin.Context) {
+	values, err := supplyQuery(c, "region", "keyword")
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	result, err := h.reader.Options(c.Request.Context(), values.Get("region"), values.Get("keyword"))
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 type supplyResourcePermissions struct {
 	CanEdit bool `json:"can_edit"`
 }

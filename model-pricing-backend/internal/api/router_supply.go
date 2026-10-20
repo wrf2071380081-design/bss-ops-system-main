@@ -44,6 +44,7 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	resources.Use(requireSupplyInternalStaff)
 	rh := &supplyResourceHandler{reader: deps.Resources}
 	resources.GET("", rh.list)
+	resources.GET("/filter-options", rh.options)
 	resources.GET("/:id", rh.get)
 }
 
