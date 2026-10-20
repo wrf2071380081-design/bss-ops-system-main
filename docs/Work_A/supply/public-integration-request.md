@@ -80,3 +80,13 @@ F4/F3 及后续阶段所需 schema/接口在对应切片继续补充，不因 F1
 - `FormalURLPolicy` 负责本地环境策略，可要求HTTPS；不在事务锁内执行网络探测。
 - schema需核对区域来源、状态、revision、确认人员/时间/对应版本及密文版本字段。绑定配置、修改供应商区域和停用配置必须采用一致锁顺序与资源引用约束；单靠先查引用数量不足以证明并发正确性。
 - 当前仅有独立领域实现，正式配置 HTTP/读取与真库适配尚未装配；供应商主体、网站账户、资质和附件仍需继续交付。
+
+## 8. v0.22 F1 前端装配
+
+A 页面组件为 `model-pricing-web/src/views/internal/models/StandardModelList.vue`，请求封装 `src/api/standardModels.ts`；建议公共菜单新增“标准模型库”，路径 `/internal/standard-models`，component 使用该文件。不要把旧 `Models.vue` 的SKU权限点和API语义复制到新入口。
+
+页面已对接新F1列表/详情/版本/新增/整体修改/核验契约；后端 `RegisterSupplyRoutes` 及真实仓储仍需公共装配。当前没有修改生产公共路由、布局、入口和菜单，浏览器测试通过测试专用入口挂载组件。
+
+详情记录读取附01的 `entityType/ entityId` 查询参数，预期列表包含 action、operator_id、reason、request_id、occurred_at（或公共映射后的created_at）。最终DTO、操作人显示名和分页待公共方固定；当前UI显示最近100条，不将其声称为日志平台已接入。
+
+多值公司/类型及供应商/部署节点关联筛选、模型库级记录侧栏需继续冻结查询契约；不从当前分页结果推断全部可选值，也不将标准模型硬设单一区域。阶段截图与未完成项见[F1前端执行记录](../TDD/2026-10-20-f1-frontend-results.md)。

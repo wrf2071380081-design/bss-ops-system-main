@@ -1,0 +1,55 @@
+TAP version 13
+# Subtest: standard model draft saves a complete replacement without ownership or response metadata
+ok 1 - standard model draft saves a complete replacement without ownership or response metadata
+  ---
+  duration_ms: 1.993
+  type: 'test'
+  ...
+# Subtest: prices preserve decimal strings and zero, reject invalid precision, units and key duplicates
+ok 2 - prices preserve decimal strings and zero, reject invalid precision, units and key duplicates
+  ---
+  duration_ms: 1.8488
+  type: 'test'
+  ...
+# Subtest: request snapshots cannot mutate draft and source URLs reject credentials
+ok 3 - request snapshots cannot mutate draft and source URLs reject credentials
+  ---
+  duration_ms: 0.8902
+  type: 'test'
+  ...
+# Subtest: provided facts validate structural truth without interpreting undisclosed as unsupported
+ok 4 - provided facts validate structural truth without interpreting undisclosed as unsupported
+  ---
+  duration_ms: 1.1751
+  type: 'test'
+  ...
+# Subtest: wire responses reject wrong identity and numeric prices, normalize backend null draft arrays
+not ok 5 - wire responses reject wrong identity and numeric prices, normalize backend null draft arrays
+  ---
+  duration_ms: 0.8422
+  type: 'test'
+  location: 'H:\\Desktop\\Dongxin\\bss-ops-system-main\\model-pricing-web\\tests\\standard-model-contract.test.ts:61:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (file:///H:/Desktop/Dongxin/bss-ops-system-main/model-pricing-web/tests/standard-model-contract.test.ts:63:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 4
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 219.2552
+ExitCode=1
