@@ -70,6 +70,7 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	plans := internal.Group("/plans")
 	plans.Use(requireSupplyInternalStaff)
 	ph := &supplyPlanHandler{reader: deps.Plans}
+	plans.GET("", ph.list)
 	plans.GET("/:id", ph.get)
 	pw := &supplyPlanWriteHandler{writer: deps.PlanWriter}
 	plans.POST("", idem, pw.create)

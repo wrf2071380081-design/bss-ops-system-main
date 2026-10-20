@@ -6,6 +6,7 @@
 
 | 接口 | 入参 | 结果 |
 |---|---|---|
+| GET `/api/internal/plans` | resource_id、region、kind、status、page/size | 当前资源前提与原发起人的计划只读分页 |
 | GET `/api/internal/notices` | region、resource_id、read_status=ALL/UNREAD/READ、keyword、page/size | 当前认证StaffID的公告投影 |
 | GET `/api/internal/notices/read-states` | 上述条件、staff_ids（逗号分隔）、all_staff=true | 指定人员或全部内部人员的阅读投影；省略人员条件默认为当前人员 |
 | GET `/api/internal/notices/:id` | 可选staff_id | 公告及该人员阅读详情；省略staff_id看当前人 |
@@ -28,6 +29,8 @@ POST `/api/internal/notices/:id/read` 允许空body或`{}`，拒绝自报reader_
 预计时间仅用于追踪，不因尚未到期拒绝读取；当前资源revision与计划预期不同则返回precondition_matches=false和阻断原因，GET不修改计划状态。未来F13执行服务仍须验证发起人、实际外部操作确认、资源前提及共享事务。
 
 ## 4. 公共/真实适配要求
+
+计划列表通过可选PlanListStore读取，缺能力503；created_at DESC、数值id DESC稳定排序，过滤先于分页，total为计划数。每条计划携带当前资源一致性事实；同详情共享校验与只读投影，不按buyer限制内部读取。实际SQL和前端面板仍待接入，见[列表记录](../TDD/2026-10-20-plan-list-results.md)。
 
 计划维护HTTP已在A注册器提供POST plans、PUT plans/:id、POST plans/:id/cancel，注入SupplyDeps.PlanWriter=PlanMaintenanceService。创建字段resource_id/expected_resource_revision/kind/due_at/reason，修改expected_revision/due_at/reason，取消expected_revision/reason；ID/revision字符串，日期RFC3339，拒绝自报操作者。执行HTTP仍未注册，当前只读摘要不承诺办理权限，见[HTTP记录](../TDD/2026-10-20-plan-http-results.md)。
 

@@ -65,6 +65,9 @@ func (r *PlanReader) Get(ctx context.Context, actor, id string) (*PlanSummary, e
 	if err != nil {
 		return nil, err
 	}
+	return buildPlanSummary(record, actor, id)
+}
+func buildPlanSummary(record PlanReadRecord, actor, id string) (*PlanSummary, error) {
 	p := record.Plan
 	if p == nil || p.ID != id || !validID(p.ResourceID) || !validID(p.CreatedBy) || !validID(record.ResourceBuyerID) || record.ResourceID != p.ResourceID || record.ResourceRegion != p.Region || (p.Region != "CN" && p.Region != "OVERSEAS") || p.Revision == 0 || p.Revision > math.MaxInt64 || p.ExpectedResourceRevision == 0 || p.ExpectedResourceRevision > math.MaxInt64 || record.ResourceRevision == 0 || record.ResourceRevision > math.MaxInt64 || p.DueAt.IsZero() || p.CreatedAt.IsZero() || strings.TrimSpace(p.Reason) == "" {
 		return nil, ErrReadContract

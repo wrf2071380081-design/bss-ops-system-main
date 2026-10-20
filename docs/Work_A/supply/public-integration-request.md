@@ -138,6 +138,8 @@ ModelReadStore实现可选ModelFilterOptionsStore后可使用标准模型filter-
 
 ## 14. 资源直接上下架装配
 
+PlanReadStore增加可选PlanListStore能力后，现有SupplyDeps.Plans即可使用GET plans列表；未实现列表能力503。SQL按resource_id/region/kind/status过滤后稳定分页，当前资源事实与计划同快照读取，total为计划数。前端面板尚未接入，见[列表记录](../TDD/2026-10-20-plan-list-results.md)。
+
 计划维护HTTP当前通过SupplyDeps.PlanWriter注入NewPlanMaintenanceService(work,clock)，提供创建/修改/取消三个入口。必须保留requireSupplyInternalStaff、认证StaffID、公共幂等和RequestID；真实work需加入外层事务。计划执行写入口仍未装配，见[维护HTTP记录](../TDD/2026-10-20-plan-http-results.md)。
 
 当前计划创建/维护服务为PlanMaintenanceService，事务端口需锁资源→计划、强制状态维度唯一、CAS写入，并把不可变修订、操作日志与提醒outbox同事务提交。提醒按plan revision防陈旧，due_at不触发实际状态变化。真实适配仍待完成，见[维护服务记录](../TDD/2026-10-20-plan-maintenance-results.md)。
