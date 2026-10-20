@@ -1,0 +1,11 @@
+FAIL	model_bss/internal/domain/supply [build failed]
+FAIL
+# model_bss/internal/domain/supply [model_bss/internal/domain/supply.test]
+internal/domain/supply/plan_lifecycle_test.go:11:9: undefined: NewStatePlan
+internal/domain/supply/plan_lifecycle_test.go:14:12: undefined: NewStatePlan
+internal/domain/supply/plan_lifecycle_test.go:15:12: undefined: NewStatePlan
+internal/domain/supply/plan_lifecycle_test.go:18:30: undefined: NewStatePlan
+internal/domain/supply/plan_lifecycle_test.go:30:7: undefined: NewStatePlan
+internal/domain/supply/plan_lifecycle_test.go:40:30: undefined: NewStatePlan
+internal/domain/supply/plan_lifecycle_test.go:46:132: undefined: NewStatePlan
+ExitCode=1

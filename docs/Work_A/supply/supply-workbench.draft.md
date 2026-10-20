@@ -29,6 +29,8 @@ POST `/api/internal/notices/:id/read` 允许空body或`{}`，拒绝自报reader_
 
 ## 4. 公共/真实适配要求
 
+计划写领域进度：StatePlan已实现创建/修改/取消/执行方案，原发起人办理，创建仅当前资源buyer，预计时间未到不单独阻断。尚无写应用服务/HTTP/页面；PlanSummary仍只读。事务层须先提交BLOCKED记录再映射409，不能直接抛业务错误回滚失败记录。见[领域记录](../TDD/2026-10-20-plan-lifecycle-results.md)。
+
 使用公共人员目录的StaffID，不把登录AccountID/OperatorID当作人员选择值。读取公告人员组合在一个一致性快照中完成；all_staff按真实目录分页组合，不先分页人员再伪造总数。
 
 NoticeUnitOfWork须加入已有幂等事务，阅读唯一性与日志同事务；禁止独立提交。该端口不替代公共事务/日志工具。计划摘要从plan及当前resource一致性读取，不写旧表，不执行到期计划。新表/日志/主装配缺失仍是接入依赖。
