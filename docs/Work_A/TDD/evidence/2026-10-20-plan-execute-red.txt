@@ -1,0 +1,12 @@
+FAIL	model_bss/internal/domain/supply [build failed]
+FAIL
+# model_bss/internal/domain/supply [model_bss/internal/domain/supply.test]
+internal/domain/supply/plan_execute_service_test.go:10:81: undefined: PlanExecutionEffect
+internal/domain/supply/plan_execute_service_test.go:11:76: undefined: PlanExecutionTransaction
+internal/domain/supply/plan_execute_service_test.go:12:134: undefined: PlanExecutionEffect
+internal/domain/supply/plan_execute_service_test.go:18:74: undefined: PlanExecutionEffect
+internal/domain/supply/plan_execute_service_test.go:22:14: undefined: NewPlanExecutionService
+internal/domain/supply/plan_execute_service_test.go:27:14: undefined: NewPlanExecutionService
+internal/domain/supply/plan_execute_service_test.go:34:14: undefined: NewPlanExecutionService
+internal/domain/supply/plan_execute_service_test.go:40:14: undefined: NewPlanExecutionService
+ExitCode=1

@@ -29,6 +29,8 @@ POST `/api/internal/notices/:id/read` 允许空body或`{}`，拒绝自报reader_
 
 ## 4. 公共/真实适配要求
 
+PlanExecutionService已提供执行事务端口：成功保存计划/资源/日志/公告/outbox；前提冲突保存BLOCKED/失败依据/日志，并以Conflict=true结果返回，事务回调不抛业务冲突。外层幂等事务提交后才可映射409，当前公共提交响应机制尚未对齐，执行HTTP尚未注册。见[事务服务记录](../TDD/2026-10-20-plan-execute-results.md)。
+
 计划写领域进度：StatePlan已实现创建/修改/取消/执行方案，原发起人办理，创建仅当前资源buyer，预计时间未到不单独阻断。尚无写应用服务/HTTP/页面；PlanSummary仍只读。事务层须先提交BLOCKED记录再映射409，不能直接抛业务错误回滚失败记录。见[领域记录](../TDD/2026-10-20-plan-lifecycle-results.md)。
 
 使用公共人员目录的StaffID，不把登录AccountID/OperatorID当作人员选择值。读取公告人员组合在一个一致性快照中完成；all_staff按真实目录分页组合，不先分页人员再伪造总数。
