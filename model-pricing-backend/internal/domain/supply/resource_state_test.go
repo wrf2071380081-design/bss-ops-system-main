@@ -11,6 +11,8 @@ type stateFixture struct {
 	record                  ResourceRecord
 	effects                 []ResourceStateEffect
 	failEffects, failCommit bool
+	pendingPlan             bool
+	planReadError           error
 }
 
 func (f *stateFixture) WithinResourceState(ctx context.Context, fn func(ResourceStateTransaction) error) error {
@@ -29,6 +31,31 @@ func (f *stateFixture) WithinResourceState(ctx context.Context, fn func(Resource
 }
 func (f *stateFixture) ResourceStateForUpdate(context.Context, string) (*ResourceRecord, error) {
 	return &f.record, nil
+}
+func (f *stateFixture) HasPendingStatePlan(context.Context, string) (bool, error) {
+	return f.pendingPlan, f.planReadError
+}
+
+func TestDirectResourceStateCannotBypassPendingPlan(t *testing.T) {
+	for _, kind := range []string{"pending", "unavailable"} {
+		t.Run(kind, func(t *testing.T) {
+			f := offlineStore()
+			f.pendingPlan = kind == "pending"
+			if kind == "unavailable" {
+				f.planReadError = ErrDependencyUnavailable
+			}
+			result, err := NewResourceStateService(f, nil).Change(context.Background(), stateMeta(), stateCommand())
+			if err == nil || result != nil || f.record.Resource.State != "ADMITTED" || f.record.Resource.Revision != 2 || len(f.effects) != 0 {
+				t.Fatalf("bypassed plan: %+v %v", f, err)
+			}
+			if kind == "pending" && !errors.Is(err, ErrRevisionConflict) {
+				t.Fatalf("expected conflict: %v", err)
+			}
+			if kind == "unavailable" && !errors.Is(err, ErrDependencyUnavailable) {
+				t.Fatalf("must fail closed: %v", err)
+			}
+		})
+	}
 }
 func (f *stateFixture) UpdateResourceState(_ context.Context, r *Resource, expected uint64) error {
 	if f.record.Resource.Revision != expected {

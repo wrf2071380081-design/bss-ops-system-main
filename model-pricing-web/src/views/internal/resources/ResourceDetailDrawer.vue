@@ -6,13 +6,9 @@ import { formatStandardPrice, isOfficialURL, modelTypeLabels } from "../../../ap
 import { formatDateTime } from "../../../domain/date";
 import type { ResourceRow } from "../../../api/resources.types";
 import ResourceNoticesPanel from "./ResourceNoticesPanel.vue";
-import ResourceStateDialog from "./ResourceStateDialog.vue";
-import { resourceStateAction } from "../../../api/resourceState.contract";
 const props = defineProps<{ id: string; region: string }>();
 const emit = defineEmits<{ close: []; changed: [] }>();
 const data = ref<ResourceRow>(), loading = ref(false), error = ref(""), tab = ref("profile");
-const stateOpen = ref(false);
-async function stateSaved() { stateOpen.value = false; emit("changed"); await load(); }
 let active = true, controller: AbortController | undefined;
 async function load() {
   controller?.abort(); const request = controller = new AbortController(); loading.value = true; error.value = "";
@@ -34,8 +30,7 @@ onMounted(load); onBeforeUnmount(() => { active = false; controller?.abort(); })
         </el-tabs>
       </template>
     </div>
-    <ResourceStateDialog v-if="stateOpen && data" :resource="data" @close="stateOpen = false" @saved="stateSaved" />
-    <template #footer><el-button @click="emit('close')">关闭资源详情</el-button><el-button v-if="data && resourceStateAction(data)" type="primary" :disabled="loading" @click="stateOpen = true">{{ data.state === 'OFFLINE' ? '重新上架登记' : '下架登记' }}</el-button></template>
+    <template #footer><el-button @click="emit('close')">关闭资源详情</el-button></template>
   </el-drawer>
 </template>
 <style scoped>

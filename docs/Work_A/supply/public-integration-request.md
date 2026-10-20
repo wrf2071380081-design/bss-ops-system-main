@@ -138,6 +138,8 @@ ModelReadStore实现可选ModelFilterOptionsStore后可使用标准模型filter-
 
 ## 14. 资源直接上下架装配
 
+> 本节原装配方案已被DEC-010取代，当前不得按此装配直接HTTP入口。上下架必须先创建计划，再由原发起人登记完成，见[纠正记录](../TDD/2026-10-20-plan-only-correction.md)。以下保留历史接口说明。
+
 SupplyDeps.ResourceStates注入NewResourceStateService(work,clock)，A注册器提供POST resources/:id/state。work实现ResourceStateUnitOfWork，加入现有幂等事务；资源锁定和当前模型/配置/B证据同快照读取，CAS更新与日志、公告、outbox同事务写入。公共方提供工具，A提供真实资源映射，B提供当前报告事实。
 
 效果端口分配唯一event_id，并将其用于自动公告source_event_id防重；未知客户影响写PENDING，C消费后计算。不直接修改客户关系，上架不自动恢复。并发锁顺序及commit失败响应需共同真库验收。接口字段与当前测试边界见[HTTP记录](../TDD/2026-10-20-resource-state-http-results.md)。

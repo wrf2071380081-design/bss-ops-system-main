@@ -149,6 +149,8 @@ ResourceCoefficientService.Change接收认证WriteMeta、资源ID/revision、系
 
 ## 12. 直接上下架领域命令
 
+> DEC-010已确认严格计划流程：以下直接HTTP/页面入口现已撤下，领域代码仅供后续计划执行重构复用。当前实施以[纠正记录](../TDD/2026-10-20-plan-only-correction.md)为准。
+
 ResourceStateService.Change仅供绑定采购人直接OFFLINE/ONLINE，参数包含external_confirmed和completion_note；未实际确认或无依据拒绝。计划来源不能用客户端plan_id绕过buyer校验，需后续独立的发起人验证执行服务。
 
 ONLINE复用当前安全快照可报价判定，在候选ADMITTED副本重查模型、主体、配置及自身测试；OFFLINE不因上游资料失效而阻止采购人停止资源。两者保留ever_admitted、目标与报告，CAS升revision。操作记录、公告和outbox由同事务效果端口写入，公告影响PENDING。具体证据及未接入项见[上下架领域记录](../TDD/2026-10-20-resource-state-results.md)。

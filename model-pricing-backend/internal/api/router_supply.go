@@ -17,18 +17,14 @@ type SupplyModelWriter interface {
 type SupplyNoticeWriter interface {
 	MarkRead(context.Context, supply.WriteMeta, string) (*supply.NoticeReadReceipt, error)
 }
-type SupplyResourceStateWriter interface {
-	Change(context.Context, supply.WriteMeta, supply.ResourceStateCommand) (*supply.Resource, error)
-}
 type SupplyDeps struct {
-	ResourceStates SupplyResourceStateWriter
-	Reader         *supply.ModelReader
-	Writer         SupplyModelWriter
-	IdemStore      middleware.IdempotencyStore
-	Resources      *supply.ResourceReader
-	Notices        *supply.NoticeReader
-	NoticeWriter   SupplyNoticeWriter
-	Plans          *supply.PlanReader
+	Reader       *supply.ModelReader
+	Writer       SupplyModelWriter
+	IdemStore    middleware.IdempotencyStore
+	Resources    *supply.ResourceReader
+	Notices      *supply.NoticeReader
+	NoticeWriter SupplyNoticeWriter
+	Plans        *supply.PlanReader
 }
 
 // RegisterSupplyRoutes is A's integration entry point. The public assembler passes an
@@ -57,8 +53,6 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	resources.GET("", rh.list)
 	resources.GET("/filter-options", rh.options)
 	resources.GET("/:id", rh.get)
-	stateHandler := &supplyResourceStateHandler{writer: deps.ResourceStates}
-	resources.POST("/:id/state", idem, stateHandler.change)
 	notices := internal.Group("/notices")
 	notices.Use(requireSupplyInternalStaff)
 	nh := &supplyNoticeHandler{reader: deps.Notices, writer: deps.NoticeWriter}

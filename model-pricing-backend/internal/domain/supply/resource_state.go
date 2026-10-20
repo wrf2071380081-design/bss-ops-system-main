@@ -23,6 +23,10 @@ type ResourceStateTransaction interface {
 	// Lock the resource and read current model, supplier, config and selected B
 	// evidence consistently. Return sanitized facts, never API credentials.
 	ResourceStateForUpdate(context.Context, string) (*ResourceRecord, error)
+	// Check PENDING/EXECUTING plans for the shared ONLINE/OFFLINE dimension.
+	// Plan creation/cancellation/execution must acquire the same resource lock
+	// before changing that dimension, preventing a check-then-create race.
+	HasPendingStatePlan(context.Context, string) (bool, error)
 	UpdateResourceState(context.Context, *Resource, uint64) error
 	// Append operation log, auto-notice and outbox as one atomic effect. Allocate
 	// event_id once, use it as notice.source_event_id, and deduplicate retries.
@@ -79,6 +83,13 @@ func (s *ResourceStateService) Change(ctx context.Context, meta WriteMeta, cmd R
 			return ErrRevisionConflict
 		}
 		if !r.EverAdmitted || (cmd.Action == "OFFLINE" && r.State != "ADMITTED") || (cmd.Action == "ONLINE" && r.State != "OFFLINE") {
+			return ErrRevisionConflict
+		}
+		pending, err := tx.HasPendingStatePlan(ctx, r.ID)
+		if err != nil {
+			return err
+		}
+		if pending {
 			return ErrRevisionConflict
 		}
 		before := *r
