@@ -7,6 +7,7 @@ import (
 	"model_bss/internal/domain/supply"
 	"model_bss/pkg/apperr"
 	"model_bss/pkg/response"
+	"time"
 )
 
 type SupplyModelWriter interface {
@@ -18,6 +19,7 @@ type SupplyNoticeWriter interface {
 	MarkRead(context.Context, supply.WriteMeta, string) (*supply.NoticeReadReceipt, error)
 }
 type SupplyDeps struct {
+	PlanWriter   SupplyPlanWriter
 	Reader       *supply.ModelReader
 	Writer       SupplyModelWriter
 	IdemStore    middleware.IdempotencyStore
@@ -25,6 +27,11 @@ type SupplyDeps struct {
 	Notices      *supply.NoticeReader
 	NoticeWriter SupplyNoticeWriter
 	Plans        *supply.PlanReader
+}
+type SupplyPlanWriter interface {
+	Create(context.Context, supply.WriteMeta, string, uint64, string, time.Time) (*supply.ResourcePlan, error)
+	Revise(context.Context, supply.WriteMeta, string, uint64, time.Time) (*supply.ResourcePlan, error)
+	Cancel(context.Context, supply.WriteMeta, string, uint64) (*supply.ResourcePlan, error)
 }
 
 // RegisterSupplyRoutes is A's integration entry point. The public assembler passes an
@@ -64,6 +71,10 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	plans.Use(requireSupplyInternalStaff)
 	ph := &supplyPlanHandler{reader: deps.Plans}
 	plans.GET("/:id", ph.get)
+	pw := &supplyPlanWriteHandler{writer: deps.PlanWriter}
+	plans.POST("", idem, pw.create)
+	plans.PUT("/:id", idem, pw.revise)
+	plans.POST("/:id/cancel", idem, pw.cancel)
 }
 
 func requireSupplyInternalStaff(c *gin.Context) {

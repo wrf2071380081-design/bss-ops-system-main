@@ -29,6 +29,8 @@ POST `/api/internal/notices/:id/read` 允许空body或`{}`，拒绝自报reader_
 
 ## 4. 公共/真实适配要求
 
+计划维护HTTP已在A注册器提供POST plans、PUT plans/:id、POST plans/:id/cancel，注入SupplyDeps.PlanWriter=PlanMaintenanceService。创建字段resource_id/expected_resource_revision/kind/due_at/reason，修改expected_revision/due_at/reason，取消expected_revision/reason；ID/revision字符串，日期RFC3339，拒绝自报操作者。执行HTTP仍未注册，当前只读摘要不承诺办理权限，见[HTTP记录](../TDD/2026-10-20-plan-http-results.md)。
+
 PlanMaintenanceService已提供Create/Revise/Cancel事务服务，创建按当前buyer，修改/取消按原发起人；同状态维度唯一、修订/日志与提醒意图同事务。实际SQL和worker仍待实现，写HTTP/页面尚未装配，见[维护服务记录](../TDD/2026-10-20-plan-maintenance-results.md)。
 
 PlanExecutionService已提供执行事务端口：成功保存计划/资源/日志/公告/outbox；前提冲突保存BLOCKED/失败依据/日志，并以Conflict=true结果返回，事务回调不抛业务冲突。外层幂等事务提交后才可映射409，当前公共提交响应机制尚未对齐，执行HTTP尚未注册。见[事务服务记录](../TDD/2026-10-20-plan-execute-results.md)。

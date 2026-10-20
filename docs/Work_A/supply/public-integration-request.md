@@ -138,6 +138,8 @@ ModelReadStore实现可选ModelFilterOptionsStore后可使用标准模型filter-
 
 ## 14. 资源直接上下架装配
 
+计划维护HTTP当前通过SupplyDeps.PlanWriter注入NewPlanMaintenanceService(work,clock)，提供创建/修改/取消三个入口。必须保留requireSupplyInternalStaff、认证StaffID、公共幂等和RequestID；真实work需加入外层事务。计划执行写入口仍未装配，见[维护HTTP记录](../TDD/2026-10-20-plan-http-results.md)。
+
 当前计划创建/维护服务为PlanMaintenanceService，事务端口需锁资源→计划、强制状态维度唯一、CAS写入，并把不可变修订、操作日志与提醒outbox同事务提交。提醒按plan revision防陈旧，due_at不触发实际状态变化。真实适配仍待完成，见[维护服务记录](../TDD/2026-10-20-plan-maintenance-results.md)。
 
 > 本节原装配方案已被DEC-010取代，当前不得按此装配直接HTTP入口。上下架必须先创建计划，再由原发起人登记完成，见[纠正记录](../TDD/2026-10-20-plan-only-correction.md)。以下保留历史接口说明。
