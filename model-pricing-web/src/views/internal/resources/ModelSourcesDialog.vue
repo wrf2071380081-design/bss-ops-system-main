@@ -5,7 +5,7 @@ import { buildResourceQuery, resourceCacheDisplay, resourceMetricDisplay, resour
 import type { ResourceGroup, ResourcePage, ResourceQuery, ResourceRow } from "../../../api/resources.types";
 import ResourceDetailDrawer from "./ResourceDetailDrawer.vue";
 const props = defineProps<{ group: ResourceGroup; filters: ResourceQuery }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; changed: [] }>();
 const data = ref<ResourcePage<ResourceRow>>(), error = ref(""), loading = ref(false), selected = ref<ResourceRow>();
 const query = reactive({ modelID: props.group.id, page: 1, size: 20, sort_by: "coefficient", order: "asc" });
 let active = true, controller: AbortController | undefined;
@@ -26,7 +26,7 @@ onMounted(() => { void load(); }); onBeforeUnmount(() => { active = false; contr
     <el-alert v-if="error" :title="error" type="error" :closable="false"><el-button text @click="load()">重新加载供应来源</el-button></el-alert>
     <div v-loading="loading" class="sources-scroll" role="region" aria-label="供应来源表，可横向滚动" tabindex="0"><table class="source-table"><thead><tr><th>供应商 / 接口模型 ID</th><th>部署节点</th><th><button @click="sort('coefficient')">采购系数 ↕</button></th><th><button @click="sort('connection_ms')">连通耗时 · ms ↕</button></th><th><button @click="sort('rps')">压力 RPS ↕</button></th><th><button @click="sort('tps')">压力 TPS ↕</button></th><th><button @click="sort('cache_hit_rate')">输入缓存命中率 ↕</button></th><th>资源状态</th><th>报价条件</th><th>详情</th></tr></thead><tbody><tr v-for="row in data?.list || []" :key="row.id"><td><strong>{{ row.supplier_name }}</strong><code>{{ row.supplier_model_id }}</code></td><td>{{ resourceRegionLabels[row.region] }}</td><td class="coefficient">{{ row.coefficient }}</td><td>{{ resourceMetricDisplay(row.test.metrics.connection_ms, row.test.status) }}</td><td>{{ resourceMetricDisplay(row.test.metrics.rps, row.test.status) }}</td><td>{{ resourceMetricDisplay(row.test.metrics.tps, row.test.status) }}</td><td>{{ resourceCacheDisplay(row.test.cache_stats, row.test.status) }}</td><td><el-tag :type="row.state === 'ADMITTED' ? 'success' : 'info'" size="small">{{ resourceStateLabels[row.state] }}</el-tag></td><td>{{ row.quote_readiness.eligible ? '可用于报价' : '暂不可用于报价' }}</td><td><el-button size="small" @click="selected = row">详情</el-button></td></tr><tr v-if="!loading && !error && !data?.list.length"><td colspan="10" class="empty">当前筛选暂无供应资源</td></tr></tbody></table></div>
     <footer v-if="data" class="source-pagination"><span>共 {{ data.total }} 条资源</span><el-pagination v-model:current-page="query.page" v-model:page-size="query.size" :total="data.total" :page-sizes="[10, 20, 50, 100]" layout="sizes, prev, pager, next" @current-change="load()" @size-change="load(true)" /></footer>
-    <ResourceDetailDrawer v-if="selected" :key="selected.id" :id="selected.id" :region="selected.region" @close="selected = undefined" />
+    <ResourceDetailDrawer v-if="selected" :key="selected.id" :id="selected.id" :region="selected.region" @close="selected = undefined" @changed="load(); emit('changed')" />
     <template #footer><el-button @click="emit('close')">关闭供应来源</el-button></template>
   </el-dialog>
 </template>

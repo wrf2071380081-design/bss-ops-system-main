@@ -5,13 +5,15 @@ import { createServer } from "vite";
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 process.env.VITE_AUTH_ENABLED = "false"; process.env.VITE_MOCK_ENABLED = "false"; process.env.VITE_API_BASE_URL = "/api";
-const entry = `import {createApp,h} from 'vue';import {createPinia} from 'pinia';import {createRouter,createWebHistory,RouterView} from 'vue-router';import ElementPlus from 'element-plus';import zhCn from 'element-plus/es/locale/lang/zh-cn';import 'element-plus/dist/index.css';import Page from '/src/views/internal/resources/ModelPlaza.vue';const app=createApp({render:()=>h(RouterView)});const router=createRouter({history:createWebHistory(),routes:[{path:'/__resource-plaza-test',component:Page}]});app.use(createPinia()).use(router).use(ElementPlus,{locale:zhCn});router.isReady().then(()=>app.mount('#app'));`;
+const entry = `import {createApp,h} from 'vue';import {createPinia} from 'pinia';import {createRouter,createWebHistory,RouterView} from 'vue-router';import ElementPlus from 'element-plus';import zhCn from 'element-plus/es/locale/lang/zh-cn';import 'element-plus/dist/index.css';import Page from '/src/views/internal/resources/ModelPlaza.vue';import {useSessionStore} from '/src/stores/session.ts';const app=createApp({render:()=>h(RouterView)});const router=createRouter({history:createWebHistory(),routes:[{path:'/__resource-plaza-test',component:Page}]});app.use(createPinia()).use(router).use(ElementPlus,{locale:zhCn});useSessionStore().restoreSession();router.isReady().then(()=>app.mount('#app'));`;
 const plugin = { name: "resource-plaza-test", resolveId(id) { if (id === "/@resource-plaza-test-entry") return "\0resource-plaza-test-entry"; }, load(id) { if (id === "\0resource-plaza-test-entry") return entry; }, configureServer(server) { server.middlewares.use(async (req, res, next) => { if (req.url !== "/__resource-plaza-test") return next(); res.setHeader("Content-Type", "text/html"); res.end(await server.transformIndexHtml(req.url, '<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:24px;background:#f5f7f8;font-family:"Microsoft YaHei",sans-serif}*{box-sizing:border-box}</style></head><body><div id="app"></div><script type="module" src="/@resource-plaza-test-entry"></script></body></html>')); }); } };
 const price = { item_key: "text_input", label: "输入", task_type: "TEXT_INPUT", amount: "2.00000000", currency: "USD", unit_code: "TOKEN", unit_quantity: "1000000", condition: "标准请求", dimensions: {}, source_url: "https://vendor.example/pricing" };
 const row = (id, supplier, name, coefficient, cache, eligible) => ({ id, supplier_id: supplier, supplier_name: name, standard_model_id: "11", model_name: "示例标准模型", official_id: "example-v1", company: "示例模型公司", model_type: "TEXT", region: "CN", supplier_model_id: "vendor-model-" + id, coefficient, buyer_id: "7", state: "ADMITTED", ever_admitted: true, revision: "1", formal_config_id: "91", formal_config_revision: "1", test: { report_id: "51" + supplier, status: "COMPLETED", connectivity_passed: true, pressure_passed: true, valid: true, cache_stats: { ...cache, report_id: "51" + supplier }, metrics: { connection_ms: "0.00", rps: "23.00000000", tps: "9007199254740993" } }, official_price_items: [price, { ...price, item_key: "text_output", label: "输出", task_type: "TEXT_OUTPUT", amount: "8.00000000" }], quote_readiness: { eligible, blocked_reasons: eligible ? [] : ["MODEL_NOT_READY"], resource_revision: "1", model_version_no: "1", formal_config_revision: "1", test_evidence_ref: "51" + supplier }, permissions: { can_edit: false }, created_at: "2026-10-20T01:00:00Z", updated_at: "2026-10-20T01:00:00Z" });
 const rows = [row("9007199254740993", "21", "供应商甲", "0.6800", { status: "PROVIDED", hit_tokens: "0", input_tokens: "2000", scene: "固定前缀零命中" }, true), row("32", "22", "供应商乙", "0.5000", { status: "PROVIDED", hit_tokens: "246899", input_tokens: "2000000", hit_rate: "0.123450", scene: "重复前缀测试" }, false), row("33", "23", "供应商丙", "0.9000", { status: "NOT_PROVIDED" }, false)];
 rows[2].test.metrics = { connection_ms: null, rps: null, tps: null };
-let server, browser, failRows = true, failDetail = true;
+rows[0].permissions.can_edit = true;
+let server, browser, failRows = true, failDetail = true, stateAttempts = 0;
+const stateWrites = [];
 const errors = [], flatQueries = [];
 try {
   server = await createServer({ plugins: [plugin], server: { host: "127.0.0.1", port: 0 }, logLevel: "error" }); await server.listen();
@@ -21,6 +23,13 @@ try {
   await page.route("**/api/internal/resources**", async route => {
     const url = new URL(route.request().url()), q = url.searchParams;
     const send = (data, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ code: status === 200 ? 0 : 10000, message: status === 200 ? "ok" : "暂时不可用", data, requestId: "resource-browser-fixture" }) });
+    if (url.pathname.endsWith('/state')) {
+      const request = route.request(), body = request.postDataJSON(); stateWrites.push({body,key:request.headers()['idempotency-key']}); stateAttempts++;
+      if (stateAttempts === 1) return send(null,503);
+      if (body.action === 'ONLINE') return send(null,409);
+      rows[0].state='OFFLINE';rows[0].revision='2';rows[0].quote_readiness={...rows[0].quote_readiness,eligible:false,resource_revision:'2',blocked_reasons:['RESOURCE_NOT_ADMITTED']};
+      return send({id:rows[0].id,state:'OFFLINE',revision:'2',ever_admitted:true,updated_at:'2026-10-20T03:00:00Z'});
+    }
     if (url.pathname.endsWith("/filter-options")) return send({ companies: ["示例模型公司"], suppliers: rows.map(row => ({ id: row.supplier_id, name: row.supplier_name, region: "CN" })), has_more: false });
     if (/\/resources\/[0-9]+$/.test(url.pathname)) { if (failDetail) { failDetail = false; return send(null, 503); } return send(rows.find(row => row.id === url.pathname.split("/").at(-1))); }
     const filtered = rows.filter(row => (!q.get("region") || row.region === q.get("region")) && (!q.get("supplier_id") || row.supplier_id === q.get("supplier_id")));
@@ -59,13 +68,39 @@ try {
   await drawer.getByRole("tab", { name: "公告", exact: true }).click();
   await drawer.getByText("暂无符合条件的公告", { exact: true }).waitFor();
   await drawer.getByRole("button", { name: "关闭资源详情", exact: true }).click();
+  await sources.locator('tbody tr').filter({hasText:'供应商甲'}).getByRole('button',{name:'详情',exact:true}).click();
+  await drawer.getByRole('button',{name:'下架登记',exact:true}).click();
+  const registration=page.locator('.resource-state-dialog');
+  await registration.getByRole('button',{name:'确认登记下架',exact:true}).click();
+  await registration.getByText('请确认已完成实际平台操作，并填写完成依据和原因。',{exact:true}).waitFor();
+  assert.equal(stateWrites.length,0);
+  await registration.getByRole('textbox',{name:'操作原因',exact:true}).fill('供应商维护');
+  await registration.getByRole('textbox',{name:'完成依据',exact:true}).fill('国内平台操作记录已确认');
+  await registration.locator('.el-checkbox').click();
+  await registration.getByRole('button',{name:'确认登记下架',exact:true}).click();
+  await registration.getByText('服务暂时不可用，请稍后重试。',{exact:true}).waitFor();
+  await registration.getByRole('button',{name:'确认登记下架',exact:true}).click();
+  await drawer.getByRole('button',{name:'重新上架登记',exact:true}).waitFor();
+  assert.equal(stateWrites[0].key,stateWrites[1].key);assert.ok(stateWrites[0].key);
+  assert.deepEqual(stateWrites[1].body,{expected_revision:'1',action:'OFFLINE',external_confirmed:true,completion_note:'国内平台操作记录已确认',reason:'供应商维护'});
+  await drawer.getByRole('button',{name:'重新上架登记',exact:true}).click();
+  await registration.getByRole('textbox',{name:'操作原因',exact:true}).fill('恢复');
+  await registration.getByRole('textbox',{name:'完成依据',exact:true}).fill('保留这条依据');
+  await registration.locator('.el-checkbox').click();
+  await registration.getByRole('button',{name:'确认登记上架',exact:true}).click();
+  await registration.getByText('权限或资源状态已变化，输入已保留。请复制需要保留的内容，关闭后刷新资源，再重新核对登记。',{exact:true}).waitFor();
+  assert.equal(await registration.getByRole('textbox',{name:'完成依据',exact:true}).inputValue(),'保留这条依据');
+  assert.equal(await registration.getByRole('button',{name:'确认登记上架',exact:true}).isDisabled(),true);
+  await page.screenshot({path:'.qa/resource-state-conflict.png',fullPage:true,animations:'disabled'});
+  await registration.getByRole('button',{name:'关闭登记',exact:true}).click();
+  await drawer.getByRole('button',{name:'关闭资源详情',exact:true}).click();
   await sources.getByRole("button", { name: "关闭供应来源", exact: true }).click();
   await page.locator(".el-select").filter({ has: page.getByRole("combobox", { name: "部署节点", exact: true }) }).click();
   await page.getByRole("option", { name: "国内", exact: true }).click();
   await page.locator(".el-select").filter({ has: page.getByRole("combobox", { name: "供应商", exact: true }) }).click();
   await page.getByRole("option", { name: "供应商甲 · 国内", exact: true }).click();
   await page.getByRole("button", { name: "查询", exact: true }).click();
-  await page.getByText("1 条资源 · 1 条可用", { exact: true }).waitFor();
+  await page.getByText("1 条资源 · 0 条可用", { exact: true }).waitFor();
   await page.locator(".plaza-table").getByRole("button", { name: "详情", exact: true }).click();
   await sources.getByText("供应商甲", { exact: true }).waitFor();
   assert.equal(await sources.getByText("供应商乙", { exact: true }).count(), 0);

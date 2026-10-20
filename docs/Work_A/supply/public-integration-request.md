@@ -141,3 +141,5 @@ ModelReadStore实现可选ModelFilterOptionsStore后可使用标准模型filter-
 SupplyDeps.ResourceStates注入NewResourceStateService(work,clock)，A注册器提供POST resources/:id/state。work实现ResourceStateUnitOfWork，加入现有幂等事务；资源锁定和当前模型/配置/B证据同快照读取，CAS更新与日志、公告、outbox同事务写入。公共方提供工具，A提供真实资源映射，B提供当前报告事实。
 
 效果端口分配唯一event_id，并将其用于自动公告source_event_id防重；未知客户影响写PENDING，C消费后计算。不直接修改客户关系，上架不自动恢复。并发锁顺序及commit失败响应需共同真库验收。接口字段与当前测试边界见[HTTP记录](../TDD/2026-10-20-resource-state-http-results.md)。
+
+资源详情已新增ResourceStateDialog，POST成功后重读详情并沿changed事件刷新来源与广场。权限展示使用安全DTO的can_edit及实际状态，服务端仍必须强制校验；403/409后输入保留且不自动更新revision重试。完整页面证据见[登记页面记录](../TDD/2026-10-20-resource-state-ui-results.md)。

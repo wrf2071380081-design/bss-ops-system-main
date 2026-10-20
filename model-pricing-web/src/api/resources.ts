@@ -1,4 +1,5 @@
 import { apiRequest } from "./http";
+import { buildResourceStateBody, validateResourceStateReceipt } from "./resourceState.contract";
 import { standardModelVersion } from "./standardModels.contract";
 import { buildResourceQuery, resourceRegionLabels, validateResourceGroup, validateResourceRow } from "./resources.contract";
 import type { ResourceFilterOptions, ResourceGroup, ResourcePage, ResourceQuery, ResourceRow } from "./resources.types";
@@ -8,6 +9,10 @@ function page<T>(value: ResourcePage<unknown>, expected: ResourceQuery, validate
   return { ...value, list: value.list.map(row => validate(row)) };
 }
 export const resourcesApi = {
+  async registerState(row: ResourceRow, confirmed: boolean, note: string, reason: string, lifecycle: string) {
+    const body = buildResourceStateBody(row, confirmed, note, reason), url = `/internal/resources/${standardModelVersion(row.id)}/state`;
+    return validateResourceStateReceipt(await apiRequest<unknown>({ method: "POST", url, data: body, idempotency: { scope: url, payload: body, lifecycle } }), row, body.action);
+  },
   async groups(query: Partial<ResourceQuery>, signal?: AbortSignal): Promise<ResourcePage<ResourceGroup>> {
     const params = buildResourceQuery({ ...query, view: "grouped" });
     return page(await apiRequest<ResourcePage<unknown>>({ url: "/internal/resources", params, signal }), params, validateResourceGroup);
