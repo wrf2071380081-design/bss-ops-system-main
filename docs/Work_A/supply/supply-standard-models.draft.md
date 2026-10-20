@@ -191,3 +191,13 @@ F1 列表/维护页优先于 F2 自动抓取增强。抓取未接入时不能把
 v0.22 三入口的职责与当前代码差距见[最新范围核对](./2026-10-20-v022-entry-scope.md)。本补充不表示页面或正式存储已实现。
 
 后续交付更新：独立标准库与维护页面已新增，接入边界、实际测试及原型尚待补齐项见[F1前端记录](../TDD/2026-10-20-f1-frontend-results.md)。正式菜单/存储仍未装配。
+# v0.22 多值筛选补充（2026-10-20）
+
+GET列表增加 companies/model_types/supplier_ids/regions，每个query值为JSON字符串数组，例如 `companies=["OpenAI","Company, LLC"]`、`regions=["CN","OVERSEAS"]`。不用逗号拆公司名称。每维最多50个非空、不重复值，单个公司最多200字符；ID仍为canonical bigint字符串，类型与区域使用既有枚举。空数组表示该维度不限；同维度OR、跨维度AND。
+
+旧company/model_type单值参数可继续使用，但不允许与对应复数参数同时指定非空条件。复数条件规范化后传给仓储；公司名保留大小写进行精确选择，keyword另作文本搜索。
+
+供应商和区域筛选必须通过同一资源的EXISTS关联实现，不给standard_model添加region列，也不以两个独立EXISTS分别命中不同资源。过滤和模型去重先于排序/分页，total为符合条件的模型数。未指定供应商/区域时，没有资源的标准模型仍可见。
+
+GET `/api/internal/standard-models/filter-options` 接收keyword、regions（相同JSON数组编码）。返回 companies、suppliers[{id,name,region}]、has_more，每类最多50项。公司来自标准模型全集（包括无资源模型），供应商来自关联资源及有效供应商身份，regions仅限定供应商选项。keyword按名称匹配。达到上限仍有匹配时has_more=true，不从当前列表页构造选项。身份和普通读取相同，全体内部人员可读；缺选项仓储能力503。
+

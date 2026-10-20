@@ -101,7 +101,7 @@ func supplyHTTPError(c *gin.Context, err error) {
 // @Failure 400,401,403,503 {object} response.Body
 // @Router /api/internal/standard-models [get]
 func (h *supplyModelHandler) list(c *gin.Context) {
-	values, err := supplyQuery(c, "page", "size", "keyword", "company", "model_type", "status", "verify_status", "sort_by", "order")
+	values, err := supplyQuery(c, "page", "size", "keyword", "company", "model_type", "companies", "model_types", "supplier_ids", "regions", "status", "verify_status", "sort_by", "order")
 	if err != nil {
 		supplyHTTPError(c, err)
 		return
@@ -111,7 +111,18 @@ func (h *supplyModelHandler) list(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	result, err := h.reader.List(c.Request.Context(), supply.ModelListQuery{Page: page, Size: size, Keyword: values.Get("keyword"), Company: values.Get("company"), ModelType: values.Get("model_type"), Status: values.Get("status"), VerifyStatus: values.Get("verify_status"), SortBy: values.Get("sort_by"), Order: values.Get("order")})
+	query := supply.ModelListQuery{Page: page, Size: size, Keyword: values.Get("keyword"), Company: values.Get("company"), ModelType: values.Get("model_type"), Status: values.Get("status"), VerifyStatus: values.Get("verify_status"), SortBy: values.Get("sort_by"), Order: values.Get("order")}
+	for _, field := range []struct {
+		key    string
+		target *[]string
+	}{{"companies", &query.Companies}, {"model_types", &query.ModelTypes}, {"supplier_ids", &query.SupplierIDs}, {"regions", &query.Regions}} {
+		*field.target, err = supplyModelArray(values, field.key)
+		if err != nil {
+			supplyHTTPError(c, err)
+			return
+		}
+	}
+	result, err := h.reader.List(c.Request.Context(), query)
 	if err != nil {
 		supplyHTTPError(c, err)
 		return

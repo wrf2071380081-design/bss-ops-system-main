@@ -35,6 +35,7 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	group.Use(requireSupplyInternalStaff)
 	h := &supplyModelHandler{reader: deps.Reader, writer: deps.Writer}
 	group.GET("", h.list)
+	group.GET("/filter-options", h.options)
 	group.GET("/:id/versions", h.versions)
 	group.GET("/:id", h.get)
 	var idem gin.HandlerFunc

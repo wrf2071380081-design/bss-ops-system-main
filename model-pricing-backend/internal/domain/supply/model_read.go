@@ -11,6 +11,7 @@ var ErrReadContract = errors.New("standard model read adapter returned inconsist
 
 type ModelListQuery struct {
 	Keyword, Company, ModelType, Status, VerifyStatus string
+	Companies, ModelTypes, SupplierIDs, Regions       []string
 	SortBy, Order                                     string
 	Page, Size                                        int
 	// Adapter obligations: NULLS LAST in both directions, then a stable ID tie break.
@@ -64,6 +65,10 @@ func normalizeModelQuery(q ModelListQuery) (ModelListQuery, error) {
 	}
 	q.Keyword = strings.TrimSpace(q.Keyword)
 	q.Company = strings.TrimSpace(q.Company)
+	q, err = normalizeModelFilters(q)
+	if err != nil {
+		return q, err
+	}
 	if q.SortBy == "" {
 		q.SortBy = "updated_at"
 	}

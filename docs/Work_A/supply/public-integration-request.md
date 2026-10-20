@@ -129,3 +129,9 @@ B报告适配须提供report_id、可空resource_id、supplier/model/region、�
 `PlanSummaryDialog.vue` 接收 id 和 close 事件，仅用于已知计划ID的只读详情；未实现的执行接口不能通过该组件绕过。公共方待办办理入口仍需后续F13写能力支持。
 
 资源详情已内部挂载 `ResourceNoticesPanel.vue`，按 resourceID/region 查询当前人员公告，不需新增公共菜单。组件、截图和实际验证边界见[前端记录](../TDD/2026-10-20-workbench-a-frontend-results.md)。
+
+## 13. 标准模型多值筛选
+
+ModelListQuery新增Companies/ModelTypes/SupplierIDs/Regions；规范化后复数条件为准，旧Company/ModelType被转入并清空。仓储不能继续只读取旧单值字段。供应商/区域必须通过同一资源EXISTS匹配；未指定关联条件保留无资源模型，过滤和模型去重先于分页。
+
+ModelReadStore实现可选ModelFilterOptionsStore后可使用标准模型filter-options路由，缺该能力503。公司取全部标准模型，供应商取关联资源身份；不要用资源选项接口代替，避免丢失无资源公司的模型。具体字段与边界见[F1契约](./supply-standard-models.draft.md)和[后端记录](../TDD/2026-10-20-f1-filters-results.md)。
