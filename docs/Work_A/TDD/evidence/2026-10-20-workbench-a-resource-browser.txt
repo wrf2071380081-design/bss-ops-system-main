@@ -1,2 +1,0 @@
-PASS: grouped counts/range; detail-column navigation; sources/detail retry; exact metrics and cache states; raw report counters and scene; named remote supplier selection; inherited filters; narrow-screen scrolling.
-ExitCode=0

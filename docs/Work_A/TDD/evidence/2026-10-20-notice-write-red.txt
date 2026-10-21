@@ -1,6 +1,0 @@
---- FAIL: TestNoticeWriteOperationPreservesFirstReadAndSchemaLimits (0.00s)
-    notice_write_test.go:16: standard model read adapter returned inconsistent data
-FAIL
-FAIL	model_bss/internal/infra/supplypg	0.008s
-FAIL
-ExitCode=1

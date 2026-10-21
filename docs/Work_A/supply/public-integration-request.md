@@ -89,7 +89,7 @@ A 页面组件为 `model-pricing-web/src/views/internal/models/StandardModelList
 
 详情记录读取附01的 `entityType/ entityId` 查询参数，预期列表包含 action、operator_id、reason、request_id、occurred_at（或公共映射后的created_at）。最终DTO、操作人显示名和分页待公共方固定；当前UI显示最近100条，不将其声称为日志平台已接入。
 
-多值公司/类型及供应商/部署节点关联筛选、模型库级记录侧栏需继续冻结查询契约；不从当前分页结果推断全部可选值，也不将标准模型硬设单一区域。阶段截图与未完成项见[F1前端执行记录](../TDD/2026-10-20-f1-frontend-results.md)。
+多值公司/类型及供应商/部署节点关联筛选、模型库级记录侧栏需继续冻结查询契约；不从当前分页结果推断全部可选值，也不将标准模型硬设单一区域。阶段截图与未完成项见[F1前端执行记录](../TDD/SUMMARY.md#stage-04)。
 
 ## 9. F3 资源读取装配
 
@@ -101,7 +101,7 @@ A 页面组件为 `model-pricing-web/src/views/internal/models/StandardModelList
 
 B报告适配须提供report_id、可空resource_id、supplier/model/region、来源申报行及版本、不可变目标版本、自身连通/压力结论、有效性、可选毫秒/RPS/TPS字符串和cache_stats原始计数/场景。选定报告缺失/依赖失败必须区分，不借其他报告或原始测试凭据填充。
 
-新字段需求包括resource的supplier_model_id、origin_row/version、target_version、latest_report_id及正式配置引用版本；B的报告需保留资源创建前的行关联。报告选择的任务顺序与迟到回调保护后续写切片继续冻结。样例及验证边界见[F3读取记录](../TDD/2026-10-20-f3-read-results.md)。
+新字段需求包括resource的supplier_model_id、origin_row/version、target_version、latest_report_id及正式配置引用版本；B的报告需保留资源创建前的行关联。报告选择的任务顺序与迟到回调保护后续写切片继续冻结。样例及验证边界见[F3读取记录](../TDD/SUMMARY.md#stage-10)。
 
 ## 10. 模型广场页面与选项装配
 
@@ -109,7 +109,7 @@ B报告适配须提供report_id、可空resource_id、supplier/model/region、�
 
 现有ResourceReader新增Options能力，注册器增加GET `/resources/filter-options`；实际store实现可选接口ResourceFilterOptionsStore，查询region/keyword，Limit=50，每类至多50项，更多匹配返回HasMore。A真实仓储接新表；公共方提供目标DDL、人员/区域与主装配能力。选项缺失返回503，不能从当前资源页或旧profile猜测身份。
 
-当前只读页面已按新GET契约验证；公共区域联动、采购人名称、日志/计划/历史报告面板及资源状态写入仍需继续接入。完整证据见[F3前端记录](../TDD/2026-10-20-f3-frontend-results.md)。
+当前只读页面已按新GET契约验证；公共区域联动、采购人名称、日志/计划/历史报告面板及资源状态写入仍需继续接入。完整证据见[F3前端记录](../TDD/SUMMARY.md#stage-09)。
 
 ## 11. 工作台公告与计划摘要装配
 
@@ -120,7 +120,7 @@ B报告适配须提供report_id、可空resource_id、supplier/model/region、�
 - 阅读表要求 notice_id/staff_id 唯一约束。写入先锁公告、确认内部人员，再读取/创建个人状态；加入外层幂等事务，阅读记录和操作日志原子提交。重复阅读保留首次时间，新操作意图追加READ_NOOP，幂等重放不追加。
 - POST已读使用认证StaffID，原因由服务端固定为“阅读公告”。禁止调用方通过body或query指定阅读者。
 - 计划仓储返回计划与当前资源的同一一致性快照；发起人取created_by，不从当前buyer_id推断。所有摘要只读，revision比较仅为提示，不是执行授权或完整执行前置校验。
-- 真实约束、并发、日志失败、提交失败及公共幂等响应提交顺序仍需联调。测试替身通过不代表现有运行容器已接入，见[阶段证据](../TDD/2026-10-20-workbench-a-results.md)。
+- 真实约束、并发、日志失败、提交失败及公共幂等响应提交顺序仍需联调。测试替身通过不代表现有运行容器已接入，见[阶段证据](../TDD/SUMMARY.md#stage-31)。
 
 ## 12. 工作台 A 详情组件装配
 
@@ -128,32 +128,32 @@ B报告适配须提供report_id、可空resource_id、supplier/model/region、�
 
 `PlanSummaryDialog.vue` 接收 id 和 close 事件，仅用于已知计划ID的只读详情；未实现的执行接口不能通过该组件绕过。公共方待办办理入口仍需后续F13写能力支持。
 
-资源详情已内部挂载 `ResourceNoticesPanel.vue`，按 resourceID/region 查询当前人员公告，不需新增公共菜单。组件、截图和实际验证边界见[前端记录](../TDD/2026-10-20-workbench-a-frontend-results.md)。
+资源详情已内部挂载 `ResourceNoticesPanel.vue`，按 resourceID/region 查询当前人员公告，不需新增公共菜单。组件、截图和实际验证边界见[前端记录](../TDD/SUMMARY.md#stage-30)。
 
 ## 13. 标准模型多值筛选
 
 ModelListQuery新增Companies/ModelTypes/SupplierIDs/Regions；规范化后复数条件为准，旧Company/ModelType被转入并清空。仓储不能继续只读取旧单值字段。供应商/区域必须通过同一资源EXISTS匹配；未指定关联条件保留无资源模型，过滤和模型去重先于分页。
 
-ModelReadStore实现可选ModelFilterOptionsStore后可使用标准模型filter-options路由，缺该能力503。公司取全部标准模型，供应商取关联资源身份；不要用资源选项接口代替，避免丢失无资源公司的模型。具体字段与边界见[F1契约](./supply-standard-models.draft.md)和[后端记录](../TDD/2026-10-20-f1-filters-results.md)。
+ModelReadStore实现可选ModelFilterOptionsStore后可使用标准模型filter-options路由，缺该能力503。公司取全部标准模型，供应商取关联资源身份；不要用资源选项接口代替，避免丢失无资源公司的模型。具体字段与边界见[F1契约](./supply-standard-models.draft.md)和[后端记录](../TDD/SUMMARY.md#stage-03)。
 
 ## 14. 资源直接上下架装配
 
-PlanMaintenanceTransaction必须实现HasPendingConfigurationChange：B在同事务提供该资源“已通过尚未应用”的变更事实，true阻断创建，依赖失败关闭。与B审批/应用统一资源锁或等价约束，不在锁内远程调用，不从前端列表推断。此项补齐原型539行此前遗漏的门槛，见[修正记录](../TDD/2026-10-20-plan-config-guard-results.md)。
+PlanMaintenanceTransaction必须实现HasPendingConfigurationChange：B在同事务提供该资源“已通过尚未应用”的变更事实，true阻断创建，依赖失败关闭。与B审批/应用统一资源锁或等价约束，不在锁内远程调用，不从前端列表推断。此项补齐原型539行此前遗漏的门槛，见[修正记录](../TDD/SUMMARY.md#stage-15)。
 
-资源详情内部已挂载ResourcePlansPanel，通过GET plans查询resource_id/region/status并打开只读PlanSummaryDialog，无需新增公共菜单；计划写办理页面仍待完成。真实接口不能将依赖失败伪装成空列表，见[前端记录](../TDD/2026-10-20-plan-list-ui-results.md)。
+资源详情内部已挂载ResourcePlansPanel，通过GET plans查询resource_id/region/status并打开只读PlanSummaryDialog，无需新增公共菜单；计划写办理页面仍待完成。真实接口不能将依赖失败伪装成空列表，见[前端记录](../TDD/SUMMARY.md#stage-21)。
 
-PlanReadStore增加可选PlanListStore能力后，现有SupplyDeps.Plans即可使用GET plans列表；未实现列表能力503。SQL按resource_id/region/kind/status过滤后稳定分页，当前资源事实与计划同快照读取，total为计划数。前端面板尚未接入，见[列表记录](../TDD/2026-10-20-plan-list-results.md)。
+PlanReadStore增加可选PlanListStore能力后，现有SupplyDeps.Plans即可使用GET plans列表；未实现列表能力503。SQL按resource_id/region/kind/status过滤后稳定分页，当前资源事实与计划同快照读取，total为计划数。前端面板尚未接入，见[列表记录](../TDD/SUMMARY.md#stage-20)。
 
-计划维护HTTP当前通过SupplyDeps.PlanWriter注入NewPlanMaintenanceService(work,clock)，提供创建/修改/取消三个入口。必须保留requireSupplyInternalStaff、认证StaffID、公共幂等和RequestID；真实work需加入外层事务。计划执行写入口仍未装配，见[维护HTTP记录](../TDD/2026-10-20-plan-http-results.md)。
+计划维护HTTP当前通过SupplyDeps.PlanWriter注入NewPlanMaintenanceService(work,clock)，提供创建/修改/取消三个入口。必须保留requireSupplyInternalStaff、认证StaffID、公共幂等和RequestID；真实work需加入外层事务。计划执行写入口仍未装配，见[维护HTTP记录](../TDD/SUMMARY.md#stage-18)。
 
-当前计划创建/维护服务为PlanMaintenanceService，事务端口需锁资源→计划、强制状态维度唯一、CAS写入，并把不可变修订、操作日志与提醒outbox同事务提交。提醒按plan revision防陈旧，due_at不触发实际状态变化。真实适配仍待完成，见[维护服务记录](../TDD/2026-10-20-plan-maintenance-results.md)。
+当前计划创建/维护服务为PlanMaintenanceService，事务端口需锁资源→计划、强制状态维度唯一、CAS写入，并把不可变修订、操作日志与提醒outbox同事务提交。提醒按plan revision防陈旧，due_at不触发实际状态变化。真实适配仍待完成，见[维护服务记录](../TDD/SUMMARY.md#stage-22)。
 
 > 本节原装配方案已被DEC-010取代，当前不得按此装配直接HTTP入口。上下架必须先创建计划，再由原发起人登记完成，见[纠正记录](../TDD/2026-10-20-plan-only-correction.md)。以下保留历史接口说明。
 
-当前执行方案为PlanExecutionService及PlanExecutionUnitOfWork，不注册直接state HTTP。执行结果Conflict=true必须在外层幂等事务提交后返回409并保存幂等响应，不能让BLOCKED跟随业务错误回滚；日志或提交失败则返回技术错误且没有部分写入。计划/资源加锁及同维度唯一规则见[计划执行记录](../TDD/2026-10-20-plan-execute-results.md)，需要公共响应提交机制配合验收。
+当前执行方案为PlanExecutionService及PlanExecutionUnitOfWork，不注册直接state HTTP。执行结果Conflict=true必须在外层幂等事务提交后返回409并保存幂等响应，不能让BLOCKED跟随业务错误回滚；日志或提交失败则返回技术错误且没有部分写入。计划/资源加锁及同维度唯一规则见[计划执行记录](../TDD/SUMMARY.md#stage-17)，需要公共响应提交机制配合验收。
 
 SupplyDeps.ResourceStates注入NewResourceStateService(work,clock)，A注册器提供POST resources/:id/state。work实现ResourceStateUnitOfWork，加入现有幂等事务；资源锁定和当前模型/配置/B证据同快照读取，CAS更新与日志、公告、outbox同事务写入。公共方提供工具，A提供真实资源映射，B提供当前报告事实。
 
-效果端口分配唯一event_id，并将其用于自动公告source_event_id防重；未知客户影响写PENDING，C消费后计算。不直接修改客户关系，上架不自动恢复。并发锁顺序及commit失败响应需共同真库验收。接口字段与当前测试边界见[HTTP记录](../TDD/2026-10-20-resource-state-http-results.md)。
+效果端口分配唯一event_id，并将其用于自动公告source_event_id防重；未知客户影响写PENDING，C消费后计算。不直接修改客户关系，上架不自动恢复。并发锁顺序及commit失败响应需共同真库验收。接口字段与当前测试边界见[HTTP记录](../TDD/SUMMARY.md#stage-25)。
 
-资源详情已新增ResourceStateDialog，POST成功后重读详情并沿changed事件刷新来源与广场。权限展示使用安全DTO的can_edit及实际状态，服务端仍必须强制校验；403/409后输入保留且不自动更新revision重试。完整页面证据见[登记页面记录](../TDD/2026-10-20-resource-state-ui-results.md)。
+资源详情已新增ResourceStateDialog，POST成功后重读详情并沿changed事件刷新来源与广场。权限展示使用安全DTO的can_edit及实际状态，服务端仍必须强制校验；403/409后输入保留且不自动更新revision重试。完整页面证据见[登记页面记录](../TDD/SUMMARY.md#stage-27)。

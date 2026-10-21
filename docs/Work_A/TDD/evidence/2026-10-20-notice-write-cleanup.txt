@@ -1,6 +1,0 @@
- remaining_notice_write_test_orgs
-----------------------------------
-                                0
-(1 row)
-
-ExitCode=0

@@ -131,23 +131,23 @@ grouped响应为模型id/name/official_id/company/model_type、supplier_count/re
 
 测试摘要增加 `test.metrics.connection_ms/rps/tps`，为可空十进制字符串；真实0保留原字符串，缺失为null。flat排序白名单包括id/supplier_name/region/coefficient/state/updated_at/connection_ms/rps/tps/cache_hit_rate；grouped包括id/name/company/model_type/supplier_count/resource_count/available_count/coefficient_min/coefficient_max。API统一包络data含view/list/total/page/size。
 
-读取代码与HTTP注册器已新增，尚未装配真实仓储/主入口；实际交付及未完成项见[F3读取记录](../TDD/2026-10-20-f3-read-results.md)。
+读取代码与HTTP注册器已新增，尚未装配真实仓储/主入口；实际交付及未完成项见[F3读取记录](../TDD/SUMMARY.md#stage-10)。
 
 ## 10. 广场远程筛选选项
 
-已有独立SQL目录适配supplypg.FilterOptionsStore，按新表完整资源/模型/供应商关系筛选，在同一只读快照查询公司和供应商，使用EXISTS去重、Limit+1判断has_more。真库已覆盖区域、重复来源、55项截断和搜索，见[SQL验证记录](../TDD/2026-10-20-filter-options-pg-results.md)。尚需组合进完整ResourceReadStore，不能将该目录类单独冒充完整资源仓储。
+已有独立SQL目录适配supplypg.FilterOptionsStore，按新表完整资源/模型/供应商关系筛选，在同一只读快照查询公司和供应商，使用EXISTS去重、Limit+1判断has_more。真库已覆盖区域、重复来源、55项截断和搜索，见[SQL验证记录](../TDD/SUMMARY.md#stage-12)。尚需组合进完整ResourceReadStore，不能将该目录类单独冒充完整资源仓储。
 
 GET `/api/internal/resources/filter-options?region=CN&keyword=名称片段`，仅内部人员读取。data为 `{companies: string[], suppliers: [{id,name,region}], has_more: boolean}`；ID字符串，不含配置或凭据。region可空，keyword按公司/供应商各自名称匹配。
 
 每种选项最多50项，截断时has_more=true；应在完整新资源/模型/供应商关联上按区域和名称过滤后取有限匹配，不从资源当前页猜测全集。仓储实现独立的可选能力ResourceFilterOptionsStore；未提供时503，不回退旧supplier_profile。
 
-前端按名称查找并提交已选择供应商ID，展开来源时固定继承已应用筛选并重置资源页码/排序。独立ModelPlaza及来源/详情组件已新增；真实装配和状态写流程仍待完成，见[F3前端记录](../TDD/2026-10-20-f3-frontend-results.md)。
+前端按名称查找并提交已选择供应商ID，展开来源时固定继承已应用筛选并重置资源页码/排序。独立ModelPlaza及来源/详情组件已新增；真实装配和状态写流程仍待完成，见[F3前端记录](../TDD/SUMMARY.md#stage-09)。
 
 ## 11. 统一改系数命令独立实现
 
 ResourceCoefficientService.Change接收认证WriteMeta、资源ID/revision、系数和CoefficientSource{Kind:SUBMISSION/PLAN,ID,Revision}。ResourceCoefficientTransaction在同事务读取并核对真实来源授权、目标资源/revision/金额；来源引用不是客户端授权凭证。PLAN按原发起人验证，不错误要求其仍是当前buyer；人工MANUAL入口尚未开放。
 
-实际变化CAS升资源revision，保留测试目标版本与报告，写前后快照日志和系数变更outbox；无变化只追加NOOP日志，保留revision/updated_at。调用方来源完成、资源、日志和outbox原子提交，提交失败返回nil。事件ID由公共outbox分配，C不因该命令被A直接改写原报价。具体端口及当前证据边界见[阶段记录](../TDD/2026-10-20-resource-coefficient-results.md)。
+实际变化CAS升资源revision，保留测试目标版本与报告，写前后快照日志和系数变更outbox；无变化只追加NOOP日志，保留revision/updated_at。调用方来源完成、资源、日志和outbox原子提交，提交失败返回nil。事件ID由公共outbox分配，C不因该命令被A直接改写原报价。具体端口及当前证据边界见[阶段记录](../TDD/SUMMARY.md#stage-24)。
 
 ## 12. 直接上下架领域命令
 
@@ -155,6 +155,6 @@ ResourceCoefficientService.Change接收认证WriteMeta、资源ID/revision、系
 
 ResourceStateService.Change仅供绑定采购人直接OFFLINE/ONLINE，参数包含external_confirmed和completion_note；未实际确认或无依据拒绝。计划来源不能用客户端plan_id绕过buyer校验，需后续独立的发起人验证执行服务。
 
-ONLINE复用当前安全快照可报价判定，在候选ADMITTED副本重查模型、主体、配置及自身测试；OFFLINE不因上游资料失效而阻止采购人停止资源。两者保留ever_admitted、目标与报告，CAS升revision。操作记录、公告和outbox由同事务效果端口写入，公告影响PENDING。具体证据及未接入项见[上下架领域记录](../TDD/2026-10-20-resource-state-results.md)。
+ONLINE复用当前安全快照可报价判定，在候选ADMITTED副本重查模型、主体、配置及自身测试；OFFLINE不因上游资料失效而阻止采购人停止资源。两者保留ever_admitted、目标与报告，CAS升revision。操作记录、公告和outbox由同事务效果端口写入，公告影响PENDING。具体证据及未接入项见[上下架领域记录](../TDD/SUMMARY.md#stage-26)。
 
-历史POST `/api/internal/resources/:id/state` 及直接登记页面已按DEC-010从A注册器撤下；[HTTP记录](../TDD/2026-10-20-resource-state-http-results.md)仅保留历史证据。当前采用创建计划→原发起人登记实际完成；已有计划创建/修改/取消独立能力，执行HTTP仍未开放，最新进度以[TDD索引](../TDD/README.md)为准。
+历史POST `/api/internal/resources/:id/state` 及直接登记页面已按DEC-010从A注册器撤下；[HTTP记录](../TDD/SUMMARY.md#stage-25)仅保留历史证据。当前采用创建计划→原发起人登记实际完成；已有计划创建/修改/取消独立能力，执行HTTP仍未开放，最新进度以[TDD索引](../TDD/README.md)为准。

@@ -1,7 +1,0 @@
-=== RUN   TestResourceRejectsMalformedModelAndPreservesMetricPrecision
-    resource_read_test.go:164: malformed official model leaked into resource: <nil>
---- FAIL: TestResourceRejectsMalformedModelAndPreservesMetricPrecision (0.00s)
-FAIL
-FAIL	model_bss/internal/domain/supply	0.007s
-FAIL
-ExitCode=1

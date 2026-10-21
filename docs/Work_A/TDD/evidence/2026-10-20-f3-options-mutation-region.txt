@@ -1,7 +1,0 @@
-=== RUN   TestResourceOptionsAreRemoteBoundedAndUseSafeSupplierIdentity
-    resource_options_test.go:31: options leaked excluded region: <nil>
---- FAIL: TestResourceOptionsAreRemoteBoundedAndUseSafeSupplierIdentity (0.00s)
-FAIL
-FAIL	model_bss/internal/domain/supply	0.008s
-FAIL
-ExitCode=1

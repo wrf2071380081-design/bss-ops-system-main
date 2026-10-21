@@ -1,7 +1,0 @@
-=== RUN   TestResourceCacheStatisticsUseOriginalCountsAndPreserveMissingStates
-    resource_read_test.go:15: wrong cache projection: {ReportID:51 Status:PROVIDED HitTokens:246899 InputTokens:2000000 HitRate:0.123450 HitPercent:12.35 Scene:固定前缀} <nil>
---- FAIL: TestResourceCacheStatisticsUseOriginalCountsAndPreserveMissingStates (0.00s)
-FAIL
-FAIL	model_bss/internal/domain/supply	0.006s
-FAIL
-ExitCode=1

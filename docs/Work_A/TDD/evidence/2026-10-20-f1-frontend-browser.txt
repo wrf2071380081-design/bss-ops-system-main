@@ -1,2 +1,0 @@
-PASS: single maintenance entry; exact zero price; conflict/input preservation; save; verify; historical read-only; operation logs; nonowner read-only; incomplete draft; narrow-screen scrolling.
-ExitCode=0

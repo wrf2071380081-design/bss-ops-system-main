@@ -1,5 +1,0 @@
-FAIL	model_bss/internal/api [build failed]
-FAIL
-# model_bss/internal/api [model_bss/internal/api.test]
-internal/api/supply_resource_test.go:30:38: deps.Resources undefined (type SupplyDeps has no field or method Resources)
-ExitCode=1

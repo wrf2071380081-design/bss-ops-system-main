@@ -6,10 +6,10 @@
 
 保留底层领域状态逻辑供后续重构复用，并补HasPendingStatePlan事务端口：有PENDING/EXECUTING上下架维度计划返回409；查询失败关闭。计划创建/取消/执行及直接内部命令须先取得相同资源锁，避免先查后创建竞态。PRICE_CHANGE属于独立维度，不应一概阻断。
 
-[红色测试](./evidence/2026-10-20-state-plan-guard-red.txt)证明原服务确实在已有计划/查询失败时仍变更状态；修复后最终验证见：
+红色测试（本地运行产物；历史见 Git）证明原服务确实在已有计划/查询失败时仍变更状态；修复后最终验证见：
 
-- [后端回归](./evidence/2026-10-20-plan-only-tests.txt)
-- [vet](./evidence/2026-10-20-plan-only-vet.txt)、[build](./evidence/2026-10-20-plan-only-build.txt)
-- [前端回归](./evidence/2026-10-20-plan-only-frontend.txt)、[类型检查](./evidence/2026-10-20-plan-only-typecheck.txt)、[广场浏览器](./evidence/2026-10-20-plan-only-browser.txt)
+- 后端回归（本地运行产物；历史见 Git）
+- vet（本地运行产物；历史见 Git）、build（本地运行产物；历史见 Git）
+- 前端回归（本地运行产物；历史见 Git）、类型检查（本地运行产物；历史见 Git）、广场浏览器（本地运行产物；历史见 Git）
 
 历史直接登记页面和HTTP报告已失效为当前功能说明；它们仍记录当时执行过程。当前没有可用的计划创建/修改/取消/执行写接口和页面，本次也没有宣称其已完成。后续补齐原型计划全流程，再接公共新表、主入口和真实事务联调。

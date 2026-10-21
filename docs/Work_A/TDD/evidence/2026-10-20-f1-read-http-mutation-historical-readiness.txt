@@ -1,6 +1,0 @@
---- FAIL: TestModelReaderHistoricalSnapshotPreservesPriceAndBlocksNewQuotes (0.00s)
-    model_read_test.go:80: history repriced or eligible for new quotes: &{Model:0x24e4dcae29c0 CurrentVersionNo:3 IsCurrent:false QuoteReadiness:{Ready:true Reasons:[HISTORICAL_MODEL_VERSION] StandardModelVersionNo:2}}
-FAIL
-FAIL	model_bss/internal/domain/supply	0.006s
-FAIL
-ExpectedTestExitCode=1

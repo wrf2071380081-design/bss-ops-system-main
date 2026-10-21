@@ -1,4 +1,0 @@
-ok  	model_bss/internal/domain/supply	0.022s
-ok  	model_bss/internal/api	0.036s
-ok  	model_bss/internal/infra/supplypg	0.009s
-ExitCode=0
