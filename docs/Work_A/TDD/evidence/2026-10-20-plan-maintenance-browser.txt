@@ -1,0 +1,2 @@
+PASS: real Vue plan revise/cancel; empty reason; preserved fields and same-key 503 retry; original resource basis; list/detail refresh; 409 freeze; terminal and non-initiator actions hidden. Mock HTTP only.
+ExitCode=0

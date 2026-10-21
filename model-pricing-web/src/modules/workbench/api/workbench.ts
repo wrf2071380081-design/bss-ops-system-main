@@ -1,6 +1,10 @@
 import type { IsoDateTime } from "../../../domain/common";
 import { apiRequest } from "../../../api/http";
 
+// ------------------------------------------------------------
+// 旧工作台（指标卡 + 任务 + 提醒）——保留给 MSW mock 与兼容，
+// 新页面统一走下面的 inbox/operations。
+// ------------------------------------------------------------
 export interface WorkbenchMetricDTO {
   id: string;
   label: string;
@@ -66,7 +70,74 @@ function internalDeeplink(path: string) {
   return "/internal/workbench";
 }
 
+// ------------------------------------------------------------
+// 新工作台：统一收件箱（F0，v0.22）
+// ------------------------------------------------------------
+export type InboxState = "TODO" | "READ" | "DONE" | "READ_DONE";
+
+export interface InboxItemDTO {
+  biz_type: string;
+  biz_id: number;
+  item_type: "TODO" | "READ";
+  state: InboxState;
+  title: string;
+  biz_object: string;
+  region?: string;
+  priority: string;
+  occurred_at: IsoDateTime;
+  deeplink?: string;
+  readable: boolean;
+}
+
+export interface InboxPageDTO {
+  list: InboxItemDTO[];
+  total: number;
+  page: number;
+  size: number;
+}
+
+export interface WorkbenchPersonDTO {
+  id: number;
+  name: string;
+}
+
+export interface InboxQuery {
+  state: InboxState;
+  assigneeId?: number;
+  bizType?: string;
+  region?: string;
+  keyword?: string;
+  page?: number;
+  size?: number;
+}
+
+export interface OperationItemDTO {
+  id: number;
+  action: string;
+  entity_type: string;
+  entity_id: number;
+  operator_name: string;
+  reason?: string;
+  created_at: IsoDateTime;
+}
+
+export interface OperationPageDTO {
+  list: OperationItemDTO[];
+  total: number;
+  page: number;
+  size: number;
+}
+
+export interface OperationQuery {
+  operatorId?: number;
+  entityType?: string;
+  entityId?: number;
+  page?: number;
+  size?: number;
+}
+
 export const workbenchApi = {
+  // 旧接口（保留兼容；新页面不再使用）
   get: async (): Promise<WorkbenchDTO> => {
     const [todos, metrics] = await Promise.all([
       apiRequest<{ list: TodoWireDTO[] }>({ url: "/internal/workbench/todos", method: "GET", params: { page: 1, size: 20, status: "OPEN" } }),
@@ -94,5 +165,47 @@ export const workbenchApi = {
       notices: [],
       generatedAt: new Date().toISOString(),
     };
+  },
+
+  inbox: async (query: InboxQuery): Promise<InboxPageDTO> =>
+    apiRequest<InboxPageDTO>({
+      url: "/internal/workbench/inbox",
+      method: "GET",
+      params: {
+        state: query.state,
+        assignee_id: query.assigneeId || undefined,
+        biz_type: query.bizType || undefined,
+        region: query.region || undefined,
+        keyword: query.keyword || undefined,
+        page: query.page || 1,
+        size: query.size || 20,
+      },
+    }),
+
+  people: async (): Promise<WorkbenchPersonDTO[]> => {
+    const data = await apiRequest<{ list: WorkbenchPersonDTO[] }>({ url: "/internal/workbench/people", method: "GET" });
+    return data.list;
+  },
+
+  operations: async (query: OperationQuery): Promise<OperationPageDTO> =>
+    apiRequest<OperationPageDTO>({
+      url: "/internal/workbench/operations",
+      method: "GET",
+      params: {
+        operator_id: query.operatorId || undefined,
+        entity_type: query.entityType || undefined,
+        entity_id: query.entityId || undefined,
+        page: query.page || 1,
+        size: query.size || 20,
+      },
+    }),
+
+  markRead: async (noticeId: number): Promise<void> => {
+    await apiRequest<{ notice_id: number }>({
+      url: `/internal/workbench/notices/${noticeId}/read`,
+      method: "POST",
+      data: {},
+      idempotency: { scope: `workbench:notice-read:${noticeId}`, payload: { noticeId } },
+    });
   },
 };

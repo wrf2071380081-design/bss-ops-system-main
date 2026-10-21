@@ -1,9 +1,28 @@
 import { apiRequest } from "./http";
+import { buildPlanCancellation, buildPlanRevision, validateMaintainedPlan } from "./planMaintenance.contract";
+import { buildPlanCreate, validateCreatedPlan, type PlanResource } from "./planCreate.contract";
+import { validatePlanPage, validatePlanQuery, type PlanQuery } from "./planList.contract";
 import { standardModelVersion } from "./standardModels.contract";
 import { validateNoticePage, validateNoticeView, validatePlanSummary, validateReadReceipt } from "./supplyWorkbench.contract";
-import type { NoticeQuery } from "./supplyWorkbench.types";
+import type { NoticeQuery, PlanSummary } from "./supplyWorkbench.types";
 
 export const supplyWorkbenchApi = {
+  async revisePlan(plan: PlanSummary, reason: string, dueAt: string, lifecycle: string) {
+    const body = buildPlanRevision(plan, reason, dueAt);
+    return validateMaintainedPlan(await apiRequest<unknown>({ method: "PUT", url: `/internal/plans/${plan.id}`, data: body, idempotency: { scope: `supply-plan-revise:${plan.id}`, payload: body, lifecycle } }), plan, body, "revise");
+  },
+  async cancelPlan(plan: PlanSummary, reason: string, lifecycle: string) {
+    const body = buildPlanCancellation(plan, reason);
+    return validateMaintainedPlan(await apiRequest<unknown>({ method: "POST", url: `/internal/plans/${plan.id}/cancel`, data: body, idempotency: { scope: `supply-plan-cancel:${plan.id}`, payload: body, lifecycle } }), plan, body, "cancel");
+  },
+  async createPlan(resource: PlanResource, reason: string, dueAt: string, lifecycle: string) {
+    const body = buildPlanCreate(resource, reason, dueAt);
+    return validateCreatedPlan(await apiRequest<unknown>({ method: "POST", url: "/internal/plans", data: body, idempotency: { scope: "supply-state-plan-create", payload: body, lifecycle } }), resource, body);
+  },
+  async plans(query: PlanQuery, signal?: AbortSignal) {
+    const params = validatePlanQuery(query);
+    return validatePlanPage(await apiRequest<unknown>({ url: "/internal/plans", params, signal }), params);
+  },
   async notices(query: NoticeQuery, signal?: AbortSignal) {
     if (query.resource_id) standardModelVersion(query.resource_id);
     return validateNoticePage(await apiRequest<unknown>({ url: "/internal/notices", params: query, signal }), query);

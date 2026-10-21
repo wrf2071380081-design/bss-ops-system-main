@@ -65,6 +65,20 @@ func Load() (*Config, error) {
 	v.SetDefault("worker.jobs.event_deliver.enable", true)
 	v.SetDefault("worker.jobs.event_deliver.interval", time.Minute)
 
+	// 模块开关（重构收敛）：原型 v0.19 用不到的模块默认关闭，路由返回 404。
+	// configs/config.yaml 被 .gitignore 忽略，默认值必须落在代码里；
+	// 要恢复某模块，改这里/配置为 true 即可（代码与表都还在，不删）。
+	// 可用环境变量覆盖：MODEL_BSS_FEATURES_COST=true 等（AutomaticEnv 会映射成 features.cost）。
+	v.SetDefault("features.approval", false)
+	v.SetDefault("features.cost", false)
+	v.SetDefault("features.legacy_price_sync", false)
+	v.SetDefault("features.pricing_policy", false)
+	v.SetDefault("features.price_upconduction", false)
+	v.SetDefault("features.supplier_quote_approval", false)
+	v.SetDefault("features.special_price", false)
+	v.SetDefault("features.finance_legacy", false)
+	v.SetDefault("features.customer_portal", false)
+
 	for key, env := range bindings {
 		if err := v.BindEnv(key, env); err != nil {
 			return nil, fmt.Errorf("bind env %s to %s: %w", env, key, err)

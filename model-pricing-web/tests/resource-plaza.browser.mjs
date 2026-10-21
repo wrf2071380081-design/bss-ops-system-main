@@ -5,7 +5,7 @@ import { createServer } from "vite";
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 process.env.VITE_AUTH_ENABLED = "false"; process.env.VITE_MOCK_ENABLED = "false"; process.env.VITE_API_BASE_URL = "/api";
-const entry = `import {createApp,h} from 'vue';import {createPinia} from 'pinia';import {createRouter,createWebHistory,RouterView} from 'vue-router';import ElementPlus from 'element-plus';import zhCn from 'element-plus/es/locale/lang/zh-cn';import 'element-plus/dist/index.css';import Page from '/src/views/internal/resources/ModelPlaza.vue';const app=createApp({render:()=>h(RouterView)});const router=createRouter({history:createWebHistory(),routes:[{path:'/__resource-plaza-test',component:Page}]});app.use(createPinia()).use(router).use(ElementPlus,{locale:zhCn});router.isReady().then(()=>app.mount('#app'));`;
+const entry = `import {createApp,h} from 'vue';import {createPinia} from 'pinia';import {createRouter,createWebHistory,RouterView} from 'vue-router';import ElementPlus from 'element-plus';import zhCn from 'element-plus/es/locale/lang/zh-cn';import 'element-plus/dist/index.css';import Page from '/src/views/internal/resources/ModelPlaza.vue';import {useSessionStore} from '/src/stores/session.ts';const app=createApp({render:()=>h(RouterView)});const router=createRouter({history:createWebHistory(),routes:[{path:'/__resource-plaza-test',component:Page}]});app.use(createPinia()).use(router).use(ElementPlus,{locale:zhCn});useSessionStore().restoreSession();router.isReady().then(()=>app.mount('#app'));`;
 const plugin = { name: "resource-plaza-test", resolveId(id) { if (id === "/@resource-plaza-test-entry") return "\0resource-plaza-test-entry"; }, load(id) { if (id === "\0resource-plaza-test-entry") return entry; }, configureServer(server) { server.middlewares.use(async (req, res, next) => { if (req.url !== "/__resource-plaza-test") return next(); res.setHeader("Content-Type", "text/html"); res.end(await server.transformIndexHtml(req.url, '<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:24px;background:#f5f7f8;font-family:"Microsoft YaHei",sans-serif}*{box-sizing:border-box}</style></head><body><div id="app"></div><script type="module" src="/@resource-plaza-test-entry"></script></body></html>')); }); } };
 const price = { item_key: "text_input", label: "输入", task_type: "TEXT_INPUT", amount: "2.00000000", currency: "USD", unit_code: "TOKEN", unit_quantity: "1000000", condition: "标准请求", dimensions: {}, source_url: "https://vendor.example/pricing" };
 const row = (id, supplier, name, coefficient, cache, eligible) => ({ id, supplier_id: supplier, supplier_name: name, standard_model_id: "11", model_name: "示例标准模型", official_id: "example-v1", company: "示例模型公司", model_type: "TEXT", region: "CN", supplier_model_id: "vendor-model-" + id, coefficient, buyer_id: "7", state: "ADMITTED", ever_admitted: true, revision: "1", formal_config_id: "91", formal_config_revision: "1", test: { report_id: "51" + supplier, status: "COMPLETED", connectivity_passed: true, pressure_passed: true, valid: true, cache_stats: { ...cache, report_id: "51" + supplier }, metrics: { connection_ms: "0.00", rps: "23.00000000", tps: "9007199254740993" } }, official_price_items: [price, { ...price, item_key: "text_output", label: "输出", task_type: "TEXT_OUTPUT", amount: "8.00000000" }], quote_readiness: { eligible, blocked_reasons: eligible ? [] : ["MODEL_NOT_READY"], resource_revision: "1", model_version_no: "1", formal_config_revision: "1", test_evidence_ref: "51" + supplier }, permissions: { can_edit: false }, created_at: "2026-10-20T01:00:00Z", updated_at: "2026-10-20T01:00:00Z" });
@@ -13,11 +13,32 @@ const rows = [row("9007199254740993", "21", "供应商甲", "0.6800", { status: 
 rows[2].test.metrics = { connection_ms: null, rps: null, tps: null };
 let server, browser, failRows = true, failDetail = true;
 const errors = [], flatQueries = [];
+rows[0].permissions.can_edit=true;
+let failPlans = true, createdPlan;const planWrites=[];
+const planQueries = [];
+const plan = { id: "81", resource_id: "32", region: "CN", kind: "OFFLINE", status: "PENDING", created_by: "8", creator_name: "采购乙", revision: "1", expected_resource_revision: "1", current_resource_revision: "2", due_at: "2027-01-01T01:00:00Z", executed_at: null, created_at: "2026-10-20T01:00:00Z", reason: "计划维护", is_initiator: false, read_only: true, precondition_matches: false, blocked_reasons: ["RESOURCE_CHANGED"] };
 try {
   server = await createServer({ plugins: [plugin], server: { host: "127.0.0.1", port: 0 }, logLevel: "error" }); await server.listen();
   browser = await chromium.launch({ headless: true, channel: "msedge" });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } }); page.setDefaultTimeout(20000); page.on("pageerror", error => errors.push(error.message));
   await page.route("**/api/internal/notices?**", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data: { list: [], total: 0, page: 1, size: 10 }, requestId: "resource-notices-fixture" }) }));
+  await page.route("**/api/internal/plans**", route => {
+    const url = new URL(route.request().url());
+    const send = (data, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ code: status === 200 ? 0 : 10000, message: status === 200 ? "ok" : "暂时不可用", data, requestId: "plan-panel-fixture" }) });
+    if(route.request().method()==='POST'){
+      const body=route.request().postDataJSON();planWrites.push({body,key:route.request().headers()['idempotency-key']});
+      if(planWrites.length===1)return send(null,503);
+      createdPlan={...plan,...body,id:'82',revision:'1',created_by:'7',expected_resource_revision:body.expected_resource_revision,current_resource_revision:body.expected_resource_revision,precondition_matches:true,blocked_reasons:[],is_initiator:true};return send(createdPlan);
+    }
+    if(url.searchParams.get('resource_id')==='9007199254740993'){
+      const list=createdPlan&&(!url.searchParams.get('status')||url.searchParams.get('status')===createdPlan.status)&&(!url.searchParams.get('kind')||url.searchParams.get('kind')===createdPlan.kind)?[createdPlan]:[];return send({list,total:list.length,page:Number(url.searchParams.get('page')),size:Number(url.searchParams.get('size'))});
+    }
+    if (url.pathname.endsWith("/81")) return send(plan);
+    planQueries.push(Object.fromEntries(url.searchParams));
+    if (failPlans) { failPlans = false; return send(null, 503); }
+    const list = url.searchParams.get("status") === "CANCELED" ? [] : [plan];
+    return send({ list, total: list.length, page: Number(url.searchParams.get("page")), size: Number(url.searchParams.get("size")) });
+  });
   await page.route("**/api/internal/resources**", async route => {
     const url = new URL(route.request().url()), q = url.searchParams;
     const send = (data, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ code: status === 200 ? 0 : 10000, message: status === 200 ? "ok" : "暂时不可用", data, requestId: "resource-browser-fixture" }) });
@@ -58,7 +79,45 @@ try {
   await page.screenshot({ path: ".qa/resource-detail-report.png", fullPage: true, animations: "disabled" });
   await drawer.getByRole("tab", { name: "公告", exact: true }).click();
   await drawer.getByText("暂无符合条件的公告", { exact: true }).waitFor();
+  await drawer.getByRole("tab", { name: "计划", exact: true }).click();
+  await drawer.getByRole("button", { name: "重新加载计划列表", exact: true }).click();
+  await drawer.getByText("采购乙", { exact: true }).waitFor();
+  await drawer.getByText("资源已变更", { exact: true }).waitFor();
+  assert.equal(planQueries.at(-1).resource_id, "32"); assert.equal(planQueries.at(-1).region, "CN");
+  await drawer.locator(".resource-plans").getByRole("button", { name: "详情", exact: true }).click();
+  const planDialog = page.locator(".supply-plan-dialog");
+  await planDialog.getByText("资源已变更，计划执行前需重新核对。", { exact: true }).waitFor();
+  assert.equal(await planDialog.getByRole("button", { name: "登记完成", exact: true }).count(), 0);
+  await page.screenshot({ path: ".qa/resource-plan-details.png", fullPage: true, animations: "disabled" });
+  await planDialog.getByRole("button", { name: "关闭计划详情", exact: true }).click();
+  await drawer.locator(".el-select").filter({ has: page.getByRole("combobox", { name: "计划状态", exact: true }) }).click();
+  await page.getByRole("option", { name: "已取消", exact: true }).click();
+  await drawer.getByText("暂无符合条件的计划", { exact: true }).waitFor();
+  assert.equal(planQueries.at(-1).status, "CANCELED"); assert.equal(planQueries.at(-1).page, "1");
   await drawer.getByRole("button", { name: "关闭资源详情", exact: true }).click();
+  await sources.locator('tbody tr').filter({hasText:'供应商甲'}).getByRole('button',{name:'详情',exact:true}).click();
+  await drawer.getByRole('button',{name:'创建下架计划',exact:true}).click();
+  const create=page.locator('.create-state-plan');
+  await create.getByRole('button',{name:'保存计划',exact:true}).click();
+  await create.getByText('请填写原因和有效的预计时间。',{exact:true}).waitFor();
+  assert.equal(planWrites.length,0);
+  await create.getByRole('textbox',{name:'计划原因',exact:true}).fill('供应商维护');
+  await create.getByLabel('预计时间',{exact:true}).fill('2027-01-01T10:00');
+  await create.getByRole('button',{name:'保存计划',exact:true}).click();
+  await create.getByText('服务暂时不可用，请稍后重试。',{exact:true}).waitFor();
+  await page.screenshot({path:'.qa/create-state-plan.png',fullPage:true,animations:'disabled'});
+  await create.getByRole('button',{name:'保存计划',exact:true}).click();
+  await drawer.locator('.resource-plans').getByText('待执行',{exact:true}).waitFor();
+  assert.equal(planWrites[0].key,planWrites[1].key);assert.ok(planWrites[0].key);
+  assert.deepEqual(planWrites[1].body,{resource_id:'9007199254740993',expected_resource_revision:'1',kind:'OFFLINE',due_at:new Date('2027-01-01T10:00').toISOString(),reason:'供应商维护'});
+  await drawer.getByRole('tab',{name:'资源资料',exact:true}).click();
+  await drawer.getByText('已接入',{exact:true}).waitFor();
+  await drawer.getByRole('button',{name:'创建下架计划',exact:true}).click();
+  await create.getByText('该资源已有待执行或执行中的上下架计划，请先查看原计划。',{exact:true}).waitFor();
+  assert.equal(await create.getByRole('button',{name:'保存计划',exact:true}).isDisabled(),true);
+  assert.equal(planWrites.length,2);
+  await create.getByRole('button',{name:'关闭创建计划',exact:true}).click();
+  await drawer.getByRole('button',{name:'关闭资源详情',exact:true}).click();
   await sources.getByRole("button", { name: "关闭供应来源", exact: true }).click();
   await page.locator(".el-select").filter({ has: page.getByRole("combobox", { name: "部署节点", exact: true }) }).click();
   await page.getByRole("option", { name: "国内", exact: true }).click();

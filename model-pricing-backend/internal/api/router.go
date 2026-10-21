@@ -65,6 +65,8 @@ type Deps struct {
 	CustomerPortalSvc *customer.PortalService
 	// 阶段 10a：工作台（10-workbench-audit.md §2/§3）。
 	WorkbenchSvc *workbench.Service
+	// 2026-10-20：工作台统一收件箱（F0）。
+	WorkbenchInboxSvc *workbench.InboxService
 	// 阶段 10b：告警处理 + 审计日志（10-workbench-audit.md §4/§5）。
 	AlertSvc *workbench.AlertService
 	AuditSvc *workbench.AuditService
@@ -96,6 +98,9 @@ func New(deps Deps) *gin.Engine {
 	r.Use(middleware.CORS(deps.Config.Server.AllowOrigins))
 	r.Use(infra_middleware.RequestID())
 	r.Use(infra_middleware.AccessLog(deps.Log))
+	// 模块开关（重构收敛）：原型 v0.19 用不到的旧模块默认关闭，命中路由返回 404。
+	// 只隐藏入口，不删代码/表；configs 或 MODEL_BSS_FEATURES_* 可改回。
+	r.Use(middleware.FeatureGate(deps.Config.Features))
 
 	r.GET("/healthz", HealthzHandler(deps.Health))
 
@@ -138,6 +143,8 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 			protected.GET("/cost-snapshot", h.GetCostSnapshot)
 			protected.GET("/events", h.PullEvents)
 		}
+		// 开放接口的扩展路由（如测试平台回调）加到 router_submission.go，别改本文件。
+		registerOpenCallbacks(g, deps)
 		return
 	}
 
@@ -603,4 +610,10 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 			)
 		}
 	}
+
+	// ---- 重构并行开发：三条线各自的路由文件（各改各的，避免 router.go 冲突） ----
+	// 新增路由一律加到对应文件；上面的遗留路由暂不搬，后续按需迁移。
+	registerSupplyRoutes(g, protected, portal, deps)     // A：主数据与供应侧
+	registerSubmissionRoutes(g, protected, portal, deps) // B：申报/办理/测试
+	registerTradeRoutes(g, protected, portal, deps)      // C：客户/报价/留痕
 }

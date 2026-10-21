@@ -1,0 +1,8 @@
+--- FAIL: TestNoticePayloadRoundTripPreservesUnknownImpactAndExactCount (0.00s)
+    notice_row_test.go:17: standard model read adapter returned inconsistent data
+--- FAIL: TestNoticePayloadRejectsAmbiguousOrIncompatibleRows (0.00s)
+    notice_row_test.go:31: standard model read adapter returned inconsistent data
+FAIL
+FAIL	model_bss/internal/infra/supplypg	0.007s
+FAIL
+ExitCode=1

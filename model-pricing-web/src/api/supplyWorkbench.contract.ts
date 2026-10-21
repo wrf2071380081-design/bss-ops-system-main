@@ -56,5 +56,8 @@ export function validatePlanSummary(value: unknown, expectedID: string): PlanSum
   if (!Array.isArray(plan.blocked_reasons) || plan.blocked_reasons.some(reason => typeof reason !== "string") || (!plan.precondition_matches && !plan.blocked_reasons.includes("RESOURCE_CHANGED"))) invalid();
   if (!timestamp(plan.due_at) || !timestamp(plan.created_at) || (plan.executed_at !== null && !timestamp(plan.executed_at)) || (plan.status === "EXECUTED" && plan.executed_at === null)) invalid();
   if (typeof plan.creator_name !== "string" || typeof plan.reason !== "string" || !plan.reason.trim()) invalid();
-  return structuredClone(plan) as unknown as PlanSummary;
+  const permissions = plan.permissions === undefined ? { can_revise: false, can_cancel: false, can_execute: false } : object(plan.permissions);
+  if (["can_revise", "can_cancel", "can_execute"].some(key => typeof permissions[key] !== "boolean")) invalid();
+  if ((permissions.can_revise && (!plan.is_initiator || plan.status !== "PENDING" || !["ONLINE", "OFFLINE"].includes(String(plan.kind)))) || (permissions.can_cancel && (!plan.is_initiator || !["PENDING", "BLOCKED"].includes(String(plan.status)) || !["ONLINE", "OFFLINE"].includes(String(plan.kind)))) || permissions.can_execute) invalid();
+  return structuredClone({ ...plan, permissions }) as unknown as PlanSummary;
 }

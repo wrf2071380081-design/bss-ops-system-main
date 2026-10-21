@@ -30,6 +30,7 @@ export interface NoticeQuery {
 export interface NoticePage { list: NoticeView[]; total: number; page: number; size: number }
 export interface NoticeReadReceipt { notice_id: string; staff_id: string; read_at: string; created: boolean }
 export interface PlanSummary {
+  permissions: { can_revise: boolean; can_cancel: boolean; can_execute: boolean };
   id: string;
   resource_id: string;
   region: string;

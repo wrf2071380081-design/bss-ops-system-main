@@ -44,12 +44,18 @@ type PlanReadStore interface {
 	GetPlanSummary(context.Context, string) (PlanReadRecord, error)
 }
 type PlanSummary struct {
+	Permissions PlanPermissions `json:"permissions"`
 	*ResourcePlan
 	IsInitiator             bool     `json:"is_initiator"`
 	ReadOnly                bool     `json:"read_only"`
 	PreconditionMatches     bool     `json:"precondition_matches"`
 	CurrentResourceRevision uint64   `json:"current_resource_revision,string"`
 	BlockedReasons          []string `json:"blocked_reasons"`
+}
+type PlanPermissions struct {
+	CanRevise  bool `json:"can_revise"`
+	CanCancel  bool `json:"can_cancel"`
+	CanExecute bool `json:"can_execute"`
 }
 type PlanReader struct{ store PlanReadStore }
 
@@ -82,6 +88,12 @@ func buildPlanSummary(record PlanReadRecord, actor, id string) (*PlanSummary, er
 		return nil, ErrReadContract
 	}
 	summary := &PlanSummary{ResourcePlan: p.Clone(), IsInitiator: p.CreatedBy == actor, ReadOnly: true, PreconditionMatches: p.ExpectedResourceRevision == record.ResourceRevision, CurrentResourceRevision: record.ResourceRevision, BlockedReasons: []string{}}
+	if summary.IsInitiator && (p.Kind == "ONLINE" || p.Kind == "OFFLINE") {
+		summary.Permissions.CanRevise = p.Status == "PENDING"
+		summary.Permissions.CanCancel = p.Status == "PENDING" || p.Status == "BLOCKED"
+	}
+	// Execution is not exposed until the public transaction/response assembler
+	// can commit BLOCKED outcomes before sending409. Attribution is not a grant.
 	summary.DueAt = summary.DueAt.UTC()
 	summary.CreatedAt = summary.CreatedAt.UTC()
 	if !summary.PreconditionMatches {

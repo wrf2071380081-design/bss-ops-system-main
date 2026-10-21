@@ -1,0 +1,6 @@
+ current_database | version | dirty
+------------------+---------+-------
+ model_bss        |      32 | f
+(1 row)
+
+ExitCode=0

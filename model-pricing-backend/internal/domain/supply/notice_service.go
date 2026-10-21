@@ -72,7 +72,9 @@ func (s *NoticeService) MarkRead(ctx context.Context, meta WriteMeta, id string)
 		if err != nil {
 			return err
 		}
-		now := s.now().UTC()
+		// PostgreSQL timestamptz stores microseconds. Keep the first receipt,
+		// persisted read and later NOOP receipts at the same precision.
+		now := s.now().UTC().Truncate(time.Microsecond)
 		after := before.Clone()
 		action := "READ_NOOP"
 		created := false

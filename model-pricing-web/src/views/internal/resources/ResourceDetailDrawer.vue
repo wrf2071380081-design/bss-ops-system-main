@@ -6,9 +6,14 @@ import { formatStandardPrice, isOfficialURL, modelTypeLabels } from "../../../ap
 import { formatDateTime } from "../../../domain/date";
 import type { ResourceRow } from "../../../api/resources.types";
 import ResourceNoticesPanel from "./ResourceNoticesPanel.vue";
+import ResourcePlansPanel from "./ResourcePlansPanel.vue";
+import CreateStatePlanDialog from "./CreateStatePlanDialog.vue";
+import { canCreateStatePlan } from "../../../api/planCreate.contract";
 const props = defineProps<{ id: string; region: string }>();
 const emit = defineEmits<{ close: []; changed: [] }>();
 const data = ref<ResourceRow>(), loading = ref(false), error = ref(""), tab = ref("profile");
+const createOpen = ref(false), planGeneration = ref(0);
+function planCreated() { createOpen.value = false; planGeneration.value++; tab.value = "plans"; }
 let active = true, controller: AbortController | undefined;
 async function load() {
   controller?.abort(); const request = controller = new AbortController(); loading.value = true; error.value = "";
@@ -27,10 +32,12 @@ onMounted(load); onBeforeUnmount(() => { active = false; controller?.abort(); })
         <el-tabs v-model="tab"><el-tab-pane label="资源资料" name="profile"><dl><dt>官方 ID</dt><dd>{{ data.official_id || '待补齐' }}</dd><dt>供应商接口模型 ID</dt><dd>{{ data.supplier_model_id }}</dd><dt>采购系数</dt><dd class="coefficient">{{ data.coefficient }}</dd><dt>归属采购人</dt><dd>{{ data.buyer_id }}</dd><dt>正式配置</dt><dd>{{ data.formal_config_id ? `配置 ${data.formal_config_id} · 引用版本 ${data.formal_config_revision}` : '尚未关联' }}</dd><dt>资源修订号</dt><dd>{{ data.revision }}</dd><dt>最近更新</dt><dd>{{ formatDateTime(data.updated_at) }}</dd><dt>官方价格快照</dt><dd v-if="!data.official_price_items.length">价格尚未补齐</dd><dd v-for="price in data.official_price_items" :key="price.item_key"><strong>{{ formatStandardPrice(price) }}</strong><p>{{ price.condition }}</p><a v-if="price.source_url && isOfficialURL(price.source_url)" :href="price.source_url" target="_blank" rel="noopener noreferrer">官方价格来源 ↗</a></dd></dl></el-tab-pane>
           <el-tab-pane label="当前报告摘要" name="report"><el-alert v-if="data.test.status === 'STALE'" title="测试目标已变化；原报告不作为当前测试与报价依据。" type="warning" :closable="false" /><dl><dt>报告</dt><dd>{{ data.test.report_id || '未测试' }}</dd><dt>报告依据</dt><dd>{{ data.test.status === 'NOT_TESTED' ? '未测试' : data.test.status === 'STALE' ? '旧目标报告' : data.test.valid ? '当前有效' : '已失效' }}</dd><dt>连通 / 压力</dt><dd>{{ data.test.status === 'COMPLETED' ? `${data.test.connectivity_passed ? '连通通过' : '连通未通过'} / ${data.test.pressure_passed ? '压力通过' : '压力未通过'}` : data.test.status === 'STALE' ? '目标已变化' : '未测试' }}</dd><dt>连通耗时 · ms</dt><dd>{{ resourceMetricDisplay(data.test.metrics.connection_ms, data.test.status) }}</dd><dt>压力 RPS</dt><dd>{{ resourceMetricDisplay(data.test.metrics.rps, data.test.status) }}</dd><dt>压力 TPS</dt><dd>{{ resourceMetricDisplay(data.test.metrics.tps, data.test.status) }}</dd><dt>输入缓存命中率</dt><dd class="cache-percent">{{ resourceCacheDisplay(data.test.cache_stats, data.test.status) }}</dd><template v-if="data.test.status === 'COMPLETED' && data.test.cache_stats.status === 'PROVIDED'"><dt>命中输入 Token / 总输入 Token</dt><dd>{{ data.test.cache_stats.hit_tokens }} / {{ data.test.cache_stats.input_tokens }}</dd><dt>测试场景</dt><dd>{{ data.test.cache_stats.scene || '未提供' }}</dd></template></dl><p class="muted">缓存统计只表示本次报告口径，不作为新增测试通过阈值。</p></el-tab-pane>
           <el-tab-pane label="公告" name="notices" lazy><ResourceNoticesPanel :resource-i-d="data.id" :region="data.region" /></el-tab-pane>
+          <el-tab-pane label="计划" name="plans" lazy><ResourcePlansPanel :key="planGeneration" :resource-i-d="data.id" :region="data.region" /></el-tab-pane>
         </el-tabs>
       </template>
     </div>
-    <template #footer><el-button @click="emit('close')">关闭资源详情</el-button></template>
+    <CreateStatePlanDialog v-if="createOpen && data" :resource="data" @close="createOpen = false" @saved="planCreated" />
+    <template #footer><el-button @click="emit('close')">关闭资源详情</el-button><el-button v-if="data && canCreateStatePlan(data)" :disabled="loading" type="primary" @click="createOpen = true">{{ data.state === 'OFFLINE' ? '创建上架计划' : '创建下架计划' }}</el-button></template>
   </el-drawer>
 </template>
 <style scoped>

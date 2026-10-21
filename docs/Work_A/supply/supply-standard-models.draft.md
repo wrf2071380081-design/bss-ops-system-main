@@ -193,6 +193,8 @@ v0.22 三入口的职责与当前代码差距见[最新范围核对](./2026-10-2
 后续交付更新：独立标准库与维护页面已新增，接入边界、实际测试及原型尚待补齐项见[F1前端记录](../TDD/2026-10-20-f1-frontend-results.md)。正式菜单/存储仍未装配。
 # v0.22 多值筛选补充（2026-10-20）
 
+后续已实现supplypg.FilterOptionsStore的真实目录查询：公司来自全体标准模型，供应商通过资源与所选区域关联，先去重再截断；真实库已验证无资源公司、多区域、单类截断和默认前50项外搜索，见[SQL验证记录](../TDD/2026-10-20-filter-options-pg-results.md)。当前只实现ModelFilterOptionsStore能力，完整ModelReadStore及生产HTTP装配仍待完成。
+
 GET列表增加 companies/model_types/supplier_ids/regions，每个query值为JSON字符串数组，例如 `companies=["OpenAI","Company, LLC"]`、`regions=["CN","OVERSEAS"]`。不用逗号拆公司名称。每维最多50个非空、不重复值，单个公司最多200字符；ID仍为canonical bigint字符串，类型与区域使用既有枚举。空数组表示该维度不限；同维度OR、跨维度AND。
 
 旧company/model_type单值参数可继续使用，但不允许与对应复数参数同时指定非空条件。复数条件规范化后传给仓储；公司名保留大小写进行精确选择，keyword另作文本搜索。

@@ -18,6 +18,11 @@ type PlanMaintenanceTransaction interface {
 	// share this order and the same resource lock for the state-change dimension.
 	ResourceForPlanCreation(context.Context, string) (*Resource, error)
 	HasPendingStatePlan(context.Context, string) (bool, error)
+	// B supplies the server-side fact: approved but not yet applied changes
+	// affecting this exact resource. Join the current transaction and use the
+	// shared resource lock for B approval/application as well as plan creation.
+	// Dependency failure is an error, never equivalent to "no pending change".
+	HasPendingConfigurationChange(context.Context, string) (bool, error)
 	NextPlanID(context.Context) (string, error)
 	// Enforce pending ONLINE/OFFLINE dimension uniqueness at the DB boundary.
 	CreateStatePlan(context.Context, *StatePlan) error
@@ -84,6 +89,13 @@ func (s *PlanMaintenanceService) Create(ctx context.Context, meta WriteMeta, res
 			return err
 		}
 		if pending {
+			return ErrRevisionConflict
+		}
+		pendingConfiguration, err := tx.HasPendingConfigurationChange(ctx, resourceID)
+		if err != nil {
+			return err
+		}
+		if pendingConfiguration {
 			return ErrRevisionConflict
 		}
 		id, err := tx.NextPlanID(ctx)

@@ -1,0 +1,11 @@
+ current_database | version | dirty
+------------------+---------+-------
+ model_bss        |      32 | f
+(1 row)
+
+ runtime_standard_model
+------------------------
+
+(1 row)
+
+ExitCode=0

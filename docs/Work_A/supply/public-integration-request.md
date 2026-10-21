@@ -138,6 +138,10 @@ ModelReadStore实现可选ModelFilterOptionsStore后可使用标准模型filter-
 
 ## 14. 资源直接上下架装配
 
+PlanMaintenanceTransaction必须实现HasPendingConfigurationChange：B在同事务提供该资源“已通过尚未应用”的变更事实，true阻断创建，依赖失败关闭。与B审批/应用统一资源锁或等价约束，不在锁内远程调用，不从前端列表推断。此项补齐原型539行此前遗漏的门槛，见[修正记录](../TDD/2026-10-20-plan-config-guard-results.md)。
+
+资源详情内部已挂载ResourcePlansPanel，通过GET plans查询resource_id/region/status并打开只读PlanSummaryDialog，无需新增公共菜单；计划写办理页面仍待完成。真实接口不能将依赖失败伪装成空列表，见[前端记录](../TDD/2026-10-20-plan-list-ui-results.md)。
+
 PlanReadStore增加可选PlanListStore能力后，现有SupplyDeps.Plans即可使用GET plans列表；未实现列表能力503。SQL按resource_id/region/kind/status过滤后稳定分页，当前资源事实与计划同快照读取，total为计划数。前端面板尚未接入，见[列表记录](../TDD/2026-10-20-plan-list-results.md)。
 
 计划维护HTTP当前通过SupplyDeps.PlanWriter注入NewPlanMaintenanceService(work,clock)，提供创建/修改/取消三个入口。必须保留requireSupplyInternalStaff、认证StaffID、公共幂等和RequestID；真实work需加入外层事务。计划执行写入口仍未装配，见[维护HTTP记录](../TDD/2026-10-20-plan-http-results.md)。

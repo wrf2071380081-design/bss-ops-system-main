@@ -1,0 +1,4 @@
+=== RUN   TestSupplyNoticePostgres34HTTP
+--- PASS: TestSupplyNoticePostgres34HTTP (0.05s)
+PASS
+ExitCode=0

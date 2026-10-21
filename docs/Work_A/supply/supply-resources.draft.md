@@ -135,6 +135,8 @@ grouped响应为模型id/name/official_id/company/model_type、supplier_count/re
 
 ## 10. 广场远程筛选选项
 
+已有独立SQL目录适配supplypg.FilterOptionsStore，按新表完整资源/模型/供应商关系筛选，在同一只读快照查询公司和供应商，使用EXISTS去重、Limit+1判断has_more。真库已覆盖区域、重复来源、55项截断和搜索，见[SQL验证记录](../TDD/2026-10-20-filter-options-pg-results.md)。尚需组合进完整ResourceReadStore，不能将该目录类单独冒充完整资源仓储。
+
 GET `/api/internal/resources/filter-options?region=CN&keyword=名称片段`，仅内部人员读取。data为 `{companies: string[], suppliers: [{id,name,region}], has_more: boolean}`；ID字符串，不含配置或凭据。region可空，keyword按公司/供应商各自名称匹配。
 
 每种选项最多50项，截断时has_more=true；应在完整新资源/模型/供应商关联上按区域和名称过滤后取有限匹配，不从资源当前页猜测全集。仓储实现独立的可选能力ResourceFilterOptionsStore；未提供时503，不回退旧supplier_profile。
@@ -155,4 +157,4 @@ ResourceStateService.Change仅供绑定采购人直接OFFLINE/ONLINE，参数包
 
 ONLINE复用当前安全快照可报价判定，在候选ADMITTED副本重查模型、主体、配置及自身测试；OFFLINE不因上游资料失效而阻止采购人停止资源。两者保留ever_admitted、目标与报告，CAS升revision。操作记录、公告和outbox由同事务效果端口写入，公告影响PENDING。具体证据及未接入项见[上下架领域记录](../TDD/2026-10-20-resource-state-results.md)。
 
-POST `/api/internal/resources/:id/state` 已在A注册器提供，当前仅OFFLINE/ONLINE。请求为expected_revision字符串、action、external_confirmed=true、completion_note、reason；拒绝查询参数及自报操作者/计划授权。返回安全收据id/state/revision/ever_admitted/updated_at；客户端成功后重读资源详情。缺writer503，版本/状态前提冲突409，非绑定403。页面与真实装配尚未完成，见[HTTP记录](../TDD/2026-10-20-resource-state-http-results.md)。
+历史POST `/api/internal/resources/:id/state` 及直接登记页面已按DEC-010从A注册器撤下；[HTTP记录](../TDD/2026-10-20-resource-state-http-results.md)仅保留历史证据。当前采用创建计划→原发起人登记实际完成；已有计划创建/修改/取消独立能力，执行HTTP仍未开放，最新进度以[TDD索引](../TDD/README.md)为准。

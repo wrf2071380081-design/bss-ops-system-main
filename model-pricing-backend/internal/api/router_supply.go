@@ -92,3 +92,13 @@ func requireSupplyInternalStaff(c *gin.Context) {
 	}
 	c.Next()
 }
+
+// registerSupplyRoutes is the entry called by the main branch public assembler.
+// The A handlers above require concrete target-schema stores and shared services.
+// Keep registration closed until those adapters are supplied through Deps;
+// do not wire nil stores or silently fall back to the legacy schema.
+func registerSupplyRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, portal string, deps Deps) {
+    if portal != "internal" {
+        return
+    }
+}

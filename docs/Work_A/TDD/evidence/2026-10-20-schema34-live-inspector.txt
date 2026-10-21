@@ -1,0 +1,37 @@
+=== RUN   TestF1SchemaPostgres34Metadata
+    f1_schema_integration_test.go:27: {
+          "columns_compatible": false,
+          "repository_ready": false,
+          "missing_columns": [
+            "standard_model.checked_by",
+            "standard_model.maintainer_id",
+            "standard_model.revision",
+            "standard_model.verify_status",
+            "standard_model.version_no"
+          ],
+          "incompatible_columns": [
+            "standard_model_version.version_no: expected bigint, actual integer"
+          ],
+          "index_definitions": [
+            "CREATE INDEX idx_operation_log_created ON public.operation_log USING btree (created_at DESC)",
+            "CREATE INDEX idx_operation_log_entity ON public.operation_log USING btree (entity_type, entity_id, created_at DESC)",
+            "CREATE INDEX idx_operation_log_operator ON public.operation_log USING btree (operator_id, created_at DESC)",
+            "CREATE UNIQUE INDEX operation_log_pkey ON public.operation_log USING btree (id)",
+            "CREATE INDEX idx_standard_model_status ON public.standard_model USING btree (status)",
+            "CREATE INDEX idx_standard_model_type ON public.standard_model USING btree (model_type)",
+            "CREATE UNIQUE INDEX standard_model_pkey ON public.standard_model USING btree (id)",
+            "CREATE UNIQUE INDEX uk_standard_model_company_official ON public.standard_model USING btree (company, official_id)",
+            "CREATE UNIQUE INDEX standard_model_version_pkey ON public.standard_model_version USING btree (id)",
+            "CREATE UNIQUE INDEX uk_standard_model_version ON public.standard_model_version USING btree (standard_model_id, version_no)"
+          ],
+          "required_checks": [
+            "identity uniqueness includes incomplete-draft policy",
+            "version uniqueness and immutable snapshots",
+            "foreign keys and maintainer backfill",
+            "varchar lengths and trace/reason limits",
+            "CAS, shared transaction and commit-failure response"
+          ]
+        }
+--- PASS: TestF1SchemaPostgres34Metadata (0.03s)
+PASS
+ExitCode=0

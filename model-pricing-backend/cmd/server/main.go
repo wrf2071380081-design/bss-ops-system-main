@@ -142,6 +142,9 @@ func main() {
 	// 阶段 10a：工作台（10-workbench-audit.md §2 待办 + §3 指标卡）。
 	workbenchRepo := repo.NewWorkbenchRepo(dbClient.DB)
 	workbenchSvc := workbench.NewService(workbenchRepo, nil)
+	// 2026-10-20：工作台统一收件箱（F0，读 v_work_item 视图）。
+	workbenchInboxRepo := repo.NewWorkbenchInboxRepo(dbClient.DB)
+	workbenchInboxSvc := workbench.NewInboxService(workbenchInboxRepo)
 	// 阶段 10b：告警处理 + 审计日志（10-workbench-audit.md §4/§5）。
 	alertRepo := repo.NewAlertRepo(dbClient.DB)
 	alertSvc := workbench.NewAlertService(alertRepo, nil)
@@ -228,6 +231,7 @@ func main() {
 		CustomerExportSvc:        customerExportSvc,
 		CustomerPortalSvc:        customerPortalSvc,
 		WorkbenchSvc:             workbenchSvc,
+		WorkbenchInboxSvc:        workbenchInboxSvc,
 		AlertSvc:                 alertSvc,
 		AuditSvc:                 auditSvc,
 		OpenApiSvc:               openApiSvc,

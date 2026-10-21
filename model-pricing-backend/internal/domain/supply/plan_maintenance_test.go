@@ -12,6 +12,9 @@ type planMaintenanceFixture struct {
 	plan                            *StatePlan
 	effects                         []PlanMaintenanceEffect
 	pending, failEffect, failCommit bool
+	pendingConfiguration            bool
+	configurationError              error
+	configurationResourceID         string
 }
 
 func (f *planMaintenanceFixture) WithinPlanMaintenance(ctx context.Context, fn func(PlanMaintenanceTransaction) error) error {
@@ -33,6 +36,33 @@ func (f *planMaintenanceFixture) ResourceForPlanCreation(context.Context, string
 }
 func (f *planMaintenanceFixture) HasPendingStatePlan(context.Context, string) (bool, error) {
 	return f.pending, nil
+}
+func (f *planMaintenanceFixture) HasPendingConfigurationChange(_ context.Context, id string) (bool, error) {
+	f.configurationResourceID = id
+	return f.pendingConfiguration, f.configurationError
+}
+
+func TestStatePlanCreationBlocksUnappliedConfigurationChange(t *testing.T) {
+	for _, kind := range []string{"pending", "unavailable"} {
+		t.Run(kind, func(t *testing.T) {
+			f := maintenanceStore()
+			f.pendingConfiguration = kind == "pending"
+			if kind == "unavailable" {
+				f.configurationError = ErrDependencyUnavailable
+			}
+			before := f.resource
+			result, err := NewPlanMaintenanceService(f, nil).Create(context.Background(), maintenanceMeta("7"), "11", 2, "OFFLINE", modelNow)
+			if err == nil || result != nil || f.plan != nil || f.resource != before || len(f.effects) != 0 {
+				t.Fatalf("bypassed pending config: %+v %v", f, err)
+			}
+			if kind == "pending" && !errors.Is(err, ErrRevisionConflict) {
+				t.Fatalf("expected conflict %v", err)
+			}
+			if kind == "unavailable" && !errors.Is(err, ErrDependencyUnavailable) {
+				t.Fatalf("expected dependency error %v", err)
+			}
+		})
+	}
 }
 func (f *planMaintenanceFixture) NextPlanID(context.Context) (string, error) { return "81", nil }
 func (f *planMaintenanceFixture) CreateStatePlan(_ context.Context, p *StatePlan) error {
