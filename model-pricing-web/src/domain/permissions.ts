@@ -43,6 +43,8 @@ export type PermissionCode =
 export const ROUTE_REQUIREMENTS: Record<string, PermissionCode | null> = {
   "internal.workbench": null,
   "internal.models": PERMISSIONS.MODEL_VIEW,
+  "internal.modelPlaza": PERMISSIONS.MODEL_VIEW,
+  "internal.quotes": PERMISSIONS.CUSTOMER_QUOTE_VIEW,
   "internal.modelApplications": PERMISSIONS.MODEL_VIEW,
   "internal.officialPrices": PERMISSIONS.PRICE_SYNC_VIEW,
   "internal.suppliers": PERMISSIONS.SUPPLIER_VIEW,
