@@ -1,6 +1,0 @@
---- FAIL: TestNoticeFirstReadReceiptUsesPersistableMicrosecondPrecision (0.00s)
-    notice_precision_test.go:16: receipt/read/log cannot roundtrip PostgreSQL precision: receipt=2026-10-20 01:00:00.123456789 +0000 UTC want=2026-10-20 01:00:00.123456 +0000 UTC
-FAIL
-FAIL	model_bss/internal/domain/supply	0.006s
-FAIL
-ExitCode=1

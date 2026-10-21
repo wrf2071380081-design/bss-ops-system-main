@@ -1,7 +1,0 @@
-=== RUN   TestNoticeReadIsPersonalAndKeepsFirstTimestamp
-    notice_test.go:158: repeat changed first read or lost audit: &{NoticeID:51 StaffID:7 ReadAt:2026-10-20 03:00:00 +0000 UTC Created:false} <nil>
---- FAIL: TestNoticeReadIsPersonalAndKeepsFirstTimestamp (0.00s)
-FAIL
-FAIL	model_bss/internal/domain/supply	0.008s
-FAIL
-ExitCode=1

@@ -1,5 +1,0 @@
-
-> model-pricing-web@0.1.0 typecheck
-> vue-tsc --noEmit
-
-ExitCode=0

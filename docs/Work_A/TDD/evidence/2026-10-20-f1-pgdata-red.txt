@@ -1,6 +1,0 @@
---- FAIL: TestModelDataReadRequiresTransactionAndCanonicalIdentity (0.00s)
-    model_data_read_test.go:16: invalid identity must fail before query: "0" required supply dependency is unavailable
-FAIL
-FAIL	model_bss/internal/infra/supplypg	0.011s
-FAIL
-ExitCode=1

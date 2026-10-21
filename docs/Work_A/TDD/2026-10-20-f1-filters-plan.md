@@ -9,4 +9,4 @@
 
 本阶段不触碰公共DDL/main/router。实际EXISTS关联与分页前过滤需要后续真库仓储验收。
 
-后端检查见[阶段记录](./2026-10-20-f1-filters-results.md)，后续前端交付见[前端记录](./2026-10-20-f1-filters-frontend-results.md)。真实SQL验收尚未完成。
+后端检查见[阶段记录](SUMMARY.md#stage-03)，后续前端交付见[前端记录](SUMMARY.md#stage-02)。真实SQL验收尚未完成。

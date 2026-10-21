@@ -1,5 +1,0 @@
-FAIL	model_bss/internal/domain/supply [build failed]
-FAIL
-# model_bss/internal/domain/supply [model_bss/internal/domain/supply.test]
-internal/domain/supply/plan_permissions_test.go:7:29: summary.Permissions undefined (type *PlanSummary has no field or method Permissions)
-ExitCode=1

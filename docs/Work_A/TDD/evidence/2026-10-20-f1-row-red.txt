@@ -1,7 +1,0 @@
-FAIL	model_bss/internal/infra/supplypg [build failed]
-FAIL
-# model_bss/internal/infra/supplypg [model_bss/internal/infra/supplypg.test]
-internal/infra/supplypg/model_data_test.go:3:20: undefined: ModelDataRow
-internal/infra/supplypg/model_data_test.go:8:11: undefined: EncodeModelData
-internal/infra/supplypg/model_data_test.go:11: undefined: EncodeModelData
-ExitCode=1

@@ -40,12 +40,12 @@
 
 ## 4. A 当前可交付与下一接入条件
 
-后续已在独立测试库实际应用000033/34并运行检查器：上述五个缺列、version_no类型差异，以及第二条空身份草稿的唯一约束冲突均已确认。运行库仍32。详见[独立测试库验证记录](../TDD/2026-10-20-schema34-testdb-results.md)；该记录补充下面早期仅检查运行库的证据，不代表完整仓储已就绪。
+后续已在独立测试库实际应用000033/34并运行检查器：上述五个缺列、version_no类型差异，以及第二条空身份草稿的唯一约束冲突均已确认。运行库仍32。详见[独立测试库验证记录](../TDD/SUMMARY.md#stage-29)；该记录补充下面早期仅检查运行库的证据，不代表完整仓储已就绪。
 
-现新增InspectF1Schema/AssessF1Columns读取元数据检查列及类型；索引定义只读审阅，不把列存在当完整仓储就绪。2026-10-20再查本地model_bss仍32、dirty=false，public无三个F1目标表。证据见[实查记录](../TDD/2026-10-20-f1-schema-results.md)。
+现新增InspectF1Schema/AssessF1Columns读取元数据检查列及类型；索引定义只读审阅，不把列存在当完整仓储就绪。2026-10-20再查本地model_bss仍32、dirty=false，public无三个F1目标表。证据见[实查记录](../TDD/SUMMARY.md#stage-08)。
 
 已有领域服务、读取器、HTTP注册器和页面；现新增infra/supplypg.ModelDataRow编解码。该类型只映射八类资料，不构造StandardModel身份/核验/CAS聚合，不是可直接部署的完整仓储。
 
-随后已新增ReadModelData，在调用方事务内读取现有资料列，以to_json(text[])明确处理数组，再解码JSONB与date；独立真库验证了特殊字符、NULL拒绝、精确价格、默认资料、查询错误及夹具回滚，见[资料读取验证](../TDD/2026-10-20-f1-pgdata-results.md)。该函数不提供完整聚合、写入、核验或CAS，不绕过增量结构需求。
+随后已新增ReadModelData，在调用方事务内读取现有资料列，以to_json(text[])明确处理数组，再解码JSONB与date；独立真库验证了特殊字符、NULL拒绝、精确价格、默认资料、查询错误及夹具回滚，见[资料读取验证](../TDD/SUMMARY.md#stage-05)。该函数不提供完整聚合、写入、核验或CAS，不绕过增量结构需求。
 
 公共方落实字段和事务工具后，A继续实现ModelReadStore/ModelUnitOfWork，连接现有ModelService；不启用填假revision/假维护人的过渡仓储。字段全表差异见[差异矩阵](./2026-10-20-schema34-gap-matrix.md)。

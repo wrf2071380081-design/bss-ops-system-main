@@ -1,2 +1,0 @@
-PASS: notice list/detail retries; GET leaves unread; unknown vs zero impact; mark-read retry retains key and empty body; own receipt disables write; other person readonly; future plan with revision warning; read filter/resource scope; mobile dialog.
-ExitCode=0

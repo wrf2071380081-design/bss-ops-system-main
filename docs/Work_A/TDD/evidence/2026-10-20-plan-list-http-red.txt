@@ -1,6 +1,0 @@
---- FAIL: TestPlanHTTPListScopeAndReadProjection (0.00s)
-    supply_plan_list_test.go:13: invalid list 404 404 page not found {ResourceID: Region: Kind: Status: Page:0 Size:0 SortBy: Order: TieBreakBy:}
-FAIL
-FAIL	model_bss/internal/api	0.018s
-FAIL
-ExitCode=1

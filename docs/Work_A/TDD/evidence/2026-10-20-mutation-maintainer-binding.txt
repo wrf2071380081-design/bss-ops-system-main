@@ -1,5 +1,0 @@
---- FAIL: TestModelUpdateProtectsOwnerRevisionAndSnapshots (0.00s)
-    model_test.go:128: non-maintainer accepted: <nil>
-FAIL
-FAIL	model_bss/internal/domain/supply	0.007s
-FAIL

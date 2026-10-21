@@ -1,7 +1,0 @@
-FAIL	model_bss/internal/api [build failed]
-FAIL
-# model_bss/internal/api [model_bss/internal/api.test]
-internal/api/supply_workbench_test.go:15:72: deps.Notices undefined (type SupplyDeps has no field or method Notices)
-internal/api/supply_workbench_test.go:15:127: deps.NoticeWriter undefined (type SupplyDeps has no field or method NoticeWriter)
-internal/api/supply_workbench_test.go:15:152: deps.Plans undefined (type SupplyDeps has no field or method Plans)
-ExitCode=1

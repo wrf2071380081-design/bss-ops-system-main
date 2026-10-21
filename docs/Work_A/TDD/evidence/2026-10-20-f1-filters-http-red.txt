@@ -1,6 +1,0 @@
---- FAIL: TestModelHTTPMultiFiltersAndOptions (0.00s)
-    supply_model_filters_test.go:19: lost filters: 400 {"code":10001,"message":"字段校验失败：query","data":null,"requestId":""} {Keyword: Company: ModelType: Status: VerifyStatus: Companies:[] ModelTypes:[] SupplierIDs:[] Regions:[] SortBy: Order: Page:0 Size:0 NullsLast:false TieBreakBy:}
-FAIL
-FAIL	model_bss/internal/api	0.025s
-FAIL
-ExitCode=1

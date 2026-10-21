@@ -11,3 +11,6 @@ config.yaml
 
 # Logs
 *.log
+
+# Local TDD terminal output and screenshots
+docs/Work_A/TDD/evidence/
