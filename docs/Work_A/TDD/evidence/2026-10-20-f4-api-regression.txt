@@ -1,0 +1,75 @@
+=== RUN   TestRequestIDOf_ReturnsResponseRequestID
+--- PASS: TestRequestIDOf_ReturnsResponseRequestID (0.00s)
+=== RUN   TestRouterCostWritePermissionMountPoints
+--- PASS: TestRouterCostWritePermissionMountPoints (0.00s)
+=== RUN   TestRouterOrgPermissionMountPoints
+--- PASS: TestRouterOrgPermissionMountPoints (0.00s)
+=== RUN   TestRouterSupplierPortalProfileNotGuardedByRequirePerm
+--- PASS: TestRouterSupplierPortalProfileNotGuardedByRequirePerm (0.00s)
+=== RUN   TestGetSupplierProfileStatus
+=== RUN   TestGetSupplierProfileStatus/不存在
+=== RUN   TestGetSupplierProfileStatus/超出数据域
+=== RUN   TestGetSupplierProfileStatus/可见
+--- PASS: TestGetSupplierProfileStatus (0.00s)
+    --- PASS: TestGetSupplierProfileStatus/不存在 (0.00s)
+    --- PASS: TestGetSupplierProfileStatus/超出数据域 (0.00s)
+    --- PASS: TestGetSupplierProfileStatus/可见 (0.00s)
+=== RUN   TestVisibleSupplierProfileCommercialFields
+=== RUN   TestVisibleSupplierProfileCommercialFields/财务多角色
+=== RUN   TestVisibleSupplierProfileCommercialFields/归属采购
+=== RUN   TestVisibleSupplierProfileCommercialFields/非归属采购
+=== RUN   TestVisibleSupplierProfileCommercialFields/管理员
+=== RUN   TestVisibleSupplierProfileCommercialFields/无角色
+--- PASS: TestVisibleSupplierProfileCommercialFields (0.00s)
+    --- PASS: TestVisibleSupplierProfileCommercialFields/财务多角色 (0.00s)
+    --- PASS: TestVisibleSupplierProfileCommercialFields/归属采购 (0.00s)
+    --- PASS: TestVisibleSupplierProfileCommercialFields/非归属采购 (0.00s)
+    --- PASS: TestVisibleSupplierProfileCommercialFields/管理员 (0.00s)
+    --- PASS: TestVisibleSupplierProfileCommercialFields/无角色 (0.00s)
+=== RUN   TestSupplyHTTPReadsRequireInternalIdentityButNoLegacyRole
+=== RUN   TestSupplyHTTPReadsRequireInternalIdentityButNoLegacyRole/anonymous
+=== RUN   TestSupplyHTTPReadsRequireInternalIdentityButNoLegacyRole/supplier
+=== RUN   TestSupplyHTTPReadsRequireInternalIdentityButNoLegacyRole/internal_without_permissions
+--- PASS: TestSupplyHTTPReadsRequireInternalIdentityButNoLegacyRole (0.00s)
+    --- PASS: TestSupplyHTTPReadsRequireInternalIdentityButNoLegacyRole/anonymous (0.00s)
+    --- PASS: TestSupplyHTTPReadsRequireInternalIdentityButNoLegacyRole/supplier (0.00s)
+    --- PASS: TestSupplyHTTPReadsRequireInternalIdentityButNoLegacyRole/internal_without_permissions (0.00s)
+=== RUN   TestSupplyHTTPStrictCreateInputAndAuthenticatedStaffBinding
+--- PASS: TestSupplyHTTPStrictCreateInputAndAuthenticatedStaffBinding (0.00s)
+=== RUN   TestSupplyHTTPPutRequiresFullReplacementAndStringRevision
+--- PASS: TestSupplyHTTPPutRequiresFullReplacementAndStringRevision (0.00s)
+=== RUN   TestSupplyHTTPVerifyForwardsDateAndRejectsInvalidRevision
+--- PASS: TestSupplyHTTPVerifyForwardsDateAndRejectsInvalidRevision (0.00s)
+=== RUN   TestSupplyHTTPErrorMappingAndNoInternalSecretEcho
+--- PASS: TestSupplyHTTPErrorMappingAndNoInternalSecretEcho (0.00s)
+=== RUN   TestSupplyHTTPSharedIdempotencyReplayAndMissingDependency
+--- PASS: TestSupplyHTTPSharedIdempotencyReplayAndMissingDependency (0.00s)
+=== RUN   TestSupplyHTTPHistoricalRecordsAreReadOnlyAndBadQueriesReject
+--- PASS: TestSupplyHTTPHistoricalRecordsAreReadOnlyAndBadQueriesReject (0.00s)
+=== RUN   TestLockPrimary_RoleGate_ProcurementAllowed
+--- PASS: TestLockPrimary_RoleGate_ProcurementAllowed (0.00s)
+=== RUN   TestLockPrimary_RoleGate_ProcurementSecondAlsoAllowed
+--- PASS: TestLockPrimary_RoleGate_ProcurementSecondAlsoAllowed (0.00s)
+=== RUN   TestLockPrimary_RoleGate_PlatformAdminDenied
+--- PASS: TestLockPrimary_RoleGate_PlatformAdminDenied (0.00s)
+=== RUN   TestLockPrimary_RoleGate_FinanceDenied
+--- PASS: TestLockPrimary_RoleGate_FinanceDenied (0.00s)
+=== RUN   TestLockPrimary_RoleGate_ModelOpsDenied
+--- PASS: TestLockPrimary_RoleGate_ModelOpsDenied (0.00s)
+=== RUN   TestLockPrimary_RoleGate_EmptyRoles
+--- PASS: TestLockPrimary_RoleGate_EmptyRoles (0.00s)
+=== RUN   TestPostFxLock_FinanceAllowed
+--- PASS: TestPostFxLock_FinanceAllowed (0.00s)
+=== RUN   TestPostFxLock_FinanceNotFirstAllowed
+--- PASS: TestPostFxLock_FinanceNotFirstAllowed (0.00s)
+=== RUN   TestPostFxLock_NonFinanceDenied
+--- PASS: TestPostFxLock_NonFinanceDenied (0.00s)
+=== RUN   TestPostFxLock_FinanceInvalidTierBadRequest
+--- PASS: TestPostFxLock_FinanceInvalidTierBadRequest (0.00s)
+=== RUN   TestHealthz_OK
+--- PASS: TestHealthz_OK (0.00s)
+=== RUN   TestHealthz_DBDown
+--- PASS: TestHealthz_DBDown (0.00s)
+PASS
+ok  	model_bss/internal/api	0.037s
+ExitCode=0

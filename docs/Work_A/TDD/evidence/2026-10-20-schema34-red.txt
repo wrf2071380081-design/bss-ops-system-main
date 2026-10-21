@@ -1,0 +1,7 @@
+FAIL	model_bss/internal/infra/supplypg [build failed]
+FAIL
+# model_bss/internal/infra/supplypg [model_bss/internal/infra/supplypg.test]
+internal/infra/supplypg/report_cache_test.go:10:7: undefined: ReportCacheRow
+internal/infra/supplypg/report_cache_test.go:16:21: undefined: ReportCacheRow
+internal/infra/supplypg/report_cache_test.go:21:7: undefined: ReportCacheRow
+ExitCode=1

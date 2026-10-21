@@ -1,0 +1,16 @@
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+locator.click: Timeout 8000ms exceeded.
+Call log:
+[2m  - waiting for locator('.supply-plan-dialog').getByRole('button', { name: '修改计划', exact: true })[22m
+
+    at H:\Desktop\Dongxin\bss-ops-system-main\model-pricing-web\tests\plan-maintenance.browser.mjs:35:67 {
+  log: [
+    "  - waiting for locator('.supply-plan-dialog').getByRole('button', { name: '修改计划', exact: true })"
+  ],
+  name: 'TimeoutError'
+}
+
+Node.js v22.19.0

@@ -1,0 +1,12 @@
+=== RUN   TestModelDataPostgres34RoundTrip
+=== RUN   TestModelDataPostgres34RoundTrip/migration_defaults_remain_incomplete
+=== RUN   TestModelDataPostgres34RoundTrip/array_escaping_JSONB_exact_prices_and_date
+=== RUN   TestModelDataPostgres34RoundTrip/legacy_facts_and_null_array_elements_rejected
+=== RUN   TestModelDataPostgres34RoundTrip/not_found_and_canceled_context_propagate
+--- PASS: TestModelDataPostgres34RoundTrip (0.02s)
+    --- PASS: TestModelDataPostgres34RoundTrip/migration_defaults_remain_incomplete (0.00s)
+    --- PASS: TestModelDataPostgres34RoundTrip/array_escaping_JSONB_exact_prices_and_date (0.00s)
+    --- PASS: TestModelDataPostgres34RoundTrip/legacy_facts_and_null_array_elements_rejected (0.00s)
+    --- PASS: TestModelDataPostgres34RoundTrip/not_found_and_canceled_context_propagate (0.00s)
+PASS
+ExitCode=0

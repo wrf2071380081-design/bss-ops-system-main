@@ -1,0 +1,13 @@
+FAIL	model_bss/internal/domain/supply [build failed]
+FAIL
+# model_bss/internal/domain/supply [model_bss/internal/domain/supply.test]
+internal/domain/supply/resource_options_test.go:4:62: undefined: ResourceFilterOptions
+internal/domain/supply/resource_options_test.go:4:90: undefined: ResourceOptionsQuery
+internal/domain/supply/resource_options_test.go:5:73: undefined: ResourceOptionsQuery
+internal/domain/supply/resource_options_test.go:5:95: undefined: ResourceFilterOptions
+internal/domain/supply/resource_options_test.go:7:40: undefined: ResourceFilterOptions
+internal/domain/supply/resource_options_test.go:7:109: undefined: ResourceSupplierOption
+internal/domain/supply/resource_options_test.go:8:39: NewResourceReader(store).Options undefined (type *ResourceReader has no field or method Options)
+internal/domain/supply/resource_options_test.go:12:37: NewResourceReader(store).Options undefined (type *ResourceReader has no field or method Options)
+internal/domain/supply/resource_options_test.go:13:53: NewResourceReader(&resourceReadMemory{}).Options undefined (type *ResourceReader has no field or method Options)
+ExitCode=1

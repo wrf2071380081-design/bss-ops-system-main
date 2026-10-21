@@ -1,0 +1,15 @@
+FAIL	model_bss/internal/domain/supply [build failed]
+FAIL
+# model_bss/internal/domain/supply [model_bss/internal/domain/supply.test]
+internal/domain/supply/model_filters_test.go:12:47: unknown field Companies in struct literal of type ModelListQuery
+internal/domain/supply/model_filters_test.go:12:69: unknown field ModelTypes in struct literal of type ModelListQuery
+internal/domain/supply/model_filters_test.go:12:108: unknown field SupplierIDs in struct literal of type ModelListQuery
+internal/domain/supply/model_filters_test.go:12:157: unknown field Regions in struct literal of type ModelListQuery
+internal/domain/supply/model_filters_test.go:14:26: q.Companies undefined (type ModelListQuery has no field or method Companies)
+internal/domain/supply/model_filters_test.go:14:82: q.SupplierIDs undefined (type ModelListQuery has no field or method SupplierIDs)
+internal/domain/supply/model_filters_test.go:31:10: undefined: ModelFilterOptions
+internal/domain/supply/model_filters_test.go:32:15: undefined: ModelOptionsQuery
+internal/domain/supply/model_filters_test.go:34:70: undefined: ModelOptionsQuery
+internal/domain/supply/model_filters_test.go:34:89: undefined: ModelFilterOptions
+internal/domain/supply/model_filters_test.go:14:82: too many errors
+ExitCode=1

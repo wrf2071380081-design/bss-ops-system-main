@@ -1,0 +1,5 @@
+FAIL	model_bss/internal/api [build failed]
+FAIL
+# model_bss/internal/api [model_bss/internal/api.test]
+internal/api/supply_plan_write_test.go:16: deps.PlanWriter undefined (type SupplyDeps has no field or method PlanWriter)
+ExitCode=1

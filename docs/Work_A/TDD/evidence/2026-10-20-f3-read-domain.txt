@@ -1,0 +1,37 @@
+=== RUN   TestResourceCacheStatisticsUseOriginalCountsAndPreserveMissingStates
+--- PASS: TestResourceCacheStatisticsUseOriginalCountsAndPreserveMissingStates (0.00s)
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/pressure_failed
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/connection_failed
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/stale_target
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/config_changed
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/no_key
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/unverified_model
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/inactive_supplier
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/not_admitted
+=== RUN   TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/invalid_report
+--- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/pressure_failed (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/connection_failed (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/stale_target (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/config_changed (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/no_key (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/unverified_model (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/inactive_supplier (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/not_admitted (0.00s)
+    --- PASS: TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration/invalid_report (0.00s)
+=== RUN   TestResourceProjectionRejectsWrongIdentityAndInvalidCoefficients
+--- PASS: TestResourceProjectionRejectsWrongIdentityAndInvalidCoefficients (0.00s)
+=== RUN   TestResourceReaderGroupsAfterFilteringAndPagesModels
+--- PASS: TestResourceReaderGroupsAfterFilteringAndPagesModels (0.00s)
+=== RUN   TestResourceReaderRejectsBadQueriesAndMissingDependencies
+--- PASS: TestResourceReaderRejectsBadQueriesAndMissingDependencies (0.00s)
+=== RUN   TestResourceRejectsMalformedOfficialModel
+--- PASS: TestResourceRejectsMalformedOfficialModel (0.00s)
+=== RUN   TestResourceMetricsPreserveStringsAndExcludeStaleTargets
+--- PASS: TestResourceMetricsPreserveStringsAndExcludeStaleTargets (0.00s)
+=== RUN   TestResourceDraftReportUsesOwnRowAndVersion
+--- PASS: TestResourceDraftReportUsesOwnRowAndVersion (0.00s)
+PASS
+ok  	model_bss/internal/domain/supply	0.011s
+ExitCode=0

@@ -1,0 +1,15 @@
+FAIL	model_bss/internal/domain/supply [build failed]
+FAIL
+# model_bss/internal/domain/supply [model_bss/internal/domain/supply.test]
+internal/domain/supply/resource_read_test.go:13:13: undefined: resourceCacheStats
+internal/domain/supply/resource_read_test.go:13:38: undefined: ReportCacheCounters
+internal/domain/supply/resource_read_test.go:23:79: undefined: ResourceRecord
+internal/domain/supply/resource_read_test.go:55:45: undefined: ResourceRecord
+internal/domain/supply/resource_read_test.go:55:104: undefined: ResourceListQuery
+internal/domain/supply/resource_read_test.go:56:67: undefined: ResourceListQuery
+internal/domain/supply/resource_read_test.go:56:91: undefined: ResourceRecord
+internal/domain/supply/resource_read_test.go:57:65: undefined: ResourceListQuery
+internal/domain/supply/resource_read_test.go:57:87: undefined: ResourceRecord
+internal/domain/supply/resource_read_test.go:58:70: undefined: ResourceRecord
+internal/domain/supply/resource_read_test.go:13:38: too many errors
+ExitCode=1

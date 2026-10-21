@@ -1,0 +1,15 @@
+FAIL	model_bss/internal/domain/supply [build failed]
+FAIL
+# model_bss/internal/domain/supply [model_bss/internal/domain/supply.test]
+internal/domain/supply/notice_test.go:5:22: undefined: Notice
+internal/domain/supply/notice_test.go:8:10: undefined: Notice
+internal/domain/supply/notice_test.go:9:20: undefined: NoticeRead
+internal/domain/supply/notice_test.go:10:8: undefined: NoticeReadOperation
+internal/domain/supply/notice_test.go:12:8: undefined: NoticeQuery
+internal/domain/supply/notice_test.go:15:59: undefined: NoticeTransaction
+internal/domain/supply/notice_test.go:19:69: undefined: Notice
+internal/domain/supply/notice_test.go:21:80: undefined: NoticeRead
+internal/domain/supply/notice_test.go:22:58: undefined: NoticeRead
+internal/domain/supply/plan_read_test.go:4:38: undefined: PlanReadRecord
+internal/domain/supply/notice_test.go:22:58: too many errors
+ExitCode=1

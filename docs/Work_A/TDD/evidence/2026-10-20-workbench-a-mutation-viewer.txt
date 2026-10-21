@@ -1,0 +1,7 @@
+=== RUN   TestNoticeReadStatesSeparateViewerFromSelectedPerson
+    notice_test.go:118: unread other person granted write: &{Notice:0x184f398f6840 StaffID:8 StaffName:人员8 ReadStatus:UNREAD ReadAt:<nil> Permissions:{CanMarkRead:true}} <nil>
+--- FAIL: TestNoticeReadStatesSeparateViewerFromSelectedPerson (0.00s)
+FAIL
+FAIL	model_bss/internal/domain/supply	0.007s
+FAIL
+ExitCode=1

@@ -1,0 +1,14 @@
+=== RUN   TestNoticeReadPostgres34
+=== RUN   TestNoticeReadPostgres34/person_combinations_sorting_and_pagination
+=== RUN   TestNoticeReadPostgres34/read_status_filtered_before_count_and_pagination
+=== RUN   TestNoticeReadPostgres34/all_staff_uses_full_directory_and_literal_keyword
+=== RUN   TestNoticeReadPostgres34/detail_is_personal_and_GET_leaves_unread
+=== RUN   TestNoticeReadPostgres34/missing_persons_and_incompatible_A_payload_fail
+--- PASS: TestNoticeReadPostgres34 (0.08s)
+    --- PASS: TestNoticeReadPostgres34/person_combinations_sorting_and_pagination (0.01s)
+    --- PASS: TestNoticeReadPostgres34/read_status_filtered_before_count_and_pagination (0.01s)
+    --- PASS: TestNoticeReadPostgres34/all_staff_uses_full_directory_and_literal_keyword (0.01s)
+    --- PASS: TestNoticeReadPostgres34/detail_is_personal_and_GET_leaves_unread (0.00s)
+    --- PASS: TestNoticeReadPostgres34/missing_persons_and_incompatible_A_payload_fail (0.01s)
+PASS
+ExitCode=0

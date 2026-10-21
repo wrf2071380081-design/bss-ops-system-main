@@ -1,0 +1,18 @@
+BEGIN
+DO
+    column_name     | data_type | is_nullable
+--------------------+-----------+-------------
+ cache_hit_tokens   | bigint    | YES
+ cache_input_tokens | bigint    | YES
+(2 rows)
+
+INSERT 0 1
+DO
+ROLLBACK
+NOTICE:  CONFIRMED: existing identity index rejects a second incomplete model with blank company/official_id
+ synthetic_standard_model_rows_after_rollback
+----------------------------------------------
+                                            0
+(1 row)
+
+ExitCode=0

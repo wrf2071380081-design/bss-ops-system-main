@@ -1,0 +1,6 @@
+ remaining_models | remaining_suppliers
+------------------+---------------------
+                0 |                   0
+(1 row)
+
+ExitCode=0

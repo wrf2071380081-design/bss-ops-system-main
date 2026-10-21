@@ -1,0 +1,7 @@
+=== RUN   TestFormalConfigReferencedCannotDisable
+    formal_config_test.go:267: referenced config disabled: <nil>
+--- FAIL: TestFormalConfigReferencedCannotDisable (0.00s)
+FAIL
+FAIL	model_bss/internal/domain/supply	0.006s
+FAIL
+ExitCode=1

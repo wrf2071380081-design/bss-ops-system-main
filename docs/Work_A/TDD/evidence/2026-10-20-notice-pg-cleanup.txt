@@ -1,0 +1,6 @@
+ remaining_notice_test_orgs
+----------------------------
+                          0
+(1 row)
+
+ExitCode=0

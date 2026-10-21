@@ -1,0 +1,75 @@
+TAP version 13
+# Subtest: notice projection keeps selected person and unread state without mutation
+ok 1 - notice projection keeps selected person and unread state without mutation
+  ---
+  duration_ms: 2.6505
+  type: 'test'
+  ...
+# Subtest: impact count distinguishes unknown from exact zero and preserves bigint
+ok 2 - impact count distinguishes unknown from exact zero and preserves bigint
+  ---
+  duration_ms: 0.516
+  type: 'test'
+  ...
+# Subtest: notice pages validate resource, pagination and unique notice/person pairs
+ok 3 - notice pages validate resource, pagination and unique notice/person pairs
+  ---
+  duration_ms: 0.6103
+  type: 'test'
+  ...
+# Subtest: read receipt cannot acknowledge another person or notice
+ok 4 - read receipt cannot acknowledge another person or notice
+  ---
+  duration_ms: 0.2935
+  type: 'test'
+  ...
+# Subtest: plan remains readonly with future date and consistent revision hint
+ok 5 - plan remains readonly with future date and consistent revision hint
+  ---
+  duration_ms: 0.4101
+  type: 'test'
+  ...
+# Subtest: plan permissions fail closed when absent and refuse cross-person grants
+not ok 6 - plan permissions fail closed when absent and refuse cross-person grants
+  ---
+  duration_ms: 2.1295
+  type: 'test'
+  location: 'H:\\Desktop\\Dongxin\\bss-ops-system-main\\model-pricing-web\\tests\\plan-permissions.test.ts:5:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+
+    + undefined
+    - {
+    -   can_cancel: false,
+    -   can_execute: false,
+    -   can_revise: false
+    - }
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    can_revise: false
+    can_cancel: false
+    can_execute: false
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///H:/Desktop/Dongxin/bss-ops-system-main/model-pricing-web/tests/plan-permissions.test.ts:7:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 5
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 232.3462
+ExitCode=1

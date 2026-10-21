@@ -1,0 +1,9 @@
+--- FAIL: TestStatePlanCreationBlocksUnappliedConfigurationChange (0.00s)
+    --- FAIL: TestStatePlanCreationBlocksUnappliedConfigurationChange/pending (0.00s)
+        plan_maintenance_test.go:46: bypassed pending config: &{resource:{ID:11 SupplierID: StandardModelID: Region:CN SupplierModelID: Coefficient: BuyerID:7 State:ADMITTED EverAdmitted:true Revision:2 FormalConfigID: FormalConfigRevision:0 OriginRowID: OriginRowVersion:0 TargetVersion:0 LatestReportID: CreatedAt:{wall:0 ext:0 loc:<nil>} UpdatedAt:{wall:0 ext:0 loc:<nil>}} plan:0xabfc12b2608 effects:[{Action:CREATE ActorID:7 Reason:维护安排 RequestID:trace Before:<nil> After:0xabfc12b2908 ScheduleReminder:true OccurredAt:{wall:906732904 ext:63928087779 loc:<nil>}}] pending:true failEffect:false failCommit:false pendingConfiguration:true configurationError:<nil> configurationResourceID:} <nil>
+    --- FAIL: TestStatePlanCreationBlocksUnappliedConfigurationChange/unavailable (0.00s)
+        plan_maintenance_test.go:46: bypassed pending config: &{resource:{ID:11 SupplierID: StandardModelID: Region:CN SupplierModelID: Coefficient: BuyerID:7 State:ADMITTED EverAdmitted:true Revision:2 FormalConfigID: FormalConfigRevision:0 OriginRowID: OriginRowVersion:0 TargetVersion:0 LatestReportID: CreatedAt:{wall:0 ext:0 loc:<nil>} UpdatedAt:{wall:0 ext:0 loc:<nil>}} plan:0xabfc12b3208 effects:[{Action:CREATE ActorID:7 Reason:维护安排 RequestID:trace Before:<nil> After:0xabfc12b3508 ScheduleReminder:true OccurredAt:{wall:906825776 ext:63928087779 loc:<nil>}}] pending:true failEffect:false failCommit:false pendingConfiguration:false configurationError:0x855f70 configurationResourceID:} <nil>
+FAIL
+FAIL	model_bss/internal/domain/supply	0.008s
+FAIL
+ExitCode=1
