@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -33,9 +34,10 @@ type accountRow struct {
 func (accountRow) TableName() string { return "account" }
 
 type staffRow struct {
-	ID        int64 `gorm:"primaryKey"`
-	OrgUnitID int64
-	Name      string
+	ID                 int64 `gorm:"primaryKey"`
+	OrgUnitID          int64
+	Name               string
+	CanApproveSupplier bool
 }
 
 func (staffRow) TableName() string { return "internal_staff" }
@@ -252,7 +254,7 @@ func (r *AuthRepo) FindStaff(ctx context.Context, staffID int64) (*auth.StaffRow
 	if err != nil {
 		return nil, fmt.Errorf("take staff: %w", err)
 	}
-	return &auth.StaffRow{ID: row.ID, OrgUnitID: row.OrgUnitID}, nil
+	return &auth.StaffRow{ID: row.ID, OrgUnitID: row.OrgUnitID, CanApproveSupplier: row.CanApproveSupplier}, nil
 }
 
 // CreateSession 落库会话（role_snapshot 以 jsonb 存入）。
@@ -338,4 +340,87 @@ func (r *AuthRepo) AllPoints() ([]string, error) {
 		return nil, fmt.Errorf("list permission points: %w", err)
 	}
 	return points, nil
+}
+
+// FindSupplierByPhone 按手机号定位供应商（新表 supplier）。
+func (r *AuthRepo) FindSupplierByPhone(ctx context.Context, phone string) (*auth.SupplierAuthRow, error) {
+	var row struct {
+		ID     int64
+		Name   string
+		Region string
+		Phone  string
+		Status string
+	}
+	err := r.db.WithContext(ctx).Table("supplier").Where("phone = ?", phone).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("take supplier: %w", err)
+	}
+	return &auth.SupplierAuthRow{ID: row.ID, Name: row.Name, Region: row.Region, Phone: row.Phone, Status: row.Status}, nil
+}
+
+// FindAccountByOwner 按门户+归属定位账号（供应商手机号登录用）。
+func (r *AuthRepo) FindAccountByOwner(ctx context.Context, portal, ownerType string, ownerID int64) (*auth.Account, error) {
+	var row accountRow
+	err := r.db.WithContext(ctx).
+		Where("portal_type = ? AND owner_type = ? AND owner_id = ?", portal, ownerType, ownerID).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("take account by owner: %w", err)
+	}
+	return &auth.Account{
+		ID: row.ID, PortalType: row.PortalType, OwnerType: row.OwnerType, OwnerID: row.OwnerID,
+		LoginID: row.LoginID, PasswordHash: row.PasswordHash, Status: row.Status,
+	}, nil
+}
+
+// CreateSupplierWithAccount 单事务创建供应商 + 登录账号（供应商注册）。
+func (r *AuthRepo) CreateSupplierWithAccount(ctx context.Context, in auth.SupplierRegisterInput) (*auth.Account, error) {
+	var acct *auth.Account
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var n int64
+		if err := tx.Table("supplier").Where("phone = ?", in.Phone).Count(&n).Error; err != nil {
+			return err
+		}
+		if n > 0 {
+			return auth.ErrSupplierExists
+		}
+		var supplierID int64
+		if err := tx.Raw(
+			`INSERT INTO supplier (name, region, registration_no, contact, phone, status)
+			 VALUES (?, ?, ?, ?, ?, 'ACTIVE') RETURNING id`,
+			in.CompanyName, in.Region, in.CreditCode, in.Contact, in.Phone,
+		).Scan(&supplierID).Error; err != nil {
+			if isDuplicateKey(err) {
+				return auth.ErrSupplierExists
+			}
+			return err
+		}
+		var accountID int64
+		if err := tx.Raw(
+			`INSERT INTO account (portal_type, owner_type, owner_id, login_id, status)
+			 VALUES ('SUPPLIER', 'SUPPLIER', ?, ?, 'ACTIVE') RETURNING id`,
+			supplierID, in.Phone,
+		).Scan(&accountID).Error; err != nil {
+			if isDuplicateKey(err) {
+				return auth.ErrSupplierExists
+			}
+			return err
+		}
+		acct = &auth.Account{ID: accountID, PortalType: "SUPPLIER", OwnerType: "SUPPLIER", OwnerID: supplierID, LoginID: in.Phone, Status: "ACTIVE"}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return acct, nil
+}
+
+func isDuplicateKey(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate key")
 }

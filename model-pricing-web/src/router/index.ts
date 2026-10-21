@@ -16,6 +16,7 @@ import type { PortalType } from "../stores/session";
 declare module "vue-router" {
   interface RouteMeta {
     requiresAuth?: boolean;
+    requiresApproval?: boolean;
     portal?: PortalType;
     routeKey?: string;
     requiredPermission?: PermissionCode | null;
@@ -35,17 +36,12 @@ const routes: RouteRecordRaw[] = [
   {
     path: "/internal/login",
     component: LoginView,
-    meta: { title: "内部用户登录", portal: "internal" },
+    meta: { title: "用户登录", portal: "internal" },
   },
   {
     path: "/supplier/login",
     component: LoginView,
     meta: { title: "供应商登录", portal: "supplier" },
-  },
-  {
-    path: "/customer/login",
-    component: LoginView,
-    meta: { title: "客户登录", portal: "customer" },
   },
   {
     path: "/403",

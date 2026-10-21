@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -119,22 +120,24 @@ func (s *Service) Login(ctx context.Context, portal, loginID, password, clientIP
 		s.limit.Reset(ipKey)
 	}
 
-	// 装配权限包
+	return s.issueSession(ctx, acct, portal, "", "")
+}
+
+// issueSession 装配权限包、生成 token、落会话；登录/注册/手机号登录共用。
+func (s *Service) issueSession(ctx context.Context, acct *Account, portal, supplierName, supplierRegion string) (*LoginResult, error) {
 	snap, err := s.buildSnapshot(ctx, acct)
 	if err != nil {
 		return nil, err
 	}
-
-	// 生成 token：明文只在本次响应出现，库中存 sha256
+	snap.SupplierName = supplierName
+	snap.SupplierRegion = supplierRegion
 	token, err := randomToken()
 	if err != nil {
 		return nil, err
 	}
-	hash := tokenHash(token)
-
 	sess := &Session{
 		AccountID:    acct.ID,
-		TokenHash:    hash,
+		TokenHash:    tokenHash(token),
 		PortalType:   portal,
 		ClientType:   "WEB", // 本期仅 WEB；H5/MP/OPEN 留接入点
 		OperatorType: operatorTypeOf(acct),
@@ -145,8 +148,50 @@ func (s *Service) Login(ctx context.Context, portal, loginID, password, clientIP
 	if err := s.store.CreateSession(ctx, sess); err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
-
 	return &LoginResult{Token: token, Snapshot: *snap}, nil
+}
+
+// devSMSCode 当前阶段的统一验证码（短信未接入）。
+const devSMSCode = "1234"
+
+// LoginSupplierByMobile 供应商手机号 + 验证码登录（验证码固定 1234）。
+func (s *Service) LoginSupplierByMobile(ctx context.Context, mobile, code string) (*LoginResult, error) {
+	if code != devSMSCode {
+		return nil, ErrBadCredentials
+	}
+	sup, err := s.store.FindSupplierByPhone(ctx, mobile)
+	if err != nil {
+		return nil, fmt.Errorf("find supplier: %w", err)
+	}
+	if sup == nil || sup.Status != "ACTIVE" {
+		return nil, ErrBadCredentials
+	}
+	acct, err := s.store.FindAccountByOwner(ctx, "SUPPLIER", "SUPPLIER", sup.ID)
+	if err != nil {
+		return nil, fmt.Errorf("find supplier account: %w", err)
+	}
+	if acct == nil || acct.Status != "ACTIVE" {
+		return nil, ErrBadCredentials
+	}
+	return s.issueSession(ctx, acct, "SUPPLIER", sup.Name, sup.Region)
+}
+
+// RegisterSupplier 供应商注册（手机号 + 验证码），成功后直接建会话。
+func (s *Service) RegisterSupplier(ctx context.Context, in SupplierRegisterInput) (*LoginResult, error) {
+	if in.Code != devSMSCode {
+		return nil, ErrBadCredentials
+	}
+	in.Phone = strings.TrimSpace(in.Phone)
+	in.CompanyName = strings.TrimSpace(in.CompanyName)
+	in.Region = strings.TrimSpace(in.Region)
+	if in.Phone == "" || in.CompanyName == "" || (in.Region != "CN" && in.Region != "OVERSEAS") {
+		return nil, ErrInvalidRegister
+	}
+	acct, err := s.store.CreateSupplierWithAccount(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	return s.issueSession(ctx, acct, "SUPPLIER", in.CompanyName, in.Region)
 }
 
 // Logout 按 token 明文吊销会话。
@@ -212,6 +257,7 @@ func (s *Service) buildSnapshot(ctx context.Context, acct *Account) (*Snapshot, 
 		if staff != nil {
 			snap.StaffID = staff.ID
 			snap.MyOrgID = staff.OrgUnitID
+			snap.CanApproveSupplier = staff.CanApproveSupplier
 		}
 	}
 

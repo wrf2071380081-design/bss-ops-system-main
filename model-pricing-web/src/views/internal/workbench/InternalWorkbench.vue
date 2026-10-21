@@ -17,7 +17,6 @@ const router = useRouter();
 const activeTab = ref<"todo" | "operations">("todo");
 const stateTab = ref<InboxState>("TODO");
 const assigneeId = ref(0);
-const region = ref("");
 const keyword = ref("");
 const page = ref(1);
 const size = ref(20);
@@ -87,7 +86,6 @@ async function loadInbox() {
     const res = await workbenchApi.inbox({
       state: stateTab.value,
       assigneeId: assigneeId.value || undefined,
-      region: region.value || undefined,
       keyword: keyword.value || undefined,
       page: page.value,
       size: size.value,
@@ -130,11 +128,6 @@ function changeState(state: InboxState) {
 }
 
 function changeAssignee() {
-  page.value = 1;
-  void loadInbox();
-}
-
-function changeRegion() {
   page.value = 1;
   void loadInbox();
 }
@@ -195,11 +188,6 @@ onMounted(() => {
       <el-select v-model="assigneeId" style="width: 200px" @change="changeAssignee">
         <el-option :value="0" label="我（当前登录）" />
         <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.name" />
-      </el-select>
-      <el-select v-model="region" style="width: 140px" @change="changeRegion">
-        <el-option value="" label="全部平台" />
-        <el-option value="CN" label="国内平台" />
-        <el-option value="OVERSEAS" label="海外平台" />
       </el-select>
       <el-input v-model="keyword" placeholder="搜索事项 / 业务对象" clearable style="width: 240px" @keyup.enter="search" />
       <el-button @click="search">搜索</el-button>

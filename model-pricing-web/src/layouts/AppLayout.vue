@@ -56,6 +56,7 @@ const menuItems = computed(() =>
       (item) =>
         item.meta.menu &&
         item.meta.portal === portal.value &&
+        (!item.meta.requiresApproval || session.user?.canApproveSupplier) &&
         (!item.meta.routeKey || permissions.canRoute(item.meta.routeKey)),
     )
     .sort((a, b) => (a.meta.order || 0) - (b.meta.order || 0)),

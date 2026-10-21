@@ -58,6 +58,8 @@ var (
 
 	// ErrTooManyRequests 触发限流（如登录失败次数耗尽），§8.0 状态码 429。
 	ErrTooManyRequests = New(10007, "请求过于频繁", 429)
+	// ErrConflict 数据已存在（注册/唯一键冲突）。
+	ErrConflict = New(10008, "数据已存在", 409)
 )
 
 var registry = map[int]Error{
@@ -70,6 +72,7 @@ var registry = map[int]Error{
 	10005: ErrIdempotency,
 	10006: ErrSubjectFrozen,
 	10007: ErrTooManyRequests,
+	10008: ErrConflict,
 }
 
 // FromCode 根据业务码返回对应的 Error 实例；若码未注册则回退到 ErrSystem。

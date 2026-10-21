@@ -153,6 +153,11 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 	authGroup.POST("/login", LoginHandler(deps.AuthService, portal))
 	// logout 放在公开组：登出需要携带 token，但会话即使已过期也应允许吊销。
 	authGroup.POST("/logout", LogoutHandler(deps.AuthService))
+	// 供应商：手机号+验证码登录 / 注册（短信未接入，验证码固定 1234）。
+	if portal == "supplier" {
+		authGroup.POST("/login-mobile", SupplierMobileLoginHandler(deps.AuthService))
+		authGroup.POST("/register", SupplierRegisterHandler(deps.AuthService))
+	}
 
 	// ---- 受保护路由：AuthN → DataScope（顺序固定，AuthZ 在路由级追加） ----
 	protected := g.Group("")

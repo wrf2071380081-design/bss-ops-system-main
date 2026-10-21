@@ -54,23 +54,28 @@ type OrgNode struct {
 
 // StaffRow 是 internal_staff 的最小模型。
 type StaffRow struct {
-	ID        int64
-	OrgUnitID int64
+	ID                 int64
+	OrgUnitID          int64
+	CanApproveSupplier bool
 }
 
 // Snapshot 是 role_snapshot 权限包快照（login_session.role_snapshot jsonb）。
 // JSON 字段名与设计文档 §3 权限包结构完全一致。
 type Snapshot struct {
-	AccountID    int64      `json:"account_id"`
-	PortalType   string     `json:"portal_type"`
-	OperatorType string     `json:"operator_type"` // STAFF / SUPPLIER / CUSTOMER
-	OperatorID   int64      `json:"operator_id"`
-	StaffID      int64      `json:"staff_id,omitempty"`  // operator_type=STAFF 时
-	MyOrgID      int64      `json:"my_org_id,omitempty"` // operator_type=STAFF 时
-	Roles        []RoleSnap `json:"roles"`
-	Perms        []string   `json:"perms"`
-	DataScope    DataScope  `json:"data_scope"`
-	ScopePaths   []string   `json:"scope_paths"`
+	AccountID    int64  `json:"account_id"`
+	PortalType   string `json:"portal_type"`
+	OperatorType string `json:"operator_type"` // STAFF / SUPPLIER / CUSTOMER
+	OperatorID   int64  `json:"operator_id"`
+	StaffID      int64  `json:"staff_id,omitempty"`  // operator_type=STAFF 时
+	MyOrgID      int64  `json:"my_org_id,omitempty"` // operator_type=STAFF 时
+	// CanApproveSupplier 供应商审批权（2026-10-21）：领导 true，普通员工 false。
+	CanApproveSupplier bool       `json:"can_approve_supplier"`
+	SupplierName       string     `json:"supplier_name,omitempty"`
+	SupplierRegion     string     `json:"supplier_region,omitempty"`
+	Roles              []RoleSnap `json:"roles"`
+	Perms              []string   `json:"perms"`
+	DataScope          DataScope  `json:"data_scope"`
+	ScopePaths         []string   `json:"scope_paths"`
 }
 
 // RoleSnap 是快照内的单个角色信息。
@@ -93,6 +98,26 @@ type Session struct {
 	RoleSnapshot Snapshot
 	ExpiresAt    time.Time
 	Revoked      bool
+}
+
+// SupplierAuthRow 供应商手机号登录所需的最小信息。
+type SupplierAuthRow struct {
+	ID     int64
+	Name   string
+	Region string
+	Phone  string
+	Status string
+}
+
+// SupplierRegisterInput 供应商注册（手机号+验证码，验证码 dev 固定 1234）。
+type SupplierRegisterInput struct {
+	Phone       string
+	Code        string
+	CompanyName string
+	Region      string // CN / OVERSEAS
+	CreditCode  string
+	Contact     string
+	LicenseName string
 }
 
 // LoginRequest 是 POST /api/{portal}/auth/login 的请求体。

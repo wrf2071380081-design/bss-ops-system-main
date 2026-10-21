@@ -19,6 +19,10 @@ var (
 	ErrAccountFrozen = errors.New("account frozen")
 	// ErrAccountInactive 账号非 ACTIVE 状态（非冻结的其他禁用态）。
 	ErrAccountInactive = errors.New("account inactive")
+	// ErrSupplierExists 手机号/企业已注册。
+	ErrSupplierExists = errors.New("supplier exists")
+	// ErrInvalidRegister 注册参数不完整/非法。
+	ErrInvalidRegister = errors.New("invalid register input")
 )
 
 // ToAppErr 把登录链路的内部错误映射为 HTTP 响应错误码。
@@ -30,6 +34,10 @@ func ToAppErr(err error) apperr.Error {
 		return apperr.ErrTooManyRequests
 	case errors.Is(err, ErrBadCredentials), errors.Is(err, ErrAccountInactive):
 		return apperr.ErrUnauthorized
+	case errors.Is(err, ErrSupplierExists):
+		return apperr.ErrConflict
+	case errors.Is(err, ErrInvalidRegister):
+		return apperr.ErrInvalidParams
 	default:
 		return apperr.ErrSystem
 	}

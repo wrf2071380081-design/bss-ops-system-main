@@ -12,7 +12,7 @@ import { usePermissionStore } from "../stores/permission";
 const loginPath: Record<PortalType, string> = {
   internal: "/internal/login",
   supplier: "/supplier/login",
-  customer: "/customer/login",
+  customer: "/internal/login",
 };
 
 export function installRouterGuards(router: Router, pinia: Pinia) {

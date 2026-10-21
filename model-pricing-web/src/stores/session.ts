@@ -25,6 +25,9 @@ export interface CurrentUser {
   roleLabel: string;
   roleCodes?: string[];
   identityKey?: DevIdentityKey;
+  canApproveSupplier?: boolean;
+  supplierName?: string;
+  supplierRegion?: string;
 }
 
 interface DevIdentity {
@@ -122,6 +125,7 @@ export const DEV_IDENTITIES: Record<DevIdentityKey, DevIdentity> = {
       name: "顾言",
       roleLabel: "系统管理员",
       identityKey: "ADMIN_OP",
+      canApproveSupplier: true,
     },
     permissionCodes: [
       PERMISSIONS.CUSTOMER_VIEW,
@@ -294,6 +298,9 @@ export const useSessionStore = defineStore("session", () => {
     portal.value = targetPortal;
     const roleCodes = snapshot.roles?.map(r => r.code) || [];
     user.value = { id: String(snapshot.account_id), name: loginID, roleCodes,
+      canApproveSupplier: Boolean(snapshot.can_approve_supplier),
+      supplierName: snapshot.supplier_name,
+      supplierRegion: snapshot.supplier_region,
       roleLabel: roleCodes.join(" / ") || (targetPortal === "internal" ? "内部用户" : targetPortal === "supplier" ? "供应商" : "客户") };
     permissionCodes.value = [...(snapshot.perms || [])];
     legacyRole.value = "VIEWER";

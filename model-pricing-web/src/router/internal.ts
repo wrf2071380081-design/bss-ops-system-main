@@ -242,5 +242,19 @@ export const internalRoutes: RouteRecordRaw = {
     },
     page("model-plaza", "internal.modelPlaza", "模型广场", "按标准模型查看供应来源、采购系数与资源状态", 30),
     page("quotes", "internal.quotes", "报价单", "按客户与资源生成报价单、计算毛利", 60),
+    {
+      path: "approvals",
+      component: ModulePlaceholderView,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.approvals",
+        title: "审批中心",
+        description: "供应商新增模型 / 价格变更审批",
+        menu: true,
+        order: 80,
+        requiresApproval: true,
+      },
+    },
   ],
 };

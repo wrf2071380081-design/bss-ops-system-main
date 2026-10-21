@@ -94,3 +94,73 @@ func bearerFromHeader(c *gin.Context) string {
 	}
 	return h[len(prefix):]
 }
+
+// SupplierMobileLoginRequest 供应商手机号+验证码登录。
+type SupplierMobileLoginRequest struct {
+	Mobile string `json:"mobile"`
+	Code   string `json:"code"`
+}
+
+// SupplierMobileLoginHandler 返回 POST /api/supplier/auth/login-mobile 的处理函数。
+// 当前阶段短信未接入：验证码固定 1234。
+func SupplierMobileLoginHandler(svc *auth.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req SupplierMobileLoginRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.Error(c, apperr.ErrInvalidParams)
+			return
+		}
+		req.Mobile = strings.TrimSpace(req.Mobile)
+		if req.Mobile == "" || req.Code == "" {
+			response.Error(c, apperr.ErrInvalidParams)
+			return
+		}
+		res, err := svc.LoginSupplierByMobile(c.Request.Context(), req.Mobile, req.Code)
+		if err != nil {
+			response.Error(c, auth.ToAppErr(err))
+			return
+		}
+		response.Success(c, res)
+	}
+}
+
+// SupplierRegisterRequest 供应商注册（原型：手机号+验证码+企业信息）。
+type SupplierRegisterRequest struct {
+	Mobile      string `json:"mobile"`
+	Code        string `json:"code"`
+	CompanyName string `json:"company_name"`
+	Region      string `json:"region"` // CN / OVERSEAS
+	CreditCode  string `json:"credit_code"`
+	Contact     string `json:"contact"`
+	LicenseName string `json:"license_name"`
+	Agreement   bool   `json:"agreement"`
+}
+
+// SupplierRegisterHandler 返回 POST /api/supplier/auth/register 的处理函数。
+func SupplierRegisterHandler(svc *auth.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req SupplierRegisterRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.Error(c, apperr.ErrInvalidParams)
+			return
+		}
+		if !req.Agreement {
+			response.Error(c, apperr.ErrInvalidParams)
+			return
+		}
+		res, err := svc.RegisterSupplier(c.Request.Context(), auth.SupplierRegisterInput{
+			Phone:       req.Mobile,
+			Code:        req.Code,
+			CompanyName: req.CompanyName,
+			Region:      req.Region,
+			CreditCode:  req.CreditCode,
+			Contact:     req.Contact,
+			LicenseName: req.LicenseName,
+		})
+		if err != nil {
+			response.Error(c, auth.ToAppErr(err))
+			return
+		}
+		response.Success(c, res)
+	}
+}

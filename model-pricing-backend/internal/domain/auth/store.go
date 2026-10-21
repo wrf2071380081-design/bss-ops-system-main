@@ -25,6 +25,15 @@ type Store interface {
 	// FindStaff 返回员工的组织归属。
 	FindStaff(ctx context.Context, staffID int64) (*StaffRow, error)
 
+	// FindSupplierByPhone 按手机号定位供应商（新表 supplier）。
+	FindSupplierByPhone(ctx context.Context, phone string) (*SupplierAuthRow, error)
+
+	// FindAccountByOwner 按门户+归属定位账号（供应商手机号登录用）。
+	FindAccountByOwner(ctx context.Context, portal, ownerType string, ownerID int64) (*Account, error)
+
+	// CreateSupplierWithAccount 单事务创建供应商 + 登录账号，返回账号。
+	CreateSupplierWithAccount(ctx context.Context, in SupplierRegisterInput) (*Account, error)
+
 	// CreateSession 落库新会话并返回会话 ID。
 	CreateSession(ctx context.Context, s *Session) error
 

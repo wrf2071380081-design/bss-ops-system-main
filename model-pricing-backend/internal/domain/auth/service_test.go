@@ -58,6 +58,18 @@ func (f *fakeStore) FindStaff(ctx context.Context, staffID int64) (*StaffRow, er
 	return f.staff, nil
 }
 
+func (f *fakeStore) FindSupplierByPhone(ctx context.Context, phone string) (*SupplierAuthRow, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) FindAccountByOwner(ctx context.Context, portal, ownerType string, ownerID int64) (*Account, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) CreateSupplierWithAccount(ctx context.Context, in SupplierRegisterInput) (*Account, error) {
+	return nil, nil
+}
+
 func (f *fakeStore) CreateSession(ctx context.Context, s *Session) error {
 	if f.errCreate != nil {
 		return f.errCreate
