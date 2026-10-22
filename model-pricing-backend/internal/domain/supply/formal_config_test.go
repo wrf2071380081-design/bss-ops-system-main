@@ -101,6 +101,65 @@ func formalService(db *formalConfigMemory) *FormalConfigService {
 		return SecretEnvelope{Ciphertext: []byte("test-envelope:" + binding.ConfigID), KeyVersion: "test-v1"}, nil
 	}), testFormalURLPolicy(func(context.Context, string) error { return nil }), func() time.Time { return modelNow })
 }
+func TestFormalConfigWriteClockUsesDatabasePrecision(t *testing.T) {
+	db := newFormalMemory()
+	service := formalService(db)
+	now := time.Date(2026, 10, 21, 8, 0, 0, 123456789, time.FixedZone("CST", 8*3600))
+	service.now = func() time.Time { return now }
+	created, err := service.Create(context.Background(), writeMeta("7"), "11", formalCommand())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.CreatedAt.Location() != time.UTC || created.CreatedAt.Nanosecond() != 123456000 || created.ConfirmedAt != created.CreatedAt {
+		t.Fatalf("receipt differs from PostgreSQL precision: %s", created.CreatedAt)
+	}
+	now = now.Add(time.Second)
+	command := formalCommand()
+	command.Scope = "新范围"
+	command.APIKey = nil
+	updated, err := service.Update(context.Background(), writeMeta("7"), "11", created.ID, 1, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.UpdatedAt.Nanosecond() != 123456000 || updated.ConfirmedAt != updated.UpdatedAt {
+		t.Fatal("update confirmation/receipt precision differs")
+	}
+	now = now.Add(time.Second)
+	disabled, err := service.Disable(context.Background(), writeMeta("7"), "11", created.ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabled.UpdatedAt.Nanosecond() != 123456000 || disabled.ConfirmedAt != updated.ConfirmedAt {
+		t.Fatal("disable changed prior confirmation or precision")
+	}
+}
+func TestFormalConfigInputStorageLimitsReturnFieldErrors(t *testing.T) {
+	for _, tc := range []struct {
+		field  string
+		change func(*FormalConfigInput)
+	}{
+		{"scope", func(c *FormalConfigInput) { c.Scope = strings.Repeat("中", 256) }},
+		{"scope", func(c *FormalConfigInput) { c.Scope = "a\x00b" }},
+		{"scope", func(c *FormalConfigInput) { c.Scope = string([]byte{0xff}) }},
+		{"base_url", func(c *FormalConfigInput) { c.BaseURL = "https://api.vendor.example/" + strings.Repeat("x", 500) }},
+	} {
+		db := newFormalMemory()
+		service := formalService(db)
+		input := formalCommand()
+		tc.change(&input)
+		got, err := service.Create(context.Background(), writeMeta("7"), "11", input)
+		var field *FieldError
+		if !errors.As(err, &field) || field.Path != tc.field || got != nil || len(db.configs) != 0 || len(db.operations) != 0 {
+			t.Fatalf("invalid %s reached persistence: %v", tc.field, err)
+		}
+	}
+	db := newFormalMemory()
+	input := formalCommand()
+	input.Scope = strings.Repeat("中", 255)
+	if _, err := formalService(db).Create(context.Background(), writeMeta("7"), "11", input); err != nil {
+		t.Fatal("scope capacity counted bytes instead of characters", err)
+	}
+}
 func formalCommand() FormalConfigInput {
 	key := "formal-secret-not-test-credential"
 	return FormalConfigInput{Scope: "文本服务", BaseURL: "https://api.vendor.example/v1", APIKey: &key, ExternalConfirmed: true}

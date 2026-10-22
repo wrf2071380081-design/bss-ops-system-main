@@ -1,4 +1,5 @@
 import { apiRequest } from "./http";
+import { buildPlanExecution, validatePlanExecutionReceipt } from "./planExecution.contract";
 import { buildPlanCancellation, buildPlanRevision, validateMaintainedPlan } from "./planMaintenance.contract";
 import { buildPlanCreate, validateCreatedPlan, type PlanResource } from "./planCreate.contract";
 import { validatePlanPage, validatePlanQuery, type PlanQuery } from "./planList.contract";
@@ -7,6 +8,11 @@ import { validateNoticePage, validateNoticeView, validatePlanSummary, validateRe
 import type { NoticeQuery, PlanSummary } from "./supplyWorkbench.types";
 
 export const supplyWorkbenchApi = {
+  async executePlan(plan: PlanSummary, confirmed: boolean, completionNote: string, reason: string, lifecycle: string) {
+    const body = buildPlanExecution(plan, confirmed, completionNote, reason);
+    return validatePlanExecutionReceipt(await apiRequest<unknown>({ method: "POST", url: `/internal/plans/${plan.id}/execute`, data: body,
+      idempotency: { scope: `supply-plan-execute:${plan.id}`, payload: body, lifecycle } }), plan);
+  },
   async revisePlan(plan: PlanSummary, reason: string, dueAt: string, lifecycle: string) {
     const body = buildPlanRevision(plan, reason, dueAt);
     return validateMaintainedPlan(await apiRequest<unknown>({ method: "PUT", url: `/internal/plans/${plan.id}`, data: body, idempotency: { scope: `supply-plan-revise:${plan.id}`, payload: body, lifecycle } }), plan, body, "revise");

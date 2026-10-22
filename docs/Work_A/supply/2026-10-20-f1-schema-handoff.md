@@ -1,5 +1,7 @@
 # F1 增量结构交接需求（待公共负责人实施）
 
+> 当前已由用户确认[直接按34结构实施](./2026-10-21-schema34-baseline.md)。本文件“必须新增五列/升级bigint/改草稿索引”的旧交接请求撤销，保留历史方案记录；新的F1仓储使用原列、原integer版本和完整JSON快照。后续接入需求按当前方案核对。
+
 依据main422be85迁移000033/34、F1既定业务决策。本文不是已应用迁移，不占用公共迁移编号，不修改已发布脚本。
 
 ## 1. 首个真实闭环需要的字段
@@ -32,7 +34,7 @@
 
 新增/修改/核验：当前投影、版本快照、operation_log同事务；日志失败或commit失败不得返回成功。新建identity分配遵守GENERATED ALWAYS AS IDENTITY（如领域先取序列ID，需明确INSERT策略），不能直接用普通INSERT显式ID导致冲突。
 
-公共operation_log.request_id是varchar(64)，部分A领域允许128，需统一上限并让超长输入明确失败，禁止截断追踪号；reason(500)同理。读写不回显敏感来源参数。
+公共operation_log.request_id是varchar(64)，reason为varchar(500)。2026-10-21已统一A早期写入口的字符上限，拒绝无效UTF-8/NUL且不截断追踪号，见[适配记录](../TDD/SUMMARY.md)。真实日志同事务写入及公共幂等提交仍待接入；读写不回显敏感来源参数。
 
 列表关联筛选需同一资源EXISTS同时匹配supplier_ids和regions，按模型去重后分页，NULLS LAST+稳定ID。无关联筛选时无资源模型仍可见。
 
@@ -49,3 +51,9 @@
 随后已新增ReadModelData，在调用方事务内读取现有资料列，以to_json(text[])明确处理数组，再解码JSONB与date；独立真库验证了特殊字符、NULL拒绝、精确价格、默认资料、查询错误及夹具回滚，见[资料读取验证](../TDD/SUMMARY.md#stage-05)。该函数不提供完整聚合、写入、核验或CAS，不绕过增量结构需求。
 
 公共方落实字段和事务工具后，A继续实现ModelReadStore/ModelUnitOfWork，连接现有ModelService；不启用填假revision/假维护人的过渡仓储。字段全表差异见[差异矩阵](./2026-10-20-schema34-gap-matrix.md)。
+
+2026-10-21进展：已实现ModelUnitOfWork SQL适配，复用调用方事务与日志回调；在专用测试库的会话临时表按候选增量契约验证完整草稿/核验/改价/版本及日志失败回滚。public五列仍未增加，运行库仍32；完整读取与生产装配尚未完成，见[阶段记录](../TDD/SUMMARY.md)。
+
+同日后续已补ModelReadStore四方法SQL适配及只读事务运行器，临时表真实验证当前/历史、筛选和分页，见[读取阶段](../TDD/SUMMARY.md)。以上写阶段的“完整读取未完成”保留其时点；目前剩余重点是选项能力组合、公共增量与生产装配，不能在当前public结构启用仓储。
+
+同日选项能力组合已完成：ModelRepository同时提供四方法与选项，四个GET入口已通过真实HTTP/SQL测试，见[组合验证](../TDD/SUMMARY.md)。公共增量和生产装配仍未完成，以上早期剩余项按本段更新。

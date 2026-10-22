@@ -53,6 +53,10 @@ export function installRouterGuards(router: Router, pinia: Pinia) {
       return "/403";
     }
 
+    if (to.meta.requiresApproval && session.user?.canApproveSupplier !== true) {
+      return "/403";
+    }
+
     const routeKey = to.meta.routeKey as string | undefined;
     if (routeKey && !permissions.canRoute(routeKey)) return "/403";
     return true;

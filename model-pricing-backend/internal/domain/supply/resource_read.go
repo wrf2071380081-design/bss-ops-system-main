@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 type ResourceListQuery struct {
@@ -72,6 +73,12 @@ func normalizeResourceQuery(q ResourceListQuery) (ResourceListQuery, error) {
 	}
 	q.Company = strings.TrimSpace(q.Company)
 	q.Keyword = strings.TrimSpace(q.Keyword)
+	if err := resourceSearchText("company", q.Company, 128); err != nil {
+		return q, err
+	}
+	if err := resourceSearchText("keyword", q.Keyword, 200); err != nil {
+		return q, err
+	}
 	if q.SortBy == "" {
 		if q.View == "grouped" {
 			q.SortBy = "name"
@@ -96,6 +103,12 @@ func normalizeResourceQuery(q ResourceListQuery) (ResourceListQuery, error) {
 	q.NullsLast = true
 	q.TieBreakBy = "id"
 	return q, nil
+}
+func resourceSearchText(field, value string, limit int) error {
+	if !utf8.ValidString(value) || strings.ContainsRune(value, 0) || utf8.RuneCountInString(value) > limit {
+		return invalid(field, "invalid search text or character limit exceeded")
+	}
+	return nil
 }
 func resourceMatches(row *ResourceSnapshot, q ResourceListQuery) bool {
 	return (q.Region == "" || row.Region == q.Region) && (q.SupplierID == "" || row.SupplierID == q.SupplierID) && (q.StandardModelID == "" || row.StandardModelID == q.StandardModelID) && (q.Company == "" || row.Company == q.Company) && (q.ModelType == "" || row.ModelType == q.ModelType) && (q.State == "" || row.State == q.State) && (q.Keyword == "" || strings.Contains(strings.ToLower(row.ModelName+" "+row.OfficialID+" "+row.SupplierName+" "+row.SupplierModelID), strings.ToLower(q.Keyword)))

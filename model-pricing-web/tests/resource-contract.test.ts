@@ -35,6 +35,14 @@ test("resource metrics distinguish exact zero from missing and preserve large va
 
 export const resourceGroupFixture = () => ({ id: "11", name: "示例模型", official_id: "example-v1", company: "示例公司", model_type: "TEXT", supplier_count: 2, resource_count: 2, available_count: 1, coefficient_min: "0.5000", coefficient_max: "0.7000", regions: ["CN"], state_counts: { ADMITTED: 2 } });
 export const resourceRowFixture = () => ({ id: "9007199254740993", supplier_id: "21", supplier_name: "供应商甲", standard_model_id: "11", model_name: "示例模型", official_id: "example-v1", company: "示例公司", model_type: "TEXT", region: "CN", supplier_model_id: "vendor-model-v1", coefficient: "0.6800", buyer_id: "7", state: "ADMITTED", ever_admitted: true, revision: "1", formal_config_id: "91", formal_config_revision: "1", test: { report_id: "51", status: "COMPLETED", connectivity_passed: true, pressure_passed: true, valid: true, cache_stats: { status: "PROVIDED", report_id: "51", hit_tokens: "0", input_tokens: "2000" }, metrics: { connection_ms: "0.00", rps: "23.00000000", tps: "9007199254740993" } }, official_price_items: [], quote_readiness: { eligible: false, blocked_reasons: ["MODEL_NOT_READY"], resource_revision: "1", model_version_no: "1", formal_config_revision: "1", test_evidence_ref: "51" }, permissions: { can_edit: false }, created_at: "2026-10-20T01:00:00Z", updated_at: "2026-10-20T01:00:00Z" });
+
+test("native optional price dimensions do not prevent loading resource details", () => {
+  const price = { item_key: "input", label: "文本输入", task_type: "TEXT_INPUT", amount: "2", currency: "USD", unit_code: "TOKEN", unit_quantity: "1000000", condition: "标准计费", source_url: "https://openai.com" };
+  for (const dimensions of [undefined, null]) {
+    const row = validateResourceRow({ ...resourceRowFixture(), official_price_items: [{ ...price, dimensions }] });
+    assert.deepEqual(row.official_price_items[0]?.dimensions, {});
+  }
+});
 test("wire validation rejects numeric IDs, bad group counts and borrowed report cache", () => {
   assert.equal(validateResourceGroup(resourceGroupFixture()).resource_count, 2);
   assert.equal(validateResourceRow(resourceRowFixture()).id, "9007199254740993");

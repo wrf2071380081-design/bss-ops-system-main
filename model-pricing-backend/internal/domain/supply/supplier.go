@@ -101,10 +101,26 @@ type SupplierUnitOfWork interface {
 	// Join an existing transaction before opening a new top-level transaction.
 	Within(context.Context, func(SupplierTransaction) error) error
 }
+type SupplierListQuery struct {
+	Page, Size int
+	Keyword    string
+	Region     string
+}
+type SupplierPage struct {
+	List  []Supplier `json:"list"`
+	Total int64      `json:"total"`
+	Page  int        `json:"page"`
+	Size  int        `json:"size"`
+}
+type SupplierReadStore interface {
+	Get(context.Context, string) (*Supplier, error)
+	List(context.Context, SupplierListQuery) (*SupplierPage, error)
+}
 type SupplierTransaction interface {
 	NextID(context.Context) (string, error)
 	SupplierForUpdate(context.Context, string) (*Supplier, error)
 	CreateSupplier(context.Context, *Supplier) error
+	CreateSupplierAssignment(context.Context, string, string, string, time.Time) error
 	UpdateSupplier(context.Context, *Supplier, uint64) error
 	SupplierUsage(context.Context, string) (SupplierUsage, error)
 	CurrencyEnabled(context.Context, string) (bool, error)

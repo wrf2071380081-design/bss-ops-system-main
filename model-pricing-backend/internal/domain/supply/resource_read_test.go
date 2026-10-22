@@ -158,6 +158,28 @@ func TestResourceReaderRejectsBadQueriesAndMissingDependencies(t *testing.T) {
 	}
 }
 
+func TestResourceReaderRejectsInvalidSearchBeforeStore(t *testing.T) {
+	for _, q := range []ResourceListQuery{{Keyword: strings.Repeat("中", 201)}, {Keyword: "a\x00b"}, {Keyword: string([]byte{0xff})}, {Company: strings.Repeat("中", 129)}, {Company: "a\x00b"}} {
+		store := &resourceReadMemory{}
+		got, err := NewResourceReader(store).List(context.Background(), q)
+		var field *FieldError
+		if !errors.As(err, &field) || got != nil || store.query.Page != 0 {
+			t.Fatalf("invalid search reached store: %+v %v", q, err)
+		}
+	}
+	for _, keyword := range []string{strings.Repeat("中", 201), "a\x00b", string([]byte{0xff})} {
+		store := &resourceOptionsMemory{}
+		got, err := NewResourceReader(store).Options(context.Background(), "", keyword)
+		var field *FieldError
+		if !errors.As(err, &field) || got != nil || store.query.Limit != 0 {
+			t.Fatalf("invalid options search reached store: %v", err)
+		}
+	}
+	if _, err := NewResourceReader(&resourceReadMemory{}).List(context.Background(), ResourceListQuery{Keyword: strings.Repeat("中", 200), Company: strings.Repeat("中", 128)}); err != nil {
+		t.Fatal("limits count characters, not bytes", err)
+	}
+}
+
 func TestResourceRejectsMalformedOfficialModel(t *testing.T) {
 	for _, change := range []func(*ResourceRecord){func(r *ResourceRecord) { r.Model.VersionNo = 0 }, func(r *ResourceRecord) {
 		r.Model.Data.PriceItems[0].SourceURL = "https://vendor.example?api_key=secret"

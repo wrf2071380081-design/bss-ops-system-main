@@ -5,8 +5,11 @@ import { planKindLabels, planStatusLabels } from "../../../api/supplyWorkbench.c
 import { formatDateTime } from "../../../domain/date";
 import type { PlanSummary } from "../../../api/supplyWorkbench.types";
 import PlanSummaryDialog from "./PlanSummaryDialog.vue";
-const props = defineProps<{ resourceID: string; region: string }>();
+const props = defineProps<{ resourceID: string; region: string; initialPlanID?: string }>();
 const rows = ref<PlanSummary[]>([]), total = ref(0), page = ref(1), status = ref(""), loading = ref(false), error = ref(""), selected = ref<string>();
+const now = ref(Date.now());
+const clock = window.setInterval(() => { now.value = Date.now(); }, 30000);
+const isDue = (plan: PlanSummary) => plan.status === "PENDING" && Date.parse(plan.due_at) <= now.value;
 let active = true, controller: AbortController | undefined;
 async function load() {
   controller?.abort(); const request = controller = new AbortController();
@@ -18,8 +21,8 @@ async function load() {
   finally { if (active && !request.signal.aborted) loading.value = false; }
 }
 function filterChanged() { page.value = 1; void load(); }
-watch(() => [props.resourceID, props.region], () => { page.value = 1; selected.value = undefined; void load(); }, { immediate: true });
-onBeforeUnmount(() => { active = false; controller?.abort(); });
+watch(() => [props.resourceID, props.region, props.initialPlanID], () => { page.value = 1; selected.value = props.initialPlanID || undefined; void load(); }, { immediate: true });
+onBeforeUnmount(() => { active = false; controller?.abort(); window.clearInterval(clock); });
 </script>
 <template>
   <section v-loading="loading" class="resource-plans">
@@ -28,13 +31,13 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
     <el-table v-else :data="rows" empty-text="暂无符合条件的计划" aria-label="资源计划列表">
       <el-table-column label="计划" min-width="90"><template #default="{row}">{{ planKindLabels[row.kind] }}</template></el-table-column>
       <el-table-column label="发起人" min-width="100"><template #default="{row}">{{ row.creator_name || `人员 ${row.created_by}` }}{{ row.is_initiator ? '（本人）' : '' }}</template></el-table-column>
-      <el-table-column label="预计时间" min-width="160"><template #default="{row}">{{ formatDateTime(row.due_at) }}</template></el-table-column>
+      <el-table-column label="预计时间" min-width="160"><template #default="{row}">{{ formatDateTime(row.due_at) }}<div v-if="isDue(row)"><el-tag type="warning" size="small">预计时间已到，待登记</el-tag></div></template></el-table-column>
       <el-table-column label="状态" min-width="95"><template #default="{row}"><el-tag :type="row.status === 'BLOCKED' ? 'warning' : 'info'">{{ planStatusLabels[row.status] }}</el-tag></template></el-table-column>
       <el-table-column label="前提" min-width="100"><template #default="{row}">{{ row.precondition_matches ? '版本匹配' : '资源已变更' }}</template></el-table-column>
       <el-table-column label="详情" width="75" fixed="right"><template #default="{row}"><el-button link type="primary" @click="selected = row.id">详情</el-button></template></el-table-column>
     </el-table>
     <el-pagination v-if="!error && total > 0" v-model:current-page="page" :page-size="10" :total="total" layout="total, prev, pager, next" @current-change="load" />
-    <PlanSummaryDialog v-if="selected" :id="selected" @close="selected = undefined" @changed="load" />
+    <PlanSummaryDialog v-if="selected" :id="selected" :resource-i-d="resourceID" :region="region" @close="selected = undefined" @changed="load" />
   </section>
 </template>
-<style scoped>.resource-plans{min-height:220px}.plan-tools{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:14px 0 20px}.plan-tools>span{font-size:13px;color:#79868f;line-height:1.8}.el-pagination{justify-content:flex-end;margin-top:20px}@media(max-width:500px){.plan-tools{align-items:flex-start;flex-direction:column}.el-pagination{justify-content:flex-start}}</style>
+<style scoped>.resource-plans{min-height:220px}.plan-tools{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:14px 0 20px}.plan-tools>span{font-size:13px;color:#8a9099;line-height:1.8}.el-pagination{justify-content:flex-end;margin-top:20px}@media(max-width:500px){.plan-tools{align-items:flex-start;flex-direction:column}.el-pagination{justify-content:flex-start}}</style>

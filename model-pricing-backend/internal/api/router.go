@@ -32,12 +32,15 @@ import (
 
 // Deps 是路由装配所需的全部依赖。
 type Deps struct {
-	Config             *config.Config
-	Log                *zap.Logger
-	Health             Pinger
-	AuthService        *auth.Service
-	SessionReader      auth.SessionReader
-	IdemStore          middleware.IdempotencyStore
+	Config        *config.Config
+	Log           *zap.Logger
+	Health        Pinger
+	AuthService   *auth.Service
+	SessionReader auth.SessionReader
+	IdemStore     middleware.IdempotencyStore
+	// SupplyRoutes contains A-owned handlers assembled over the current schema.
+	// It stays nil in environments where the A module is not configured.
+	SupplyRoutes       *SupplyDeps
 	ModelSvc           *model.Service
 	SupplierSvc        *supplier.Service
 	SupplierProfileSvc *supplier.ProfileService

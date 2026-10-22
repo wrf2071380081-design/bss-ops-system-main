@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"model_bss/pkg/apperr"
 	"model_bss/pkg/response"
 )
 
@@ -78,7 +79,10 @@ func (f *fakeIdemStore) MarkResult(c *gin.Context, requestID string, httpStatus 
 		return errors.New("row not found")
 	}
 	row.HTTPStatus = httpStatus
-	if httpStatus >= 200 && httpStatus < 300 {
+	if snapshot, terminal := IdempotencyTerminalSnapshot(c, httpStatus); terminal {
+		row.Status = "DONE"
+		row.ResultJSON = snapshot
+	} else if httpStatus >= 200 && httpStatus < 300 {
 		row.Status = "DONE"
 		// 与真实实现（repo.IdempotencyRepo.MarkResult）一致：保存可重放的响应快照。
 		// 中间件的 bodyCapture 兜底会把未显式挂的结果也填进来，故此处与生产行为同构。
@@ -338,6 +342,37 @@ func TestIdempotency_BusinessFailureMarksFailed(t *testing.T) {
 	row := store.byRequest["idem-006"]
 	require.NotNil(t, row)
 	require.Equal(t, "FAILED", row.Status)
+}
+
+func TestIdempotency_ReplaysCommittedTerminal409WithBusinessData(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newFakeIdemStore()
+	calls := 0
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set(ctxKeyOperator, stubOperator(42)); c.Next() })
+	r.Use(Idempotency(store, DefaultBizKey))
+	r.POST("/x", func(c *gin.Context) {
+		calls++
+		err := apperr.New(10005, "资源状态已变化，计划已阻断", http.StatusConflict)
+		data := map[string]string{"plan_id": "81", "status": "BLOCKED", "revision": "2"}
+		SetIdempotencyTerminalResponse(c, err.Status, err.Code, err.Message, data)
+		response.ErrorData(c, err, data)
+	})
+	do := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{"a":1}`))
+		req.Header.Set("Idempotency-Key", "terminal-409")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+	first := do()
+	if first.Code != http.StatusConflict || calls != 1 || store.byRequest["terminal-409"].Status != "DONE" {
+		t.Fatalf("terminal 409 was not stored as committed: status=%d calls=%d row=%+v body=%s", first.Code, calls, store.byRequest["terminal-409"], first.Body)
+	}
+	replayed := do()
+	if replayed.Code != http.StatusConflict || calls != 1 || bodyCodeOf(t, replayed.Body.String()) != 10005 || !strings.Contains(replayed.Body.String(), `"status":"BLOCKED"`) {
+		t.Fatalf("terminal 409 was not replayed with its outcome: status=%d calls=%d body=%s", replayed.Code, calls, replayed.Body)
+	}
 }
 
 func TestIdempotency_ReplayUsesFreshRequestID(t *testing.T) {

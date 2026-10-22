@@ -74,6 +74,21 @@ func planExecutionStore(t *testing.T) *planExecuteFixture {
 	}
 	return &planExecuteFixture{plan: p, record: record}
 }
+
+func TestPlanExecutionRejectsInvalidEvidenceAndNormalizesTime(t *testing.T) {
+	for _, note := range []string{"bad\x00note", string([]byte{0xff})} {
+		f := planExecutionStore(t)
+		if got, err := NewPlanExecutionService(f, nil).Execute(context.Background(), maintenanceMeta("7"), "81", 1, true, note); err == nil || got != nil || len(f.effects) != 0 {
+			t.Fatal("invalid completion evidence persisted")
+		}
+	}
+	f := planExecutionStore(t)
+	at := modelNow.Add(123456789 * time.Nanosecond)
+	got, err := NewPlanExecutionService(f, func() time.Time { return at }).Execute(context.Background(), maintenanceMeta("7"), "81", 1, true, "实际操作记录")
+	if err != nil || got.Plan.ExecutedAt.Nanosecond()%1000 != 0 || f.effects[0].OccurredAt.Nanosecond()%1000 != 0 {
+		t.Fatal("execution receipt differs from SQL precision", err)
+	}
+}
 func TestPlanExecutionTransactionCommitsSuccessAndAllEffects(t *testing.T) {
 	f := planExecutionStore(t)
 	f.record.Resource.BuyerID = "8"

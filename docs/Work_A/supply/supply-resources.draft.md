@@ -1,5 +1,7 @@
 # A / F3 资源与模型广场对接草案
 
+> 最新业务结论：首次模型流程按供应商此前是否已有模型判断，与注册/登录解耦，允许首次多模型批次。B提交自测覆盖每个模型连通性、至少一个压力测试；“做过”不代表“通过”。A逐资源接入仍须该资源自身两项有效测试通过。改价执行人由审批人分派，A不得固定为原测试人或依报价提交者推断内部办理人。完整规则见[REQ-21～25](./2026-10-21-requirements-and-plan.md)。
+
 状态：评审草案；不是已注册的运行接口。
 日期：2026-10-20。
 依据：A 详细设计 §6、§8.3、§9，以及[业务决策记录](./decisions.md) DEC-002/003。
@@ -18,6 +20,12 @@
 第 3—6 项来自任务及详细设计；人工直建资源、人工直改系数、复测失败处理和证据有效期仍需按 D02 后续对齐，不能据本草案自动开放额外写入口。
 
 ## 2. A 提供给 B/C 的方法
+
+2026-10-21已新增[测试证据关联契约](./resource-evidence.draft.md)及TestEvidenceService.AttachTestEvidence：B可信报告/task Sequence选择当前证据，旧目标/旧任务忽略留痕，重复不改revision，只有尚未接入资源随自身测试更新准备状态，失败补测不自动下架。资源初建也保存LatestReportSequence，缺序号拒绝猜测。领域/内存事务和创建→补测→接入组合证据见[关联阶段记录](../TDD/SUMMARY.md)，真实B/SQL仍待接入。
+
+2026-10-21已细化[申报创建契约](./resource-creation.draft.md)，新增ResourceCreationService.CreateFromSubmission与NewResourceFromSubmission。仅接收B的可信已分派且进入办理来源，按行自身测试设置PENDING_TEST/PENDING_ACCESS，防重重读不重置现有资源，创建/B行回写/日志共享事务；当前内存事务证据见[创建阶段记录](../TDD/SUMMARY.md)。未装配真实B/SQL/HTTP，不在草稿阶段创建资源。
+
+2026-10-21已细化[逐资源登记接入契约](./resource-admission.draft.md)，新增ResourceAdmissionService.Admit与ProposeResourceAdmission；当前配置节点办理人授权，不把报价审批资格或buyer身份当代办依据。测试/配置/来源版本通过后CAS接入，B逐行状态与日志/outbox共享事务；领域和内存事务验证见[阶段记录](../TDD/SUMMARY.md)。尚无真实B/SQL/HTTP装配，不宣称接入主流程完成。
 
 | 方法 | 输入 | 结果与规则 |
 |---|---|---|
@@ -158,3 +166,13 @@ ResourceStateService.Change仅供绑定采购人直接OFFLINE/ONLINE，参数包
 ONLINE复用当前安全快照可报价判定，在候选ADMITTED副本重查模型、主体、配置及自身测试；OFFLINE不因上游资料失效而阻止采购人停止资源。两者保留ever_admitted、目标与报告，CAS升revision。操作记录、公告和outbox由同事务效果端口写入，公告影响PENDING。具体证据及未接入项见[上下架领域记录](../TDD/SUMMARY.md#stage-26)。
 
 历史POST `/api/internal/resources/:id/state` 及直接登记页面已按DEC-010从A注册器撤下；[HTTP记录](../TDD/SUMMARY.md#stage-25)仅保留历史证据。当前采用创建计划→原发起人登记实际完成；已有计划创建/修改/取消独立能力，执行HTTP仍未开放，最新进度以[TDD索引](../TDD/README.md)为准。
+
+## 13. 模型供应资源操作记录与计划定位
+
+2026-10-22交接：模型日志查询与指定计划/跨资源拦截已有真实页面/API/隔离PG证据（SUMMARY Stage57）。公共负责人接真实plan_id投影和deeplink，B接报告/流程事实，C消费资源资格与事件；具体参数及A剩余实现见[三模块交接清单](./2026-10-22-handoff.md)。本节通过不代表配置、准入或B报告已联调。
+
+GET `/api/internal/standard-models/:id/resource-operations?page=1&size=20`：内部人员读取该标准模型下全部供应资源的操作记录；可选 `resource_id` 缩小到一条资源。范围独立于供应来源表的性能/状态筛选，页面明确说明。查询在数据库按模型归属过滤后分页，按 created_at DESC、id DESC 稳定排序；模型不存在404，指定资源不属于模型404。返回 `{list,total,page,size}`；每行仅含字符串 id/entity_id/resource_id/supplier_id、entity_type(resource/plan)、supplier_name、supplier_model_id、region、action、operator_name、reason、created_at，不返回 before/after、凭据或测试原始数据。此入口汇总 resource 实体日志及通过 plan.resource_id 关联的计划日志，不包含模型资料或供应商级配置日志；模型资料日志仍走标准模型库。
+
+A 资源深链支持 `?tab=plans&plan_id=字符串ID`，直接读取并打开该计划，不依赖计划位于列表当前页；计划详情必须核对其 resource_id/region 与资源上下文。未知或跨资源计划显示错误，不改开其他计划，也不改变认证操作者。公共待办暂未提供 plan_id 时仍打开资源计划列表，不猜测计划ID，不开放实际执行。
+
+验收：多供应商资源日志一次汇总、模型间隔离、分页顺序/安全字段；指定计划可直接打开，跨资源计划不展示或操作。

@@ -18,7 +18,8 @@ type F1SchemaReport struct {
 	RequiredChecks      []string `json:"required_checks"`
 }
 
-// This is an explicit contract for the proposed F1 adapter, not a migration.
+// Native 000033/34 columns. Business control metadata is persisted in the
+// version snapshot; column presence alone does not validate that protocol.
 func F1ExpectedColumns() []F1Column {
 	result := []F1Column{}
 	add := func(table, kind string, names ...string) {
@@ -26,13 +27,14 @@ func F1ExpectedColumns() []F1Column {
 			result = append(result, F1Column{table, name, kind})
 		}
 	}
-	add("standard_model", "bigint", "id", "maintainer_id", "revision", "version_no", "checked_by")
-	add("standard_model", "character varying", "company", "name", "official_id", "model_type", "status", "verify_status")
+	add("standard_model", "bigint", "id", "created_by", "updated_by")
+	add("standard_model", "character varying", "company", "name", "official_id", "model_type", "status")
 	add("standard_model", "ARRAY", "input_modalities", "output_modalities")
 	add("standard_model", "jsonb", "capacity", "abilities", "price_items", "api_access", "lifecycle", "sources")
 	add("standard_model", "date", "checked_at")
 	add("standard_model", "timestamp with time zone", "created_at", "updated_at")
-	add("standard_model_version", "bigint", "id", "standard_model_id", "version_no")
+	add("standard_model_version", "bigint", "id", "standard_model_id")
+	add("standard_model_version", "integer", "version_no")
 	add("standard_model_version", "jsonb", "snapshot")
 	add("operation_log", "bigint", "id", "entity_id", "operator_id")
 	add("operation_log", "character varying", "entity_type", "action", "reason", "request_id")
@@ -41,7 +43,7 @@ func F1ExpectedColumns() []F1Column {
 	return result
 }
 func AssessF1Columns(columns []F1Column) *F1SchemaReport {
-	report := &F1SchemaReport{MissingColumns: []string{}, IncompatibleColumns: []string{}, IndexDefinitions: []string{}, RequiredChecks: []string{"identity uniqueness includes incomplete-draft policy", "version uniqueness and immutable snapshots", "foreign keys and maintainer backfill", "varchar lengths and trace/reason limits", "CAS, shared transaction and commit-failure response"}}
+	report := &F1SchemaReport{MissingColumns: []string{}, IncompatibleColumns: []string{}, IndexDefinitions: []string{}, RequiredChecks: []string{"schema34 identity uniqueness and explicit identity conflicts", "versioned snapshot metadata agrees with current projection", "legacy rows need reviewed snapshot initialization, not invented ownership", "varchar lengths and trace/reason limits", "locked snapshot CAS, shared transaction and commit-failure response"}}
 	actual := map[string]string{}
 	for _, column := range columns {
 		actual[column.Table+"."+column.Name] = column.Type
@@ -51,7 +53,7 @@ func AssessF1Columns(columns []F1Column) *F1SchemaReport {
 		kind, ok := actual[key]
 		if !ok {
 			report.MissingColumns = append(report.MissingColumns, key)
-		} else if kind != expected.Type {
+		} else if kind != expected.Type && !(expected.Table == "standard_model_version" && expected.Name == "version_no" && kind == "bigint") {
 			report.IncompatibleColumns = append(report.IncompatibleColumns, fmt.Sprintf("%s: expected %s, actual %s", key, expected.Type, kind))
 		}
 	}

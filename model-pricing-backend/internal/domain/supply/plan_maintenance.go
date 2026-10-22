@@ -3,7 +3,6 @@ package supply
 import (
 	"context"
 	"math"
-	"strings"
 	"time"
 )
 
@@ -51,7 +50,10 @@ func (s *PlanMaintenanceService) validate(meta WriteMeta, id string, revision ui
 	if s == nil || s.work == nil {
 		return ErrDependencyUnavailable
 	}
-	if !validID(id) || !validID(meta.ActorID) || revision == 0 || revision > math.MaxInt64 || strings.TrimSpace(meta.Reason) == "" || strings.TrimSpace(meta.RequestID) == "" || len(meta.RequestID) > 128 {
+	if err := validateWriteMetaStorage(meta); err != nil {
+		return err
+	}
+	if !validID(id) || !validID(meta.ActorID) || revision == 0 || revision > math.MaxInt64 {
 		return invalid("command", "identity, revision, reason and trace required")
 	}
 	return nil
@@ -105,8 +107,8 @@ func (s *PlanMaintenanceService) Create(ctx context.Context, meta WriteMeta, res
 		if !validID(id) {
 			return ErrReadContract
 		}
-		now := s.now().UTC()
-		plan, err := NewStatePlan(id, meta.ActorID, resource, kind, due, meta.Reason, now)
+		now := s.now().UTC().Truncate(time.Microsecond)
+		plan, err := NewStatePlan(id, meta.ActorID, resource, kind, due.UTC().Truncate(time.Microsecond), meta.Reason, now)
 		if err != nil {
 			return err
 		}
@@ -156,7 +158,7 @@ func (s *PlanMaintenanceService) change(ctx context.Context, meta WriteMeta, id 
 		if action == "CANCEL" {
 			after, err = before.CanceledStatePlan(meta.ActorID, expected)
 		} else {
-			after, err = before.RevisedStatePlan(meta.ActorID, expected, due, meta.Reason)
+			after, err = before.RevisedStatePlan(meta.ActorID, expected, due.UTC().Truncate(time.Microsecond), meta.Reason)
 		}
 		if err != nil {
 			return err
@@ -164,7 +166,7 @@ func (s *PlanMaintenanceService) change(ctx context.Context, meta WriteMeta, id 
 		if err := tx.UpdateStatePlan(ctx, after.copy(), expected); err != nil {
 			return err
 		}
-		if err := tx.AppendPlanMaintenanceEffect(ctx, PlanMaintenanceEffect{Action: action, ActorID: meta.ActorID, Reason: meta.Reason, RequestID: meta.RequestID, Before: before.copy(), After: after.copy(), ScheduleReminder: action == "REVISE", OccurredAt: s.now().UTC()}); err != nil {
+		if err := tx.AppendPlanMaintenanceEffect(ctx, PlanMaintenanceEffect{Action: action, ActorID: meta.ActorID, Reason: meta.Reason, RequestID: meta.RequestID, Before: before.copy(), After: after.copy(), ScheduleReminder: action == "REVISE", OccurredAt: s.now().UTC().Truncate(time.Microsecond)}); err != nil {
 			return err
 		}
 		result = after.ResourcePlan.Clone()

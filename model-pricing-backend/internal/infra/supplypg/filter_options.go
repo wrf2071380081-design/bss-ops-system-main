@@ -13,12 +13,18 @@ import (
 // FilterOptionsStore implements only directory capabilities. Compose it with
 // the complete model/resource repositories; it does not invent missing models
 // or resource readiness to satisfy their read interfaces.
-type FilterOptionsStore struct{ db *sql.DB }
+type FilterOptionsStore struct {
+	db     *sql.DB
+	schema string
+	read   ModelReadRunner
+}
 
 var _ supply.ModelFilterOptionsStore = (*FilterOptionsStore)(nil)
 var _ supply.ResourceFilterOptionsStore = (*FilterOptionsStore)(nil)
 
-func NewFilterOptionsStore(db *sql.DB) *FilterOptionsStore { return &FilterOptionsStore{db: db} }
+func NewFilterOptionsStore(db *sql.DB) *FilterOptionsStore {
+	return &FilterOptionsStore{db: db, schema: "public"}
+}
 func (s *FilterOptionsStore) ModelFilterOptions(ctx context.Context, q supply.ModelOptionsQuery) (supply.ModelFilterOptions, error) {
 	if utf8.RuneCountInString(q.Keyword) > 200 {
 		return supply.ModelFilterOptions{}, supply.ErrReadContract
@@ -86,18 +92,40 @@ func buildFilterOptionQueries(regions []string, keyword string, limit int, globa
 }
 func (s *FilterOptionsStore) options(ctx context.Context, regions []string, keyword string, limit int, globalCompanies bool) (supply.ModelFilterOptions, error) {
 	empty := supply.ModelFilterOptions{}
-	if s == nil || s.db == nil {
+	if s == nil || (s.db == nil && s.read == nil) {
 		return empty, supply.ErrDependencyUnavailable
+	}
+	if !modelSchemaName.MatchString(s.schema) {
+		return empty, mappingError("schema")
 	}
 	queries, err := buildFilterOptionQueries(regions, keyword, limit, globalCompanies)
 	if err != nil {
 		return empty, err
 	}
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	// Only the validated identifier replaces the fixed schema token. Search
+	// values remain bound arguments in the original query builder.
+	queries.company = strings.ReplaceAll(queries.company, "public.", `"`+s.schema+`".`)
+	queries.supplier = strings.ReplaceAll(queries.supplier, "public.", `"`+s.schema+`".`)
+	run := s.read
+	if run == nil {
+		run = ModelReadTransactions(s.db)
+	}
+	var result supply.ModelFilterOptions
+	err = run(ctx, func(tx *sql.Tx) error {
+		if tx == nil {
+			return supply.ErrDependencyUnavailable
+		}
+		var e error
+		result, e = readFilterOptions(ctx, tx, queries, limit)
+		return e
+	})
 	if err != nil {
 		return empty, err
 	}
-	defer tx.Rollback()
+	return result, nil
+}
+func readFilterOptions(ctx context.Context, tx *sql.Tx, queries filterOptionQueries, limit int) (supply.ModelFilterOptions, error) {
+	empty := supply.ModelFilterOptions{}
 	result := supply.ModelFilterOptions{Companies: []string{}, Suppliers: []supply.ModelSupplierOption{}}
 	rows, err := tx.QueryContext(ctx, queries.company, queries.companyArgs...)
 	if err != nil {
@@ -145,9 +173,6 @@ func (s *FilterOptionsStore) options(ctx context.Context, regions []string, keyw
 	}
 	if len(result.Suppliers) > limit {
 		result.Suppliers = result.Suppliers[:limit]
-	}
-	if err := tx.Commit(); err != nil {
-		return empty, err
 	}
 	return result, nil
 }

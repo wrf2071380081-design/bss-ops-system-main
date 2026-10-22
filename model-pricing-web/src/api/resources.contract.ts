@@ -76,6 +76,11 @@ export function validateResourceRow(value: unknown, expectedID?: string): Resour
   if (readiness.eligible && (readiness.blocked_reasons.length || row.state !== "ADMITTED" || !row.ever_admitted || test.status !== "COMPLETED" || !test.valid || !test.connectivity_passed || !test.pressure_passed)) invalid();
   resourceCacheDisplay(cache as unknown as ResourceCache, String(test.status));
   for (const key of ["connection_ms", "rps", "tps"]) resourceMetricDisplay(metrics[key] as string | null, String(test.status));
-  if (!Array.isArray(row.official_price_items) || validateStandardModel({ ...emptyStandardModel(), price_items: row.official_price_items }).length) invalid();
-  return structuredClone(row) as unknown as ResourceRow;
+  if (!Array.isArray(row.official_price_items)) invalid();
+  const officialPrices = row.official_price_items.map(value => {
+    const price = object(value);
+    return { ...price, dimensions: price.dimensions == null ? {} : object(price.dimensions) };
+  });
+  if (validateStandardModel({ ...emptyStandardModel(), price_items: officialPrices as ResourceRow["official_price_items"] }).length) invalid();
+  return structuredClone({ ...row, official_price_items: officialPrices }) as unknown as ResourceRow;
 }

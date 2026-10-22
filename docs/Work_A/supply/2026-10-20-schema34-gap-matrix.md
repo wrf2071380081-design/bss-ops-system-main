@@ -1,5 +1,7 @@
 # main 000033/000034 与 A 代码差异清单
 
+> 当前技术决策已更新为[按34实施](./2026-10-21-schema34-baseline.md)。本表保留此前A候选方案与DDL的差异事实，但“字段不同”不再等同公共方必须补列；F1已改用现有版本快照。其余条目先核实复用路径，不能将本表直接当迁移待办。
+
 基线：2026-10-20拉取的main `422be85`，`000033_target_model.up.sql`及`000034_test_report_cache.up.sql`。本清单按实际DDL核对，不以设计文档中的“已有”代替代码事实。
 
 ## 1. 处理原则
@@ -28,10 +30,12 @@
 | plan | resource_id/kind/reason/due_at/before/after/status/created_by/created_at | revision、expected_resource_revision、executed_at、failure_reason、修订、同维度唯一 | 公共方补增量结构；before/after可保存快照，不能拿created_at冒充实际完成时间。DONE/EXECUTED须显式词典与历史补证，不能默认转换完成依据 |
 | notice | type/target_type/target_id/payload/created_at | 资源/区域/内容/影响状态及数量/来源事件 | A可用payload明确编码，公共方固定JSON版本及来源事件防重约束。不能从无载荷的目标关联猜影响客户数或当前区域 |
 | notice_read | (notice_id,staff_id)主键、read_at | 首次阅读及个人状态 | 已具备基本字段；A可实现仓储，仍需与操作日志/幂等事务共享。缺记录才是未读，查询失败不是未读 |
-| operation_log | before/after JSON、operator_id、request_id(64)、reason(500)、created_at | A操作前后安全快照、认证StaffID、追踪及时间 | A可映射OccurredAt→created_at；需统一request/reason长度，当前部分A服务允许128字符追踪，数据库不可截断。原子写入仍需公共工具 |
+| operation_log | before/after JSON、operator_id、request_id(64)、reason(500)、created_at | A操作前后安全快照、认证StaffID、追踪及时间 | A可映射OccurredAt→created_at；2026-10-21已统一A早期写入口为64/500字符并拒绝无效文本，不截断。原子写入仍需公共工具 |
 | outbox/提醒 | 000033/34没有专用出站事件/提醒投递结构 | 资源/公告原子事件、plan revision提醒失效 | 需公共稳定端口及持久化方案，不用操作日志冒充已投递事件或实际完成 |
 
 ## 3. 建议接入顺序
+
+2026-10-21增量补充：AttachTestEvidence需要资源当前报告的真实任务序号LatestReportSequence，以及B不可变报告摘要Sequence；B须提供同资源测试链跨目标版本可比较的单调序号。当前000033/34/35未提供该顺序协议，不能用报告ID/回调时间替代。公共方与B落实来源关联及序号后，A才能接真实证据选择仓储，见[证据关联契约](./resource-evidence.draft.md)。
 
 进展补充：已在独立测试库验证000033/34脚本、F1缺列/类型及空身份草稿唯一冲突，见[真实库验证记录](../TDD/SUMMARY.md#stage-29)。运行库仍32，尚未完成业务仓储、历史数据与事务验收。
 

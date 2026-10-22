@@ -2,7 +2,6 @@ package supply
 
 import (
 	"context"
-	"strings"
 	"time"
 )
 
@@ -46,8 +45,8 @@ func (s *NoticeService) MarkRead(ctx context.Context, meta WriteMeta, id string)
 	if !validID(id) || !validID(meta.ActorID) {
 		return nil, invalid("id", "expected notice and authenticated staff bigint strings")
 	}
-	if strings.TrimSpace(meta.Reason) == "" || strings.TrimSpace(meta.RequestID) == "" || len(meta.RequestID) > 128 {
-		return nil, invalid("request_id", "trace and operation reason are required")
+	if err := validateWriteMetaStorage(meta); err != nil {
+		return nil, err
 	}
 	var result *NoticeReadReceipt
 	err := s.work.Within(ctx, func(tx NoticeTransaction) error {

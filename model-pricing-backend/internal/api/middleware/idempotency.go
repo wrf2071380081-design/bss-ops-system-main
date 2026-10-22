@@ -357,6 +357,20 @@ func replayResult(c *gin.Context, row *IdempotencyRow) {
 		response.Error(c, apperr.ErrIdempotency)
 		return
 	}
+	var terminal terminalResultSnapshot
+	if err := json.Unmarshal(row.ResultJSON, &terminal); err == nil && terminal.Contract == terminalResultContract {
+		if terminal.HTTPStatus != 409 || terminal.Code == 0 || strings.TrimSpace(terminal.Message) == "" || len(terminal.Data) == 0 {
+			response.Error(c, apperr.ErrIdempotency)
+			return
+		}
+		var data any
+		if err := json.Unmarshal(terminal.Data, &data); err != nil {
+			response.Error(c, apperr.ErrIdempotency)
+			return
+		}
+		c.JSON(terminal.HTTPStatus, response.Body{Code: terminal.Code, Message: terminal.Message, Data: data, RequestID: rid})
+		return
+	}
 
 	var data interface{}
 	if err := json.Unmarshal(row.ResultJSON, &data); err != nil {
@@ -412,6 +426,53 @@ func (w *bodyCapture) capturedData() (any, bool) {
 
 // ctxKeyIdemResult 是 handler 写入、中间件读取的响应快照键。
 const ctxKeyIdemResult = "idem.result"
+
+const terminalResultContract = "idempotency.terminal/1"
+
+type terminalResultContext struct {
+	HTTPStatus int
+	Code       int
+	Message    string
+	Data       any
+}
+
+type terminalResultSnapshot struct {
+	Contract   string          `json:"$idempotency_contract"`
+	HTTPStatus int             `json:"http_status"`
+	Code       int             `json:"code"`
+	Message    string          `json:"message"`
+	Data       json.RawMessage `json:"data"`
+}
+
+// SetIdempotencyTerminalResponse marks a committed business conflict such as a
+// BLOCKED plan execution as a replayable terminal response. Ordinary 4xx
+// validation/authorization failures remain FAILED and retryable.
+func SetIdempotencyTerminalResponse(c *gin.Context, httpStatus, code int, message string, data any) bool {
+	if c == nil || httpStatus != 409 || code == 0 || strings.TrimSpace(message) == "" || data == nil {
+		return false
+	}
+	c.Set("idem.terminal_result", terminalResultContext{HTTPStatus: httpStatus, Code: code, Message: message, Data: data})
+	return true
+}
+
+// IdempotencyTerminalSnapshot returns the serialized replay marker only when
+// the handler marked the exact status that it actually sent.
+func IdempotencyTerminalSnapshot(c *gin.Context, httpStatus int) ([]byte, bool) {
+	if c == nil {
+		return nil, false
+	}
+	value, ok := c.Get("idem.terminal_result")
+	terminal, valid := value.(terminalResultContext)
+	if !ok || !valid || terminal.HTTPStatus != httpStatus {
+		return nil, false
+	}
+	data, err := json.Marshal(terminal.Data)
+	if err != nil || len(data) == 0 || string(data) == "null" {
+		return nil, false
+	}
+	snapshot, err := json.Marshal(terminalResultSnapshot{Contract: terminalResultContract, HTTPStatus: terminal.HTTPStatus, Code: terminal.Code, Message: terminal.Message, Data: data})
+	return snapshot, err == nil
+}
 
 // newRequestID 生成新的请求 ID（与 infra/middleware 的 UUID 策略一致）。
 func newRequestID() string { return uuid.NewString() }

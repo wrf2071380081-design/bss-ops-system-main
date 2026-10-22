@@ -25,6 +25,32 @@ func TestSupplierTaxRateUsesExactRatioAndExplicitCurrency(t *testing.T) {
 	}
 }
 
+func TestSupplierCreateBindsAuthenticatedCreatorAndAuditsAtomically(t *testing.T) {
+	db := newSupplierMemory()
+	created, err := supplierService(db).Create(context.Background(), writeMeta("7"), supplierProfileData())
+	if err != nil {
+		t.Fatalf("create supplier: %v", err)
+	}
+	if created.ID != "101" || created.BuyerID != "7" || created.Established || created.Status != "ACTIVE" || created.Revision != 1 || created.Data.TaxRate != "0.06000000" {
+		t.Fatalf("unexpected initial supplier: %+v", created)
+	}
+	if len(db.assignments) != 1 || db.assignments[0] != "101:7:7" {
+		t.Fatalf("creator was not recorded as initial buyer: %v", db.assignments)
+	}
+	if len(db.operations) != 1 || db.operations[0].Action != "CREATE" || db.operations[0].EntityID != "101" || db.operations[0].ActorID != "7" || db.operations[0].Before != nil || db.operations[0].After.BuyerID != "7" {
+		t.Fatalf("creation audit missing or incorrect: %+v", db.operations)
+	}
+}
+
+func TestSupplierCreateRollsBackIfInitialBuyerAssignmentFails(t *testing.T) {
+	db := newSupplierMemory()
+	db.failAssign = true
+	created, err := supplierService(db).Create(context.Background(), writeMeta("7"), supplierProfileData())
+	if created != nil || !errors.Is(err, ErrDependencyUnavailable) || len(db.profiles) != 0 || len(db.assignments) != 0 || len(db.operations) != 0 {
+		t.Fatalf("failed initial assignment partially created supplier: %+v %v", created, err)
+	}
+}
+
 func TestSupplierRejectsInvalidSuppliedDataWithoutRounding(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -60,14 +86,16 @@ func TestSupplierRejectsInvalidSuppliedDataWithoutRounding(t *testing.T) {
 }
 
 type supplierMemory struct {
-	profiles   map[string]*Supplier
-	usage      SupplierUsage
-	usageErr   error
-	currencies map[string]bool
-	staff      map[string]bool
-	operations []SupplierOperation
-	failLog    bool
-	next       int
+	profiles    map[string]*Supplier
+	usage       SupplierUsage
+	usageErr    error
+	currencies  map[string]bool
+	staff       map[string]bool
+	operations  []SupplierOperation
+	assignments []string
+	failAssign  bool
+	failLog     bool
+	next        int
 }
 
 func newSupplierMemory() *supplierMemory {
@@ -80,6 +108,7 @@ func (db *supplierMemory) Within(ctx context.Context, run func(SupplierTransacti
 		work.profiles[id] = profile.Clone()
 	}
 	work.operations = append([]SupplierOperation(nil), db.operations...)
+	work.assignments = append([]string(nil), db.assignments...)
 	if err := run(&work); err != nil {
 		return err
 	}
@@ -101,6 +130,13 @@ func (db *supplierMemory) CreateSupplier(_ context.Context, profile *Supplier) e
 		return ErrIdentityConflict
 	}
 	db.profiles[profile.ID] = profile.Clone()
+	return nil
+}
+func (db *supplierMemory) CreateSupplierAssignment(_ context.Context, supplierID, buyerID, changedBy string, _ time.Time) error {
+	if db.failAssign {
+		return ErrDependencyUnavailable
+	}
+	db.assignments = append(db.assignments, supplierID+":"+buyerID+":"+changedBy)
 	return nil
 }
 func (db *supplierMemory) UpdateSupplier(_ context.Context, profile *Supplier, expected uint64) error {

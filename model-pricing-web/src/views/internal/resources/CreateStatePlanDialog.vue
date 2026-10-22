@@ -43,4 +43,4 @@ onMounted(check); onBeforeUnmount(() => { active = false; controller?.abort(); }
     <template #footer><el-button :disabled="busy" @click="emit('close')">关闭创建计划</el-button><el-button type="primary" :loading="busy || checking" :disabled="!checked || pending || conflict" @click="save">保存计划</el-button></template>
   </el-dialog>
 </template>
-<style scoped>p{line-height:1.8;overflow-wrap:anywhere}.el-form{margin-top:20px}.plan-due{width:100%;padding:8px 12px;border:1px solid #dcdfe6;border-radius:4px;color:#303133;font:inherit;box-sizing:border-box}.muted{color:#79868f;font-size:13px}.el-alert+.el-alert{margin-top:12px}</style>
+<style scoped>p{line-height:1.8;overflow-wrap:anywhere}.el-form{margin-top:20px}.plan-due{width:100%;padding:8px 12px;border:1px solid #dcdfe6;border-radius:4px;color:#303133;font:inherit;box-sizing:border-box}.muted{color:#8a9099;font-size:13px}.el-alert+.el-alert{margin-top:12px}</style>

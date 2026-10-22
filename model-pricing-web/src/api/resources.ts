@@ -8,6 +8,22 @@ function page<T>(value: ResourcePage<unknown>, expected: ResourceQuery, validate
   return { ...value, list: value.list.map(row => validate(row)) };
 }
 export const resourcesApi = {
+  async allRows(query: ResourceQuery, signal?: AbortSignal): Promise<ResourceRow[]> {
+    const rows: ResourceRow[] = [], seen = new Set<string>();
+    let expectedTotal: number | undefined;
+    for (let currentPage = 1; ; currentPage++) {
+      const params = buildResourceQuery({ ...query, view: "flat", page: currentPage, size: 100 });
+      const result = page(await apiRequest<ResourcePage<unknown>>({ url: "/internal/resources", params, signal }), params, validateResourceRow);
+      if (expectedTotal !== undefined && result.total !== expectedTotal) throw new Error("供应来源已变化，请刷新后重新筛选。");
+      expectedTotal = result.total;
+      for (const row of result.list) {
+        if (seen.has(row.id) || (params.standard_model_id && row.standard_model_id !== params.standard_model_id) || (params.region && row.region !== params.region) || (params.supplier_id && row.supplier_id !== params.supplier_id)) throw new Error("来源响应与查询范围不一致，请刷新。");
+        seen.add(row.id); rows.push(row);
+      }
+      if (rows.length === expectedTotal) return rows;
+      if (!result.list.length || rows.length > expectedTotal) throw new Error("供应来源分页不完整，请刷新后重试。");
+    }
+  },
   async groups(query: Partial<ResourceQuery>, signal?: AbortSignal): Promise<ResourcePage<ResourceGroup>> {
     const params = buildResourceQuery({ ...query, view: "grouped" });
     return page(await apiRequest<ResourcePage<unknown>>({ url: "/internal/resources", params, signal }), params, validateResourceGroup);

@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type FormalConfigService struct {
@@ -30,11 +31,8 @@ func (s *FormalConfigService) checkWrite(meta WriteMeta, supplierID string) erro
 	if !validID(supplierID) {
 		return invalid("supplier_id", "expected positive bigint string")
 	}
-	if strings.TrimSpace(meta.Reason) == "" {
-		return invalid("reason", "an operation reason is required")
-	}
-	if strings.TrimSpace(meta.RequestID) == "" || len(meta.RequestID) > 128 {
-		return invalid("request_id", "a valid trace identifier is required")
+	if err := validateWriteMetaStorage(meta); err != nil {
+		return err
 	}
 	return nil
 }
@@ -60,6 +58,14 @@ func lockFormalSupplier(ctx context.Context, tx FormalConfigTransaction, supplie
 func (s *FormalConfigService) validateInput(ctx context.Context, input FormalConfigInput, create bool) (FormalConfigInput, error) {
 	input.Scope = strings.TrimSpace(input.Scope)
 	input.BaseURL = strings.TrimSpace(input.BaseURL)
+	for _, field := range []struct {
+		name, value string
+		limit       int
+	}{{"scope", input.Scope, 255}, {"base_url", input.BaseURL, 512}} {
+		if !utf8.ValidString(field.value) || strings.ContainsRune(field.value, 0) || utf8.RuneCountInString(field.value) > field.limit {
+			return input, invalid(field.name, "invalid text or native character limit exceeded")
+		}
+	}
 	if input.Scope == "" {
 		return input, invalid("scope", "scope is required")
 	}
@@ -121,7 +127,7 @@ func (s *FormalConfigService) Create(ctx context.Context, meta WriteMeta, suppli
 		if err != nil {
 			return err
 		}
-		now := s.now().UTC()
+		now := s.now().UTC().Truncate(time.Microsecond)
 		config := &FormalConfig{ID: id, SupplierID: supplierID, Region: supplier.Region, Scope: input.Scope, BaseURL: input.BaseURL, Secret: envelope, Status: "ACTIVE", Revision: 1,
 			CreatedBy: meta.ActorID, UpdatedBy: meta.ActorID, CreatedAt: now, UpdatedAt: now, ConfirmedBy: meta.ActorID, ConfirmedAt: now, ConfirmedRevision: 1}
 		if err := tx.CreateConfig(ctx, config.Clone()); err != nil {
@@ -179,7 +185,7 @@ func (s *FormalConfigService) Update(ctx context.Context, meta WriteMeta, suppli
 			return err
 		}
 		next := current.Clone()
-		now := s.now().UTC()
+		now := s.now().UTC().Truncate(time.Microsecond)
 		action := "UPDATE_NOOP"
 		if input.Scope != current.Scope || input.BaseURL != current.BaseURL || input.APIKey != nil {
 			if current.Revision == math.MaxInt64 {
@@ -237,7 +243,7 @@ func (s *FormalConfigService) Disable(ctx context.Context, meta WriteMeta, suppl
 			return ErrConfigInUse
 		}
 		next := current.Clone()
-		now := s.now().UTC()
+		now := s.now().UTC().Truncate(time.Microsecond)
 		action := "DISABLE_NOOP"
 		if current.Status != "INACTIVE" {
 			if current.Revision == math.MaxInt64 {

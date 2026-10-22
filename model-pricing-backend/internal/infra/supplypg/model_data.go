@@ -13,7 +13,7 @@ import (
 )
 
 // ModelDataRow maps only existing 000033 columns. It cannot construct an
-// authoritative StandardModel: maintainer/revision/verification need new schema.
+// authoritative StandardModel: control metadata also needs the version snapshot.
 type ModelDataRow struct {
 	Company                                                        string `gorm:"column:company"`
 	Name                                                           string `gorm:"column:name"`
