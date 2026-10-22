@@ -170,7 +170,10 @@ func (r *IdempotencyRepo) ResetProcessing(ctx context.Context, id int64, request
 func (r *IdempotencyRepo) MarkResult(c *gin.Context, requestID string, httpStatus int) error {
 	status := "FAILED"
 	var result interface{} = nil
-	if httpStatus >= 200 && httpStatus < 300 {
+	if snapshot, terminal := middleware.IdempotencyTerminalSnapshot(c, httpStatus); terminal {
+		status = "DONE"
+		result = string(snapshot)
+	} else if httpStatus >= 200 && httpStatus < 300 {
 		status = "DONE"
 		if v := middleware.GetIdempotencyResult(c); v != nil {
 			if b, err := json.Marshal(v); err == nil {

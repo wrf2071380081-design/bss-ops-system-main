@@ -64,6 +64,8 @@ func Load() (*Config, error) {
 	v.SetDefault("worker.jobs.cost_recalc.interval", time.Minute)
 	v.SetDefault("worker.jobs.event_deliver.enable", true)
 	v.SetDefault("worker.jobs.event_deliver.interval", time.Minute)
+	v.SetDefault("worker.jobs.plan_reminder.enable", true)
+	v.SetDefault("worker.jobs.plan_reminder.interval", time.Minute)
 
 	// 模块开关（重构收敛）：原型 v0.19 用不到的模块默认关闭，路由返回 404。
 	// configs/config.yaml 被 .gitignore 忽略，默认值必须落在代码里；

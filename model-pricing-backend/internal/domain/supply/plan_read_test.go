@@ -19,9 +19,21 @@ func TestPlanSummaryUsesInitiatorAndDoesNotExecuteOrBlockFutureDueTime(t *testin
 		t.Fatalf("current buyer got initiator rights or future plan was blocked: %+v %v", viewer, err)
 	}
 	initiator, err := NewPlanReader(store).Get(context.Background(), "7", "61")
-	if err != nil || !initiator.IsInitiator || !initiator.ReadOnly {
+	if err != nil || !initiator.IsInitiator || !initiator.ReadOnly || !initiator.Permissions.CanExecute {
 		t.Fatalf("initiator attribution lost: %+v %v", initiator, err)
 	}
+	viewerCanExecute, err := NewPlanReader(store).Get(context.Background(), "8", "61")
+	if err != nil || viewerCanExecute.Permissions.CanExecute {
+		t.Fatalf("another staff member received plan execution permission: %+v %v", viewerCanExecute, err)
+	}
+	store.record.Plan.Status = "BLOCKED"
+	store.record.ExecutionFailureReason = "RESOURCE_CHANGED"
+	blocked, err := NewPlanReader(store).Get(context.Background(), "7", "61")
+	if err != nil || blocked.Permissions.CanExecute {
+		t.Fatalf("blocked plan remained executable: %+v %v", blocked, err)
+	}
+	store.record.Plan.Status = "PENDING"
+	store.record.ExecutionFailureReason = ""
 	store.record.ResourceRevision = 4
 	stale, err := NewPlanReader(store).Get(context.Background(), "7", "61")
 	if err != nil || stale.PreconditionMatches || len(stale.BlockedReasons) != 1 || plan.Status != "PENDING" {

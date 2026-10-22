@@ -37,7 +37,38 @@ type inboxRow struct {
 	Region     *string   `gorm:"column:region"`
 	Priority   *string   `gorm:"column:priority"`
 	OccurredAt time.Time `gorm:"column:occurred_at"`
+	PlanID     int64     `gorm:"column:plan_id"`
 }
+
+// workbenchInboxSource keeps the shared view as the source of non-plan items,
+// while projecting plans from their native table. v_work_item exposes a
+// resource_id as biz_id for PLAN rows and does not expose plan.id; correlating
+// back by created_at can map multiple plans created in one transaction to the
+// same plan. This projection carries the stable ID without changing the shared
+// migration/view contract.
+const workbenchInboxSource = `(
+SELECT assignee_id, item_type, state, biz_type, biz_id, title, biz_object, region, priority, occurred_at,
+       NULL::bigint AS plan_id
+FROM v_work_item
+WHERE biz_type <> 'PLAN'
+UNION ALL
+SELECT p.created_by AS assignee_id,
+       'TODO'::varchar(8) AS item_type,
+       CASE WHEN p.status IN ('DONE', 'CANCELED') THEN 'DONE' ELSE 'TODO' END::varchar(16) AS state,
+       'PLAN'::varchar(32) AS biz_type,
+       p.resource_id AS biz_id,
+       p.kind AS title,
+       COALESCE(sm.name, '') || ' · ' || COALESCE(s.name, '') AS biz_object,
+       r.region AS region,
+       'MID'::varchar(8) AS priority,
+       p.created_at AS occurred_at,
+       p.id AS plan_id
+FROM plan p
+JOIN resource r ON r.id = p.resource_id
+JOIN standard_model sm ON sm.id = r.standard_model_id
+JOIN supplier s ON s.id = r.supplier_id
+WHERE p.created_by IS NOT NULL
+) AS v_work_item`
 
 // ListInbox 查询某人的收件箱（按状态/类型/区域/关键字过滤 + 分页）。
 func (r *WorkbenchInboxRepo) ListInbox(ctx context.Context, q workbench.InboxQuery) ([]workbench.InboxItem, int64, error) {
@@ -62,14 +93,14 @@ func (r *WorkbenchInboxRepo) ListInbox(ctx context.Context, q workbench.InboxQue
 	}
 
 	var total int64
-	if err := apply(r.txOf(ctx).Table("v_work_item")).Count(&total).Error; err != nil {
+	if err := apply(r.txOf(ctx).Table(workbenchInboxSource)).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	var rows []inboxRow
-	err := apply(r.txOf(ctx).Table("v_work_item")).
-		Select("biz_type, biz_id, item_type, state, title, biz_object, region, priority, occurred_at").
-		Order("occurred_at DESC, biz_id DESC").
+	err := apply(r.txOf(ctx).Table(workbenchInboxSource)).
+		Select("biz_type, biz_id, item_type, state, title, biz_object, region, priority, occurred_at, plan_id").
+		Order("occurred_at DESC, biz_id DESC, plan_id DESC NULLS LAST").
 		Offset((q.Page - 1) * q.Size).
 		Limit(q.Size).
 		Scan(&rows).Error
@@ -86,6 +117,7 @@ func (r *WorkbenchInboxRepo) ListInbox(ctx context.Context, q workbench.InboxQue
 			State:      row.State,
 			Title:      row.Title,
 			OccurredAt: row.OccurredAt,
+			PlanID:     row.PlanID,
 		}
 		if row.BizObject != nil {
 			item.BizObject = *row.BizObject

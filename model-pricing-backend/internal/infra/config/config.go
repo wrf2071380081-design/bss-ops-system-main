@@ -90,6 +90,7 @@ type WorkerJobs struct {
 	QuoteAnomalyScan JobConfig `mapstructure:"quote_anomaly_scan"`
 	CostRecalc       JobConfig `mapstructure:"cost_recalc"`
 	EventDeliver     JobConfig `mapstructure:"event_deliver"`
+	PlanReminder     JobConfig `mapstructure:"plan_reminder"`
 }
 
 // JobConfig 是单个任务的配置。

@@ -63,6 +63,7 @@ test("login rejection preserves current session, protected 401 redirects, and po
   const component = { template: "<div />" };
   const router = createRouter({ history: createMemoryHistory(), routes: [
     { path: "/internal/models", component, meta: { requiresAuth: true, portal: "internal" } },
+    { path: "/internal/approvals", component, meta: { requiresAuth: true, portal: "internal", requiresApproval: true } },
     { path: "/supplier/home", component, meta: { requiresAuth: true, portal: "supplier" } },
     { path: "/internal/login", component, meta: { portal: "internal" } },
     { path: "/supplier/login", component, meta: { portal: "supplier" } },
@@ -76,6 +77,10 @@ test("login rejection preserves current session, protected 401 redirects, and po
     assert.equal(session.token, synthetic.token);
     await router.push("/supplier/login"); assert.equal(router.currentRoute.value.path, "/supplier/login");
     await router.push("/supplier/home"); assert.equal(router.currentRoute.value.path, "/403");
+    await router.push("/internal/approvals"); assert.equal(router.currentRoute.value.path, "/403");
+    session.startSession({ ...synthetic, snapshot: { ...synthetic.snapshot, can_approve_supplier: true } }, "internal", "approver");
+    await router.push("/internal/approvals"); assert.equal(router.currentRoute.value.path, "/internal/approvals");
+    session.startSession(synthetic, "internal", "test-user");
     await router.push("/internal/models");
     await assert.rejects(apiRequest({ url: "/internal/models" }));
     await nextTick(); await new Promise(resolve => setTimeout(resolve, 0));

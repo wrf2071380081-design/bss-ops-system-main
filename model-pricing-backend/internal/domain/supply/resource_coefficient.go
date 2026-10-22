@@ -3,7 +3,6 @@ package supply
 import (
 	"context"
 	"math"
-	"strings"
 	"time"
 )
 
@@ -63,7 +62,10 @@ func (s *ResourceCoefficientService) Change(ctx context.Context, meta WriteMeta,
 	if s == nil || s.work == nil {
 		return nil, ErrDependencyUnavailable
 	}
-	if !validID(id) || !validID(meta.ActorID) || expected == 0 || expected > math.MaxInt64 || strings.TrimSpace(meta.Reason) == "" || strings.TrimSpace(meta.RequestID) == "" || len(meta.RequestID) > 128 {
+	if err := validateWriteMetaStorage(meta); err != nil {
+		return nil, err
+	}
+	if !validID(id) || !validID(meta.ActorID) || expected == 0 || expected > math.MaxInt64 {
 		return nil, invalid("command", "identity, revision, reason and request trace required")
 	}
 	value, err := resourceCoefficient(amount)

@@ -7,6 +7,8 @@ import (
 	"context"
 	"time"
 
+	"go.uber.org/zap"
+
 	"model_bss/internal/domain/cost"
 	"model_bss/internal/domain/supplier"
 	"model_bss/internal/infra/config"
@@ -87,4 +89,31 @@ func RegisterJobs(s *Scheduler, cfg config.Worker, approveSvc *supplier.ApproveS
 		n++
 	}
 	return n
+}
+
+// RegisterPlanReminderJob schedules A's due-date notice publisher.
+type PlanReminderPublisher interface {
+	PublishDuePlanReminders(context.Context, time.Time, int) (int, error)
+}
+
+func RegisterPlanReminderJob(s *Scheduler, cfg config.Worker, store PlanReminderPublisher, log *zap.Logger) int {
+	if s == nil || !cfg.Enable || !cfg.Jobs.PlanReminder.Enable || store == nil {
+		return 0
+	}
+	interval := cfg.Jobs.PlanReminder.Interval
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	s.Register("supply-plan-reminder", func(ctx context.Context, _ supplier.JobIdentity) error {
+		count, err := store.PublishDuePlanReminders(ctx, time.Now().UTC(), 100)
+		if err != nil {
+			log.Error("supply-plan-reminder failed", zap.Error(err))
+			return err
+		}
+		if count > 0 {
+			log.Info("supply-plan-reminder notices published", zap.Int("count", count))
+		}
+		return nil
+	}, interval, "")
+	return 1
 }

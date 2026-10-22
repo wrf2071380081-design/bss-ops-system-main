@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type PlanExecutionEffect struct {
@@ -49,10 +50,13 @@ func (s *PlanExecutionService) Execute(ctx context.Context, meta WriteMeta, id s
 	if s == nil || s.work == nil {
 		return nil, ErrDependencyUnavailable
 	}
-	if !validID(id) || !validID(meta.ActorID) || expected == 0 || expected > math.MaxInt64 || strings.TrimSpace(meta.Reason) == "" || strings.TrimSpace(meta.RequestID) == "" || len(meta.RequestID) > 128 {
+	if err := validateWriteMetaStorage(meta); err != nil {
+		return nil, err
+	}
+	if !validID(id) || !validID(meta.ActorID) || expected == 0 || expected > math.MaxInt64 {
 		return nil, invalid("command", "identity, revision, reason and trace required")
 	}
-	if !confirmed || strings.TrimSpace(note) == "" {
+	if !confirmed || strings.TrimSpace(note) == "" || !utf8.ValidString(note) || strings.ContainsRune(note, 0) {
 		return nil, invalid("completion", "actual operation confirmation and evidence required")
 	}
 	var result *PlanExecutionResult
@@ -70,7 +74,7 @@ func (s *PlanExecutionService) Execute(ctx context.Context, meta WriteMeta, id s
 		if plan.ID != id {
 			return ErrReadContract
 		}
-		now := s.now().UTC()
+		now := s.now().UTC().Truncate(time.Microsecond)
 		change, err := plan.ExecuteStatePlan(meta.ActorID, expected, record, confirmed, note, now)
 		conflict := errors.Is(err, ErrRevisionConflict) && change != nil && change.Plan != nil && change.Plan.Status == "BLOCKED"
 		if err != nil && !conflict {

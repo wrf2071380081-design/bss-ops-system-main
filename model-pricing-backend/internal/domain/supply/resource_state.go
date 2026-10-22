@@ -51,7 +51,10 @@ func (s *ResourceStateService) Change(ctx context.Context, meta WriteMeta, cmd R
 	if s == nil || s.work == nil {
 		return nil, ErrDependencyUnavailable
 	}
-	if !validID(cmd.ResourceID) || !validID(meta.ActorID) || cmd.ExpectedRevision == 0 || cmd.ExpectedRevision > math.MaxInt64 || strings.TrimSpace(meta.Reason) == "" || strings.TrimSpace(meta.RequestID) == "" || len(meta.RequestID) > 128 {
+	if err := validateWriteMetaStorage(meta); err != nil {
+		return nil, err
+	}
+	if !validID(cmd.ResourceID) || !validID(meta.ActorID) || cmd.ExpectedRevision == 0 || cmd.ExpectedRevision > math.MaxInt64 {
 		return nil, invalid("command", "identity, revision, reason and trace required")
 	}
 	if cmd.Action != "OFFLINE" && cmd.Action != "ONLINE" {

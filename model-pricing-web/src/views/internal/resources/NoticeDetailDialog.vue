@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { supplyWorkbenchApi } from "../../../api/supplyWorkbench";
 import { noticeImpactText } from "../../../api/supplyWorkbench.contract";
 import { resourceRegionLabels } from "../../../api/resources.contract";
@@ -8,6 +9,12 @@ import type { NoticeView } from "../../../api/supplyWorkbench.types";
 
 const props = defineProps<{ id: string; selectedStaffID?: string; readOnly?: boolean }>();
 const emit = defineEmits<{ close: []; read: [] }>();
+const router = useRouter();
+async function openResource() {
+  if (!data.value) return;
+  await router.push({ path: `/internal/model-plaza/${data.value.notice.resource_id}`, query: { region: data.value.notice.region, tab: "notices" } });
+  emit("close");
+}
 const data = ref<NoticeView>(), loading = ref(false), marking = ref(false), error = ref(""), writeError = ref("");
 let controller: AbortController | undefined, writeController: AbortController | undefined, epoch = 0;
 async function load() {
@@ -53,10 +60,10 @@ onBeforeUnmount(() => { ++epoch; controller?.abort(); writeController?.abort(); 
       </article>
       <el-alert v-if="writeError" :title="writeError" type="error" :closable="false" class="write-error" />
     </div>
-    <template #footer><el-button @click="emit('close')">关闭公告详情</el-button><el-button v-if="data?.permissions.can_mark_read && !readOnly" type="primary" :loading="marking" @click="markRead">标记已读</el-button></template>
+    <template #footer><el-button @click="emit('close')">关闭公告详情</el-button><el-button v-if="data" @click="openResource">查看关联资源</el-button><el-button v-if="data?.permissions.can_mark_read && !readOnly" type="primary" :loading="marking" @click="markRead">标记已读</el-button></template>
   </el-dialog>
 </template>
 
 <style scoped>
-.notice-body{min-height:180px;color:#20313c}.notice-card{border:1px solid #e3e8e9;border-left:3px solid #d8a14a;border-radius:8px;padding:22px}.notice-read{border-left-color:#9eadaa}header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}h2{font-size:19px;line-height:1.5;margin:0}.muted{color:#79868f;font-size:13px;line-height:1.8}dl{display:grid;grid-template-columns:110px minmax(0,1fr);gap:14px;margin:24px 0}dt{color:#79868f}dd{margin:0;overflow-wrap:anywhere}.notice-content{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}.write-error{margin-top:16px}@media(max-width:500px){.notice-card{padding:16px}dl{grid-template-columns:1fr;gap:8px}dd{padding-bottom:8px}}
+.notice-body{min-height:180px;color:#1c1d1f}.notice-card{border:1px solid #e3e8e9;border-left:3px solid #d8a14a;border-radius:8px;padding:22px}.notice-read{border-left-color:#9eadaa}header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}h2{font-size:19px;line-height:1.5;margin:0}.muted{color:#8a9099;font-size:13px;line-height:1.8}dl{display:grid;grid-template-columns:110px minmax(0,1fr);gap:14px;margin:24px 0}dt{color:#8a9099}dd{margin:0;overflow-wrap:anywhere}.notice-content{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}.write-error{margin-top:16px}@media(max-width:500px){.notice-card{padding:16px}dl{grid-template-columns:1fr;gap:8px}dd{padding-bottom:8px}}
 </style>

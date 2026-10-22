@@ -122,7 +122,10 @@ func (s *supplyHTTPIdemStore) ResetProcessing(_ context.Context, id int64, hash 
 func (s *supplyHTTPIdemStore) MarkResult(c *gin.Context, key string, status int) error {
 	row := s.rows[key]
 	row.HTTPStatus = status
-	if status >= 200 && status < 300 {
+	if snapshot, terminal := middleware.IdempotencyTerminalSnapshot(c, status); terminal {
+		row.Status = "DONE"
+		row.ResultJSON = snapshot
+	} else if status >= 200 && status < 300 {
 		row.Status = "DONE"
 		row.ResultJSON, _ = json.Marshal(middleware.GetIdempotencyResult(c))
 	} else {

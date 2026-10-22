@@ -3,7 +3,6 @@ package supply
 import (
 	"context"
 	"slices"
-	"strings"
 	"time"
 )
 
@@ -27,11 +26,8 @@ func (s *ModelService) checkWrite(meta WriteMeta, id string) error {
 	if !validID(meta.ActorID) {
 		return invalid("actor_id", "expected an authenticated staff bigint string")
 	}
-	if strings.TrimSpace(meta.Reason) == "" {
-		return invalid("reason", "a change reason is required")
-	}
-	if strings.TrimSpace(meta.RequestID) == "" || len(meta.RequestID) > 128 {
-		return invalid("request_id", "a valid trace identifier is required")
+	if err := validateWriteMetaStorage(meta); err != nil {
+		return err
 	}
 	if id != "" && !validID(id) {
 		return invalid("id", "expected a positive bigint string")

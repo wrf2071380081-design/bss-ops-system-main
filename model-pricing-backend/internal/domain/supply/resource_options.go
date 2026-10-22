@@ -37,7 +37,11 @@ func (r *ResourceReader) Options(ctx context.Context, region, keyword string) (*
 	if !ok {
 		return nil, ErrDependencyUnavailable
 	}
-	query := ResourceOptionsQuery{Region: region, Keyword: strings.TrimSpace(keyword), Limit: 50}
+	keyword = strings.TrimSpace(keyword)
+	if err := resourceSearchText("keyword", keyword, 200); err != nil {
+		return nil, err
+	}
+	query := ResourceOptionsQuery{Region: region, Keyword: keyword, Limit: 50}
 	options, err := store.ResourceFilterOptions(ctx, query)
 	if err != nil {
 		return nil, err

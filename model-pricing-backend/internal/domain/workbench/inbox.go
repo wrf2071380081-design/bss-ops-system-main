@@ -29,6 +29,7 @@ type InboxItem struct {
 	Region     string    `json:"region,omitempty"`
 	Priority   string    `json:"priority"`
 	OccurredAt time.Time `json:"occurred_at"`
+	PlanID     int64     `json:"plan_id,omitempty"`
 	Deeplink   string    `json:"deeplink,omitempty"`
 	Readable   bool      `json:"readable"` // 只有本人、且是待阅，才可标记已读
 }
@@ -126,10 +127,17 @@ func (s *InboxService) Inbox(ctx context.Context, q InboxQuery, viewerID int64) 
 		return nil, fmt.Errorf("list inbox: %w", err)
 	}
 	for i := range list {
-		list[i].Deeplink = inboxDeeplink(list[i].BizType, list[i].BizID)
+		list[i].Deeplink = inboxItemDeeplink(list[i])
 		list[i].Readable = list[i].BizType == "NOTICE" && list[i].State == "READ" && q.AssigneeID == viewerID
 	}
 	return &InboxResult{List: list, Total: total, Page: q.Page, Size: q.Size}, nil
+}
+
+func inboxItemDeeplink(item InboxItem) string {
+	if item.BizType == "PLAN" && item.PlanID > 0 && (item.Region == "CN" || item.Region == "OVERSEAS") {
+		return fmt.Sprintf("/internal/model-plaza/%d?region=%s&tab=plans&plan_id=%d", item.BizID, item.Region, item.PlanID)
+	}
+	return inboxDeeplink(item.BizType, item.BizID)
 }
 
 // People 人员选择器（只读查看他人收件箱用）。

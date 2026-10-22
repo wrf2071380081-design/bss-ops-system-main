@@ -17,6 +17,7 @@ const errors = [];
 let puts = 0, creates = 0, verifies = 0;
 let failOptions = true;
 const listQueries = [];
+const operationQueries = [];
 const data = { company: "示例模型公司", name: "示例标准模型", official_id: "example-v1", model_type: "TEXT", input_modalities: ["TEXT"], output_modalities: ["TEXT"], capacity: [{ key: "context_window", disclosure: "DISCLOSED", value: "128000 tokens" }], abilities: [{ key: "tool_call", state: "UNDISCLOSED", description: "" }], price_items: [{ item_key: "text_input", label: "文本输入", task_type: "TEXT_INPUT", amount: "0.00000000", currency: "USD", unit_code: "TOKEN", unit_quantity: "1000000", condition: "标准请求", dimensions: {}, source_url: "https://vendor.example/pricing" }, { item_key: "text_output", label: "文本输出", task_type: "TEXT_OUTPUT", amount: "8.00000000", currency: "USD", unit_code: "TOKEN", unit_quantity: "1000000", condition: "标准请求", dimensions: {}, source_url: "https://vendor.example/pricing" }], api_access: [{ key: "protocol", disclosure: "DISCLOSED", value: "HTTPS API" }], lifecycle: [{ key: "release", disclosure: "UNDISCLOSED", value: "" }], sources: [{ label: "官方价格", url: "https://vendor.example/pricing", source_kind: "OFFICIAL_PRICING" }], checked_at: "2026-10-20" };
 const dto = (fields = data) => ({ ...structuredClone(fields), id: "9007199254740993", maintainer_id: "7", revision: "1", version_no: "1", current_version_no: "1", status: "ACTIVE", verify_status: "UNVERIFIED", checked_by: "", created_at: "2026-10-20T01:00:00Z", updated_at: "2026-10-20T01:00:00Z", missing_fields: [], quote_readiness: { ready: false, reasons: ["UNVERIFIED"], standard_model_version_no: "1" }, permissions: { can_edit: true, can_verify: true } });
 let current = dto();
@@ -36,7 +37,10 @@ try {
       if (failOptions) { failOptions = false; return send(null, 503); }
       return send({ companies: ["Company, LLC", "OpenAI", "无资源模型公司"], suppliers: [{ id: "9007199254740993", name: "供应商甲", region: "CN" }], has_more: true });
     }
-    if (url.pathname.endsWith("operation-logs")) return send({ list: [{ action: "VERIFY", reason: "人工核验", operator_id: "7", request_id: "trace-test", occurred_at: "2026-10-20T01:00:00Z" }] });
+    if (url.pathname.endsWith("/workbench/operations")) {
+      operationQueries.push(Object.fromEntries(url.searchParams.entries()));
+      return send({ list: [{ id: 1, action: "VERIFY", entity_type: "standard_model", entity_id: 1, operator_name: "操作员甲", reason: "人工核验", created_at: "2026-10-20T01:00:00Z" }], total: 1, page: 1, size: 100 });
+    }
     if (url.pathname.endsWith("/versions")) return send({ list: [{ ...original, permissions: { can_edit: false, can_verify: false } }], page: 1, size: 20, total: 1 });
     if (request.method() === "PUT") {
       puts++;
@@ -118,7 +122,8 @@ try {
   await dialog.getByRole("heading", { name: "版本 1 · 只读快照", exact: true }).waitFor();
   assert.equal(await dialog.getByRole("button", { name: "保存资料", exact: true }).count(), 0);
   await dialog.getByRole("tab", { name: "操作记录", exact: true }).click();
-  await dialog.getByText("trace-test", { exact: true }).waitFor();
+  await dialog.getByText("操作员甲", { exact: true }).waitFor();
+  assert.deepEqual(operationQueries.at(-1), { entity_type: "standard_model", entity_id: "9007199254740993", page: "1", size: "100" });
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
   current.permissions = { can_edit: false, can_verify: false };
   await page.getByRole("button", { name: "维护", exact: true }).click();

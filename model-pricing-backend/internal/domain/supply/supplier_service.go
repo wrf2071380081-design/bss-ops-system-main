@@ -3,7 +3,6 @@ package supply
 import (
 	"context"
 	"math"
-	"strings"
 	"time"
 )
 
@@ -25,11 +24,8 @@ func (s *SupplierService) checkWrite(meta WriteMeta) error {
 	if !validID(meta.ActorID) {
 		return invalid("actor_id", "expected authenticated staff bigint string")
 	}
-	if strings.TrimSpace(meta.Reason) == "" {
-		return invalid("reason", "an operation reason is required")
-	}
-	if strings.TrimSpace(meta.RequestID) == "" || len(meta.RequestID) > 128 {
-		return invalid("request_id", "a valid trace identifier is required")
+	if err := validateWriteMetaStorage(meta); err != nil {
+		return err
 	}
 	return nil
 }
@@ -53,6 +49,44 @@ func validateSupplierDirectory(ctx context.Context, tx SupplierTransaction, acto
 func appendSupplierOperation(ctx context.Context, tx SupplierTransaction, before, after *Supplier, meta WriteMeta, action string, now time.Time) error {
 	return tx.AppendSupplierOperation(ctx, SupplierOperation{EntityType: "supplier", EntityID: after.ID, Action: action, ActorID: meta.ActorID, Reason: meta.Reason, RequestID: meta.RequestID, Before: before.Clone(), After: after.Clone(), OccurredAt: now.UTC()})
 }
+func (s *SupplierService) Create(ctx context.Context, meta WriteMeta, data SupplierData) (*Supplier, error) {
+	if err := s.checkWrite(meta); err != nil {
+		return nil, err
+	}
+	var result *Supplier
+	err := s.work.Within(ctx, func(tx SupplierTransaction) error {
+		if tx == nil {
+			return ErrDependencyUnavailable
+		}
+		if err := validateSupplierDirectory(ctx, tx, meta.ActorID, data.SettlementCurrency); err != nil {
+			return err
+		}
+		id, err := tx.NextID(ctx)
+		if err != nil {
+			return err
+		}
+		now := s.now().UTC().Truncate(time.Microsecond)
+		created, err := NewSupplier(id, meta.ActorID, data, now)
+		if err != nil {
+			return err
+		}
+		if err := tx.CreateSupplier(ctx, created.Clone()); err != nil {
+			return err
+		}
+		if err := tx.CreateSupplierAssignment(ctx, created.ID, meta.ActorID, meta.ActorID, now); err != nil {
+			return err
+		}
+		if err := appendSupplierOperation(ctx, tx, nil, created, meta, "CREATE", now); err != nil {
+			return err
+		}
+		result = created.Clone()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
 func (s *SupplierService) Update(ctx context.Context, meta WriteMeta, id string, expected uint64, data SupplierData) (*Supplier, error) {
 	if err := s.checkWrite(meta); err != nil {
 		return nil, err
@@ -72,7 +106,7 @@ func (s *SupplierService) Update(ctx context.Context, meta WriteMeta, id string,
 		if current == nil {
 			return ErrNotFound
 		}
-		if current.ID != id || !validID(current.BuyerID) || current.Revision == 0 || current.Revision > math.MaxInt64 || (current.Status != "ACTIVE" && current.Status != "INACTIVE") {
+		if current.ID != id || !validID(current.BuyerID) || current.Revision == 0 || current.Revision > math.MaxInt64 || (current.Status != "ACTIVE" && current.Status != "FROZEN") {
 			return ErrReadContract
 		}
 		if current.BuyerID != meta.ActorID {
@@ -98,7 +132,7 @@ func (s *SupplierService) Update(ctx context.Context, meta WriteMeta, id string,
 			}
 		}
 		next := current.Clone()
-		now := s.now().UTC()
+		now := s.now().UTC().Truncate(time.Microsecond)
 		action := "UPDATE_NOOP"
 		if current.Data != canonical {
 			if current.Revision == math.MaxInt64 {

@@ -200,13 +200,23 @@ func main() {
 		return nil
 	}
 
+	idemStore := repo.NewIdempotencyRepo(dbClient.DB)
+	supplyRoutes, err := newSupplyRuntimeDeps(dbClient.DB, idemStore)
+	if err != nil {
+		log.Fatal("initialize A supply routes", zap.Error(err))
+	}
+	planReminderStore, err := newSupplyPlanReminderStore(dbClient.DB)
+	if err != nil {
+		log.Fatal("initialize A plan reminders", zap.Error(err))
+	}
 	router := api.New(api.Deps{
 		Config:             cfg,
 		Log:                log,
 		Health:             dbClient,
 		AuthService:        authService,
 		SessionReader:      authRepo,
-		IdemStore:          repo.NewIdempotencyRepo(dbClient.DB),
+		IdemStore:          idemStore,
+		SupplyRoutes:       &supplyRoutes,
 		ModelSvc:           modelSvc,
 		SupplierSvc:        supplier.NewService(repo.NewSupplierRepo(dbClient.DB)),
 		SupplierProfileSvc: supplier.NewProfileService(repo.NewSupplierRepo(dbClient.DB)),
@@ -251,6 +261,7 @@ func main() {
 	}
 	sched := worker.NewScheduler(worker.NewCronLocker(dbClient.DB), log, loc)
 	nJobs := worker.RegisterJobs(sched, cfg.Worker, approveSvc, lifecycleSvc, costSvc, costJobs, eventJobs)
+	nJobs += worker.RegisterPlanReminderJob(sched, cfg.Worker, planReminderStore, log)
 	if cfg.Worker.Enable && nJobs > 0 {
 		sched.Start(context.Background())
 		log.Info("worker started", zap.Int("jobs", nJobs))

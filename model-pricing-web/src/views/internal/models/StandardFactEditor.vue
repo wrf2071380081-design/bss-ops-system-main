@@ -19,5 +19,5 @@ defineProps<{ title: string; disabled: boolean }>();
 </template>
 
 <style scoped>
-.fact-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.fact-heading h3{font-size:15px}.fact-row{display:grid;grid-template-columns:minmax(140px,1fr) 140px minmax(180px,2fr) auto;gap:10px;margin:10px 0}.hint{color:#79868f;font-size:13px}@media(max-width:700px){.fact-row{grid-template-columns:1fr 1fr}.fact-row>:nth-child(3){grid-column:1/-1}}
+.fact-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.fact-heading h3{font-size:15px}.fact-row{display:grid;grid-template-columns:minmax(140px,1fr) 140px minmax(180px,2fr) auto;gap:10px;margin:10px 0}.hint{color:#8a9099;font-size:13px}@media(max-width:700px){.fact-row{grid-template-columns:1fr 1fr}.fact-row>:nth-child(3){grid-column:1/-1}}
 </style>

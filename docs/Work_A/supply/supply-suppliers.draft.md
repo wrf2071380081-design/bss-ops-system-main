@@ -20,9 +20,26 @@
 
 主体仅修订当前资料，不新造官方价格版本；真实变化增加revision，无变化保存不增revision但记录操作。所有业务写与日志同事务，失败不返回成功对象；返回值与前后快照互不共享可变对象。新主体 established=false；普通编辑保留原值，后续由 B 可信办理事实驱动专门命令。
 
+### 1.2 主体 API 接入
+
+目标主数据表与旧结算档案分开。A 的主体端点使用 `/api/internal/supplier-entities`，避免复用已有 `/api/internal/suppliers` legacy 只读接口。
+
+| 方法 | 路径 | 行为 |
+|---|---|---|
+| GET | `/supplier-entities` | 内部主体列表，支持名称、区域筛选和分页 |
+| GET | `/supplier-entities/:id` | 读取目标 supplier 主体与当前采购归属 |
+| POST | `/supplier-entities` | 创建主体；buyer_id 只取认证员工，supplier 与初始 assignment_log、CREATE 留痕同事务 |
+| PUT | `/supplier-entities/:id` | 当前归属采购人全量修订，要求 expected_revision；不能改归属、established 或状态 |
+
+新主体 `established=false`。版本号由 `operation_log` 中的 supplier 快照承载；当前 000033 原生表没有 revision 列，不新增同名列。内部 GET 全员可读，写入按当前 buyer_id 限制。主体创建本身不触发供应商报价审批。
+
+截至 000036，结算币种没有独立目录表；当前主体写入按现有系统已支持的 CNY/USD 服务端白名单校验。`supplier.tax_rate` 是 numeric(6,2)，端点的比例字符串先转百分比保存；为避免数据库静默舍入，最多支持 0.01 个百分点精度，页面输入百分比并转换为比例字符串。
+
 ## 2. 正式配置写命令
 
-本切片先提供独立领域服务，HTTP 及真实存储后续装配。
+正式配置领域读写、原生存储、HTTP路由和模型广场配置页面已具备。正式配置列表及 CREATE/UPDATE/DISABLE 已在本地 v36 隔离库完成真实页面/API 联调（见 TDD Stage 63）。运行装配需要单独配置密钥；本地 API 已启用本地密钥，生产密钥仍由部署方管理。资源绑定和逐资源准入仍需 B 的真实办理资格、报告及测试事实。
+
+存储沿用原生 supplier_formal_config 和 operation_log 安全快照，不新增独立密钥版本/状态/revision列。本节早期提出的额外列建议由密封信封与保留安全快照取代。
 
 | 命令 | 输入 | 规则 |
 |---|---|---|
@@ -33,6 +50,8 @@
 ID/revision 均以 bigint 字符串对接 API。配置区域取自锁定的供应商，不接受请求自报。正式配置不从 B 的申报测试凭据自动生成。
 
 scope、URL、说明以及新建 Key 必填。URL 必须是无用户密码段、无常见敏感查询参数的 HTTP(S) 地址，并通过可注入环境策略；该策略可在正式环境要求 HTTPS，不在领域里发网络请求。
+
+scope最多255字符、URL最多512字符，中文按字符计数；非法UTF-8/NUL和超限由领域入口拒绝，不等到SQL层报500。凭据密封后必须符合原生api_key_enc容量，不能截断。
 
 每次新增/更新需 `external_confirmed=true`，记录确认人员、时间及对应 revision。配置变化产生新的 revision 和本次显式确认；旧办理/测试引用的 config revision 不再适用。此确认仅表示外部平台操作，不能代替 B 的连通性、压力测试或办理完成证明。
 
@@ -49,6 +68,6 @@ scope、URL、说明以及新建 Key 必填。URL 必须是无用户密码段、
 
 FormalConfigUnitOfWork.Within 必须加入现有幂等/办理事务，无外层事务才开启顶层事务。事务端口提供锁主体、分配ID、锁配置、创建/CAS保存、查询资源引用、追加安全日志。日志失败与业务写整体回滚。
 
-目标 supplier_formal_config 需 supplier_id、scope、base_url、api_key_enc、secret_key_version、status、revision、确认依据、时间及人员；逻辑状态 ACTIVE/INACTIVE 待与公共DDL核对。关联写入方应遵循同一主体/配置锁顺序，防止“查询无引用后并发绑定”绕过停用门槛；单元替身不能证明数据库并发安全。
+当前34映射：supplier_formal_config保存原生主体/范围/URL/密封信封及审计列，note保持原说明用途；版本、ACTIVE/INACTIVE与确认依据保存在operation_log安全快照，不新增独立列。主体采购人从明确的初始分配/转交记录链读取，不把历史created_by默认当当前归属。配置维护与资源绑定共用supplier锁；真库两个并发提交顺序已验证，B真实节点/主装配仍需联合验收。
 
-正式 HTTP 仍采用详细设计 `/api/internal/suppliers/:id/formal-configs` 路径及统一包络/幂等；本切片没有新增可运行路由。主体 CRUD、网站账户、资质附件及正式配置读取/HTTP/真库验收继续保留在 F4 范围内。
+正式 HTTP 采用详细设计 `/api/internal/suppliers/:id/formal-configs` 路径及统一包络/幂等，提供 `GET` 列表、`POST` 新建、`PUT /:configId` 更新和 `DELETE /:configId` 逻辑停用；写入要求内部认证和幂等，Key只在请求中出现，响应仅返回固定掩码。主体资料 CRUD 页面和真库联调见 TDD Stage 64；正式配置保存/安全回显见 Stage 63。网站账户/资质附件、绑定正式配置及资源准入的完整业务链路仍待接入。

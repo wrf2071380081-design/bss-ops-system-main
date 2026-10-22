@@ -17,6 +17,7 @@ type Resource struct {
 	OriginRowID                                                                           string
 	OriginRowVersion, TargetVersion                                                       uint64
 	LatestReportID                                                                        string
+	LatestReportSequence                                                                  uint64
 	CreatedAt, UpdatedAt                                                                  time.Time
 }
 type ResourceSupplier struct{ ID, Name, Region, Status string }
@@ -56,6 +57,7 @@ func copyResourceMetrics(metrics ResourceReportMetrics) (ResourceReportMetrics, 
 // B supplies facts for the selected immutable report. ResourceID may be empty
 // for draft tests, but origin row/version and all business identity must match.
 type ResourceReportSummary struct {
+	Sequence                                                         uint64
 	ID, ResourceID, SupplierID, StandardModelID, Region, OriginRowID string
 	OriginRowVersion, TargetVersion                                  uint64
 	ConnectivityPassed, PressurePassed, Valid                        bool

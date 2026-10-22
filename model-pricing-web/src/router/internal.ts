@@ -1,6 +1,7 @@
 import type { RouteRecordRaw } from "vue-router";
 import AppLayout from "../layouts/AppLayout.vue";
-import Models from "../modules/models/views/Models.vue";
+import StandardModelList from "../views/internal/models/StandardModelList.vue";
+import ModelPlaza from "../views/internal/resources/ModelPlaza.vue";
 import ModelApplicationReview from "../views/internal/models/ModelApplicationReview.vue";
 import Sync from "../modules/pricing/views/OfficialPriceSync.vue";
 import ModulePlaceholderView from "../views/ModulePlaceholderView.vue";
@@ -11,6 +12,7 @@ import CurrentCostBaselineList from "../views/internal/cost/CurrentCostBaselineL
 import PriceBookList from "../views/internal/pricing/PriceBookList.vue";
 import PricingPolicyList from "../views/internal/pricing/PricingPolicyList.vue";
 import SupplierList from "../views/internal/suppliers/SupplierList.vue";
+import SupplierEntityList from "../views/internal/suppliers/SupplierEntityList.vue";
 import CustomerWorkspace from "../views/internal/customers/CustomerWorkspace.vue";
 import FinanceCenter from "../views/internal/finance/FinanceCenter.vue";
 import InternalWorkbench from "../views/internal/workbench/InternalWorkbench.vue";
@@ -60,7 +62,7 @@ export const internalRoutes: RouteRecordRaw = {
     },
     {
       path: "models",
-      component: Models,
+      component: StandardModelList,
       meta: {
         requiresAuth: true,
         portal: "internal",
@@ -99,7 +101,7 @@ export const internalRoutes: RouteRecordRaw = {
     },
     {
       path: "suppliers",
-      component: SupplierList,
+      component: SupplierEntityList,
       meta: {
         requiresAuth: true,
         portal: "internal",
@@ -108,6 +110,19 @@ export const internalRoutes: RouteRecordRaw = {
         title: "供应商管理",
         menu: true,
         order: 50,
+      },
+    },
+    {
+      path: "supplier-profile-legacy",
+      component: SupplierList,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.suppliers",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.suppliers"],
+        title: "供应商结算档案",
+        menu: false,
+        order: 51,
       },
     },
     {
@@ -240,7 +255,34 @@ export const internalRoutes: RouteRecordRaw = {
         order: 140,
       },
     },
-    page("model-plaza", "internal.modelPlaza", "模型广场", "按标准模型查看供应来源、采购系数与资源状态", 30),
+    {
+      path: "model-plaza",
+      component: ModelPlaza,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.modelPlaza",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.modelPlaza"],
+        title: "模型广场",
+        description: "按标准模型查看供应来源、采购系数与资源状态",
+        menu: true,
+        order: 30,
+      },
+    },
+    {
+      path: "model-plaza/:resourceId",
+      component: ModelPlaza,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.modelPlaza",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.modelPlaza"],
+        title: "模型资源详情",
+        description: "打开工作台待办关联的资源计划",
+        menu: false,
+        order: 31,
+      },
+    },
     page("quotes", "internal.quotes", "报价单", "按客户与资源生成报价单、计算毛利", 60),
     {
       path: "approvals",

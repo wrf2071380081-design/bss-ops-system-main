@@ -13,10 +13,10 @@ export const standardModelsApi = {
     const params = buildModelFilters({ page: 1, size: 20, regions });
     return validateModelOptions(await apiRequest<unknown>({ url: `${base}/filter-options`, params: { keyword, regions: params.regions }, signal }), regions);
   },
-  async records(id: string, signal?: AbortSignal): Promise<{ action: string; reason: string; operator_id: string; request_id: string; occurred_at: string }[]> {
-    const response = await apiRequest<{ list: Record<string, unknown>[] }>({ url: "/internal/operation-logs", params: { entityType: "standard_model", entityId: standardModelVersion(id), page: 1, size: 100 }, signal });
+  async records(id: string, signal?: AbortSignal): Promise<{ action: string; reason: string; operator_name: string; created_at: string }[]> {
+    const response = await apiRequest<{ list: Record<string, unknown>[] }>({ url: "/internal/workbench/operations", params: { entity_type: "standard_model", entity_id: standardModelVersion(id), page: 1, size: 100 }, signal });
     if (!response || !Array.isArray(response.list)) throw new Error("操作记录暂时无法加载，请重试。");
-    return response.list.map(row => ({ action: String(row.action ?? ""), reason: String(row.reason ?? ""), operator_id: String(row.operator_id ?? ""), request_id: String(row.request_id ?? ""), occurred_at: String(row.occurred_at ?? row.created_at ?? "") }));
+    return response.list.map(row => ({ action: String(row.action ?? ""), reason: String(row.reason ?? ""), operator_name: String(row.operator_name ?? ""), created_at: String(row.created_at ?? "") }));
   },
   async list(params: StandardModelQuery, signal?: AbortSignal) {
     return normalizePage(await apiRequest<StandardModelPage>({ url: base, params: buildModelFilters(params), signal }));

@@ -29,6 +29,7 @@ configs/config.yaml
 Thumbs.db
 
 # 日志与临时
+.qa/
 logs/
 *.log
 tmp/

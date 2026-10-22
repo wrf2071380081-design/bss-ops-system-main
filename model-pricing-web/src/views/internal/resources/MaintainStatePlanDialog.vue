@@ -39,4 +39,4 @@ onBeforeUnmount(() => { active = false; });
     <template #footer><el-button :disabled="busy" @click="emit('close')">返回计划详情</el-button><el-button type="primary" :loading="busy" :disabled="conflict" @click="save">{{ action === 'revise' ? '保存修改' : '确认取消计划' }}</el-button></template>
   </el-dialog>
 </template>
-<style scoped>.plan-due{width:100%;padding:8px 12px;border:1px solid #dcdfe6;border-radius:4px;color:#303133;font:inherit;box-sizing:border-box}.muted{color:#79868f;font-size:13px;line-height:1.8}.el-alert+.el-alert{margin-top:12px}</style>
+<style scoped>.plan-due{width:100%;padding:8px 12px;border:1px solid #dcdfe6;border-radius:4px;color:#303133;font:inherit;box-sizing:border-box}.muted{color:#8a9099;font-size:13px;line-height:1.8}.el-alert+.el-alert{margin-top:12px}</style>

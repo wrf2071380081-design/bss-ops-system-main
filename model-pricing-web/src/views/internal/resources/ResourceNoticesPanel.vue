@@ -38,5 +38,5 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
   </section>
 </template>
 <style scoped>
-.resource-notices{min-height:220px}.notice-tools{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:12px 0 20px}.muted{color:#79868f;font-size:13px}.el-pagination{justify-content:flex-end;margin-top:20px}@media(max-width:500px){.notice-tools{align-items:flex-start;flex-direction:column}.el-pagination{justify-content:flex-start}}
+.resource-notices{min-height:220px}.notice-tools{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:12px 0 20px}.muted{color:#8a9099;font-size:13px}.el-pagination{justify-content:flex-end;margin-top:20px}@media(max-width:500px){.notice-tools{align-items:flex-start;flex-direction:column}.el-pagination{justify-content:flex-start}}
 </style>

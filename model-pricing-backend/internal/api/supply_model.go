@@ -15,8 +15,9 @@ import (
 )
 
 type supplyModelHandler struct {
-	reader *supply.ModelReader
-	writer SupplyModelWriter
+	reader     *supply.ModelReader
+	writer     SupplyModelWriter
+	operations *supply.SourceOperationReader
 }
 type supplyModelPermissions struct {
 	CanEdit   bool `json:"can_edit"`
@@ -72,13 +73,13 @@ func supplyHTTPError(c *gin.Context, err error) {
 	case errors.Is(err, supply.ErrIncomplete):
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "官方资料尚未补齐，无法核验", 400))
 	case errors.Is(err, supply.ErrForbidden):
-		response.Error(c, apperr.New(apperr.ErrForbidden.Code, "仅绑定维护人可以执行此操作", 403))
+		response.Error(c, apperr.New(apperr.ErrForbidden.Code, "当前人员无权执行此操作", 403))
 	case errors.Is(err, supply.ErrNotFound):
 		response.Error(c, apperr.ErrNotFound)
-	case errors.Is(err, supply.ErrRevisionConflict), errors.Is(err, supply.ErrIdentityConflict), errors.Is(err, supply.ErrInactive), errors.Is(err, supply.ErrSourceRejected):
-		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "记录、官方身份或核验依据已发生冲突，请刷新核对", 409))
+	case errors.Is(err, supply.ErrRevisionConflict), errors.Is(err, supply.ErrIdentityConflict), errors.Is(err, supply.ErrInactive), errors.Is(err, supply.ErrSourceRejected), errors.Is(err, supply.ErrConfigInUse), errors.Is(err, supply.ErrConfigInactive), errors.Is(err, supply.ErrSupplierRegionLocked):
+		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "记录状态或操作依据已发生变化，请刷新后核对", 409))
 	case errors.Is(err, supply.ErrDependencyUnavailable):
-		response.Error(c, apperr.New(apperr.ErrSystem.Code, "标准模型依赖尚未就绪", 503))
+		response.Error(c, apperr.New(apperr.ErrSystem.Code, "供应侧依赖尚未就绪", 503))
 	default:
 		response.Error(c, apperr.ErrSystem)
 	}

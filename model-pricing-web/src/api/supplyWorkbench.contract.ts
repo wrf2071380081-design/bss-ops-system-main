@@ -58,6 +58,7 @@ export function validatePlanSummary(value: unknown, expectedID: string): PlanSum
   if (typeof plan.creator_name !== "string" || typeof plan.reason !== "string" || !plan.reason.trim()) invalid();
   const permissions = plan.permissions === undefined ? { can_revise: false, can_cancel: false, can_execute: false } : object(plan.permissions);
   if (["can_revise", "can_cancel", "can_execute"].some(key => typeof permissions[key] !== "boolean")) invalid();
-  if ((permissions.can_revise && (!plan.is_initiator || plan.status !== "PENDING" || !["ONLINE", "OFFLINE"].includes(String(plan.kind)))) || (permissions.can_cancel && (!plan.is_initiator || !["PENDING", "BLOCKED"].includes(String(plan.status)) || !["ONLINE", "OFFLINE"].includes(String(plan.kind)))) || permissions.can_execute) invalid();
+  const statePlan = ["ONLINE", "OFFLINE"].includes(String(plan.kind));
+  if ((permissions.can_revise && (!plan.is_initiator || plan.status !== "PENDING" || !statePlan)) || (permissions.can_cancel && (!plan.is_initiator || !["PENDING", "BLOCKED"].includes(String(plan.status)) || !statePlan)) || (permissions.can_execute && (!plan.is_initiator || plan.status !== "PENDING" || !statePlan))) invalid();
   return structuredClone({ ...plan, permissions }) as unknown as PlanSummary;
 }

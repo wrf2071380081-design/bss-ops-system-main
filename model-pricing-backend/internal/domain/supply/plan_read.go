@@ -39,6 +39,7 @@ type PlanReadRecord struct {
 	Plan                                        *ResourcePlan
 	ResourceID, ResourceRegion, ResourceBuyerID string
 	ResourceRevision                            uint64
+	ExecutionFailureReason                      string
 }
 type PlanReadStore interface {
 	GetPlanSummary(context.Context, string) (PlanReadRecord, error)
@@ -91,13 +92,20 @@ func buildPlanSummary(record PlanReadRecord, actor, id string) (*PlanSummary, er
 	if summary.IsInitiator && (p.Kind == "ONLINE" || p.Kind == "OFFLINE") {
 		summary.Permissions.CanRevise = p.Status == "PENDING"
 		summary.Permissions.CanCancel = p.Status == "PENDING" || p.Status == "BLOCKED"
+		summary.Permissions.CanExecute = p.Status == "PENDING"
 	}
-	// Execution is not exposed until the public transaction/response assembler
-	// can commit BLOCKED outcomes before sending409. Attribution is not a grant.
 	summary.DueAt = summary.DueAt.UTC()
 	summary.CreatedAt = summary.CreatedAt.UTC()
 	if !summary.PreconditionMatches {
 		summary.BlockedReasons = append(summary.BlockedReasons, "RESOURCE_CHANGED")
+	}
+	if reason := record.ExecutionFailureReason; reason != "" {
+		if p.Status != "BLOCKED" || (reason != "RESOURCE_CHANGED" && reason != "RESOURCE_NOT_READY") {
+			return nil, ErrReadContract
+		}
+		if len(summary.BlockedReasons) == 0 || summary.BlockedReasons[0] != reason {
+			summary.BlockedReasons = append(summary.BlockedReasons, reason)
+		}
 	}
 	return summary, nil
 }

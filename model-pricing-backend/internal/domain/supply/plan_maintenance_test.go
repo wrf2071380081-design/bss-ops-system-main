@@ -97,6 +97,24 @@ func maintenanceStore() *planMaintenanceFixture {
 func maintenanceMeta(actor string) WriteMeta {
 	return WriteMeta{ActorID: actor, Reason: "维护安排", RequestID: "trace"}
 }
+
+func TestPlanMaintenanceReceiptMatchesPostgresTimePrecision(t *testing.T) {
+	f := maintenanceStore()
+	now := modelNow.Add(123456789 * time.Nanosecond)
+	due := now.Add(time.Hour)
+	s := NewPlanMaintenanceService(f, func() time.Time { return now })
+	p, err := s.Create(context.Background(), maintenanceMeta("7"), "11", 2, "OFFLINE", due)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.CreatedAt.Nanosecond()%1000 != 0 || p.DueAt.Nanosecond()%1000 != 0 || f.effects[0].OccurredAt.Nanosecond()%1000 != 0 {
+		t.Fatal("receipt differs from persisted microsecond time")
+	}
+	p, err = s.Revise(context.Background(), maintenanceMeta("7"), "81", 1, due.Add(time.Second))
+	if err != nil || p.DueAt.Nanosecond()%1000 != 0 || f.effects[1].OccurredAt.Nanosecond()%1000 != 0 {
+		t.Fatal("revised receipt differs from SQL", err)
+	}
+}
 func TestPlanMaintenanceCreatesWithoutResourceChangeAndSchedulesReminder(t *testing.T) {
 	f := maintenanceStore()
 	before := f.resource
