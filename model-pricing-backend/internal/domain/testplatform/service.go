@@ -60,6 +60,8 @@ type CreateCommand struct {
 	IdempotencyKey string
 	ReviewOf       string
 	BatchLabel     string
+	// TargetFingerprint 是发单时的目标指纹，落库后用于判断报告是否失效（Q6）。
+	TargetFingerprint string
 }
 
 // Accepted 是平台接受任务后的回执。
@@ -122,6 +124,7 @@ type NewJobRecord struct {
 	ActorID        string
 	ExternalJobID  string
 	Status         string
+	TargetFingerprint string
 }
 
 // PendingJob 是等待收口的一项任务。
@@ -210,6 +213,7 @@ func (s *Service) Start(ctx context.Context, cmd CreateCommand) (*StartResult, e
 		ResourceID: cmd.ResourceID, Category: cmd.Category,
 		IdempotencyKey: cmd.IdempotencyKey, RequestPayload: payload,
 		ReviewOf: cmd.ReviewOf, ActorID: cmd.ActorID, Status: "QUEUED",
+		TargetFingerprint: cmd.TargetFingerprint,
 	})
 	if err != nil {
 		return nil, err

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"model_bss/internal/domain/supply"
+	tpdomain "model_bss/internal/domain/testplatform"
 )
 
 // SubmissionStore 是供应商申报（草稿/提交/撤回）的持久化层。
@@ -44,6 +45,7 @@ type SubmissionRowRecord struct {
 	TestBaseURL       string
 	RowStatus         string
 	// 连通（baseline）与压力（stress）分开存放，互不覆盖。
+	TestFingerprint     string
 	ConnectivityStatus  *string
 	ConnectivityVerdict *string
 	ConnectionMS        *string
@@ -51,6 +53,9 @@ type SubmissionRowRecord struct {
 	StressVerdict       *string
 	RPS                 *string
 	TPS                 *string
+	// Stale 表示该测试目标的指纹与发单时不一致（改了地址/Key/模型）→ 结果不可用。
+	ConnectivityStale bool
+	StressStale       bool
 }
 
 // SubmissionRowInput 是写入用的行。
@@ -160,8 +165,8 @@ func (s *SubmissionStore) Rows(ctx context.Context, submissionIDs []int64) (map[
 	rows, err := s.db.QueryContext(ctx, `
 SELECT r.submission_id, r.id, r.standard_model_id, m.name, COALESCE(m.official_id,''), r.supplier_model_name,
        r.coefficient::text, COALESCE(r.test_base_url,''), r.row_status,
-       cj.status, crep.verdict, crep.connection_ms::text,
-       sj.status, srep.verdict, srep.rps::text, srep.tps::text
+       r.test_fingerprint, cj.status, crep.verdict, crep.connection_ms::text, cj.target_fingerprint,
+       sj.status, srep.verdict, srep.rps::text, srep.tps::text, sj.target_fingerprint
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
 LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
@@ -184,11 +189,20 @@ ORDER BY r.submission_id, r.id`, args...)
 		var submissionID int64
 		var item SubmissionRowRecord
 		var connStatus, connVerdict, conn, stressStatus, stressVerdict, rps, tps sql.NullString
+		var rowFP, connFP, stressFP sql.NullString
 		if err := rows.Scan(&submissionID, &item.ID, &item.StandardModelID, &item.StandardModelName, &item.OfficialID,
 			&item.SupplierModelName, &item.Coefficient, &item.TestBaseURL, &item.RowStatus,
-			&connStatus, &connVerdict, &conn, &stressStatus, &stressVerdict, &rps, &tps); err != nil {
+			&rowFP, &connStatus, &connVerdict, &conn, &connFP,
+			&stressStatus, &stressVerdict, &rps, &tps, &stressFP); err != nil {
 			return nil, err
 		}
+		item.TestFingerprint = rowFP.String
+		fingerprintChanged := func(jobFP sql.NullString) bool {
+			// 老数据可能没有指纹：只有两者都存在且不等才算失效，不做无依据的误判。
+			return rowFP.Valid && jobFP.Valid && rowFP.String != jobFP.String
+		}
+		item.ConnectivityStale = fingerprintChanged(connFP)
+		item.StressStale = fingerprintChanged(stressFP)
 		item.ConnectivityStatus = nullableString(connStatus)
 		item.ConnectivityVerdict = nullableString(connVerdict)
 		item.ConnectionMS = nullableString(conn)
@@ -331,12 +345,23 @@ func syncRows(ctx context.Context, tx *sql.Tx, table string, submissionID int64,
 	kept := make([]int64, 0, len(rows))
 	for _, row := range rows {
 		if row.ID > 0 {
+			var existingKey string
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(test_api_key_enc,'') FROM `+table+`
+WHERE id=$1 AND submission_id=$2`, row.ID, submissionID).Scan(&existingKey); err != nil {
+				return err
+			}
+			effectiveKey := row.SealedAPIKey
+			if strings.TrimSpace(effectiveKey) == "" {
+				effectiveKey = existingKey // 前端不回传密钥：留空表示沿用
+			}
+			fingerprint := tpdomain.TargetFingerprint(row.StandardModelID, row.SupplierModelName, row.TestBaseURL, effectiveKey)
 			result, err := tx.ExecContext(ctx, `UPDATE `+table+`
 SET standard_model_id=$3, supplier_model_name=$4, coefficient=$5::numeric,
-    test_base_url=NULLIF($6,''), test_api_key_enc=COALESCE(NULLIF($7,''), test_api_key_enc)
+    test_base_url=NULLIF($6,''), test_api_key_enc=COALESCE(NULLIF($7,''), test_api_key_enc),
+    test_fingerprint=NULLIF($8,'')
 WHERE id=$1 AND submission_id=$2`,
 				row.ID, submissionID, row.StandardModelID, row.SupplierModelName,
-				row.Coefficient, row.TestBaseURL, row.SealedAPIKey)
+				row.Coefficient, row.TestBaseURL, row.SealedAPIKey, fingerprint)
 			if err != nil {
 				return err
 			}
@@ -350,9 +375,10 @@ WHERE id=$1 AND submission_id=$2`,
 		}
 		var newID int64
 		if err := tx.QueryRowContext(ctx, `INSERT INTO `+table+`
-(submission_id, standard_model_id, supplier_model_name, coefficient, test_base_url, test_api_key_enc, participate_test, row_status)
-VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),false,'PENDING') RETURNING id`,
-			submissionID, row.StandardModelID, row.SupplierModelName, row.Coefficient, row.TestBaseURL, row.SealedAPIKey).Scan(&newID); err != nil {
+(submission_id, standard_model_id, supplier_model_name, coefficient, test_base_url, test_api_key_enc, participate_test, row_status, test_fingerprint)
+VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),false,'PENDING',$7) RETURNING id`,
+			submissionID, row.StandardModelID, row.SupplierModelName, row.Coefficient, row.TestBaseURL, row.SealedAPIKey,
+			tpdomain.TargetFingerprint(row.StandardModelID, row.SupplierModelName, row.TestBaseURL, row.SealedAPIKey)).Scan(&newID); err != nil {
 			return err
 		}
 		kept = append(kept, newID)
@@ -416,6 +442,7 @@ type TestRow struct {
 	Region            string
 	SupplierID        int64
 	SupplierName      string
+	TestFingerprint   string
 	ResourceID        *int64
 	TestJobID         *int64
 	StressJobID       *int64
@@ -429,14 +456,14 @@ func (s *SubmissionStore) TestRow(ctx context.Context, supplierID, submissionID,
 	err := s.db.QueryRowContext(ctx, `
 SELECT r.id, r.submission_id, r.standard_model_id, r.supplier_model_name, COALESCE(r.test_base_url,''),
        COALESCE(r.test_api_key_enc,''), r.coefficient::text, sub.region, sub.supplier_id, sp.name,
-       r.resource_id, r.test_job_id, r.stress_job_id, sub.status
+       COALESCE(r.test_fingerprint,''), r.resource_id, r.test_job_id, r.stress_job_id, sub.status
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
 JOIN `+s.table("supplier")+` sp ON sp.id = sub.supplier_id
 WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionID, supplierID).
 		Scan(&item.RowID, &item.SubmissionID, &item.StandardModelID, &item.SupplierModelName, &item.TestBaseURL,
 			&item.SealedAPIKey, &item.Coefficient, &item.Region, &item.SupplierID, &item.SupplierName,
-			&resourceID, &jobID, &stressJobID, &item.SubmissionStatus)
+			&item.TestFingerprint, &resourceID, &jobID, &stressJobID, &item.SubmissionStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}

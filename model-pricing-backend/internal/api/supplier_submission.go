@@ -53,6 +53,8 @@ type submissionTestDTO struct {
 	Status       string  `json:"status"`
 	Tested       bool    `json:"tested"`
 	Passed       bool    `json:"passed"`
+	// Stale=true 表示测试目标已变化（改了地址/Key/模型），该结果不再有效。
+	Stale        bool    `json:"stale,omitempty"`
 	JobID        string  `json:"job_id,omitempty"`
 	ReportID     string  `json:"report_id,omitempty"`
 	ConnectionMS *string `json:"connection_ms"`
@@ -291,6 +293,9 @@ func (h *supplierSubmissionHandler) submit(c *gin.Context) {
 	case errors.Is(err, errGateStressMissing):
 		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "至少需要一行完成压力测试，不能提交", 409))
 		return
+	case errors.Is(err, errGateReportStale):
+		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "测试目标已变化（地址/Key/模型），请重新测试后再提交", 409))
+		return
 	case err != nil:
 		writeSubmissionError(c, err)
 		return
@@ -382,8 +387,14 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 			"duration": "30s", "warmup": true, "warmup_duration": "5s",
 		}
 	}
+	fingerprint := row.TestFingerprint
+	if fingerprint == "" {
+		// 老数据没有指纹：按当前值现算，避免发单后立刻被判失效。
+		fingerprint = tpdomain.TargetFingerprint(row.StandardModelID, row.SupplierModelName, row.TestBaseURL, row.SealedAPIKey)
+	}
 	result, err := h.svc.starter.Start(ctx, tpdomain.CreateCommand{
-		ResourceID: strconv.FormatInt(resourceID, 10),
+		ResourceID:        strconv.FormatInt(resourceID, 10),
+		TargetFingerprint: fingerprint,
 		ActorID:    strconv.FormatInt(supplierID, 10),
 		Category:   tpdomain.Category(platformCategory),
 		Owner:      row.SupplierName,
@@ -553,7 +564,10 @@ func (h *supplierSubmissionHandler) checkSubmitGate(ctx context.Context, submiss
 		if row.ConnectivityStatus == nil || !isTerminalStatus(*row.ConnectivityStatus) {
 			return errGateConnectivityMissing
 		}
-		if row.StressStatus != nil && isTerminalStatus(*row.StressStatus) {
+		if row.ConnectivityStale {
+			return errGateReportStale
+		}
+		if row.StressStatus != nil && isTerminalStatus(*row.StressStatus) && !row.StressStale {
 			anyStress = true
 		}
 	}
@@ -567,6 +581,7 @@ var (
 	errGateNoRows               = errors.New("submission has no rows")
 	errGateConnectivityMissing  = errors.New("some rows have no connectivity test")
 	errGateStressMissing        = errors.New("no row has stress test")
+	errGateReportStale          = errors.New("test report is stale after target change")
 )
 
 // resolveTestCategory 把前端类别翻译成平台门类，并把映射收在一处。
@@ -636,19 +651,19 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			tested := isTerminalStatus(*row.ConnectivityStatus)
 			passed := verdictOK(row.ConnectivityVerdict)
 			item.ConnectivityJob = &submissionTestDTO{
-				Category: "CONNECTIVITY", Status: *row.ConnectivityStatus, Tested: tested, Passed: passed,
-				ConnectionMS: row.ConnectionMS,
+				Category: "CONNECTIVITY", Status: *row.ConnectivityStatus, Tested: tested && !row.ConnectivityStale,
+				Passed: passed, Stale: row.ConnectivityStale, ConnectionMS: row.ConnectionMS,
 			}
-			item.ConnectivityTested, item.ConnectivityPassed = tested, passed
+			item.ConnectivityTested, item.ConnectivityPassed = tested && !row.ConnectivityStale, passed && !row.ConnectivityStale
 		}
 		if row.StressStatus != nil {
 			tested := isTerminalStatus(*row.StressStatus)
 			passed := verdictOK(row.StressVerdict)
 			item.StressJob = &submissionTestDTO{
-				Category: "STRESS", Status: *row.StressStatus, Tested: tested, Passed: passed,
-				RPS: row.RPS, TPS: row.TPS,
+				Category: "STRESS", Status: *row.StressStatus, Tested: tested && !row.StressStale,
+				Passed: passed, Stale: row.StressStale, RPS: row.RPS, TPS: row.TPS,
 			}
-			item.StressTested, item.StressPassed = tested, passed
+			item.StressTested, item.StressPassed = tested && !row.StressStale, passed && !row.StressStale
 		}
 		dto.Rows = append(dto.Rows, item)
 	}
