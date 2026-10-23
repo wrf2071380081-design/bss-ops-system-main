@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"model_bss/internal/api/middleware"
 	"model_bss/internal/domain/supply"
+	tpdomain "model_bss/internal/domain/testplatform"
 	"model_bss/internal/infra/supplypg"
 	"model_bss/pkg/apperr"
 	"model_bss/pkg/response"
@@ -26,17 +27,18 @@ const (
 
 // SupplierSubmissionService 组合申报的读写与凭据加密。
 type SupplierSubmissionService struct {
-	store  *supplypg.SubmissionStore
-	sealer supply.SecretSealer
-	clock  func() time.Time
+	store   *supplypg.SubmissionStore
+	sealer  supply.SecretSealer
+	starter TestJobStarter
+	clock   func() time.Time
 }
 
 // NewSupplierSubmissionService 构造服务；sealer 可为空（此时不接受携带 Key 的写入）。
-func NewSupplierSubmissionService(store *supplypg.SubmissionStore, sealer supply.SecretSealer, clock func() time.Time) *SupplierSubmissionService {
+func NewSupplierSubmissionService(store *supplypg.SubmissionStore, sealer supply.SecretSealer, starter TestJobStarter, clock func() time.Time) *SupplierSubmissionService {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &SupplierSubmissionService{store: store, sealer: sealer, clock: clock}
+	return &SupplierSubmissionService{store: store, sealer: sealer, starter: starter, clock: clock}
 }
 
 // ---- DTO（字段名与前端 supplierSubmissions.types.ts 严格一致）----
@@ -301,16 +303,97 @@ func (h *supplierSubmissionHandler) transition(c *gin.Context, from []string, to
 // rowTest 是「参与测试 / 查测试进度」入口。
 // 一期依赖尚未合入的测试平台分支，这里明确回 503——
 // 不能回 404：前端会把 404 翻译成"数据不存在或当前账号不可见"，更难排查。
+// rowTest 发起一次测试并把任务回写到申报行（T-03，打通的关键一步）。
+//
+// 凭据现状：SecretSealer 只有 Seal 没有 Open，全系统无法解密供应商填的 Key。
+// 因此一期只支持 `test_base_url=demo` 的目标（平台内置模拟人格，不需要真 Key）；
+// 真实目标明确返回 503 并说明原因，避免"看着能点、点了没用"。
 func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
-	if _, ok := h.supplierID(c); !ok {
+	supplierID, ok := h.supplierID(c)
+	if !ok {
+		return
+	}
+	submissionID, err := positiveID(c.Param("id"))
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	rowID, err := positiveID(c.Param("rowId"))
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
 		return
 	}
 	category := strings.ToUpper(strings.TrimSpace(c.Query("category")))
-	if _, exists := submissionCategoryToPlatform[category]; !exists {
+	platformCategory, exists := submissionCategoryToPlatform[category]
+	if !exists {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 CONNECTIVITY / STRESS", 400))
 		return
 	}
-	response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入，暂不支持发起测试", 503))
+	if h.svc.starter == nil {
+		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
+		return
+	}
+	ctx := c.Request.Context()
+	row, err := h.svc.store.TestRow(ctx, supplierID, submissionID, rowID)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	if row.TestBaseURL != "demo" {
+		response.Error(c, apperr.New(apperr.ErrSystem.Code,
+			"该申报行使用真实测试地址；测试凭据目前无法解密，请先用 demo 目标联调", 503))
+		return
+	}
+	if row.TestJobID != nil {
+		// 已发过测试：不重复建任务（Q6 测试机会由 M3 统一管，这里先幂等返回）。
+		response.Success(c, gin.H{
+			"job_id": strconv.FormatInt(*row.TestJobID, 10), "category": category,
+			"status": "RUNNING", "tested": false, "passed": false,
+		})
+		return
+	}
+	resourceID, err := h.svc.store.EnsureTestResource(ctx, row)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	params := map[string]any(nil)
+	if platformCategory == "stress" {
+		// 真机实测：stress 必须显式声明参考引擎，否则 400。
+		params = map[string]any{
+			"engine": "reference-performance-v1", "concurrency": []int{1},
+			"duration": "30s", "warmup": true, "warmup_duration": "5s",
+		}
+	}
+	result, err := h.svc.starter.Start(ctx, tpdomain.CreateCommand{
+		ResourceID: strconv.FormatInt(resourceID, 10),
+		ActorID:    strconv.FormatInt(supplierID, 10),
+		Category:   tpdomain.Category(platformCategory),
+		Owner:      row.SupplierName,
+		Target: tpdomain.Target{
+			Model: row.SupplierModelName, BaseURL: row.TestBaseURL,
+			Protocol: "openai", APIKey: "demo-key",
+		},
+		Params:         params,
+		IdempotencyKey: strings.TrimSpace(c.GetHeader("Idempotency-Key")),
+	})
+	if err != nil {
+		writeTestStartError(c, err)
+		return
+	}
+	localJobID, convErr := strconv.ParseInt(result.LocalJobID, 10, 64)
+	if convErr != nil {
+		response.Error(c, apperr.ErrSystem)
+		return
+	}
+	if err := h.svc.store.AttachTestJob(ctx, rowID, localJobID); err != nil {
+		response.Error(c, apperr.ErrSystem)
+		return
+	}
+	response.Success(c, gin.H{
+		"job_id": result.LocalJobID, "category": category,
+		"status": result.Status, "tested": false, "passed": false,
+	})
 }
 
 // buildRows 校验行并把 API Key 加密；失败时已写好响应。

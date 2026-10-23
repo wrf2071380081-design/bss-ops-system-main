@@ -211,11 +211,6 @@ func main() {
 	if err != nil {
 		log.Fatal("initialize A supply routes", zap.Error(err))
 	}
-	submissionSvc, err := newSupplierSubmissionService(dbClient.DB)
-	if err != nil {
-		log.Warn("initialize supplier submission service", zap.Error(err))
-		submissionSvc = nil
-	}
 	planReminderStore, err := newSupplyPlanReminderStore(dbClient.DB)
 	if err != nil {
 		log.Fatal("initialize A plan reminders", zap.Error(err))
@@ -230,6 +225,12 @@ func main() {
 		// 注入后模型广场的报告面板不再返回 503。
 		supplyRoutes.ResourceReports = testPlatform.Reader
 		log.Info("supply report reader enabled")
+	}
+	// 申报的「发起测试」需要测试平台端口（T-03）。
+	submissionSvc, err := newSupplierSubmissionService(dbClient.DB, testJobStarter(testPlatform))
+	if err != nil {
+		log.Warn("initialize supplier submission service", zap.Error(err))
+		submissionSvc = nil
 	}
 	router := api.New(api.Deps{
 		Config:             cfg,

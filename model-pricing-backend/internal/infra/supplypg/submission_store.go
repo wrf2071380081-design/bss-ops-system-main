@@ -346,3 +346,94 @@ func itoa(n int) string {
 	}
 	return string(digits)
 }
+
+// TestRow 是发起测试所需的一行信息（含供应商主体名，平台要求 owner）。
+type TestRow struct {
+	RowID             int64
+	SubmissionID      int64
+	StandardModelID   int64
+	SupplierModelName string
+	TestBaseURL       string
+	SealedAPIKey      string
+	Coefficient       string
+	Region            string
+	SupplierID        int64
+	SupplierName      string
+	ResourceID        *int64
+	TestJobID         *int64
+	SubmissionStatus  string
+}
+
+// TestRow 取某一行（限定供应商，防越权）。
+func (s *SubmissionStore) TestRow(ctx context.Context, supplierID, submissionID, rowID int64) (*TestRow, error) {
+	var item TestRow
+	var resourceID, jobID sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+SELECT r.id, r.submission_id, r.standard_model_id, r.supplier_model_name, COALESCE(r.test_base_url,''),
+       COALESCE(r.test_api_key_enc,''), r.coefficient::text, sub.region, sub.supplier_id, sp.name,
+       r.resource_id, r.test_job_id, sub.status
+FROM `+s.table("submission_row")+` r
+JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
+JOIN `+s.table("supplier")+` sp ON sp.id = sub.supplier_id
+WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionID, supplierID).
+		Scan(&item.RowID, &item.SubmissionID, &item.StandardModelID, &item.SupplierModelName, &item.TestBaseURL,
+			&item.SealedAPIKey, &item.Coefficient, &item.Region, &item.SupplierID, &item.SupplierName,
+			&resourceID, &jobID, &item.SubmissionStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, supply.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if resourceID.Valid {
+		item.ResourceID = &resourceID.Int64
+	}
+	if jobID.Valid {
+		item.TestJobID = &jobID.Int64
+	}
+	return &item, nil
+}
+
+// EnsureTestResource 保证该行有一个可挂靠的资源（Q13：测试前先建 PENDING_TEST 资源）。
+// 已有 resource_id 直接复用；否则建一条并回写。
+func (s *SubmissionStore) EnsureTestResource(ctx context.Context, row *TestRow) (int64, error) {
+	if row == nil {
+		return 0, supply.ErrNotFound
+	}
+	if row.ResourceID != nil {
+		return *row.ResourceID, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var modelName string
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM `+s.table("standard_model")+` WHERE id=$1`, row.StandardModelID).Scan(&modelName); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, supply.ErrNotFound
+		}
+		return 0, err
+	}
+	var resourceID int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO `+s.table("resource")+`
+(standard_model_id, supplier_id, supplier_model_name, standard_model_name_snapshot, region, coefficient, state)
+VALUES ($1,$2,$3,$4,$5,$6::numeric,'PENDING_TEST') RETURNING id`,
+		row.StandardModelID, row.SupplierID, row.SupplierModelName, modelName, row.Region, row.Coefficient).Scan(&resourceID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("submission_row")+` SET resource_id=$2 WHERE id=$1`, row.RowID, resourceID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return resourceID, nil
+}
+
+// AttachTestJob 把测试任务回写到申报行（打通的关键一步）。
+func (s *SubmissionStore) AttachTestJob(ctx context.Context, rowID, jobID int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE `+s.table("submission_row")+`
+SET test_job_id=$2, participate_test=true WHERE id=$1`, rowID, jobID)
+	return err
+}

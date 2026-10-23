@@ -15,7 +15,7 @@ import (
 // 独立成文件：避免改动 A 的 supply_runtime.go，减少共享文件冲突。
 // 加密密钥来自环境变量（MODEL_BSS_FORMAL_CONFIG_KEY），未配置时 sealer 为 nil，
 // 此时「带 API Key 的写入」会返回 503，而不是把明文落库。
-func newSupplierSubmissionService(db *gorm.DB) (*api.SupplierSubmissionService, error) {
+func newSupplierSubmissionService(db *gorm.DB, starter api.TestJobStarter) (*api.SupplierSubmissionService, error) {
 	if db == nil {
 		return nil, nil
 	}
@@ -31,5 +31,5 @@ func newSupplierSubmissionService(db *gorm.DB) (*api.SupplierSubmissionService, 
 	if err != nil {
 		return nil, err
 	}
-	return api.NewSupplierSubmissionService(store, sealer, time.Now), nil
+	return api.NewSupplierSubmissionService(store, sealer, starter, time.Now), nil
 }
