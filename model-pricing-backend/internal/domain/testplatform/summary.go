@@ -16,6 +16,7 @@ func Interpret(category Category, state JobState, reportJSON []byte) Outcome {
 	out := Outcome{Verdict: state.Verdict}
 	passed := state.Verdict == "pass" || state.Verdict == "pass_with_warnings"
 
+	var tier map[string]any
 	summary := decodeObject(state.Summary)
 	document := decodeObject(reportJSON)
 	// 报告的 summary 可能嵌在文档里（{"summary":{...}}），也可能平铺在根上，两种都试。
@@ -33,15 +34,18 @@ func Interpret(category Category, state JobState, reportJSON []byte) Outcome {
 			"connection_ms", "minimal_chat_ms", "first_token_ms", "latency_ms")
 		out.DataComplete = passed && out.ConnectionMS != nil
 	case CategoryStress:
+		// 真机实测：summary.performance_tiers 是档位数组，每档 outcome+summary{concurrency,qps,tps,...}。
+		// Q2 口径：取 outcome=completed 的最高并发档（被 limited 的档不选）。
 		out.PressurePassed = passed
-		out.RPS = firstDecimal(summary, nested, document, "qps", "rps", "steady_qps", "throughput_qps")
-		out.TPS = firstDecimal(summary, nested, document, "tps", "steady_tps", "throughput_tps")
+		tier = bestTier(summary, nested, document)
+		out.RPS = firstDecimal(tier, summary, nested, document, "qps", "steady_qps", "last30s_qps", "rps")
+		out.TPS = firstDecimal(tier, summary, nested, document, "tps", "steady_tps", "last30s_tps")
 		out.DataComplete = passed && out.RPS != nil && out.TPS != nil
 	default:
 		out.DataComplete = passed
 	}
 	out.CacheHitTokens, out.CacheInputTokens = firstTokens(summary, nested, document)
-	out.CacheRatioPercent = firstRatio(summary, nested, document,
+	out.CacheRatioPercent = firstRatio(tier, summary, nested, document,
 		"cache_hit_ratio_pct", "cache_hit_ratio", "cache.hit_ratio_pct")
 	out.CacheRatioProvided = out.CacheRatioPercent != nil
 	if scene := firstString(summary, nested, document, "scene", "cache_scene", "cache.scene"); scene != "" {
@@ -111,6 +115,47 @@ func findCheck(layer, name string, sources ...map[string]any) map[string]any {
 		}
 	}
 	return nil
+}
+
+// bestTier 选出 outcome=completed 且并发最高的档位，返回该档的 summary 对象。
+// 没有可用档位时返回 nil（调用方按缺失处理，不编造数值）。
+func bestTier(sources ...map[string]any) map[string]any {
+	var best map[string]any
+	bestConcurrency := -1.0
+	for _, source := range sources {
+		if source == nil {
+			continue
+		}
+		tiers, ok := source["performance_tiers"].([]any)
+		if !ok {
+			if metrics, ok := source["metrics"].(map[string]any); ok {
+				tiers, _ = metrics["performance_tiers"].([]any)
+			}
+		}
+		for _, item := range tiers {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if outcome, _ := entry["outcome"].(string); outcome != "completed" {
+				continue
+			}
+			tierSummary, ok := entry["summary"].(map[string]any)
+			if !ok {
+				continue
+			}
+			concurrency := 0.0
+			if raw, ok := numericString(tierSummary["concurrency"]); ok {
+				if parsed, err := strconv.ParseFloat(raw, 64); err == nil {
+					concurrency = parsed
+				}
+			}
+			if concurrency > bestConcurrency {
+				bestConcurrency, best = concurrency, tierSummary
+			}
+		}
+	}
+	return best
 }
 
 // decodeObject 宽容解码：非法 JSON 或非对象一律返回空 map，调用方无需判空。

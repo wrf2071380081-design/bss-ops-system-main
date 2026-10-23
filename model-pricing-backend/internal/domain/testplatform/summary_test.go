@@ -132,3 +132,23 @@ func TestInterpretRealBaselineSummary(t *testing.T) {
 		t.Fatalf("baseline should pass and be complete: %+v", out)
 	}
 }
+
+// TestInterpretRealStressSummary 用真机压测形状回归：
+// summary.performance_tiers[] 每档带 outcome/concurrency/summary{qps,tps,cache_hit_ratio_pct}。
+func TestInterpretRealStressSummary(t *testing.T) {
+	state := JobState{Status: "succeeded", Verdict: "", Summary: json.RawMessage(`{"valid_tiers":2,"performance_tiers":[
+		{"outcome":"completed","summary":{"concurrency":1,"qps":3.23,"tps":64.67,"cache_hit_ratio_pct":40}},
+		{"outcome":"completed","summary":{"concurrency":3,"qps":9.11,"tps":182.5,"cache_hit_ratio_pct":55}},
+		{"outcome":"limited","summary":{"concurrency":5,"qps":8.0,"tps":150.0}}
+	]}`)}
+	out := Interpret(CategoryStress, state, nil)
+	if out.RPS == nil || *out.RPS != "9.11" {
+		t.Fatalf("highest completed tier not picked: %+v", out)
+	}
+	if out.TPS == nil || *out.TPS != "182.5" {
+		t.Fatalf("tps wrong: %+v", out)
+	}
+	if out.CacheRatioPercent == nil || *out.CacheRatioPercent != "55" {
+		t.Fatalf("cache ratio should come from the same tier: %+v", out)
+	}
+}
