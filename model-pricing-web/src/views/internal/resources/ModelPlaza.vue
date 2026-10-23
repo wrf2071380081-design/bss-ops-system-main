@@ -4,9 +4,17 @@ import { useRoute, useRouter } from "vue-router";
 import { resourcesApi } from "../../../api/resources";
 import { buildResourceQuery, resourceRegionLabels, resourceStateLabels } from "../../../api/resources.contract";
 import { modelTypeLabels } from "../../../api/standardModels.contract";
-import type { ResourceFilterOptions, ResourceGroup, ResourcePage, ResourceQuery } from "../../../api/resources.types";
-import ModelSourcesDialog from "./ModelSourcesDialog.vue";
+import { standardModelsApi } from "../../../api/standardModels";
+import type { ResourceFilterOptions, ResourceGroup, ResourceQuery } from "../../../api/resources.types";
+import type { StandardModelDTO } from "../../../api/standardModels.types";
 import ResourceDetailDrawer from "./ResourceDetailDrawer.vue";
+
+interface PlazaRow {
+  id: string; name: string; official_id: string; company: string; model_type: string;
+  supplier_count: number; resource_count: number; available_count: number;
+  coefficient_min: string; coefficient_max: string; regions: string[]; state_counts: Record<string, number>;
+}
+
 const route = useRoute(), router = useRouter();
 const directResourceID = computed(() => typeof route.params.resourceId === "string" ? route.params.resourceId : "");
 const directRegion = computed(() => ["CN", "OVERSEAS"].includes(String(route.query.region)) ? String(route.query.region) : "");
@@ -15,35 +23,116 @@ const directTab = computed<"profile" | "report" | "reports" | "operations" | "no
   const tab = route.query.tab;
   return tab === "profile" || tab === "report" || tab === "reports" || tab === "records" || tab === "operations" || tab === "notices" ? tab : "plans";
 });
+
 const filters = reactive({ keyword: "", company: "", model_type: "", supplier_id: "", region: "", state: "" });
-const applied = ref(buildResourceQuery(filters)), page = ref(1), size = ref(20), sortBy = ref("name"), order = ref("asc");
-const data = ref<ResourcePage<ResourceGroup>>(), loading = ref(false), error = ref(""), selected = ref<ResourceGroup>();
+const applied = ref<ResourceQuery>(buildResourceQuery(filters));
+const page = ref(1), size = ref(10), sortBy = ref("name"), order = ref("asc");
+const models = ref<StandardModelDTO[]>([]), groups = ref<ResourceGroup[]>([]);
+const loading = ref(false), error = ref("");
 const optionError = ref(""), supplierLoading = ref(false), suppliers = ref<ResourceFilterOptions["suppliers"]>([]), moreOptions = ref(false);
 const supplierNames = new Map<string, ResourceFilterOptions["suppliers"][number]>();
 const supplierChoices = computed(() => filters.supplier_id && !suppliers.value.some(supplier => supplier.id === filters.supplier_id) && supplierNames.has(filters.supplier_id) ? [supplierNames.get(filters.supplier_id)!, ...suppliers.value] : suppliers.value);
 let active = true, listRequest: AbortController | undefined, supplierRequest: AbortController | undefined, companyRequest: AbortController | undefined;
 const message = (value: unknown) => value instanceof Error ? value.message : "数据暂时无法加载，请重试。";
+
+const viewPage = computed(() => {
+  const groupByID = new Map(groups.value.map(group => [group.id, group]));
+  const rows: PlazaRow[] = models.value.map(model => {
+    const group = groupByID.get(model.id);
+    return {
+      id: model.id,
+      name: model.name,
+      official_id: model.official_id,
+      company: model.company,
+      model_type: model.model_type,
+      supplier_count: group?.supplier_count ?? 0,
+      resource_count: group?.resource_count ?? 0,
+      available_count: group?.available_count ?? 0,
+      coefficient_min: group?.coefficient_min ?? "",
+      coefficient_max: group?.coefficient_max ?? "",
+      regions: group?.regions ?? [],
+      state_counts: group?.state_counts ?? {},
+    };
+  });
+  const direction = order.value === "asc" ? 1 : -1;
+  rows.sort((a, b) => {
+    let n = 0;
+    switch (sortBy.value) {
+      case "company": n = a.company.localeCompare(b.company); break;
+      case "supplier_count": n = a.supplier_count - b.supplier_count; break;
+      case "available_count": n = a.available_count - b.available_count; break;
+      case "coefficient_min": n = (Number(a.coefficient_min) || Number.POSITIVE_INFINITY) - (Number(b.coefficient_min) || Number.POSITIVE_INFINITY); break;
+      default: n = a.name.localeCompare(b.name);
+    }
+    return n * direction || a.id.localeCompare(b.id);
+  });
+  const start = (page.value - 1) * size.value;
+  return { list: rows.slice(start, start + size.value), total: rows.length };
+});
+
 async function load() {
-  listRequest?.abort(); const request = listRequest = new AbortController(); loading.value = true; error.value = "";
-  try { const result = await resourcesApi.groups({ ...applied.value, page: page.value, size: size.value, sort_by: sortBy.value, order: order.value }, request.signal); if (active && !request.signal.aborted) data.value = result; }
-  catch (value) { if (active && !request.signal.aborted) { data.value = undefined; error.value = message(value); } }
-  finally { if (active && !request.signal.aborted) loading.value = false; }
+  listRequest?.abort();
+  const request = listRequest = new AbortController();
+  loading.value = true;
+  error.value = "";
+  try {
+    const [modelPage, groupPage] = await Promise.all([
+      standardModelsApi.list({
+        page: 1,
+        size: 100,
+        keyword: filters.keyword,
+        companies: filters.company ? [filters.company] : [],
+        model_types: filters.model_type ? [filters.model_type] : [],
+      }, request.signal),
+      resourcesApi.groups({ ...applied.value, page: 1, size: 100, sort_by: "name", order: "asc" }, request.signal),
+    ]);
+    if (!active || request.signal.aborted) return;
+    models.value = modelPage.list;
+    groups.value = groupPage.list;
+  } catch (value) {
+    if (active && !request.signal.aborted) { models.value = []; groups.value = []; error.value = message(value); }
+  } finally {
+    if (active && !request.signal.aborted) loading.value = false;
+  }
 }
-function apply() { try { applied.value = buildResourceQuery(filters); selected.value = undefined; page.value = 1; void load(); } catch (value) { error.value = message(value); } }
-function reset() { Object.assign(filters, { keyword: "", company: "", model_type: "", supplier_id: "", region: "", state: "" }); sortBy.value = "name"; order.value = "asc"; apply(); }
-function sort(key: string) { order.value = sortBy.value === key && order.value === "asc" ? "desc" : "asc"; sortBy.value = key; page.value = 1; void load(); }
+
+function apply() {
+  try { applied.value = buildResourceQuery(filters); page.value = 1; void load(); }
+  catch (value) { error.value = message(value); }
+}
+function reset() {
+  Object.assign(filters, { keyword: "", company: "", model_type: "", supplier_id: "", region: "", state: "" });
+  sortBy.value = "name"; order.value = "asc"; apply();
+}
+function sort(key: string) { order.value = sortBy.value === key && order.value === "asc" ? "desc" : "asc"; sortBy.value = key; page.value = 1; }
+function openDetail(row: PlazaRow) { void router.push(`/internal/model-detail/${row.id}`); }
+
 async function searchSuppliers(keyword = "") {
-  supplierRequest?.abort(); const request = supplierRequest = new AbortController(); supplierLoading.value = true; optionError.value = "";
-  try { const result = await resourcesApi.options(keyword, filters.region, request.signal); if (active && !request.signal.aborted) { suppliers.value = result.suppliers; moreOptions.value = result.has_more; for (const supplier of result.suppliers) supplierNames.set(supplier.id, supplier); } }
-  catch (value) { if (active && !request.signal.aborted) { suppliers.value = []; optionError.value = message(value); } }
-  finally { if (active && !request.signal.aborted) supplierLoading.value = false; }
+  supplierRequest?.abort();
+  const request = supplierRequest = new AbortController();
+  supplierLoading.value = true; optionError.value = "";
+  try {
+    const result = await resourcesApi.options(keyword, filters.region, request.signal);
+    if (active && !request.signal.aborted) {
+      suppliers.value = result.suppliers; moreOptions.value = result.has_more;
+      for (const supplier of result.suppliers) supplierNames.set(supplier.id, supplier);
+    }
+  } catch (value) {
+    if (active && !request.signal.aborted) { suppliers.value = []; optionError.value = message(value); }
+  } finally {
+    if (active && !request.signal.aborted) supplierLoading.value = false;
+  }
 }
 async function companySuggestions(keyword: string, callback: (values: { value: string }[]) => void) {
-  companyRequest?.abort(); const request = companyRequest = new AbortController();
-  try { const result = await resourcesApi.options(keyword, filters.region, request.signal); if (active && !request.signal.aborted) { callback(result.companies.map(value => ({ value }))); moreOptions.value = result.has_more; } }
-  catch (value) { if (active && !request.signal.aborted) { optionError.value = message(value); callback([]); } }
+  companyRequest?.abort();
+  const request = companyRequest = new AbortController();
+  try {
+    const result = await resourcesApi.options(keyword, filters.region, request.signal);
+    if (active && !request.signal.aborted) { callback(result.companies.map(value => ({ value }))); moreOptions.value = result.has_more; }
+  } catch (value) {
+    if (active && !request.signal.aborted) { optionError.value = message(value); callback([]); }
+  }
 }
-const scopeForSources = computed<ResourceQuery>(() => ({ ...applied.value }));
 function supplierOpened(visible: boolean) { if (visible) void searchSuppliers(); }
 watch(() => filters.region, () => { filters.supplier_id = ""; suppliers.value = []; supplierRequest?.abort(); });
 function closeDirectResource() { void router.replace("/internal/model-plaza"); }
@@ -53,26 +142,49 @@ onBeforeUnmount(() => { active = false; listRequest?.abort(); supplierRequest?.a
 </script>
 <template>
   <section class="model-plaza">
-    <template v-if="!selected && !directResourceID">
-    <header class="plaza-heading"><div class="eyebrow">TOKEN OPS / MODELS</div><h1>模型广场</h1><p>按标准模型汇总供应资源，采购系数展示当前筛选范围。</p></header>
-    <section class="plaza-panel"><header class="plaza-panel-heading"><h2>模型资源目录</h2><span>按模型分组查看供应来源与测试表现</span></header>
-      <form class="plaza-filters" @submit.prevent="apply">
-        <label>搜索<el-input v-model="filters.keyword" aria-label="搜索模型" clearable placeholder="模型 / 官方 ID / 供应商" /></label>
-        <label>模型公司<el-autocomplete v-model="filters.company" aria-label="模型公司" :fetch-suggestions="companySuggestions" clearable placeholder="输入公司名称" /></label>
-        <label>模型类型<el-select v-model="filters.model_type" aria-label="模型类型" clearable placeholder="全部类型"><el-option v-for="(name, key) in modelTypeLabels" :key="key" :label="name" :value="key" /></el-select></label>
-        <label>部署节点<el-select v-model="filters.region" aria-label="部署节点" clearable placeholder="全部节点"><el-option v-for="(name, key) in resourceRegionLabels" :key="key" :label="name" :value="key" /></el-select></label>
-        <label>供应商<el-select v-model="filters.supplier_id" aria-label="供应商" clearable filterable remote reserve-keyword :remote-method="searchSuppliers" :loading="supplierLoading" placeholder="输入匹配供应商名称" @visible-change="supplierOpened"><el-option v-for="supplier in supplierChoices" :key="supplier.id" :label="`${supplier.name} · ${resourceRegionLabels[supplier.region]}`" :value="supplier.id" /></el-select></label>
-        <label>资源状态<el-select v-model="filters.state" aria-label="资源状态" clearable placeholder="全部状态"><el-option v-for="(name, key) in resourceStateLabels" :key="key" :label="name" :value="key" /></el-select></label>
-        <el-button native-type="submit" type="primary" :loading="loading">查询</el-button><el-button @click="reset">重置</el-button>
-      </form>
-      <el-alert v-if="optionError" :title="optionError" type="warning" :closable="false"><el-button text @click="searchSuppliers()">重新加载筛选选项</el-button></el-alert><p v-if="moreOptions" class="options-hint">匹配项较多，可继续输入完整名称查找。</p>
-      <div class="plaza-note"><span>{{ data ? `${data.total} 个模型` : '模型资源' }} · 所有统计基于已应用的筛选</span><label>排序<el-select v-model="sortBy" aria-label="广场排序字段" @change="page = 1; load()"><el-option label="模型名称" value="name" /><el-option label="模型公司" value="company" /><el-option label="供应商数" value="supplier_count" /><el-option label="可用资源数" value="available_count" /><el-option label="采购系数下限" value="coefficient_min" /></el-select><el-select v-model="order" aria-label="广场排序方向" @change="page = 1; load()"><el-option label="升序" value="asc" /><el-option label="降序" value="desc" /></el-select></label></div>
-      <el-alert v-if="error" :title="error" type="error" :closable="false"><el-button text @click="load">重新加载模型广场</el-button></el-alert>
-      <div v-loading="loading" class="plaza-scroll" role="region" aria-label="模型资源目录，可横向滚动" tabindex="0"><table class="plaza-table"><thead><tr><th><button @click="sort('name')">模型 / 官方 ID ↕</button></th><th><button @click="sort('company')">模型公司 ↕</button></th><th>模型类型</th><th>部署节点</th><th><button @click="sort('supplier_count')">供应来源 ↕</button></th><th><button @click="sort('coefficient_min')">采购系数 ↕</button></th><th>资源状态</th></tr></thead><tbody><tr v-for="group in data?.list || []" :key="group.id"><td><el-button link type="primary" class="model-name-link" :aria-label="`查看${group.name || '模型'}供应来源`" @click="selected = group">{{ group.name || '待补充名称' }}</el-button><code>{{ group.official_id || '官方 ID 待补齐' }}</code></td><td>{{ group.company || '待补齐' }}</td><td>{{ modelTypeLabels[group.model_type] || '待补齐' }}</td><td>{{ group.regions.map(region => resourceRegionLabels[region]).join(' / ') }}</td><td><strong>{{ group.supplier_count }} 家</strong><span class="meta">{{ group.resource_count }} 条资源 · {{ group.available_count }} 条可用</span></td><td class="coefficient">{{ group.coefficient_min === group.coefficient_max ? group.coefficient_min : `${group.coefficient_min}～${group.coefficient_max}` }}</td><td><span v-for="(count, state) in group.state_counts" :key="state" class="state-count">{{ resourceStateLabels[state] }} {{ count }}</span></td></tr><tr v-if="!loading && !error && !data?.list.length"><td colspan="7" class="empty">当前筛选暂无模型资源</td></tr></tbody></table></div>
-      <footer v-if="data" class="plaza-pagination"><span>共 {{ data.total }} 个模型</span><el-pagination v-model:current-page="page" v-model:page-size="size" :total="data.total" :page-sizes="[10, 20, 50, 100]" layout="sizes, prev, pager, next" @current-change="load()" @size-change="page = 1; load()" /></footer>
-    </section>
+    <template v-if="!directResourceID">
+      <header class="plaza-heading"><div class="eyebrow">TOKEN OPS / MODELS</div><h1>模型广场</h1><p>按标准模型汇总供应资源，采购系数展示当前筛选范围。</p></header>
+      <section class="plaza-panel">
+        <header class="plaza-panel-heading"><h2>模型资源目录</h2><span>按模型分组查看供应来源与测试表现</span></header>
+        <form class="plaza-filters" @submit.prevent="apply">
+          <label>搜索<el-input v-model="filters.keyword" aria-label="搜索模型" clearable placeholder="模型 / 官方 ID / 供应商" /></label>
+          <label>模型公司<el-autocomplete v-model="filters.company" aria-label="模型公司" :fetch-suggestions="companySuggestions" clearable placeholder="输入公司名称" /></label>
+          <label>模型类型<el-select v-model="filters.model_type" aria-label="模型类型" clearable placeholder="全部类型"><el-option v-for="(name, key) in modelTypeLabels" :key="key" :label="name" :value="key" /></el-select></label>
+          <label>部署节点<el-select v-model="filters.region" aria-label="部署节点" clearable placeholder="全部节点"><el-option v-for="(name, key) in resourceRegionLabels" :key="key" :label="name" :value="key" /></el-select></label>
+          <label>供应商<el-select v-model="filters.supplier_id" aria-label="供应商" clearable filterable remote reserve-keyword :remote-method="searchSuppliers" :loading="supplierLoading" placeholder="输入匹配供应商名称" @visible-change="supplierOpened"><el-option v-for="supplier in supplierChoices" :key="supplier.id" :label="`${supplier.name} · ${resourceRegionLabels[supplier.region]}`" :value="supplier.id" /></el-select></label>
+          <label>资源状态<el-select v-model="filters.state" aria-label="资源状态" clearable placeholder="全部状态"><el-option v-for="(name, key) in resourceStateLabels" :key="key" :label="name" :value="key" /></el-select></label>
+          <el-button native-type="submit" type="primary" :loading="loading">查询</el-button><el-button @click="reset">重置</el-button>
+        </form>
+        <el-alert v-if="optionError" :title="optionError" type="warning" :closable="false"><el-button text @click="searchSuppliers()">重新加载筛选选项</el-button></el-alert><p v-if="moreOptions" class="options-hint">匹配项较多，可继续输入完整名称查找。</p>
+        <div class="plaza-note">
+          <span>共 {{ viewPage.total }} 个官方模型 · 所有统计基于已应用的筛选</span>
+          <label>排序
+            <el-select v-model="sortBy" aria-label="广场排序字段" @change="page = 1"><el-option label="模型名称" value="name" /><el-option label="模型公司" value="company" /><el-option label="供应商数" value="supplier_count" /><el-option label="可用资源数" value="available_count" /><el-option label="采购系数下限" value="coefficient_min" /></el-select>
+            <el-select v-model="order" aria-label="广场排序方向" @change="page = 1"><el-option label="升序" value="asc" /><el-option label="降序" value="desc" /></el-select>
+          </label>
+        </div>
+        <el-alert v-if="error" :title="error" type="error" :closable="false"><el-button text @click="load">重新加载模型广场</el-button></el-alert>
+        <div v-loading="loading" class="plaza-scroll" role="region" aria-label="模型资源目录，可横向滚动" tabindex="0">
+          <table class="plaza-table">
+            <thead><tr><th><button @click="sort('name')">模型 / 官方 ID ↕</button></th><th><button @click="sort('company')">模型公司 ↕</button></th><th>模型类型</th><th>部署节点</th><th><button @click="sort('supplier_count')">供应来源 ↕</button></th><th><button @click="sort('coefficient_min')">采购系数 ↕</button></th><th>资源状态</th><th>详情</th></tr></thead>
+            <tbody>
+              <tr v-for="row in viewPage.list" :key="row.id">
+                <td><strong>{{ row.name || '待补充名称' }}</strong><code>{{ row.official_id || '官方 ID 待补齐' }}</code></td>
+                <td>{{ row.company || '待补齐' }}</td>
+                <td>{{ modelTypeLabels[row.model_type] || '待补齐' }}</td>
+                <td>{{ row.regions.length ? row.regions.map(region => resourceRegionLabels[region]).join(' / ') : '—' }}</td>
+                <td><strong>{{ row.supplier_count }} 家</strong><span class="meta">{{ row.resource_count }} 条资源 · {{ row.available_count }} 条可用</span></td>
+                <td class="coefficient">{{ row.coefficient_min ? (row.coefficient_min === row.coefficient_max ? row.coefficient_min : `${row.coefficient_min}～${row.coefficient_max}`) : '—' }}</td>
+                <td><el-tag v-if="row.available_count > 0" type="success" size="small">有可用资源</el-tag><el-tag v-else type="info" size="small">暂无可用</el-tag></td>
+                <td><el-button size="small" @click="openDetail(row)">详情</el-button></td>
+              </tr>
+              <tr v-if="!loading && !error && !viewPage.list.length"><td colspan="8" class="empty">当前筛选暂无官方模型</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <footer v-if="viewPage.total" class="plaza-pagination"><span>共 {{ viewPage.total }} 个模型</span><el-pagination v-model:current-page="page" v-model:page-size="size" :total="viewPage.total" :page-sizes="[10, 20, 50, 100]" layout="sizes, prev, pager, next" @size-change="page = 1" /></footer>
+      </section>
     </template>
-    <ModelSourcesDialog v-if="selected" :key="selected.id" :group="selected" :filters="scopeForSources" @close="selected = undefined" @changed="load()" />
     <ResourceDetailDrawer v-if="directResourceID" :key="`${directResourceID}:${directRegion}:${directTab}:${directPlanID}`" :id="directResourceID" :region="directRegion" :initial-tab="directTab" :initial-plan-i-d="directPlanID" @close="closeDirectResource" @changed="load()" />
   </section>
 </template>

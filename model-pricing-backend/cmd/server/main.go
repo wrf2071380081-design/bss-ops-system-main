@@ -201,6 +201,12 @@ func main() {
 	}
 
 	idemStore := repo.NewIdempotencyRepo(dbClient.DB)
+	rawDB, err := dbClient.DB.DB()
+	if err != nil {
+		log.Fatal("get sql db", zap.Error(err))
+	}
+	supplyChain := api.NewSupplyChainRuntime(rawDB, nil, nil)
+	customerWorkspace := api.NewCustomerWorkspaceRuntime(rawDB)
 	supplyRoutes, err := newSupplyRuntimeDeps(dbClient.DB, idemStore)
 	if err != nil {
 		log.Fatal("initialize A supply routes", zap.Error(err))
@@ -217,6 +223,8 @@ func main() {
 		SessionReader:      authRepo,
 		IdemStore:          idemStore,
 		SupplyRoutes:       &supplyRoutes,
+		SupplyChain:        supplyChain,
+		CustomerWorkspace:  customerWorkspace,
 		ModelSvc:           modelSvc,
 		SupplierSvc:        supplier.NewService(repo.NewSupplierRepo(dbClient.DB)),
 		SupplierProfileSvc: supplier.NewProfileService(repo.NewSupplierRepo(dbClient.DB)),

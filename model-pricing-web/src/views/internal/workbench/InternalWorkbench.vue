@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { formatDateTime } from "../../../domain/date";
 import { ApiError } from "../../../domain/common";
+import WorkbenchApprovals from "./WorkbenchApprovals.vue";
 import {
   workbenchApi,
   type InboxItemDTO,
@@ -15,7 +16,7 @@ import NoticeDetailDialog from "../resources/NoticeDetailDialog.vue";
 
 const router = useRouter();
 
-const activeTab = ref<"todo" | "operations">("todo");
+const activeTab = ref<"todo" | "operations" | "approvals">("todo");
 const selectedStates = ref<InboxState[]>(["TODO", "READ"]);
 // 0 means the authenticated viewer. An empty selection follows the prototype's “全部人员” filter.
 const selectedPeopleIds = ref<number[]>([0]);
@@ -228,7 +229,7 @@ function resetFilters() {
 
 function refresh() {
   if (activeTab.value === "todo") void loadInbox();
-  else void loadOperations();
+  else if (activeTab.value === "operations") void loadOperations();
 }
 
 function openItem(item: InboxItemDTO) {
