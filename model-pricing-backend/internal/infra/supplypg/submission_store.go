@@ -43,16 +43,20 @@ type SubmissionRowRecord struct {
 	Coefficient       string
 	TestBaseURL       string
 	RowStatus         string
-	TestCategory      *string // 平台门类：baseline / stress
-	TestStatus        *string // 平台任务状态
-	TestVerdict       *string
-	ConnectionMS      *string
-	RPS               *string
-	TPS               *string
+	// 连通（baseline）与压力（stress）分开存放，互不覆盖。
+	ConnectivityStatus  *string
+	ConnectivityVerdict *string
+	ConnectionMS        *string
+	StressStatus        *string
+	StressVerdict       *string
+	RPS                 *string
+	TPS                 *string
 }
 
 // SubmissionRowInput 是写入用的行。
 type SubmissionRowInput struct {
+	// ID > 0 表示更新已有行（保留 test_job_id / resource_id 等测试产物），0 表示新增。
+	ID                int64
 	StandardModelID   int64
 	SupplierModelName string
 	Coefficient       string
@@ -156,14 +160,20 @@ func (s *SubmissionStore) Rows(ctx context.Context, submissionIDs []int64) (map[
 	rows, err := s.db.QueryContext(ctx, `
 SELECT r.submission_id, r.id, r.standard_model_id, m.name, COALESCE(m.official_id,''), r.supplier_model_name,
        r.coefficient::text, COALESCE(r.test_base_url,''), r.row_status,
-       j.category, j.status, rep.verdict, rep.connection_ms::text, rep.rps::text, rep.tps::text
+       cj.status, crep.verdict, crep.connection_ms::text,
+       sj.status, srep.verdict, srep.rps::text, srep.tps::text
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
-LEFT JOIN `+s.table("test_job")+` j ON j.id = r.test_job_id
+LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
 LEFT JOIN LATERAL (
-  SELECT verdict, connection_ms, rps, tps FROM `+s.table("test_report")+`
-  WHERE test_job_id = j.id ORDER BY id DESC LIMIT 1
-) rep ON TRUE
+  SELECT verdict, connection_ms FROM `+s.table("test_report")+`
+  WHERE test_job_id = cj.id ORDER BY id DESC LIMIT 1
+) crep ON TRUE
+LEFT JOIN `+s.table("test_job")+` sj ON sj.id = r.stress_job_id
+LEFT JOIN LATERAL (
+  SELECT verdict, rps, tps FROM `+s.table("test_report")+`
+  WHERE test_job_id = sj.id ORDER BY id DESC LIMIT 1
+) srep ON TRUE
 WHERE r.submission_id IN (`+strings.Join(placeholders, ",")+`)
 ORDER BY r.submission_id, r.id`, args...)
 	if err != nil {
@@ -173,16 +183,17 @@ ORDER BY r.submission_id, r.id`, args...)
 	for rows.Next() {
 		var submissionID int64
 		var item SubmissionRowRecord
-		var category, jobStatus, verdict, conn, rps, tps sql.NullString
+		var connStatus, connVerdict, conn, stressStatus, stressVerdict, rps, tps sql.NullString
 		if err := rows.Scan(&submissionID, &item.ID, &item.StandardModelID, &item.StandardModelName, &item.OfficialID,
 			&item.SupplierModelName, &item.Coefficient, &item.TestBaseURL, &item.RowStatus,
-			&category, &jobStatus, &verdict, &conn, &rps, &tps); err != nil {
+			&connStatus, &connVerdict, &conn, &stressStatus, &stressVerdict, &rps, &tps); err != nil {
 			return nil, err
 		}
-		item.TestCategory = nullableString(category)
-		item.TestStatus = nullableString(jobStatus)
-		item.TestVerdict = nullableString(verdict)
+		item.ConnectivityStatus = nullableString(connStatus)
+		item.ConnectivityVerdict = nullableString(connVerdict)
 		item.ConnectionMS = nullableString(conn)
+		item.StressStatus = nullableString(stressStatus)
+		item.StressVerdict = nullableString(stressVerdict)
 		item.RPS = nullableString(rps)
 		item.TPS = nullableString(tps)
 		result[submissionID] = append(result[submissionID], item)
@@ -230,10 +241,7 @@ WHERE id=$2 AND supplier_id=$3 AND status='DRAFT' AND revision=$4 RETURNING revi
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM `+s.table("submission_row")+` WHERE submission_id=$1`, id); err != nil {
-		return 0, err
-	}
-	if err := insertRows(ctx, tx, s.table("submission_row"), id, rows); err != nil {
+	if err := syncRows(ctx, tx, s.table("submission_row"), id, rows); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -314,6 +322,55 @@ func (s *SubmissionStore) ModelOptions(ctx context.Context, keyword string, page
 	return list, total, rows.Err()
 }
 
+// syncRows 按行 id 做增量同步：带 id 的更新、不带的新增、未出现的删除。
+//
+// 为什么不能"删了重插"：test_job_id / resource_id 挂在行 id 上，
+// 删掉重插会让已完成的测试结果全部丢失（前端流程是"先测再提交"，中途还会保存草稿）。
+// 另外 test_api_key 传空表示"沿用原值"——接口从不回传密钥，前端拿不到旧值。
+func syncRows(ctx context.Context, tx *sql.Tx, table string, submissionID int64, rows []SubmissionRowInput) error {
+	kept := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		if row.ID > 0 {
+			result, err := tx.ExecContext(ctx, `UPDATE `+table+`
+SET standard_model_id=$3, supplier_model_name=$4, coefficient=$5::numeric,
+    test_base_url=NULLIF($6,''), test_api_key_enc=COALESCE(NULLIF($7,''), test_api_key_enc)
+WHERE id=$1 AND submission_id=$2`,
+				row.ID, submissionID, row.StandardModelID, row.SupplierModelName,
+				row.Coefficient, row.TestBaseURL, row.SealedAPIKey)
+			if err != nil {
+				return err
+			}
+			if affected, err := result.RowsAffected(); err != nil {
+				return err
+			} else if affected == 0 {
+				return supply.ErrRevisionConflict
+			}
+			kept = append(kept, row.ID)
+			continue
+		}
+		var newID int64
+		if err := tx.QueryRowContext(ctx, `INSERT INTO `+table+`
+(submission_id, standard_model_id, supplier_model_name, coefficient, test_base_url, test_api_key_enc, participate_test, row_status)
+VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),false,'PENDING') RETURNING id`,
+			submissionID, row.StandardModelID, row.SupplierModelName, row.Coefficient, row.TestBaseURL, row.SealedAPIKey).Scan(&newID); err != nil {
+			return err
+		}
+		kept = append(kept, newID)
+	}
+	if len(kept) == 0 {
+		_, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE submission_id=$1`, submissionID)
+		return err
+	}
+	placeholders := make([]string, 0, len(kept)+1)
+	args := []any{submissionID}
+	for i, rowID := range kept {
+		args = append(args, rowID)
+		placeholders = append(placeholders, "$"+itoa(i+2))
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE submission_id=$1 AND id NOT IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	return err
+}
+
 func insertRows(ctx context.Context, tx *sql.Tx, table string, submissionID int64, rows []SubmissionRowInput) error {
 	for _, row := range rows {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO `+table+`
@@ -361,24 +418,25 @@ type TestRow struct {
 	SupplierName      string
 	ResourceID        *int64
 	TestJobID         *int64
+	StressJobID       *int64
 	SubmissionStatus  string
 }
 
 // TestRow 取某一行（限定供应商，防越权）。
 func (s *SubmissionStore) TestRow(ctx context.Context, supplierID, submissionID, rowID int64) (*TestRow, error) {
 	var item TestRow
-	var resourceID, jobID sql.NullInt64
+	var resourceID, jobID, stressJobID sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
 SELECT r.id, r.submission_id, r.standard_model_id, r.supplier_model_name, COALESCE(r.test_base_url,''),
        COALESCE(r.test_api_key_enc,''), r.coefficient::text, sub.region, sub.supplier_id, sp.name,
-       r.resource_id, r.test_job_id, sub.status
+       r.resource_id, r.test_job_id, r.stress_job_id, sub.status
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
 JOIN `+s.table("supplier")+` sp ON sp.id = sub.supplier_id
 WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionID, supplierID).
 		Scan(&item.RowID, &item.SubmissionID, &item.StandardModelID, &item.SupplierModelName, &item.TestBaseURL,
 			&item.SealedAPIKey, &item.Coefficient, &item.Region, &item.SupplierID, &item.SupplierName,
-			&resourceID, &jobID, &item.SubmissionStatus)
+			&resourceID, &jobID, &stressJobID, &item.SubmissionStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
@@ -390,6 +448,9 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 	}
 	if jobID.Valid {
 		item.TestJobID = &jobID.Int64
+	}
+	if stressJobID.Valid {
+		item.StressJobID = &stressJobID.Int64
 	}
 	return &item, nil
 }
@@ -432,9 +493,14 @@ VALUES ($1,$2,$3,$4,$5,$6::numeric,'PENDING_TEST') RETURNING id`,
 }
 
 // AttachTestJob 把测试任务回写到申报行（打通的关键一步）。
-func (s *SubmissionStore) AttachTestJob(ctx context.Context, rowID, jobID int64) error {
+// category 为 baseline 写 test_job_id，stress 写 stress_job_id——两个槽位互不覆盖。
+func (s *SubmissionStore) AttachTestJob(ctx context.Context, rowID, jobID int64, category string) error {
+	column := "test_job_id"
+	if category == "stress" {
+		column = "stress_job_id"
+	}
 	_, err := s.db.ExecContext(ctx, `UPDATE `+s.table("submission_row")+`
-SET test_job_id=$2, participate_test=true WHERE id=$1`, rowID, jobID)
+SET `+column+`=$2, participate_test=true WHERE id=$1`, rowID, jobID)
 	return err
 }
 

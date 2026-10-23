@@ -271,6 +271,31 @@ func (h *supplierSubmissionHandler) update(c *gin.Context) {
 }
 
 func (h *supplierSubmissionHandler) submit(c *gin.Context) {
+	supplierID, ok := h.supplierID(c)
+	if !ok {
+		return
+	}
+	submissionID, err := positiveID(c.Param("id"))
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	// 后端门禁（T-06）：不信任前端禁用态，直接调接口也必须被拦。
+	switch err := h.checkSubmitGate(c.Request.Context(), submissionID); {
+	case errors.Is(err, errGateNoRows):
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "至少需要一行模型", 400))
+		return
+	case errors.Is(err, errGateConnectivityMissing):
+		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "还有模型未完成连通测试，不能提交", 409))
+		return
+	case errors.Is(err, errGateStressMissing):
+		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "至少需要一行完成压力测试，不能提交", 409))
+		return
+	case err != nil:
+		writeSubmissionError(c, err)
+		return
+	}
+	_ = supplierID
 	h.transition(c, []string{submissionDraft, submissionRejected}, submissionPending, true)
 }
 
@@ -308,77 +333,46 @@ func (h *supplierSubmissionHandler) transition(c *gin.Context, from []string, to
 // rowTest 是「参与测试 / 查测试进度」入口。
 // 一期依赖尚未合入的测试平台分支，这里明确回 503——
 // 不能回 404：前端会把 404 翻译成"数据不存在或当前账号不可见"，更难排查。
-// rowTest 发起一次测试并把任务回写到申报行（T-03，打通的关键一步）。
-//
-// 凭据现状：SecretSealer 只有 Seal 没有 Open，全系统无法解密供应商填的 Key。
-// 因此一期只支持 `test_base_url=demo` 的目标（平台内置模拟人格，不需要真 Key）；
-// 真实目标明确返回 503 并说明原因，避免"看着能点、点了没用"。
-func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
-	supplierID, ok := h.supplierID(c)
-	if !ok {
-		return
-	}
-	submissionID, err := positiveID(c.Param("id"))
-	if err != nil {
-		response.Error(c, apperr.ErrInvalidParams)
-		return
-	}
-	rowID, err := positiveID(c.Param("rowId"))
-	if err != nil {
-		response.Error(c, apperr.ErrInvalidParams)
-		return
-	}
-	category := strings.ToUpper(strings.TrimSpace(c.Query("category")))
-	platformCategory, exists := submissionCategoryToPlatform[category]
-	if !exists {
-		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 CONNECTIVITY / STRESS", 400))
-		return
-	}
-	if h.svc.starter == nil {
-		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
-		return
-	}
-	ctx := c.Request.Context()
+// 发起测试时的两类凭据错误，供 handler 翻译成明确文案。
+var (
+	errCredentialMissing      = errors.New("test credential missing")
+	errCredentialUndecryptable = errors.New("test credential undecryptable")
+)
+
+// startRowTest 对单行发起一次测试并回写任务号（T-03）。
+// 返回 skipped=true 表示该行这一类已经测过，未重复建任务。
+func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID, submissionID, rowID int64,
+	platformCategory, idempotencyKey string) (string, bool, error) {
 	row, err := h.svc.store.TestRow(ctx, supplierID, submissionID, rowID)
 	if err != nil {
-		writeSubmissionError(c, err)
-		return
+		return "", false, err
 	}
-	// demo 目标走平台模拟人格，不需要真 Key；真实目标必须解出供应商凭据。
+	if platformCategory == "baseline" && row.TestJobID != nil {
+		return strconv.FormatInt(*row.TestJobID, 10), true, nil
+	}
+	if platformCategory == "stress" && row.StressJobID != nil {
+		return strconv.FormatInt(*row.StressJobID, 10), true, nil
+	}
 	apiKey := "demo-key"
 	if row.TestBaseURL != "demo" {
 		if h.svc.decodeCredential == nil {
-			response.Error(c, apperr.New(apperr.ErrSystem.Code, "凭据解密已被配置禁用，暂无法测试真实目标", 503))
-			return
+			return "", false, errCredentialUndecryptable
 		}
 		if strings.TrimSpace(row.SealedAPIKey) == "" {
-			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "该申报行未填写测试 API Key", 400))
-			return
+			return "", false, errCredentialMissing
 		}
 		plain, err := h.svc.decodeCredential(ctx, row.SealedAPIKey, strconv.FormatInt(supplierID, 10))
 		if err != nil {
-			response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试凭据无法解密（密钥版本或主体不匹配）", 503))
-			return
+			return "", false, errCredentialUndecryptable
 		}
 		apiKey = plain
-		// 审计：每次把凭据还原成明文都留痕。
 		if err := h.svc.store.LogCredentialOpen(ctx, supplierID, rowID); err != nil {
-			response.Error(c, apperr.ErrSystem)
-			return
+			return "", false, err
 		}
-	}
-	if row.TestJobID != nil {
-		// 已发过测试：不重复建任务（Q6 测试机会由 M3 统一管，这里先幂等返回）。
-		response.Success(c, gin.H{
-			"job_id": strconv.FormatInt(*row.TestJobID, 10), "category": category,
-			"status": "RUNNING", "tested": false, "passed": false,
-		})
-		return
 	}
 	resourceID, err := h.svc.store.EnsureTestResource(ctx, row)
 	if err != nil {
-		writeSubmissionError(c, err)
-		return
+		return "", false, err
 	}
 	params := map[string]any(nil)
 	if platformCategory == "stress" {
@@ -398,25 +392,179 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 			Protocol: "openai", APIKey: apiKey,
 		},
 		Params:         params,
-		IdempotencyKey: strings.TrimSpace(c.GetHeader("Idempotency-Key")),
+		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
-		writeTestStartError(c, err)
-		return
+		return "", false, err
 	}
 	localJobID, convErr := strconv.ParseInt(result.LocalJobID, 10, 64)
 	if convErr != nil {
-		response.Error(c, apperr.ErrSystem)
+		return "", false, convErr
+	}
+	if err := h.svc.store.AttachTestJob(ctx, rowID, localJobID, platformCategory); err != nil {
+		return "", false, err
+	}
+	return result.LocalJobID, false, nil
+}
+
+// writeRowTestError 统一翻译单行/批量测试的错误。
+func writeRowTestError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, errCredentialMissing):
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "该申报行未填写测试 API Key", 400))
+	case errors.Is(err, errCredentialUndecryptable):
+		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试凭据无法解密（密钥版本或主体不匹配）", 503))
+	case errors.Is(err, tpdomain.ErrNotConfigured):
+		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
+	case errors.Is(err, tpdomain.ErrInvalidCommand):
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "发起测试的参数不完整", 400))
+	default:
+		writeSubmissionError(c, err)
+	}
+}
+
+// rowTest 是「参与测试 / 查测试进度」入口（单行）。
+func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
+	supplierID, ok := h.supplierID(c)
+	if !ok {
 		return
 	}
-	if err := h.svc.store.AttachTestJob(ctx, rowID, localJobID); err != nil {
-		response.Error(c, apperr.ErrSystem)
+	submissionID, err := positiveID(c.Param("id"))
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	rowID, err := positiveID(c.Param("rowId"))
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	category, platformCategory, ok := resolveTestCategory(c.Query("category"))
+	if !ok {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 CONNECTIVITY / STRESS", 400))
+		return
+	}
+	if h.svc.starter == nil {
+		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
+		return
+	}
+	jobID, skipped, err := h.startRowTest(c.Request.Context(), supplierID, submissionID, rowID,
+		platformCategory, strings.TrimSpace(c.GetHeader("Idempotency-Key")))
+	if err != nil {
+		writeRowTestError(c, err)
 		return
 	}
 	response.Success(c, gin.H{
-		"job_id": result.LocalJobID, "category": category,
-		"status": result.Status, "tested": false, "passed": false,
+		"job_id": jobID, "category": category, "status": "QUEUED",
+		"tested": false, "passed": false, "skipped": skipped,
 	})
+}
+
+// batchTests 一键测全部行（某一门类）。
+// 已完成的行跳过，返回发起/跳过/失败三项计数，便于前端提示"还有几行没测"。
+func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
+	supplierID, ok := h.supplierID(c)
+	if !ok {
+		return
+	}
+	submissionID, err := positiveID(c.Param("id"))
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	var body struct {
+		Category string `json:"category"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	category, platformCategory, ok := resolveTestCategory(body.Category)
+	if !ok {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 CONNECTIVITY / STRESS", 400))
+		return
+	}
+	if h.svc.starter == nil {
+		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
+		return
+	}
+	ctx := c.Request.Context()
+	header, err := h.svc.store.Get(ctx, supplierID, submissionID)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	if header.Status != submissionDraft {
+		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "只有草稿可以发起测试", 409))
+		return
+	}
+	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	started, skipped, failed := 0, 0, 0
+	firstErr := error(nil)
+	baseKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	for _, row := range rows[submissionID] {
+		jobID, wasSkipped, err := h.startRowTest(ctx, supplierID, submissionID, row.ID, platformCategory,
+			baseKey+"-"+strconv.FormatInt(row.ID, 10))
+		_ = jobID
+		switch {
+		case err != nil:
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+		case wasSkipped:
+			skipped++
+		default:
+			started++
+		}
+	}
+	result := gin.H{"category": category, "started": started, "skipped": skipped, "failed": failed}
+	if failed > 0 && started == 0 && skipped == 0 {
+		// 一发都没成功时把错误原因带回，避免前端只看到 0/0/0。
+		writeRowTestError(c, firstErr)
+		return
+	}
+	response.Success(c, result)
+}
+
+// checkSubmitGate 是提交门禁的后端校验（T-06）：
+// 每一行都要测过连通，且至少一行测过压力。前端已拦，这里防直接调接口绕过。
+func (h *supplierSubmissionHandler) checkSubmitGate(ctx context.Context, submissionID int64) error {
+	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
+	if err != nil {
+		return err
+	}
+	list := rows[submissionID]
+	if len(list) == 0 {
+		return errGateNoRows
+	}
+	anyStress := false
+	for _, row := range list {
+		if row.ConnectivityStatus == nil || !isTerminalStatus(*row.ConnectivityStatus) {
+			return errGateConnectivityMissing
+		}
+		if row.StressStatus != nil && isTerminalStatus(*row.StressStatus) {
+			anyStress = true
+		}
+	}
+	if !anyStress {
+		return errGateStressMissing
+	}
+	return nil
+}
+
+var (
+	errGateNoRows               = errors.New("submission has no rows")
+	errGateConnectivityMissing  = errors.New("some rows have no connectivity test")
+	errGateStressMissing        = errors.New("no row has stress test")
+)
+
+// resolveTestCategory 把前端类别翻译成平台门类，并把映射收在一处。
+func resolveTestCategory(raw string) (string, string, bool) {
+	category := strings.ToUpper(strings.TrimSpace(raw))
+	platformCategory, ok := submissionCategoryToPlatform[category]
+	return category, platformCategory, ok && category != ""
 }
 
 // buildRows 校验行并把 API Key 加密；失败时已写好响应。
@@ -450,8 +598,9 @@ func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, 
 			}
 			sealed = supplysecurity.EncodeTestCredential(envelope)
 		}
+		rowID, _ := strconv.ParseInt(strings.TrimSpace(row.ID), 10, 64)
 		rows = append(rows, supplypg.SubmissionRowInput{
-			StandardModelID: modelID, SupplierModelName: strings.TrimSpace(row.InterfaceModelID),
+			ID: rowID, StandardModelID: modelID, SupplierModelName: strings.TrimSpace(row.InterfaceModelID),
 			Coefficient: strings.TrimSpace(row.Coefficient), TestBaseURL: strings.TrimSpace(row.TestBaseURL),
 			SealedAPIKey: sealed,
 		})
@@ -474,22 +623,23 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			OfficialID: row.OfficialID, Coefficient: row.Coefficient, TestBaseURL: row.TestBaseURL,
 			RowStatus: row.RowStatus,
 		}
-		if row.TestCategory != nil {
-			category := platformCategoryToSubmission[*row.TestCategory]
-			tested := row.TestStatus != nil && (*row.TestStatus == "SUCCEEDED" || *row.TestStatus == "FAILED" || *row.TestStatus == "ABORTED" || *row.TestStatus == "CANCELED")
-			passed := row.TestVerdict != nil && (*row.TestVerdict == "pass" || *row.TestVerdict == "pass_with_warnings")
-			test := &submissionTestDTO{
-				Category: category, Status: deref(row.TestStatus), Tested: tested, Passed: passed,
-				ConnectionMS: row.ConnectionMS, RPS: row.RPS, TPS: row.TPS,
+		if row.ConnectivityStatus != nil {
+			tested := isTerminalStatus(*row.ConnectivityStatus)
+			passed := verdictOK(row.ConnectivityVerdict)
+			item.ConnectivityJob = &submissionTestDTO{
+				Category: "CONNECTIVITY", Status: *row.ConnectivityStatus, Tested: tested, Passed: passed,
+				ConnectionMS: row.ConnectionMS,
 			}
-			switch category {
-			case "CONNECTIVITY":
-				item.ConnectivityJob = test
-				item.ConnectivityTested, item.ConnectivityPassed = tested, passed
-			case "STRESS":
-				item.StressJob = test
-				item.StressTested, item.StressPassed = tested, passed
+			item.ConnectivityTested, item.ConnectivityPassed = tested, passed
+		}
+		if row.StressStatus != nil {
+			tested := isTerminalStatus(*row.StressStatus)
+			passed := verdictOK(row.StressVerdict)
+			item.StressJob = &submissionTestDTO{
+				Category: "STRESS", Status: *row.StressStatus, Tested: tested, Passed: passed,
+				RPS: row.RPS, TPS: row.TPS,
 			}
+			item.StressTested, item.StressPassed = tested, passed
 		}
 		dto.Rows = append(dto.Rows, item)
 	}
@@ -508,6 +658,18 @@ func permissionsFor(status string) submissionPermissionsDTO {
 	default:
 		return submissionPermissionsDTO{}
 	}
+}
+
+func isTerminalStatus(status string) bool {
+	switch status {
+	case "SUCCEEDED", "FAILED", "ABORTED", "CANCELED":
+		return true
+	}
+	return false
+}
+
+func verdictOK(verdict *string) bool {
+	return verdict != nil && (*verdict == "pass" || *verdict == "pass_with_warnings")
 }
 
 func deref(value *string) string {
@@ -552,6 +714,7 @@ func registerSupplierSubmissionRoutes(protected *gin.RouterGroup, deps Deps, ide
 	// 写接口一律挂幂等（红线）。
 	group.POST("", idempotent, handler.create)
 	group.PUT("/:id", idempotent, handler.update)
+	group.POST("/:id/tests", idempotent, handler.batchTests)
 	group.POST("/:id/submit", idempotent, handler.submit)
 	group.POST("/:id/withdraw", idempotent, handler.withdraw)
 }
