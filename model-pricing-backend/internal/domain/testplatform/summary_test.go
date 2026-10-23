@@ -115,3 +115,20 @@ func TestInterpretCacheRatio(t *testing.T) {
 		t.Fatalf("ratio above 100 is dirty data: %+v", outOfRange)
 	}
 }
+
+// TestInterpretRealBaselineSummary 用真机返回的形状做回归：
+// summary 是 {"checks":[...]}，连通耗时在 L1 minimal_chat 的 ttft_ms 上。
+func TestInterpretRealBaselineSummary(t *testing.T) {
+	state := JobState{Status: "succeeded", Verdict: "pass", Summary: json.RawMessage(`{"checks":[
+		{"layer":"L1","name":"error_semantics","result":"pass","duration_ms":0.036},
+		{"layer":"L1","name":"minimal_chat","result":"pass","ttft_ms":400.542,"duration_ms":734.538},
+		{"layer":"L2","name":"stop_sequence","result":"pass","ttft_ms":400.943,"duration_ms":511.678}
+	]}`)}
+	out := Interpret(CategoryBaseline, state, nil)
+	if out.ConnectionMS == nil || *out.ConnectionMS != "400.542" {
+		t.Fatalf("L1 minimal_chat.ttft_ms not picked: %+v", out)
+	}
+	if !out.ConnectivityPassed || !out.DataComplete {
+		t.Fatalf("baseline should pass and be complete: %+v", out)
+	}
+}

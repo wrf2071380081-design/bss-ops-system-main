@@ -24,9 +24,13 @@ func Interpret(category Category, state JobState, reportJSON []byte) Outcome {
 	switch category {
 	case CategoryBaseline:
 		out.ConnectivityPassed = passed
-		out.ConnectionMS = firstDecimal(summary, nested, document,
-			"connection_ms", "minimal_chat_ms", "first_token_ms", "ttft_ms", "latency_ms",
-			"l1.minimal_chat.ms", "layers.l1.minimal_chat_ms")
+		// 真机实测：summary 是 {"checks":[{layer,name,result,ttft_ms,duration_ms,...}]}，
+		// 没有扁平的 connection_ms。连通耗时取 L1 minimal_chat 的 ttft_ms，
+		// 没有再退回 duration_ms；最后才尝试扁平键（兼容旧引擎）。
+		check := findCheck("L1", "minimal_chat", summary, nested, document)
+		out.ConnectionMS = firstDecimal(check, summary, nested, document,
+			"ttft_ms", "duration_ms",
+			"connection_ms", "minimal_chat_ms", "first_token_ms", "latency_ms")
 		out.DataComplete = passed && out.ConnectionMS != nil
 	case CategoryStress:
 		out.PressurePassed = passed
@@ -70,6 +74,40 @@ func firstRatio(sources ...any) *string {
 				continue
 			}
 			return &value
+		}
+	}
+	return nil
+}
+
+// findCheck 在 summary/报告里定位 checks[] 中 layer+name 命中的一项。
+// 真机结构是 {"checks":[...]}；报告里也可能是 {"metrics":{"checks":[...]}}。
+func findCheck(layer, name string, sources ...map[string]any) map[string]any {
+	for _, source := range sources {
+		if source == nil {
+			continue
+		}
+		lists := make([][]any, 0, 2)
+		if raw, ok := source["checks"].([]any); ok {
+			lists = append(lists, raw)
+		}
+		if metrics, ok := source["metrics"].(map[string]any); ok {
+			if raw, ok := metrics["checks"].([]any); ok {
+				lists = append(lists, raw)
+			}
+		}
+		for _, list := range lists {
+			for _, item := range list {
+				check, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if l, _ := check["layer"].(string); l != layer {
+					continue
+				}
+				if n, _ := check["name"].(string); n == name {
+					return check
+				}
+			}
 		}
 	}
 	return nil
