@@ -78,6 +78,8 @@ func supplyHTTPError(c *gin.Context, err error) {
 		response.Error(c, apperr.ErrNotFound)
 	case errors.Is(err, supply.ErrRevisionConflict), errors.Is(err, supply.ErrIdentityConflict), errors.Is(err, supply.ErrInactive), errors.Is(err, supply.ErrSourceRejected), errors.Is(err, supply.ErrConfigInUse), errors.Is(err, supply.ErrConfigInactive), errors.Is(err, supply.ErrSupplierRegionLocked):
 		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "记录状态或操作依据已发生变化，请刷新后核对", 409))
+	case errors.Is(err, supply.ErrTestEvidenceRequired):
+		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "测试报告未通过或已失效，不能登记接入", 409))
 	case errors.Is(err, supply.ErrDependencyUnavailable):
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "供应侧依赖尚未就绪", 503))
 	default:

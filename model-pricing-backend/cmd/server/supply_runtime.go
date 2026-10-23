@@ -132,6 +132,12 @@ func newSupplyRuntimeDeps(db *gorm.DB, idem middleware.IdempotencyStore) (api.Su
 	if err != nil {
 		return api.SupplyDeps{}, err
 	}
+	// T-13：登记接入前必须存在有效测试证据（通过 + 已选为证据 + 指纹未变）。
+	gate, gateErr := supplypg.NewAdmissionReportGate(raw, "public")
+	if gateErr != nil {
+		return api.SupplyDeps{}, gateErr
+	}
+	deps.ResourceAdmitter = api.WithAdmissionGate(deps.ResourceAdmitter, gate)
 	deps.Plans = supply.NewPlanReader(planStore)
 	deps.PlanWriter = supply.NewPlanMaintenanceService(planStore, time.Now)
 	deps.PlanExecutor = supply.NewPlanExecutionService(supplypg.NewPlanExecutionWork(planStore, configs, report), time.Now)
