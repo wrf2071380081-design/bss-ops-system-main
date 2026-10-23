@@ -1,397 +1,380 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { customersApi } from "../../../api/customers";
 import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow, type CustomerWorkspaceRow } from "../../../api/customerWorkspace";
-import type { CustomerListItemDTO, CustomerTransferImpactDTO } from "../../../api/customers.types";
+import { customersApi } from "../../../api/customers";
+import type { CustomerTransferImpactDTO } from "../../../api/customers.types";
 import { customerQuotesApi } from "../../../api/customerQuotes";
 import { modelsApi } from "../../../api/models";
 import type { ModelSkuContractDTO } from "../../../api/models.types";
-import type { CustomerQuoteContextDTO, CustomerQuoteHistoryPreviewDTO, CustomerQuotePreviewItemDTO, CustomerQuoteType, GenerateCustomerQuoteDraft, GenerateCustomerQuoteItem } from "../../../api/customerQuotes.types";
 import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
 import { isDecimalAmount } from "../../../domain/money";
 import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
-import * as e2e from "../../../e2e/priceBookQuote";
-
-// 详情弹窗发起报价 / 移交时只需要这三个字段，避免与列表行类型强绑。
-interface QuoteTarget { id: string; legalName: string; levelCode: string }
+import { useSessionStore } from "../../../stores/session";
 
 const permissions = usePermissionStore();
+const session = useSessionStore();
 const canTransfer = computed(() => permissions.canAction(PERMISSIONS.CUSTOMER_EDIT));
-const canGenerateQuote = computed(() => permissions.canAction(PERMISSIONS.CUSTOMER_QUOTE_EDIT));
-const canReadSkus = computed(() => permissions.canAction(PERMISSIONS.MODEL_VIEW));
-const skuChoices = ref<ModelSkuContractDTO[]>([]);
-const selectedSkus = reactive(new Map<string, ModelSkuContractDTO>());
-const skuKeyword = ref(""), skuError = ref(""), skuLoading = ref(false), skuPage = ref(1), skuTotal = ref(0);
-let skuSequence = 0;
-async function searchSkus(keyword = "", append = false) {
-  if (!canReadSkus.value) return;
-  const sequence = ++skuSequence; skuLoading.value = true; skuError.value = "";
-  const page = append ? skuPage.value + 1 : 1;
-  try {
-    const result = await modelsApi.list({ view: "sku", keyword: keyword.trim() || undefined, page, size: 20, lifecycle_status: "PUBLISHED" });
-    if (sequence !== skuSequence) return;
-    const list = result.list.filter((row): row is ModelSkuContractDTO => "sku_code" in row);
-    skuChoices.value = append ? [...skuChoices.value, ...list] : list;
-    skuPage.value = page; skuTotal.value = result.total;
-  } catch (error) { if (sequence === skuSequence) skuError.value = message(error); }
-  finally { if (sequence === skuSequence) skuLoading.value = false; }
-}
-function skuLabel(id: string) {
-  const sku = selectedSkus.get(id) || skuChoices.value.find(row => String(row.id) === id);
-  return sku ? `${sku.vendor_name} / ${sku.family_name} · ${sku.sku_code} · ID ${id}` : `SKU ID ${id}`;
-}
-function rememberSku(id: string) {
-  const sku = skuChoices.value.find(row => String(row.id) === id);
-  if (sku) selectedSkus.set(id, sku);
-}
+const canQuote = computed(() => permissions.canAction(PERMISSIONS.CUSTOMER_QUOTE_EDIT));
+
 const message = (value: unknown) => value instanceof ApiError ? value.message : value instanceof Error ? value.message : "操作失败，请稍后重试。";
 const positiveId = (value: string) => /^[1-9]\d*$/.test(value.trim()) && Number.isSafeInteger(Number(value));
 
-const activeTab = ref<"customers" | "quotes" | "approvals">("customers");
+const activeTab = ref<"list" | "quote">("list");
+const quoteView = ref<"edit" | "drafts" | "exported" | "logs">("edit");
+
+function unique(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+const regionText = (region: string) => region === "OVERSEAS" ? "海外" : "国内";
+const currencyText = (currency: string) => currency === "USD" ? "美元 USD" : "人民币 CNY";
+const currencySymbol = (currency: string) => currency === "USD" ? "$" : "¥";
+function amountText(currency: string, amount: string) {
+  const value = Number(amount || 0);
+  if (!Number.isFinite(value)) return amount;
+  return `${currencySymbol(currency)}${value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+}
+
+// ---------------- 客户列表 ----------------
 const rows = ref<CustomerWorkspaceRow[]>([]);
 const loading = ref(false);
 const loadError = ref("");
-const pagination = reactive({ page: 1, size: 10, total: 0 });
-const keyword = ref("");
-let listSequence = 0;
+
+const filters = reactive<{
+  names: string[]; owners: string[]; regions: string[]; contracts: string[];
+  services: string[]; currencies: string[]; stages: string[]; handlings: string[];
+}>({ names: [], owners: [], regions: [], contracts: [], services: [], currencies: [], stages: [], handlings: [] });
+
+const options = computed(() => ({
+  names: unique(rows.value.map(row => row.name)),
+  owners: unique(rows.value.map(row => row.owner_name)),
+  regions: unique(rows.value.map(row => regionText(row.region))),
+  contracts: unique(rows.value.map(row => row.contract_status)),
+  services: unique(rows.value.map(row => row.service_status)),
+  currencies: unique(rows.value.map(row => currencyText(row.settlement_currency))),
+  stages: unique(rows.value.map(row => row.cooperation_stage)),
+  handlings: unique(rows.value.map(row => row.handling_status)),
+}));
+
+const filteredRows = computed(() => rows.value.filter(row => {
+  if (filters.names.length && !filters.names.includes(row.name)) return false;
+  if (filters.owners.length && !filters.owners.includes(row.owner_name)) return false;
+  if (filters.regions.length && !filters.regions.includes(regionText(row.region))) return false;
+  if (filters.contracts.length && !filters.contracts.includes(row.contract_status)) return false;
+  if (filters.services.length && !filters.services.includes(row.service_status)) return false;
+  if (filters.currencies.length && !filters.currencies.includes(currencyText(row.settlement_currency))) return false;
+  if (filters.stages.length && !filters.stages.includes(row.cooperation_stage)) return false;
+  if (filters.handlings.length && !filters.handlings.includes(row.handling_status)) return false;
+  return true;
+}));
 
 async function loadCustomers() {
-  const sequence = ++listSequence;
   loading.value = true;
   loadError.value = "";
   try {
-    const result = await customerWorkspaceApi.customers({ page: pagination.page, size: pagination.size, keyword: keyword.value.trim() || undefined });
-    if (sequence !== listSequence) return;
+    // 原型列表是单页滚动，不分页；一次取够后前端过滤。
+    const result = await customerWorkspaceApi.customers({ page: 1, size: 200 });
     rows.value = result.list;
-    pagination.total = result.total;
   } catch (error) {
-    if (sequence !== listSequence) return;
     rows.value = [];
-    pagination.total = 0;
     loadError.value = message(error);
   } finally {
-    if (sequence === listSequence) loading.value = false;
+    loading.value = false;
   }
 }
-function query() { pagination.page = 1; void loadCustomers(); }
-function reset() { keyword.value = ""; query(); }
-function changePage(page: number) { pagination.page = page; void loadCustomers(); }
+function resetFilters() {
+  Object.assign(filters, { names: [], owners: [], regions: [], contracts: [], services: [], currencies: [], stages: [], handlings: [] });
+}
 
-// 报价 tab
+// ---------------- 报价单 ----------------
 const quoteRows = ref<CustomerQuoteRow[]>([]);
 const quoteLoading = ref(false);
-const quoteListError = ref("");
-const quoteFilters = reactive({ keyword: "", status: "" });
-const quotePagination = reactive({ page: 1, size: 20, total: 0 });
-let quoteSequence = 0;
-async function loadQuotes() {
-  const sequence = ++quoteSequence;
-  quoteLoading.value = true;
-  quoteListError.value = "";
+const quoteError = ref("");
+const approvalRows = ref<CustomerApprovalRow[]>([]);
+
+const form = reactive({
+  customerId: "",
+  customerName: "",
+  ourCompany: "根公司",
+  region: "CN",
+  currency: "CNY",
+  quoteDate: new Date().toISOString().slice(0, 10),
+  operator: session.user?.name || "—",
+  quoteNo: "",
+  remark: "",
+});
+
+interface QuoteLine {
+  skuId: string;
+  skuCode: string;
+  name: string;
+  basePrice: string;
+  margin: string;
+  price: string;
+}
+
+const lines = ref<QuoteLine[]>([]);
+const marginAll = ref("0.10");
+const priceBookVersion = ref<number | null>(null);
+const priceBookMap = ref(new Map<string, string>());
+const priceBookMissing = ref(false);
+
+const customerOptions = computed(() => rows.value.map(row => ({
+  id: String(row.id), name: row.name, region: row.region,
+  currency: row.settlement_currency, owner: row.owner_name,
+})));
+const filteredCustomers = computed(() => customerOptions.value);
+
+function onCustomerChange(customerId: string) {
+  const option = customerOptions.value.find(item => item.id === customerId);
+  if (!option) { form.customerName = ""; return; }
+  form.customerName = option.name;
+  form.region = option.region;
+  form.currency = option.currency;
+  void loadPriceBook(customerId);
+}
+
+async function loadPriceBook(customerId: string) {
+  priceBookMap.value = new Map();
+  priceBookVersion.value = null;
+  priceBookMissing.value = false;
+  if (!positiveId(customerId)) return;
   try {
-    const result = await customerWorkspaceApi.quotes({
-      page: quotePagination.page, size: quotePagination.size,
-      keyword: quoteFilters.keyword.trim() || undefined,
-      status: quoteFilters.status || undefined,
-    });
-    if (sequence !== quoteSequence) return;
-    quoteRows.value = result.list;
-    quotePagination.total = result.total;
+    const context = await customerQuotesApi.context(customerId);
+    if (context.priceBook) {
+      priceBookVersion.value = context.priceBook.versionNo;
+      const map = new Map<string, string>();
+      context.priceBook.items.forEach(item => map.set(String(item.skuId), String(item.unitPrice)));
+      priceBookMap.value = map;
+    } else {
+      priceBookMissing.value = true;
+    }
   } catch (error) {
-    if (sequence !== quoteSequence) return;
-    quoteRows.value = [];
-    quotePagination.total = 0;
-    quoteListError.value = message(error);
+    priceBookMissing.value = true;
+    quoteError.value = message(error);
+  }
+  // 已选行同步基准单价（价目表里没有的 SKU 保持为空，由人填）
+  lines.value = lines.value.map(line => {
+    const base = priceBookMap.value.get(line.skuId) || "";
+    return { ...line, basePrice: base, price: line.price || base };
+  });
+}
+
+function startNewQuote(row?: CustomerWorkspaceRow) {
+  activeTab.value = "quote";
+  quoteView.value = "edit";
+  form.customerId = row ? String(row.id) : "";
+  form.customerName = "";
+  form.region = row?.region || "CN";
+  form.currency = row?.settlement_currency || "CNY";
+  form.quoteNo = "";
+  form.remark = "";
+  form.quoteDate = new Date().toISOString().slice(0, 10);
+  lines.value = [];
+  priceBookMap.value = new Map();
+  priceBookVersion.value = null;
+  priceBookMissing.value = false;
+  if (row) void onCustomerChange(String(row.id));
+}
+
+function priceFromMargin(base: string, margin: string) {
+  if (!isDecimalAmount(base)) return "";
+  const baseValue = Number(base);
+  const marginValue = Number(margin);
+  if (!Number.isFinite(baseValue) || !Number.isFinite(marginValue)) return "";
+  const computedValue = baseValue * (1 + marginValue);
+  return computedValue.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+}
+function applyPrice(line: QuoteLine) {
+  line.price = line.price || priceFromMargin(line.basePrice, line.margin);
+}
+function applyMarginAll() {
+  if (!isDecimalAmount(marginAll.value)) { ElMessage.error("统一毛利率必须是合法十进制数，例如 0.10"); return; }
+  if (!lines.value.length) { ElMessage.warning("请先添加模型"); return; }
+  lines.value = lines.value.map(line => ({ ...line, margin: marginAll.value, price: priceFromMargin(line.basePrice, marginAll.value) }));
+  ElMessage.success(`已按毛利率 ${marginAll.value} 统一 ${lines.value.length} 个模型`);
+}
+function removeLine(skuId: string) { lines.value = lines.value.filter(line => line.skuId !== skuId); }
+
+// 添加/选择模型
+const pickerVisible = ref(false);
+const pickerKeyword = ref("");
+const pickerLoading = ref(false);
+const pickerError = ref("");
+const pickerRows = ref<ModelSkuContractDTO[]>([]);
+const pickerSelected = reactive(new Set<string>());
+const pickerPage = ref(1);
+const pickerTotal = ref(0);
+let pickerSequence = 0;
+
+async function openPicker() {
+  pickerVisible.value = true;
+  pickerKeyword.value = "";
+  pickerSelected.clear();
+  pickerRows.value = [];
+  await searchModels(false);
+}
+async function searchModels(append: boolean) {
+  const sequence = ++pickerSequence;
+  pickerLoading.value = true;
+  pickerError.value = "";
+  const page = append ? pickerPage.value + 1 : 1;
+  try {
+    const result = await modelsApi.list({ view: "sku", keyword: pickerKeyword.value.trim() || undefined, page, size: 20, lifecycle_status: "PUBLISHED" });
+    if (sequence !== pickerSequence) return;
+    const list = result.list.filter((row): row is ModelSkuContractDTO => "sku_code" in row);
+    pickerRows.value = append ? [...pickerRows.value, ...list] : list;
+    pickerPage.value = page;
+    pickerTotal.value = result.total;
+  } catch (error) {
+    if (sequence === pickerSequence) pickerError.value = message(error);
   } finally {
-    if (sequence === quoteSequence) quoteLoading.value = false;
+    if (sequence === pickerSequence) pickerLoading.value = false;
   }
 }
-function queryQuotes() { quotePagination.page = 1; void loadQuotes(); }
-function resetQuotes() { quoteFilters.keyword = ""; quoteFilters.status = ""; queryQuotes(); }
-function changeQuotePage(page: number) { quotePagination.page = page; void loadQuotes(); }
-
-// 审批记录 tab
-const approvalRows = ref<CustomerApprovalRow[]>([]);
-const approvalLoading = ref(false);
-const approvalError = ref("");
-async function loadApprovals() {
-  approvalLoading.value = true;
-  approvalError.value = "";
-  try { approvalRows.value = await customerWorkspaceApi.approvals(); }
-  catch (error) { approvalRows.value = []; approvalError.value = message(error); }
-  finally { approvalLoading.value = false; }
+function togglePick(skuId: string) {
+  if (pickerSelected.has(skuId)) pickerSelected.delete(skuId); else pickerSelected.add(skuId);
+}
+function confirmPicker() {
+  const chosen = pickerRows.value.filter(row => pickerSelected.has(String(row.id)));
+  const next = [...lines.value];
+  chosen.forEach(row => {
+    const skuId = String(row.id);
+    if (next.some(line => line.skuId === skuId)) return;
+    const base = priceBookMap.value.get(skuId) || "";
+    next.push({
+      skuId, skuCode: row.sku_code,
+      name: `${row.vendor_name} / ${row.family_name}`,
+      basePrice: base, margin: marginAll.value,
+      price: base ? priceFromMargin(base, marginAll.value) : "",
+    });
+  });
+  lines.value = next;
+  pickerVisible.value = false;
 }
 
-// 详情弹窗
-const detailVisible = ref(false);
-const detailRow = ref<CustomerWorkspaceRow>();
-function openDetail(row: CustomerWorkspaceRow) { detailRow.value = row; detailVisible.value = true; }
-function quoteFromDetail() {
-  const row = detailRow.value;
-  if (!row) return;
-  detailVisible.value = false;
-  openQuote({ id: String(row.id), legalName: row.name, levelCode: row.level_code });
+function validateBeforeSubmit() {
+  if (!positiveId(form.customerId)) return "请先选择关联客户。";
+  if (!lines.value.length) return "请至少添加一个模型。";
+  const bad = lines.value.find(line => !positiveId(line.skuId) || !isDecimalAmount(line.price));
+  if (bad) return `${bad.skuCode || bad.skuId} 的报价单价必须是大于 0 的普通十进制字符串。`;
+  return "";
 }
-function transferFromDetail() {
-  const row = detailRow.value;
-  if (!row) return;
-  detailVisible.value = false;
-  openTransfer({ id: String(row.id), legalName: row.name, levelCode: row.level_code });
+
+const submitting = ref(false);
+async function saveDraft(exportAfter: boolean) {
+  const invalid = validateBeforeSubmit();
+  if (invalid) { ElMessage.error(invalid); return; }
+  if (submitting.value) return;
+  submitting.value = true;
+  try {
+    const validTo = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+    const result = await customerQuotesApi.generate({
+      customerId: form.customerId,
+      quoteType: "TEMP",
+      validTo,
+      items: lines.value.map(line => ({ skuId: line.skuId, unitPrice: line.price })),
+    });
+    form.quoteNo = `#${result.id}`;
+    if (exportAfter) {
+      const blob = await customerQuotesApi.exportXlsx(result.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `customer_quote_${result.id}.xlsx`;
+      link.click();
+      URL.revokeObjectURL(url);
+      ElMessage.success(`报价单 #${result.id} 已生成并导出。`);
+    } else {
+      ElMessage.success(`报价草稿 #${result.id} 已保存。`);
+    }
+    await loadQuotes();
+  } catch (error) {
+    ElMessage.error(message(error));
+  } finally {
+    submitting.value = false;
+  }
 }
-function switchTab(name: string | number) {
-  if (name === "quotes" && !quoteRows.value.length) void loadQuotes();
-  if (name === "approvals" && !approvalRows.value.length) void loadApprovals();
+
+async function loadQuotes() {
+  quoteLoading.value = true;
+  quoteError.value = "";
+  try {
+    const result = await customerWorkspaceApi.quotes({ page: 1, size: 200 });
+    quoteRows.value = result.list;
+    approvalRows.value = await customerWorkspaceApi.approvals();
+  } catch (error) {
+    quoteRows.value = [];
+    quoteError.value = message(error);
+  } finally {
+    quoteLoading.value = false;
+  }
 }
+
+const draftRows = computed(() => quoteRows.value.filter(row => row.status === "DRAFT" || row.status === "PENDING" || row.status === "APPROVED"));
+const exportedRows = computed(() => quoteRows.value.filter(row => row.status === "EFFECTIVE" || row.status === "EXPIRED" || row.status === "FORMAL"));
+// 报价操作日志：当前没有独立审计表，用报价单自身的时间/状态/操作人派生（不编造动作）。
+const logRows = computed(() => quoteRows.value.map(row => ({
+  id: row.id, customer: row.customer_name, version: row.version_no,
+  status: row.status, operator: row.owner_name, at: row.created_at,
+})));
 
 const statusText = (status: string) => ({ EFFECTIVE: "生效", DRAFT: "草稿", PENDING: "待审批", APPROVED: "已批准", EXPIRED: "已过期", REJECTED: "已驳回", FORMAL: "正式" } as Record<string, string>)[status] || status;
 const quoteTypeText = (type: string) => ({ APPLY: "套用价目表", CLONE: "克隆历史", TEMP: "临时报价", SPECIAL: "特价", CONTRACT: "合同" } as Record<string, string>)[type] || type;
 const approvalStatusText = (status: string) => ({ PENDING: "待审批", APPROVED: "已通过", REJECTED: "已驳回" } as Record<string, string>)[status] || status;
 const approvalStatusType = (status: string) => status === "APPROVED" ? "success" : status === "REJECTED" ? "danger" : "warning";
 
-const quoteOpen = ref(false);
-const quotePreviewOpen = ref(false);
-const quoteSubmitting = ref(false);
-const quoteError = ref("");
-const quotePreview = ref<{ draft: GenerateCustomerQuoteDraft; customerName: string; levelCode: string;
-  typeLabel: string; hint: string; items: Array<{ label: string; unitPrice: string }> }>();
-const quoteForm = reactive<{ customerId: string; quoteType: CustomerQuoteType; sourceQuoteId: string; validTo: string; items: GenerateCustomerQuoteItem[] }>({
-  customerId: "", quoteType: "APPLY", sourceQuoteId: "", validTo: "", items: [],
-});
-const quoteCustomers = ref<QuoteTarget[]>([]);
-const selectedQuoteCustomer = ref<QuoteTarget>();
-const quoteCustomerOptions = computed(() => selectedQuoteCustomer.value && !quoteCustomers.value.some(row => row.id === selectedQuoteCustomer.value?.id)
-  ? [...quoteCustomers.value, selectedQuoteCustomer.value] : quoteCustomers.value);
-const quoteCustomerKeyword = ref(""), quoteCustomerPage = ref(1), quoteCustomerTotal = ref(0);
-const quoteCustomerLoading = ref(false), quoteCustomerError = ref("");
-let quoteCustomerSequence = 0;
-const quoteContext = ref<CustomerQuoteContextDTO>();
-const quoteContextLoading = ref(false);
-const quoteContextError = ref("");
-let quoteContextSequence = 0;
-async function loadQuoteContext(customerId: string) {
-  const sequence = ++quoteContextSequence;
-  quoteContext.value = undefined;
-  quoteContextError.value = "";
-  if (!positiveId(customerId)) return;
-  quoteContextLoading.value = true;
-  try {
-    const result = await customerQuotesApi.context(customerId);
-    if (sequence === quoteContextSequence) quoteContext.value = result;
-  } catch (error) {
-    if (sequence === quoteContextSequence) quoteContextError.value = message(error);
-  } finally {
-    if (sequence === quoteContextSequence) quoteContextLoading.value = false;
-  }
-}
-async function searchQuoteCustomers(value = "", append = false) {
-  const sequence = ++quoteCustomerSequence;
-  quoteCustomerKeyword.value = value;
-  quoteCustomerLoading.value = true; quoteCustomerError.value = "";
-  const page = append ? quoteCustomerPage.value + 1 : 1;
-  try {
-    const result = await customersApi.list({ page, size: 20, keyword: value.trim() || undefined });
-    if (sequence !== quoteCustomerSequence) return;
-    const mapped = result.list.map(row => ({ id: row.id, legalName: row.legalName, levelCode: row.levelCode }));
-    quoteCustomers.value = append ? [...quoteCustomers.value, ...mapped] : mapped;
-    quoteCustomerPage.value = page; quoteCustomerTotal.value = result.total;
-  } catch (error) { if (sequence === quoteCustomerSequence) quoteCustomerError.value = message(error); }
-  finally { if (sequence === quoteCustomerSequence) quoteCustomerLoading.value = false; }
-}
-function rememberQuoteCustomer(id: string) {
-  selectedQuoteCustomer.value = quoteCustomers.value.find(row => row.id === id)
-    || (selectedQuoteCustomer.value?.id === id ? selectedQuoteCustomer.value : undefined);
-  quoteForm.sourceQuoteId = "";
-  void loadQuoteContext(id);
-}
-const quoteTypeOptions: Array<{ value: CustomerQuoteType; label: string; hint: string }> = [
-  { value: "APPLY", label: "套用当前价目表", hint: "系统按客户 level_code 自动匹配当前生效价目表，无需手工选择价目表。" },
-  { value: "CLONE", label: "克隆历史报价", hint: "从该客户过去的报价中选择一份，由服务端复制价格。" },
-  { value: "TEMP", label: "临时报价", hint: "填写到期时间，以及 SKU ID 与客户单价。" },
-];
-const quoteHint = computed(() => quoteTypeOptions.find(option => option.value === quoteForm.quoteType)?.hint || "");
-const chosenCustomerLevel = computed(() => selectedQuoteCustomer.value?.levelCode || "");
-const selectedHistoryQuote = computed<CustomerQuoteHistoryPreviewDTO | undefined>(() =>
-  quoteContext.value?.history.list.find(row => row.id === quoteForm.sourceQuoteId));
-const contextPreviewItems = computed<CustomerQuotePreviewItemDTO[]>(() => {
-  if (quoteForm.quoteType === "APPLY") return quoteContext.value?.priceBook?.items || [];
-  if (quoteForm.quoteType === "CLONE") return selectedHistoryQuote.value?.items || [];
-  return [];
-});
-const quoteActionOpen = ref(false);
-const quoteActionSubmitting = ref(false);
-const quoteActionError = ref("");
-const quoteActionForm = reactive({ quoteId: "", reason: "", expectedMargin: "0.08" });
-
-function openQuoteActions(id = "") {
-  Object.assign(quoteActionForm, { quoteId: id, reason: "", expectedMargin: "0.08" });
-  quoteActionError.value = "";
-  quoteActionOpen.value = true;
+function switchQuoteView(view: "edit" | "drafts" | "exported" | "logs") {
+  quoteView.value = view;
+  if (view !== "edit" && !quoteRows.value.length) void loadQuotes();
 }
 
-function openQuote(customer?: QuoteTarget) {
-  Object.assign(quoteForm, { customerId: customer?.id || "", quoteType: "APPLY", sourceQuoteId: "", validTo: "", items: [] });
-  selectedQuoteCustomer.value = customer;
-  quoteCustomers.value = customer ? [{ ...customer }] : [];
-  quoteCustomerKeyword.value = "";
-  quoteContext.value = undefined;
-  quoteContextError.value = "";
-  if (customer) void loadQuoteContext(customer.id);
-  void searchQuoteCustomers();
-  quotePreviewOpen.value = false;
-  quotePreview.value = undefined;
-  quoteError.value = "";
-  quoteOpen.value = true;
-}
-function changeQuoteType() {
-  quoteForm.sourceQuoteId = "";
-  quoteForm.validTo = "";
-  quoteForm.items = [];
-  quotePreview.value = undefined;
-  quoteError.value = "";
-}
-function addQuoteItem() { quoteForm.items.push({ skuId: "", unitPrice: "" }); }
-
-function floorViolationMessage(error: unknown) {
-  if (!(error instanceof ApiError) || !error.details || typeof error.details !== "object") return "";
-  const details = error.details as { floor_violations?: unknown };
-  if (!Array.isArray(details.floor_violations)) return "";
-  const lines = details.floor_violations.flatMap(item => {
-    if (!item || typeof item !== "object") return [];
-    const row = item as Record<string, unknown>;
-    return [`${String(row.sku_code || `SKU ${row.sku_id || "?"}`)}：报价 ${String(row.unit_price || "-")}，floor ${String(row.floor_price || "-")}`];
-  });
-  return lines.length ? `${error.message} ${lines.join("；")}` : "";
+function openRowQuote(row: CustomerQuoteRow) {
+  activeTab.value = "quote";
+  quoteView.value = "edit";
+  form.customerId = String(row.customer_id);
+  form.customerName = row.customer_name;
+  form.quoteNo = `#${row.id}`;
+  lines.value = [];
+  void onCustomerChange(String(row.customer_id));
 }
 
-function validateQuoteForm() {
-  if (!positiveId(quoteForm.customerId)) return "请选择有效客户。";
-  if (quoteContextLoading.value) return "正在加载该客户的报价信息，请稍候。";
-  if (quoteContextError.value) return "报价信息加载失败，请重试后再提交。";
-  if (quoteForm.quoteType === "APPLY" && !quoteContext.value?.priceBook) return "该客户等级暂无当前生效价目表，不能套用。";
-  if (quoteForm.quoteType === "CLONE" && !selectedHistoryQuote.value) return "请选择该客户的一份历史报价。";
-  if (quoteForm.quoteType === "TEMP") {
-    if (!quoteForm.validTo || Number.isNaN(Date.parse(quoteForm.validTo))) return "请选择临时报价到期时间。";
-    if (!quoteForm.items.length) return "临时报价至少需要一个 SKU 价格项。";
-    if (quoteForm.items.some(item => !positiveId(item.skuId) || !isDecimalAmount(item.unitPrice)))
-      return "SKU ID 必须为正整数，报价必须为大于 0 且最多 8 位小数的普通十进制字符串。";
-    if (new Set(quoteForm.items.map(item => item.skuId.trim())).size !== quoteForm.items.length)
-      return "同一 SKU 不能重复报价。";
-  }
-  return "";
-}
+// ---------------- 详情与移交 ----------------
+const detailVisible = ref(false);
+const detailRow = ref<CustomerWorkspaceRow>();
+function openDetail(row: CustomerWorkspaceRow) { detailRow.value = row; detailVisible.value = true; }
 
-function openQuotePreview() {
-  quoteError.value = validateQuoteForm();
-  if (quoteError.value) return;
-  const customer = selectedQuoteCustomer.value;
-  quotePreview.value = {
-    draft: {
-      customerId: quoteForm.customerId.trim(), quoteType: quoteForm.quoteType,
-      sourceQuoteId: quoteForm.quoteType === "CLONE" ? quoteForm.sourceQuoteId.trim() : undefined,
-      validTo: quoteForm.quoteType === "TEMP" ? new Date(quoteForm.validTo).toISOString() : undefined,
-      items: quoteForm.quoteType === "TEMP" ? quoteForm.items.map(item => ({ skuId: item.skuId.trim(), unitPrice: item.unitPrice.trim() })) : undefined,
-    },
-    customerName: customer?.legalName || `客户 ID ${quoteForm.customerId}`,
-    levelCode: customer?.levelCode || "未提供",
-    typeLabel: quoteTypeOptions.find(option => option.value === quoteForm.quoteType)?.label || quoteForm.quoteType,
-    hint: quoteHint.value,
-    items: quoteForm.quoteType === "TEMP"
-      ? quoteForm.items.map(item => ({ label: skuLabel(item.skuId), unitPrice: item.unitPrice.trim() }))
-      : contextPreviewItems.value.map(item => ({ label: `${item.skuCode} · ID ${item.skuId}`, unitPrice: `${item.unitPrice} ${item.currency}` })),
-  };
-  quotePreviewOpen.value = true;
-}
-
-async function generateQuote() {
-  if (quoteSubmitting.value || !quotePreview.value) return;
-  quoteError.value = "";
-  const draft = quotePreview.value.draft;
-  quoteSubmitting.value = true;
-  try {
-    const result = await customerQuotesApi.generate(draft);
-    if (e2e.enabled && draft.quoteType === "APPLY") {
-      e2e.advance("FINANCE_APPROVED", "COMPLETED", run =>
-        run.customer_id === draft.customerId && run.price_book_version !== null &&
-        run.price_book_version === result.priceBookVersion && result.itemCount > 0,
-      { customer_quote_id: result.id });
-    }
-    quotePreviewOpen.value = false;
-    quoteOpen.value = false;
-    ElMessage.success(`客户报价 #${result.id} 已生成：V${result.versionNo}，${result.itemCount} 项，状态 ${result.status}。`);
-    openQuoteActions(result.id);
-  } catch (error) {
-    quoteError.value = floorViolationMessage(error) || message(error);
-  } finally {
-    quoteSubmitting.value = false;
-  }
-}
-
-async function requestSpecialPrice() {
-  if (!positiveId(quoteActionForm.quoteId)) return void (quoteActionError.value = "请输入有效的报价 ID。");
-  if (!quoteActionForm.reason.trim()) return void (quoteActionError.value = "申请特价必须填写原因。");
-  if (!isDecimalAmount(quoteActionForm.expectedMargin)) return void (quoteActionError.value = "期望毛利必须是合法十进制数。");
-  quoteActionSubmitting.value = true; quoteActionError.value = "";
-  try {
-    const result = await customerQuotesApi.requestSpecialPrice(quoteActionForm.quoteId.trim(), quoteActionForm.reason, quoteActionForm.expectedMargin);
-    ElMessage.success(`特价申请已提交，变更单 #${result.changeRequestId}，共 ${result.stepCount} 级审批。`);
-  } catch (error) { quoteActionError.value = message(error); }
-  finally { quoteActionSubmitting.value = false; }
-}
-
-async function refreshQuote() {
-  if (!positiveId(quoteActionForm.quoteId)) return void (quoteActionError.value = "请输入有效的报价 ID。");
-  quoteActionSubmitting.value = true; quoteActionError.value = "";
-  try {
-    const result = await customerQuotesApi.refresh(quoteActionForm.quoteId.trim(), quoteActionForm.reason);
-    ElMessage.success(result.unchanged ? "最新成本未改变 floor，未生成新版本。" : `已刷新为 V${result.newVersionNo}，变更 ${result.changedItems.length} 项。`);
-  } catch (error) { quoteActionError.value = message(error); }
-  finally { quoteActionSubmitting.value = false; }
-}
-
-async function exportQuote() {
-  if (!positiveId(quoteActionForm.quoteId)) return void (quoteActionError.value = "请输入有效的报价 ID。");
-  quoteActionSubmitting.value = true; quoteActionError.value = "";
-  try {
-    const blob = await customerQuotesApi.exportXlsx(quoteActionForm.quoteId.trim());
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a"); link.href = url; link.download = `customer_quote_${quoteActionForm.quoteId.trim()}.xlsx`; link.click();
-    URL.revokeObjectURL(url);
-  } catch (error) { quoteActionError.value = message(error); }
-  finally { quoteActionSubmitting.value = false; }
-}
-
-const transferOpen = ref(false);
+const transferVisible = ref(false);
 const transferSubmitting = ref(false);
-const transferCustomer = ref<QuoteTarget>();
+const transferTarget = ref<CustomerWorkspaceRow>();
 const transferForm = reactive({ toOperatorId: "", reason: "" });
 const transferImpact = ref<CustomerTransferImpactDTO>();
 const transferError = ref("");
 let transferSequence = 0;
 
-function openTransfer(customer: QuoteTarget) {
+function openTransfer(row: CustomerWorkspaceRow) {
   ++transferSequence;
-  transferCustomer.value = customer;
+  transferTarget.value = row;
   transferSubmitting.value = false;
   Object.assign(transferForm, { toOperatorId: "", reason: "" });
   transferImpact.value = undefined;
   transferError.value = "";
-  transferOpen.value = true;
+  transferVisible.value = true;
 }
 function invalidateTransferPreview() { ++transferSequence; transferImpact.value = undefined; transferError.value = ""; }
 async function previewTransfer() {
-  if (!transferCustomer.value || transferSubmitting.value) return;
-  if (!positiveId(transferForm.toOperatorId)) return void (transferError.value = "请输入有效的目标销售人员 ID。");
+  if (!transferTarget.value || transferSubmitting.value) return;
+  if (!positiveId(transferForm.toOperatorId)) { transferError.value = "请输入有效的目标销售人员 ID。"; return; }
   const sequence = ++transferSequence;
-  const customerId = transferCustomer.value.id;
+  const customerId = String(transferTarget.value.id);
   const draft = { toOperatorId: transferForm.toOperatorId.trim(), reason: transferForm.reason.trim() };
   transferSubmitting.value = true;
   transferError.value = "";
   try {
     const impact = await customersApi.transferPreview(customerId, draft);
-    if (sequence === transferSequence && transferCustomer.value?.id === customerId) transferImpact.value = impact;
+    if (sequence === transferSequence) transferImpact.value = impact;
   } catch (error) {
     if (sequence === transferSequence) { transferImpact.value = undefined; transferError.value = message(error); }
   } finally {
@@ -399,8 +382,8 @@ async function previewTransfer() {
   }
 }
 async function confirmTransfer() {
-  if (!transferCustomer.value || !transferImpact.value || transferSubmitting.value) return;
-  const customerId = transferCustomer.value.id;
+  if (!transferTarget.value || !transferImpact.value || transferSubmitting.value) return;
+  const customerId = String(transferTarget.value.id);
   const impact = transferImpact.value;
   const draft = { toOperatorId: transferForm.toOperatorId.trim(), reason: transferForm.reason.trim() };
   transferSubmitting.value = true;
@@ -410,7 +393,7 @@ async function confirmTransfer() {
   transferError.value = "";
   try {
     const result = await customersApi.transferConfirm(customerId, draft);
-    transferOpen.value = false;
+    transferVisible.value = false;
     ElMessage.success(`客户移交完成，已迁移 ${result.quotesMigrated} 份报价。`);
     await loadCustomers();
   } catch (error) {
@@ -420,155 +403,335 @@ async function confirmTransfer() {
   }
 }
 
-onMounted(() => { void loadCustomers(); });
+onMounted(() => { void loadCustomers(); void loadQuotes(); });
 </script>
 
 <template>
-  <section class="panel customer-panel">
-    <div class="section-title">
-      <div><h2>客户管理 <span>{{ pagination.total }}</span></h2><p class="muted">真实后端阶段 9a/9b：客户、报价生成、特价、刷新与导出。</p></div>
-      <div class="header-actions"><el-button :loading="loading" @click="loadCustomers">刷新</el-button><el-button v-if="canGenerateQuote" @click="openQuoteActions()">报价后续操作</el-button><el-button v-if="canGenerateQuote" type="primary" @click="openQuote()">生成报价</el-button></div>
+  <section class="customer-page">
+    <div class="tabbar">
+      <div class="tabbar-left">
+        <button class="tab" :class="{ active: activeTab === 'list' }" @click="activeTab = 'list'">客户列表</button>
+        <button class="tab" :class="{ active: activeTab === 'quote' }" @click="activeTab = 'quote'">客户报价单</button>
+      </div>
+      <el-button v-if="activeTab === 'list' && canQuote" type="primary" @click="startNewQuote()">新建报价</el-button>
     </div>
-    <el-tabs v-model="activeTab" class="customer-tabs" @tab-change="switchTab">
-      <el-tab-pane label="客户列表" name="customers">
-        <div class="filters customer-filters">
-          <el-input v-model="keyword" clearable aria-label="客户关键字" placeholder="按客户名称搜索" @keyup.enter="query" />
-          <el-button type="primary" @click="query">查询</el-button>
-          <el-button text @click="reset">重置</el-button>
+
+    <!-- ================= 客户列表 ================= -->
+    <template v-if="activeTab === 'list'">
+      <div class="filterbar">
+        <el-select v-model="filters.names" multiple filterable clearable collapse-tags placeholder="客户名称" class="flt" filter-placeholder="输入匹配已有选项">
+          <el-option v-for="item in options.names" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-select v-model="filters.owners" multiple filterable clearable collapse-tags placeholder="销售" class="flt" filter-placeholder="输入匹配已有选项">
+          <el-option v-for="item in options.owners" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-select v-model="filters.regions" multiple filterable clearable collapse-tags placeholder="国内/海外" class="flt" filter-placeholder="输入匹配已有选项">
+          <el-option v-for="item in options.regions" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-select v-model="filters.contracts" multiple filterable clearable collapse-tags placeholder="合同状态" class="flt" filter-placeholder="输入匹配已有选项">
+          <el-option v-for="item in options.contracts" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-select v-model="filters.services" multiple filterable clearable collapse-tags placeholder="服务状态" class="flt" filter-placeholder="输入匹配已有选项">
+          <el-option v-for="item in options.services" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-select v-model="filters.currencies" multiple filterable clearable collapse-tags placeholder="结算币种" class="flt" filter-placeholder="输入匹配已有选项">
+          <el-option v-for="item in options.currencies" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-select v-model="filters.stages" multiple filterable clearable collapse-tags placeholder="合作阶段" class="flt" filter-placeholder="输入匹配已有选项">
+          <el-option v-for="item in options.stages" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-select v-model="filters.handlings" multiple filterable clearable collapse-tags placeholder="办理状态" class="flt" filter-placeholder="输入匹配已有选项">
+          <el-option v-for="item in options.handlings" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-button text @click="resetFilters">重置</el-button>
+      </div>
+
+      <el-alert v-if="loadError" :title="loadError" type="error" show-icon :closable="false">
+        <el-button text @click="loadCustomers">重新加载</el-button>
+      </el-alert>
+
+      <el-table v-loading="loading" :data="filteredRows" row-key="id" class="grid">
+        <el-table-column type="selection" width="44" />
+        <el-table-column label="客户名称" min-width="200">
+          <template #default="{ row }">
+            <div class="cell-main">{{ row.name }}</div>
+            <div class="cell-sub">销售 {{ row.owner_name }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="国内/海外" width="100">
+          <template #default="{ row }">{{ regionText(row.region) }}</template>
+        </el-table-column>
+        <el-table-column label="授信额度" width="150" align="right">
+          <template #default="{ row }">
+            <div class="cell-main mono">{{ amountText(row.settlement_currency, row.credit_limit) }}</div>
+            <div class="cell-sub">我方 → 客户</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="合同信息" width="130">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.contract_status === '已归档' ? 'success' : row.contract_status === '办理中' ? 'warning' : 'info'" class="stack-tag">{{ row.contract_status }}</el-tag>
+            <el-tag size="small" :type="row.service_status === '服务中' ? 'success' : row.service_status === '接入中' ? 'warning' : 'info'" class="stack-tag">{{ row.service_status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="结算币种" width="120">
+          <template #default="{ row }">{{ currencyText(row.settlement_currency) }}</template>
+        </el-table-column>
+        <el-table-column label="税率" width="100">
+          <template #default="{ row }">{{ row.tax_rate ? `${row.tax_rate}%` : "未填写" }}</template>
+        </el-table-column>
+        <el-table-column label="合作阶段" width="100">
+          <template #default="{ row }">{{ row.cooperation_stage }}</template>
+        </el-table-column>
+        <el-table-column label="办理状态" width="140">
+          <template #default="{ row }">{{ row.handling_status }}</template>
+        </el-table-column>
+        <el-table-column label="详情" width="80" fixed="right">
+          <template #default="{ row }"><el-button link type="primary" @click="openDetail(row)">详情</el-button></template>
+        </el-table-column>
+        <template #empty><el-empty description="没有符合条件的客户" :image-size="64" /></template>
+      </el-table>
+    </template>
+
+    <!-- ================= 客户报价单 ================= -->
+    <template v-else>
+      <div class="subtabbar">
+        <div class="tabbar-left">
+          <button class="tab" :class="{ active: quoteView === 'edit' }" @click="switchQuoteView('edit')">报价</button>
+          <button class="tab" :class="{ active: quoteView === 'drafts' }" @click="switchQuoteView('drafts')">报价草稿</button>
+          <button class="tab" :class="{ active: quoteView === 'exported' }" @click="switchQuoteView('exported')">已导出报价</button>
+          <button class="tab" :class="{ active: quoteView === 'logs' }" @click="switchQuoteView('logs')">报价操作日志</button>
         </div>
-        <el-alert v-if="loadError" :title="loadError" type="error" show-icon :closable="false"><el-button text @click="loadCustomers">重新加载</el-button></el-alert>
-        <div v-loading="loading" class="customer-list">
-          <el-empty v-if="!rows.length && !loading && !loadError" description="没有符合条件的客户" />
-          <el-table v-else :data="rows" row-key="id">
-            <el-table-column label="客户名称" min-width="180">
-              <template #default="{ row }"><b>{{ row.name }}</b><div class="mono muted">ID {{ row.id }}</div></template>
+        <el-button v-if="canQuote" @click="startNewQuote()">新建报价单</el-button>
+      </div>
+
+      <template v-if="quoteView === 'edit'">
+        <div class="linked">
+          <label class="linked-label">关联客户</label>
+          <el-select v-model="form.customerId" filterable clearable placeholder="搜索客户名称" class="linked-input" @change="onCustomerChange">
+            <el-option v-for="item in filteredCustomers" :key="item.id" :label="`${item.name} · ${regionText(item.region)} · ${item.owner}`" :value="item.id" />
+          </el-select>
+          <span class="linked-hint">每份报价关联一个客户；新客户首次成功导出时入库</span>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">报价信息</h3>
+          <div class="form-grid">
+            <div class="field"><label>客户名称</label><el-input v-model="form.customerName" disabled placeholder="选择关联客户后自动带出" /></div>
+            <div class="field"><label>我方公司</label><el-input v-model="form.ourCompany" disabled /></div>
+            <div class="field">
+              <label>国内/海外业务区域</label>
+              <el-select v-model="form.region" placeholder="请选择">
+                <el-option value="CN" label="国内" /><el-option value="OVERSEAS" label="海外" />
+              </el-select>
+            </div>
+            <div class="field"><label>结算币种</label><el-input :model-value="form.customerId ? currencyText(form.currency) : '待确认'" disabled /></div>
+            <div class="field"><label>报价时间</label><el-input v-model="form.quoteDate" disabled /></div>
+            <div class="field"><label>操作人</label><el-input v-model="form.operator" disabled /></div>
+            <div class="field"><label>报价编号</label><el-input v-model="form.quoteNo" disabled placeholder="导出时自动生成" /></div>
+            <div class="field"><label>报价说明</label><el-input v-model="form.remark" maxlength="200" /></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="card-head-left">
+              <el-button type="primary" :disabled="!canQuote" @click="openPicker">+ 添加/选择模型</el-button>
+              <span class="muted">已选 {{ lines.length }} 个</span>
+              <span v-if="priceBookVersion" class="muted">· 基准价目表 V{{ priceBookVersion }}</span>
+              <span v-else-if="priceBookMissing" class="muted">· 该客户等级暂无生效价目表，请逐行填写单价</span>
+            </div>
+            <div class="card-head-right">
+              <span class="muted">统一毛利率</span>
+              <el-input v-model="marginAll" class="margin-input" placeholder="输入数值" />
+              <span class="muted">%</span>
+              <el-button @click="applyMarginAll">统一当前全部模型</el-button>
+            </div>
+          </div>
+
+          <el-table v-if="lines.length" :data="lines" row-key="skuId" class="grid">
+            <el-table-column label="模型" min-width="200"><template #default="{ row }">{{ row.name }}</template></el-table-column>
+            <el-table-column label="SKU" width="140"><template #default="{ row }"><span class="mono">{{ row.skuCode }}</span></template></el-table-column>
+            <el-table-column label="基准单价（价目表）" width="170" align="right">
+              <template #default="{ row }"><span class="mono">{{ row.basePrice || "—" }}</span></template>
             </el-table-column>
-            <el-table-column label="客户等级" width="100"><template #default="{ row }">{{ row.level_code }}</template></el-table-column>
-            <el-table-column label="客户来源" width="110"><template #default="{ row }">{{ row.source || "—" }}</template></el-table-column>
-            <el-table-column label="归属销售" min-width="120"><template #default="{ row }">{{ row.owner_name }}</template></el-table-column>
-            <el-table-column label="合同状态" width="110">
-              <template #default="{ row }"><el-tag :type="row.contract_status === '已归档' ? 'success' : 'info'" size="small">{{ row.contract_status }}</el-tag></template>
+            <el-table-column label="毛利率" width="120">
+              <template #default="{ row }"><el-input v-model="row.margin" size="small" @change="applyPrice(row)" /></template>
             </el-table-column>
-            <el-table-column label="合作阶段" width="100"><template #default="{ row }">{{ row.cooperation_stage }}</template></el-table-column>
-            <el-table-column label="办理状态" width="130">
-              <template #default="{ row }"><el-tag :type="row.handling_status === '有未完成事项' ? 'warning' : 'info'" size="small">{{ row.handling_status }}</el-tag></template>
+            <el-table-column label="报价单价" width="160">
+              <template #default="{ row }"><el-input v-model="row.price" size="small" placeholder="必填" /></template>
             </el-table-column>
-            <el-table-column label="客户状态" width="100">
-              <template #default="{ row }"><el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'" size="small">{{ row.status === "ACTIVE" ? "正常" : row.status }}</el-tag></template>
-            </el-table-column>
-            <el-table-column label="详情" width="80" fixed="right">
-              <template #default="{ row }"><el-button size="small" @click="openDetail(row)">详情</el-button></template>
+            <el-table-column label="操作" width="80">
+              <template #default="{ row }"><el-button link type="danger" @click="removeLine(row.skuId)">移除</el-button></template>
             </el-table-column>
           </el-table>
-        </div>
-        <div class="catalog-pagination"><el-pagination :current-page="pagination.page" :page-size="pagination.size" :total="pagination.total" layout="total, prev, pager, next" @current-change="changePage" /></div>
-      </el-tab-pane>
+          <div v-else class="empty-hint">点击添加模型，在弹窗中搜索并勾选</div>
 
-      <el-tab-pane label="报价" name="quotes">
-        <div class="filters customer-filters">
-          <el-input v-model="quoteFilters.keyword" clearable placeholder="按客户名称搜索" @keyup.enter="queryQuotes" />
-          <el-select v-model="quoteFilters.status" clearable placeholder="报价状态" style="width: 150px" @change="queryQuotes">
-            <el-option value="DRAFT" label="草稿" /><el-option value="PENDING" label="待审批" />
-            <el-option value="EFFECTIVE" label="生效" /><el-option value="EXPIRED" label="已过期" />
-          </el-select>
-          <el-button type="primary" @click="queryQuotes">查询</el-button>
-          <el-button text @click="resetQuotes">重置</el-button>
+          <div class="card-foot">
+            <span class="foot-note">统一为一次性操作，随后可逐行修改；新增行不自动继承。毛利率按「基准单价 × (1 + 毛利率)」计算报价单价，仅用于填单辅助，最终以服务端生成结果为准。</span>
+            <div class="foot-actions">
+              <el-button :loading="submitting" :disabled="!canQuote" @click="saveDraft(false)">保存草稿</el-button>
+              <el-button type="primary" :loading="submitting" :disabled="!canQuote" @click="saveDraft(true)">导出报价单</el-button>
+            </div>
+          </div>
         </div>
-        <el-alert v-if="quoteListError" :title="quoteListError" type="error" show-icon :closable="false"><el-button text @click="loadQuotes">重新加载</el-button></el-alert>
-        <el-table v-loading="quoteLoading" :data="quoteRows" row-key="id">
-          <el-table-column label="报价单号" width="110"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
-          <el-table-column label="客户名称" min-width="170"><template #default="{ row }">{{ row.customer_name }}</template></el-table-column>
+      </template>
+
+      <template v-else-if="quoteView === 'drafts'">
+        <el-alert v-if="quoteError" :title="quoteError" type="error" show-icon :closable="false" />
+        <el-table v-loading="quoteLoading" :data="draftRows" row-key="id" class="grid">
+          <el-table-column label="报价编号" width="120"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
+          <el-table-column label="客户名称" min-width="200"><template #default="{ row }">{{ row.customer_name }}</template></el-table-column>
           <el-table-column label="版本" width="80"><template #default="{ row }">V{{ row.version_no }}</template></el-table-column>
           <el-table-column label="类型" width="120"><template #default="{ row }">{{ quoteTypeText(row.quote_type) }}</template></el-table-column>
-          <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag size="small" :type="row.status === 'EFFECTIVE' ? 'success' : row.status === 'EXPIRED' ? 'info' : 'warning'">{{ statusText(row.status) }}</el-tag></template></el-table-column>
-          <el-table-column label="明细项" width="90"><template #default="{ row }">{{ row.item_count }}</template></el-table-column>
-          <el-table-column label="价目表版本" width="110"><template #default="{ row }">V{{ row.price_book_version }}</template></el-table-column>
+          <el-table-column label="状态" width="100"><template #default="{ row }">{{ statusText(row.status) }}</template></el-table-column>
+          <el-table-column label="模型数" width="90"><template #default="{ row }">{{ row.item_count }}</template></el-table-column>
+          <el-table-column label="报价时间" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
+          <el-table-column label="操作" width="120"><template #default="{ row }"><el-button link type="primary" @click="openRowQuote(row)">继续编辑</el-button></template></el-table-column>
+          <template #empty><el-empty description="暂无报价草稿" :image-size="64" /></template>
+        </el-table>
+      </template>
+
+      <template v-else-if="quoteView === 'exported'">
+        <el-table v-loading="quoteLoading" :data="exportedRows" row-key="id" class="grid">
+          <el-table-column label="报价编号" width="120"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
+          <el-table-column label="客户名称" min-width="200"><template #default="{ row }">{{ row.customer_name }}</template></el-table-column>
+          <el-table-column label="版本" width="80"><template #default="{ row }">V{{ row.version_no }}</template></el-table-column>
+          <el-table-column label="状态" width="100"><template #default="{ row }">{{ statusText(row.status) }}</template></el-table-column>
+          <el-table-column label="模型数" width="90"><template #default="{ row }">{{ row.item_count }}</template></el-table-column>
           <el-table-column label="有效期至" width="170"><template #default="{ row }">{{ row.valid_until ? formatDateTime(row.valid_until, "—", false) : "—" }}</template></el-table-column>
-          <el-table-column label="归属销售" width="110"><template #default="{ row }">{{ row.owner_name }}</template></el-table-column>
-          <el-table-column label="创建时间" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
-          <template #empty><el-empty description="暂无报价" :image-size="64" /></template>
+          <el-table-column label="报价时间" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
+          <template #empty><el-empty description="暂无已导出报价" :image-size="64" /></template>
         </el-table>
-        <div class="catalog-pagination"><el-pagination :current-page="quotePagination.page" :page-size="quotePagination.size" :total="quotePagination.total" layout="total, prev, pager, next" @current-change="changeQuotePage" /></div>
-      </el-tab-pane>
+      </template>
 
-      <el-tab-pane label="审批记录" name="approvals">
-        <el-alert v-if="approvalError" :title="approvalError" type="error" show-icon :closable="false"><el-button text @click="loadApprovals">重新加载</el-button></el-alert>
-        <el-table v-loading="approvalLoading" :data="approvalRows" row-key="id">
-          <el-table-column label="变更单号" width="110"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
-          <el-table-column label="客户名称" min-width="170"><template #default="{ row }">{{ row.customer_name || "—" }}</template></el-table-column>
-          <el-table-column label="关联报价" width="110"><template #default="{ row }">{{ row.quote_id ? `#${row.quote_id}` : "—" }}</template></el-table-column>
-          <el-table-column label="审批结果" width="110"><template #default="{ row }"><el-tag size="small" :type="approvalStatusType(row.status)">{{ approvalStatusText(row.status) }}</el-tag></template></el-table-column>
+      <template v-else>
+        <el-table v-loading="quoteLoading" :data="logRows" row-key="id" class="grid">
+          <el-table-column label="时间" width="180"><template #default="{ row }">{{ formatDateTime(row.at, "—", false) }}</template></el-table-column>
+          <el-table-column label="报价编号" width="120"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
+          <el-table-column label="客户名称" min-width="200"><template #default="{ row }">{{ row.customer }}</template></el-table-column>
+          <el-table-column label="版本 / 状态" width="150"><template #default="{ row }">V{{ row.version }} · {{ statusText(row.status) }}</template></el-table-column>
+          <el-table-column label="操作人" width="130"><template #default="{ row }">{{ row.operator }}</template></el-table-column>
+          <template #empty><el-empty description="暂无报价记录" :image-size="64" /></template>
+        </el-table>
+        <el-table v-if="approvalRows.length" :data="approvalRows" row-key="id" class="grid approval-grid">
+          <el-table-column label="特价变更单" width="130"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
+          <el-table-column label="客户名称" min-width="200"><template #default="{ row }">{{ row.customer_name }}</template></el-table-column>
+          <el-table-column label="关联报价" width="120"><template #default="{ row }">{{ row.quote_id ? `#${row.quote_id}` : "—" }}</template></el-table-column>
+          <el-table-column label="审批结果" width="110">
+            <template #default="{ row }"><el-tag size="small" :type="approvalStatusType(row.status)">{{ approvalStatusText(row.status) }}</el-tag></template>
+          </el-table-column>
           <el-table-column label="申请原因" min-width="200" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "—" }}</template></el-table-column>
-          <el-table-column label="提交人" width="110"><template #default="{ row }">{{ row.created_by || "—" }}</template></el-table-column>
           <el-table-column label="提交时间" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
-          <template #empty><el-empty description="暂无特价审批记录" :image-size="64" /></template>
         </el-table>
-      </el-tab-pane>
-    </el-tabs>
-  </section>
+      </template>
+    </template>
 
-  <el-dialog v-model="quoteOpen" title="生成客户报价" width="min(760px, 96vw)" :close-on-click-modal="false" :close-on-press-escape="!quoteSubmitting" :show-close="!quoteSubmitting">
-    <el-alert title="只调用阶段 9a 的统一生成接口；报价版本、floor 和数据域均由服务端决定。" type="info" show-icon :closable="false" />
-    <el-form class="dialog-form" label-position="top" :disabled="quoteSubmitting"><div class="form-grid"><el-form-item label="客户 *"><el-select v-model="quoteForm.customerId" filterable remote clearable :remote-method="searchQuoteCustomers" :loading="quoteCustomerLoading" placeholder="搜索客户名称" @visible-change="(open: boolean) => { if (open && !quoteCustomers.length) searchQuoteCustomers(); }" @change="rememberQuoteCustomer"><el-option v-for="customer in quoteCustomerOptions" :key="customer.id" :label="`${customer.legalName} · ${customer.levelCode} · ID ${customer.id}`" :value="customer.id" /></el-select></el-form-item><el-form-item label="报价类型 *"><el-select v-model="quoteForm.quoteType" @change="changeQuoteType"><el-option v-for="option in quoteTypeOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item></div><el-alert v-if="quoteCustomerError" :title="quoteCustomerError" type="error" :closable="false"><el-button text @click="searchQuoteCustomers(quoteCustomerKeyword)">重试查询客户</el-button></el-alert><p v-else-if="!quoteCustomerLoading && !quoteCustomers.length" class="muted">没有匹配客户，可换关键字查询。</p><el-button v-if="quoteCustomers.length < quoteCustomerTotal" text :loading="quoteCustomerLoading" @click="searchQuoteCustomers(quoteCustomerKeyword, true)">加载更多客户</el-button><p class="muted">{{ quoteHint }} <span v-if="quoteForm.quoteType === 'APPLY'">当前客户等级：{{ chosenCustomerLevel || '未选择客户' }}。</span></p><el-alert v-if="quoteContextError" :title="quoteContextError" type="error" :closable="false"><el-button text @click="loadQuoteContext(quoteForm.customerId)">重试加载报价信息</el-button></el-alert><p v-else-if="quoteContextLoading" class="muted">正在加载该客户的价目表和历史报价…</p><el-form-item v-if="quoteForm.quoteType === 'CLONE'" label="来源报价 *"><el-select v-model="quoteForm.sourceQuoteId" filterable clearable placeholder="选择该客户的历史报价"><el-option v-for="item in quoteContext?.history.list || []" :key="item.id" :label="`报价 #${item.id} · V${item.versionNo} · ${item.quoteType} · ${item.status}`" :value="item.id" /></el-select><p v-if="quoteContext && !quoteContext.history.list.length" class="muted">该客户暂无可克隆的历史报价。</p></el-form-item><el-alert v-if="quoteForm.quoteType === 'APPLY' && quoteContext && !quoteContext.priceBook" title="该客户等级暂无当前生效价目表。" type="warning" :closable="false" /><div v-if="quoteForm.quoteType === 'APPLY' && quoteContext?.priceBook" class="context-preview"><b>将套用价目表 #{{ quoteContext.priceBook.id }} · V{{ quoteContext.priceBook.versionNo }}</b><span class="muted">，共 {{ quoteContext.priceBook.items.length }} 个 SKU</span></div><div v-else-if="quoteForm.quoteType === 'CLONE' && selectedHistoryQuote" class="context-preview"><b>将克隆报价 #{{ selectedHistoryQuote.id }} · V{{ selectedHistoryQuote.versionNo }}</b><span class="muted">，共 {{ selectedHistoryQuote.items.length }} 个 SKU</span></div><el-table v-if="contextPreviewItems.length" class="context-table" :data="contextPreviewItems" border max-height="220"><el-table-column prop="skuCode" label="SKU" min-width="180" /><el-table-column prop="skuId" label="SKU ID" width="100" /><el-table-column prop="unitPrice" label="单价" min-width="120" /><el-table-column prop="currency" label="币种" width="90" /></el-table><template v-if="quoteForm.quoteType === 'TEMP'"><el-form-item label="有效期至 *"><el-date-picker v-model="quoteForm.validTo" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" placeholder="选择临时报价到期时间" /></el-form-item><div class="section-title"><h3>SKU 报价</h3><el-button @click="addQuoteItem">添加 SKU</el-button></div><el-table :data="quoteForm.items" border><el-table-column label="SKU ID *" min-width="180"><template #default="{ row }"><el-select v-if="canReadSkus" v-model="row.skuId" filterable remote clearable :remote-method="(value: string) => { skuKeyword = value; searchSkus(value); }" :loading="skuLoading" @visible-change="(open: boolean) => { if (open && !skuChoices.length) searchSkus(); }" @change="rememberSku"><el-option v-for="sku in [...skuChoices, ...selectedSkus.values()]" :key="String(sku.id)" :label="skuLabel(String(sku.id))" :value="String(sku.id)" /></el-select><el-input v-else v-model="row.skuId" inputmode="numeric" /></template></el-table-column><el-table-column label="客户单价 *" min-width="220"><template #default="{ row }"><el-input v-model="row.unitPrice" placeholder="普通十进制，最多 8 位小数" /></template></el-table-column><el-table-column label="操作" width="80"><template #default="{ $index }"><el-button link type="danger" @click="quoteForm.items.splice($index, 1)">移除</el-button></template></el-table-column></el-table><p class="muted">本次报价 SKU：{{ quoteForm.items.map(item => skuLabel(item.skuId)).join("；") }}</p><el-alert v-if="skuError" :title="skuError" type="error" :closable="false"><el-button @click="searchSkus(skuKeyword)">重试</el-button></el-alert><el-button v-if="canReadSkus && skuChoices.length < skuTotal" text :loading="skuLoading" @click="searchSkus(skuKeyword, true)">加载更多 SKU</el-button></template><el-alert v-if="quoteError" class="form-error" :title="quoteError" type="error" show-icon :closable="false" /></el-form>
-    <template #footer><el-button :disabled="quoteSubmitting" @click="quoteOpen = false">取消</el-button><el-button type="primary" :disabled="quoteSubmitting" @click="openQuotePreview">预览确认信息</el-button></template>
-  </el-dialog>
-
-  <el-dialog v-model="quotePreviewOpen" title="报价提交前确认" width="min(680px, 96vw)" append-to-body :close-on-click-modal="false" :close-on-press-escape="!quoteSubmitting" :show-close="!quoteSubmitting">
-    <template v-if="quotePreview">
-      <el-alert title="此处仅核对提交内容，不是后端计算后的报价单；价格、版本和 floor 校验以生成结果为准。" type="info" show-icon :closable="false" />
-      <el-descriptions class="quote-preview" :column="1" border>
-        <el-descriptions-item label="客户">{{ quotePreview.customerName }} · ID {{ quotePreview.draft.customerId }}</el-descriptions-item>
-        <el-descriptions-item label="客户等级">{{ quotePreview.levelCode }}</el-descriptions-item>
-        <el-descriptions-item label="报价类型">{{ quotePreview.typeLabel }}</el-descriptions-item>
-        <el-descriptions-item v-if="quotePreview.draft.sourceQuoteId" label="来源报价 ID">{{ quotePreview.draft.sourceQuoteId }}</el-descriptions-item>
-        <el-descriptions-item v-if="quotePreview.draft.validTo" label="临时报价有效期至">{{ formatDateTime(quotePreview.draft.validTo, '未设置', false) }}</el-descriptions-item>
-      </el-descriptions>
-      <p class="muted">{{ quotePreview.hint }}</p>
-      <el-table v-if="quotePreview.items.length" :data="quotePreview.items" border>
-        <el-table-column prop="label" label="SKU" min-width="260" />
-        <el-table-column prop="unitPrice" label="预览单价" min-width="160" />
+    <!-- 添加/选择模型 -->
+    <el-dialog v-model="pickerVisible" title="添加/选择模型" width="min(760px, 96vw)">
+      <div class="picker-bar">
+        <el-input v-model="pickerKeyword" placeholder="搜索模型 / SKU" clearable @keyup.enter="searchModels(false)" />
+        <el-button type="primary" @click="searchModels(false)">搜索</el-button>
+        <span class="muted">已勾选 {{ pickerSelected.size }} 个</span>
+      </div>
+      <el-alert v-if="pickerError" :title="pickerError" type="error" show-icon :closable="false" />
+      <el-table v-loading="pickerLoading" :data="pickerRows" row-key="id" max-height="360">
+        <el-table-column width="48">
+          <template #default="{ row }"><el-checkbox :model-value="pickerSelected.has(String(row.id))" @change="togglePick(String(row.id))" /></template>
+        </el-table-column>
+        <el-table-column label="厂商 / 产品" min-width="200"><template #default="{ row }">{{ row.vendor_name }} / {{ row.family_name }}</template></el-table-column>
+        <el-table-column label="SKU" width="150"><template #default="{ row }"><span class="mono">{{ row.sku_code }}</span></template></el-table-column>
       </el-table>
-      <el-alert v-if="quoteError" class="form-error" :title="quoteError" type="error" show-icon :closable="false" />
-    </template>
-    <template #footer><el-button :disabled="quoteSubmitting" @click="quotePreviewOpen = false">返回修改</el-button><el-button type="primary" :loading="quoteSubmitting" @click="generateQuote">确认生成</el-button></template>
-  </el-dialog>
+      <el-button v-if="pickerRows.length < pickerTotal" text :loading="pickerLoading" @click="searchModels(true)">加载更多</el-button>
+      <template #footer>
+        <el-button @click="pickerVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmPicker">加入报价（{{ pickerSelected.size }}）</el-button>
+      </template>
+    </el-dialog>
 
-  <el-dialog v-model="quoteActionOpen" title="客户报价后续操作" width="min(620px, 96vw)" :close-on-click-modal="false" :show-close="!quoteActionSubmitting">
-    <el-alert title="特价、刷新和导出均直接调用阶段 9b 真实接口；服务端负责权限、状态机和幂等。" type="info" show-icon :closable="false" />
-    <el-form class="dialog-form" label-position="top" :disabled="quoteActionSubmitting"><el-form-item label="报价 ID *"><el-input v-model="quoteActionForm.quoteId" inputmode="numeric" /></el-form-item><el-form-item label="原因"><el-input v-model="quoteActionForm.reason" type="textarea" :rows="3" maxlength="300" show-word-limit /></el-form-item><el-form-item label="期望毛利（申请特价时必填）"><el-input v-model="quoteActionForm.expectedMargin" placeholder="例如 0.08" /></el-form-item><el-alert v-if="quoteActionError" class="form-error" :title="quoteActionError" type="error" show-icon :closable="false" /></el-form>
-    <template #footer><el-button :loading="quoteActionSubmitting" @click="exportQuote">导出 XLSX</el-button><el-button :loading="quoteActionSubmitting" @click="refreshQuote">按最新成本刷新</el-button><el-button type="primary" :loading="quoteActionSubmitting" @click="requestSpecialPrice">申请特价</el-button></template>
-  </el-dialog>
+    <!-- 客户详情 -->
+    <el-dialog v-model="detailVisible" title="客户详情" width="min(680px, 96vw)">
+      <el-descriptions v-if="detailRow" :column="2" border>
+        <el-descriptions-item label="客户名称">{{ detailRow.name }}</el-descriptions-item>
+        <el-descriptions-item label="客户 ID">{{ detailRow.id }}</el-descriptions-item>
+        <el-descriptions-item label="销售">{{ detailRow.owner_name }}</el-descriptions-item>
+        <el-descriptions-item label="客户等级">{{ detailRow.level_code }}</el-descriptions-item>
+        <el-descriptions-item label="国内/海外">{{ regionText(detailRow.region) }}</el-descriptions-item>
+        <el-descriptions-item label="结算币种">{{ currencyText(detailRow.settlement_currency) }}</el-descriptions-item>
+        <el-descriptions-item label="授信额度 / 已用">
+          <span class="mono">{{ amountText(detailRow.settlement_currency, detailRow.credit_limit) }} / {{ detailRow.credit_used }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="税率">{{ detailRow.tax_rate ? `${detailRow.tax_rate}%` : "未填写" }}</el-descriptions-item>
+        <el-descriptions-item label="合同状态">{{ detailRow.contract_status }}</el-descriptions-item>
+        <el-descriptions-item label="服务状态">{{ detailRow.service_status }}</el-descriptions-item>
+        <el-descriptions-item label="合作阶段">{{ detailRow.cooperation_stage }}</el-descriptions-item>
+        <el-descriptions-item label="办理状态">{{ detailRow.handling_status }}</el-descriptions-item>
+        <el-descriptions-item label="生效报价">{{ detailRow.active_quotes }} 份</el-descriptions-item>
+        <el-descriptions-item label="未完成报价">{{ detailRow.pending_quotes }} 份</el-descriptions-item>
+      </el-descriptions>
+      <template #footer>
+        <el-button @click="detailVisible = false">关闭</el-button>
+        <el-button v-if="canTransfer" @click="detailVisible = false; detailRow && openTransfer(detailRow)">移交客户</el-button>
+        <el-button v-if="canQuote" type="primary" @click="detailVisible = false; startNewQuote(detailRow)">新建报价</el-button>
+      </template>
+    </el-dialog>
 
-  <el-dialog v-model="transferOpen" title="移交客户" width="min(680px, 96vw)" :close-on-click-modal="false" :close-on-press-escape="!transferSubmitting" :show-close="!transferSubmitting">
-    <p v-if="transferCustomer">客户：<b>{{ transferCustomer.legalName }}</b> · 客户 ID {{ transferCustomer.id }}</p>
-    <el-form class="dialog-form" label-position="top" :disabled="transferSubmitting"><el-form-item label="目标销售人员 ID *"><el-input v-model="transferForm.toOperatorId" inputmode="numeric" @input="invalidateTransferPreview" /></el-form-item><el-form-item label="移交原因"><el-input v-model="transferForm.reason" type="textarea" :rows="3" maxlength="200" show-word-limit @input="invalidateTransferPreview" /></el-form-item></el-form>
-    <el-descriptions v-if="transferImpact" :column="2" border><el-descriptions-item label="原归属">{{ transferImpact.fromOperatorName }}（{{ transferImpact.fromOperatorId }}）</el-descriptions-item><el-descriptions-item label="新归属">{{ transferImpact.toOperatorName }}（{{ transferImpact.toOperatorId }}）</el-descriptions-item><el-descriptions-item label="随迁报价">{{ transferImpact.quoteCount }} 份</el-descriptions-item><el-descriptions-item label="关联价目表">{{ transferImpact.priceBookCount }} 条</el-descriptions-item></el-descriptions>
-    <el-alert v-if="transferError" class="form-error" :title="transferError" type="error" show-icon :closable="false" />
-    <template #footer><el-button :disabled="transferSubmitting" @click="transferOpen = false">取消</el-button><el-button v-if="!transferImpact" type="primary" :loading="transferSubmitting" @click="previewTransfer">检查影响</el-button><el-button v-else type="danger" :loading="transferSubmitting" @click="confirmTransfer">确认移交</el-button></template>
-  </el-dialog>
-  <el-dialog v-model="detailVisible" title="客户详情" width="min(680px, 96vw)">
-    <el-descriptions v-if="detailRow" :column="2" border>
-      <el-descriptions-item label="客户名称">{{ detailRow.name }}</el-descriptions-item>
-      <el-descriptions-item label="客户 ID">{{ detailRow.id }}</el-descriptions-item>
-      <el-descriptions-item label="客户等级">{{ detailRow.level_code }}</el-descriptions-item>
-      <el-descriptions-item label="客户来源">{{ detailRow.source || "—" }}</el-descriptions-item>
-      <el-descriptions-item label="归属销售">{{ detailRow.owner_name }}</el-descriptions-item>
-      <el-descriptions-item label="客户状态">{{ detailRow.status }}</el-descriptions-item>
-      <el-descriptions-item label="合同状态">{{ detailRow.contract_status }}</el-descriptions-item>
-      <el-descriptions-item label="合作阶段">{{ detailRow.cooperation_stage }}</el-descriptions-item>
-      <el-descriptions-item label="办理状态">{{ detailRow.handling_status }}</el-descriptions-item>
-      <el-descriptions-item label="授信额度 / 已用"><span class="mono">{{ detailRow.credit_used }} / {{ detailRow.credit_limit }}</span></el-descriptions-item>
-      <el-descriptions-item label="生效报价">{{ detailRow.active_quotes }} 份</el-descriptions-item>
-      <el-descriptions-item label="未完成报价">{{ detailRow.pending_quotes }} 份</el-descriptions-item>
-    </el-descriptions>
-    <template #footer>
-      <el-button @click="detailVisible = false">关闭</el-button>
-      <el-button v-if="canTransfer" @click="transferFromDetail">移交客户</el-button>
-      <el-button v-if="canGenerateQuote" type="primary" @click="quoteFromDetail">生成报价</el-button>
-    </template>
-  </el-dialog>
+    <!-- 移交客户 -->
+    <el-dialog v-model="transferVisible" title="移交客户" width="min(680px, 96vw)" :close-on-click-modal="false" :close-on-press-escape="!transferSubmitting" :show-close="!transferSubmitting">
+      <p v-if="transferTarget">客户：<b>{{ transferTarget.name }}</b> · 当前销售 {{ transferTarget.owner_name }}</p>
+      <el-form class="dialog-form" label-position="top" :disabled="transferSubmitting">
+        <el-form-item label="目标销售人员 ID *"><el-input v-model="transferForm.toOperatorId" inputmode="numeric" @input="invalidateTransferPreview" /></el-form-item>
+        <el-form-item label="移交原因"><el-input v-model="transferForm.reason" type="textarea" :rows="3" maxlength="200" show-word-limit @input="invalidateTransferPreview" /></el-form-item>
+      </el-form>
+      <el-descriptions v-if="transferImpact" :column="2" border>
+        <el-descriptions-item label="原归属">{{ transferImpact.fromOperatorName }}（{{ transferImpact.fromOperatorId }}）</el-descriptions-item>
+        <el-descriptions-item label="新归属">{{ transferImpact.toOperatorName }}（{{ transferImpact.toOperatorId }}）</el-descriptions-item>
+        <el-descriptions-item label="随迁报价">{{ transferImpact.quoteCount }} 份</el-descriptions-item>
+        <el-descriptions-item label="关联价目表">{{ transferImpact.priceBookCount }} 条</el-descriptions-item>
+      </el-descriptions>
+      <el-alert v-if="transferError" class="form-error" :title="transferError" type="error" show-icon :closable="false" />
+      <template #footer>
+        <el-button :disabled="transferSubmitting" @click="transferVisible = false">取消</el-button>
+        <el-button v-if="!transferImpact" type="primary" :loading="transferSubmitting" @click="previewTransfer">检查影响</el-button>
+        <el-button v-else type="danger" :loading="transferSubmitting" @click="confirmTransfer">确认移交</el-button>
+      </template>
+    </el-dialog>
+  </section>
 </template>
 
 <style scoped>
-.customer-panel { padding: 22px; }.section-title,.header-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.section-title h2,.section-title h3 { margin: 0; }.section-title p { margin: 5px 0 0; }.customer-filters { grid-template-columns: minmax(260px, 1fr) auto auto; margin: 18px 0; }.customer-list { min-height: 300px; }.dialog-form { margin-top: 18px; }.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }.context-preview { margin: 14px 0 8px; }.context-table { margin-bottom: 16px; }.quote-preview { margin-top: 16px; }.form-error { margin-top: 18px; }@media (max-width: 760px) { .customer-filters,.form-grid { grid-template-columns: 1fr; }.section-title { align-items: flex-start; flex-direction: column; } }
+.customer-page { padding: 18px 22px 32px; }
+.tabbar, .subtabbar { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--el-border-color-light); margin-bottom: 16px; }
+.subtabbar { margin-top: 4px; }
+.tabbar-left { display: flex; gap: 24px; }
+.tab { background: none; border: none; padding: 10px 2px; cursor: pointer; font-size: 14px; color: var(--app-text-secondary); border-bottom: 2px solid transparent; }
+.tab.active { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); font-weight: 600; }
+.filterbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+.flt { width: 148px; }
+.grid { width: 100%; }
+.cell-main { font-weight: 600; }
+.cell-sub { color: var(--app-text-muted); font-size: 12px; margin-top: 2px; }
+.stack-tag { display: block; width: fit-content; margin: 2px 0; }
+.card { border: 1px solid var(--el-border-color-light); border-radius: 10px; padding: 18px 20px; margin-bottom: 18px; background: var(--el-bg-color); }
+.card-title { margin: 0 0 16px; font-size: 15px; font-weight: 600; }
+.form-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 20px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: 12px; color: var(--app-text-muted); }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.card-head-left, .card-head-right { display: flex; align-items: center; gap: 8px; }
+.margin-input { width: 120px; }
+.empty-hint { text-align: center; color: var(--app-text-muted); padding: 56px 0; }
+.card-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-top: 18px; }
+.foot-note { color: var(--app-text-muted); font-size: 12px; max-width: 62%; line-height: 1.6; }
+.foot-actions { display: flex; gap: 10px; }
+.linked { display: flex; align-items: center; gap: 12px; border: 1px solid var(--el-border-color-light); border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; }
+.linked-label { font-size: 13px; color: var(--app-text-secondary); }
+.linked-input { width: 380px; }
+.linked-hint { color: var(--app-text-muted); font-size: 12px; }
+.picker-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.approval-grid { margin-top: 18px; }
+.dialog-form { margin-top: 16px; }
+.form-error { margin-top: 14px; }
+.muted { color: var(--app-text-muted); font-size: 12px; }
+.mono { font-variant-numeric: tabular-nums; }
+@media (max-width: 1200px) { .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .foot-note { max-width: 100%; } .card-foot { flex-direction: column; align-items: stretch; } }
 </style>

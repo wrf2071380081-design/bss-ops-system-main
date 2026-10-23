@@ -10,8 +10,16 @@ export interface CustomerWorkspaceRow {
   /** customer_profile 无来源列，后端恒返回空串，前端显示「—」 */
   source: string;
   owner_name: string;
-  /** 库内没有客户合同表，后端恒返回「待记录」 */
+  owner_sales_operator_id: number;
+  region: "CN" | "OVERSEAS" | string;
+  settlement_currency: "CNY" | "USD" | string;
+  /** NULL 时后端返回空串，前端显示「未填写」 */
+  tax_rate: string;
+  /** 000037 落库：待记录 / 办理中 / 已归档 */
   contract_status: string;
+  /** 派生：服务中 / 接入中 / 潜在客户 */
+  service_status: string;
+  /** 派生：已有 / 潜在 */
   cooperation_stage: string;
   handling_status: string;
   status: string;

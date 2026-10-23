@@ -22,9 +22,10 @@ import (
 // 这里全部走只读 SQL，不写库、不碰状态机，避免与 C 侧正式链路产生第二套写入口。
 //
 // 数据口径（缺列一律留空/派生，不编造）：
+//   - 国内/海外、结算币种、税率、合同状态：000037 已落库（原型列），直接读
 //   - 客户来源：customer_profile 无来源列 → 返回空串，前端显示「—」
-//   - 合同状态：库内没有客户合同表（contract 是供应商侧）→ 恒为「待记录」
-//   - 合作阶段：存在 EFFECTIVE 报价 → 已有；否则 待接入
+//   - 合作阶段：存在任意报价 → 已有；否则 潜在
+//   - 服务状态：有 EFFECTIVE 报价 → 服务中；仅有未完成报价 → 接入中；否则 潜在客户
 //   - 办理状态：存在 DRAFT/PENDING/APPROVED 报价 → 有未完成事项；否则 无未完成事项
 type CustomerWorkspaceRuntime struct{ raw *sql.DB }
 
@@ -34,19 +35,24 @@ func NewCustomerWorkspaceRuntime(raw *sql.DB) *CustomerWorkspaceRuntime {
 
 // CustomerWorkspaceRow 客户列表行。
 type CustomerWorkspaceRow struct {
-	ID               int64  `json:"id"`
-	Name             string `json:"name"`
-	LevelCode        string `json:"level_code"`
-	Source           string `json:"source"`
-	OwnerName        string `json:"owner_name"`
-	ContractStatus   string `json:"contract_status"`
-	CooperationStage string `json:"cooperation_stage"`
-	HandlingStatus   string `json:"handling_status"`
-	Status           string `json:"status"`
-	CreditLimit      string `json:"credit_limit"`
-	CreditUsed       string `json:"credit_used"`
-	ActiveQuotes     int    `json:"active_quotes"`
-	PendingQuotes    int    `json:"pending_quotes"`
+	ID                 int64  `json:"id"`
+	Name               string `json:"name"`
+	LevelCode          string `json:"level_code"`
+	Source             string `json:"source"`
+	OwnerName          string `json:"owner_name"`
+	OwnerSalesOperator int64  `json:"owner_sales_operator_id"`
+	Region             string `json:"region"`
+	SettlementCurrency string `json:"settlement_currency"`
+	TaxRate            string `json:"tax_rate"`
+	ContractStatus     string `json:"contract_status"`
+	ServiceStatus      string `json:"service_status"`
+	CooperationStage   string `json:"cooperation_stage"`
+	HandlingStatus     string `json:"handling_status"`
+	Status             string `json:"status"`
+	CreditLimit        string `json:"credit_limit"`
+	CreditUsed         string `json:"credit_used"`
+	ActiveQuotes       int    `json:"active_quotes"`
+	PendingQuotes      int    `json:"pending_quotes"`
 }
 
 // CustomerQuoteRow 客户报价行。
@@ -121,8 +127,9 @@ func (rt *CustomerWorkspaceRuntime) ListCustomers(ctx context.Context, op *middl
 
 	args = append(args, size, (page-1)*size)
 	rows, err := rt.raw.QueryContext(ctx, `
-		SELECT cp.id, ls.legal_name, cp.level_code, st.name, cp.status,
+		SELECT cp.id, ls.legal_name, cp.level_code, st.name, cp.owner_sales_operator_id, cp.status,
 		       cp.credit_limit::text, cp.credit_used::text,
+		       cp.region, cp.settlement_currency, COALESCE(cp.tax_rate::text, ''), cp.contract_status,
 		       COALESCE(q.active_cnt, 0), COALESCE(q.pending_cnt, 0)
 		  FROM customer_profile cp
 		  JOIN legal_subject ls ON ls.id = cp.subject_id
@@ -146,16 +153,23 @@ func (rt *CustomerWorkspaceRuntime) ListCustomers(ctx context.Context, op *middl
 	list := make([]CustomerWorkspaceRow, 0, size)
 	for rows.Next() {
 		var row CustomerWorkspaceRow
-		if err := rows.Scan(&row.ID, &row.Name, &row.LevelCode, &row.OwnerName, &row.Status,
-			&row.CreditLimit, &row.CreditUsed, &row.ActiveQuotes, &row.PendingQuotes); err != nil {
+		if err := rows.Scan(&row.ID, &row.Name, &row.LevelCode, &row.OwnerName, &row.OwnerSalesOperator,
+			&row.Status, &row.CreditLimit, &row.CreditUsed,
+			&row.Region, &row.SettlementCurrency, &row.TaxRate, &row.ContractStatus,
+			&row.ActiveQuotes, &row.PendingQuotes); err != nil {
 			return nil, 0, err
 		}
 		row.Source = ""
-		row.ContractStatus = "待记录"
-		if row.ActiveQuotes > 0 {
+		switch {
+		case row.ActiveQuotes > 0:
 			row.CooperationStage = "已有"
-		} else {
-			row.CooperationStage = "待接入"
+			row.ServiceStatus = "服务中"
+		case row.PendingQuotes > 0:
+			row.CooperationStage = "已有"
+			row.ServiceStatus = "接入中"
+		default:
+			row.CooperationStage = "潜在"
+			row.ServiceStatus = "潜在客户"
 		}
 		if row.PendingQuotes > 0 {
 			row.HandlingStatus = "有未完成事项"
