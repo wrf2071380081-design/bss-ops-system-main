@@ -215,6 +215,17 @@ func main() {
 	if err != nil {
 		log.Fatal("initialize A plan reminders", zap.Error(err))
 	}
+	// B 线：测试平台对接。旁路能力，构造失败只告警，不阻断主链路启动。
+	testPlatform, err := newTestPlatformRuntime(cfg, dbClient.DB, log)
+	if err != nil {
+		log.Warn("initialize test platform runtime", zap.Error(err))
+		testPlatform = nil
+	}
+	if testPlatform != nil && testPlatform.Reader != nil {
+		// 注入后模型广场的报告面板不再返回 503。
+		supplyRoutes.ResourceReports = testPlatform.Reader
+		log.Info("supply report reader enabled")
+	}
 	router := api.New(api.Deps{
 		Config:             cfg,
 		Log:                log,
@@ -222,6 +233,7 @@ func main() {
 		AuthService:        authService,
 		SessionReader:      authRepo,
 		IdemStore:          idemStore,
+		TestJobs:           testJobStarter(testPlatform),
 		SupplyRoutes:       &supplyRoutes,
 		SupplyChain:        supplyChain,
 		CustomerWorkspace:  customerWorkspace,
@@ -270,6 +282,12 @@ func main() {
 	sched := worker.NewScheduler(worker.NewCronLocker(dbClient.DB), log, loc)
 	nJobs := worker.RegisterJobs(sched, cfg.Worker, approveSvc, lifecycleSvc, costSvc, costJobs, eventJobs)
 	nJobs += worker.RegisterPlanReminderJob(sched, cfg.Worker, planReminderStore, log)
+	if testPlatform != nil && testPlatform.Service != nil {
+		nJobs += worker.RegisterTestPlatformPollJob(sched, cfg.Worker, cfg.TestPlatform, testPlatform.Service, log)
+	}
+	if testPlatform != nil && testPlatform.Service != nil {
+		nJobs += worker.RegisterTestPlatformPollJob(sched, cfg.Worker, cfg.TestPlatform, testPlatform.Service, log)
+	}
 	if cfg.Worker.Enable && nJobs > 0 {
 		sched.Start(context.Background())
 		log.Info("worker started", zap.Int("jobs", nJobs))

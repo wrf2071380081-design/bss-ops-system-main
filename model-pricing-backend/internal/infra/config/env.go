@@ -67,6 +67,14 @@ func Load() (*Config, error) {
 	v.SetDefault("worker.jobs.plan_reminder.enable", true)
 	v.SetDefault("worker.jobs.plan_reminder.interval", time.Minute)
 
+	// 测试平台（open-api v1）：默认值只给"安全的空壳"，地址与 token 必须由
+	// configs/config.yaml 或环境变量提供；缺任何一个，运行装配会跳过出站调用。
+	v.SetDefault("test_platform.enable", true)
+	v.SetDefault("test_platform.timeout", 30*time.Second)
+	v.SetDefault("test_platform.poll_interval", 15*time.Second)
+	v.SetDefault("test_platform.poll_limit", 50)
+	v.SetDefault("test_platform.report_dir", "bin/test-reports")
+
 	// 模块开关（重构收敛）：原型 v0.19 用不到的模块默认关闭，路由返回 404。
 	// configs/config.yaml 被 .gitignore 忽略，默认值必须落在代码里；
 	// 要恢复某模块，改这里/配置为 true 即可（代码与表都还在，不删）。

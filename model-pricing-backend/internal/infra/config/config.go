@@ -9,14 +9,31 @@ import (
 // Config 是应用全部配置的聚合。当前阶段（骨架）只实际使用 Server / Database / Log，
 // 其余字段为后续阶段预留，避免配置结构随模块推进反复迁移。
 type Config struct {
-	Server   Server   `mapstructure:"server"`
-	Database Database `mapstructure:"db"`
-	Redis    Redis    `mapstructure:"redis"`
-	Auth     Auth     `mapstructure:"auth"`
-	Log      Log      `mapstructure:"log"`
-	Worker   Worker   `mapstructure:"worker"`
-	Docs     Docs     `mapstructure:"docs"`
-	Features Features `mapstructure:"features"`
+	Server       Server       `mapstructure:"server"`
+	Database     Database     `mapstructure:"db"`
+	Redis        Redis        `mapstructure:"redis"`
+	Auth         Auth         `mapstructure:"auth"`
+	Log          Log          `mapstructure:"log"`
+	Worker       Worker       `mapstructure:"worker"`
+	Docs         Docs         `mapstructure:"docs"`
+	Features     Features     `mapstructure:"features"`
+	TestPlatform TestPlatform `mapstructure:"test_platform"`
+}
+
+// TestPlatform 是外部测试平台（open-api v1）的连接配置。
+//
+// Enable 只是"允许出站"的开关：BaseURL 或 Token 为空时，运行装配会直接跳过，
+// 不会因为没配平台而让服务起不来（测试是旁路能力，不该阻断主链路）。
+// Token 属于密钥，只写在被 .gitignore 忽略的 configs/config.yaml 或环境变量里，
+// config.example.yaml 只保留占位。
+type TestPlatform struct {
+	Enable       bool          `mapstructure:"enable"`
+	BaseURL      string        `mapstructure:"base_url"`
+	Token        string        `mapstructure:"token"`
+	Timeout      time.Duration `mapstructure:"timeout"`
+	PollInterval time.Duration `mapstructure:"poll_interval"`
+	PollLimit    int           `mapstructure:"poll_limit"`
+	ReportDir    string        `mapstructure:"report_dir"`
 }
 
 // Features 是"模块开关"（重构收敛用）：true = 对外保留，false = 不暴露（路由返回 404）。

@@ -40,7 +40,9 @@ type Deps struct {
 	IdemStore     middleware.IdempotencyStore
 	// SupplyRoutes contains A-owned handlers assembled over the current schema.
 	// It stays nil in environments where the A module is not configured.
-	SupplyRoutes       *SupplyDeps
+	SupplyRoutes *SupplyDeps
+	// TestJobs 是 B 线测试平台发起端口；未配置测试平台时保持 nil（路由不注册）。
+	TestJobs           TestJobStarter
 	ModelSvc           *model.Service
 	SupplierSvc        *supplier.Service
 	SupplierProfileSvc *supplier.ProfileService

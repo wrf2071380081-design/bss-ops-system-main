@@ -11,6 +11,7 @@ import (
 
 	"model_bss/internal/domain/cost"
 	"model_bss/internal/domain/supplier"
+	tpdomain "model_bss/internal/domain/testplatform"
 	"model_bss/internal/infra/config"
 	"model_bss/internal/repo"
 )
@@ -89,6 +90,42 @@ func RegisterJobs(s *Scheduler, cfg config.Worker, approveSvc *supplier.ApproveS
 		n++
 	}
 	return n
+}
+
+// TestPlatformPoller 是测试任务轮询端口（domain/testplatform.Service 实现）。
+type TestPlatformPoller interface {
+	Poll(context.Context, int) (tpdomain.PollResult, error)
+}
+
+// RegisterTestPlatformPollJob 注册测试平台结果轮询。
+//
+// 设计成"轮询为主、回调为辅"（Q11）：回调不可达时仍能收口，
+// 所以这个任务是测试链路的必需件，而回调接口是可选加速件。
+func RegisterTestPlatformPollJob(s *Scheduler, workerCfg config.Worker, tp config.TestPlatform, poller TestPlatformPoller, log *zap.Logger) int {
+	if s == nil || !workerCfg.Enable || !tp.Enable || poller == nil {
+		return 0
+	}
+	interval := tp.PollInterval
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	limit := tp.PollLimit
+	if limit <= 0 {
+		limit = 50
+	}
+	s.Register("test-platform-poll", func(ctx context.Context, _ supplier.JobIdentity) error {
+		result, err := poller.Poll(ctx, limit)
+		if err != nil {
+			log.Error("test-platform-poll failed", zap.Error(err), zap.Int("scanned", result.Scanned))
+			return err
+		}
+		if result.Completed > 0 || result.Failed > 0 {
+			log.Info("test-platform-poll finished",
+				zap.Int("scanned", result.Scanned), zap.Int("completed", result.Completed), zap.Int("failed", result.Failed))
+		}
+		return nil
+	}, interval, "")
+	return 1
 }
 
 // RegisterPlanReminderJob schedules A's due-date notice publisher.

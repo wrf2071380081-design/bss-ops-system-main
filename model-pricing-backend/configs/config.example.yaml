@@ -64,3 +64,19 @@ features:
   special_price: false           # 客户特价/刷新
   finance_legacy: false          # 汇率/账户/汇率锁
   customer_portal: false         # 客户自助门户（登录接口保留）
+
+# ============================================================
+# 测试平台（open-api v1）—— B 线对接
+#   base_url 填站点根（形如 http://host:port/open-api），客户端会自动补 /api/v1。
+#   token 是实名调用方 token（cons- 前缀），属密钥：只写在 configs/config.yaml
+#   或环境变量 MODEL_BSS_TEST_PLATFORM_TOKEN 里，本文件只留占位。
+#   base_url 或 token 为空 → 出站关闭（报告读取仍然可用）。
+# ============================================================
+test_platform:
+  enable: true
+  base_url: ""            # 例：http://10.19.218.33:18080/open-api
+  token: ""               # 例：cons-xxxx（不要提交真实值）
+  timeout: 30s
+  poll_interval: 15s      # 轮询间隔（Q11：轮询为主、回调为辅）
+  poll_limit: 50          # 单轮最多处理多少个未终态任务
+  report_dir: "bin/test-reports"   # 报告本地副本目录（Q12）
