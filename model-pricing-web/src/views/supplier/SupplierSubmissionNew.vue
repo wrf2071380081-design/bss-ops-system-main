@@ -39,6 +39,19 @@ let active = true;
 let optionRequest: AbortController | undefined;
 let draftRequest: AbortController | undefined;
 const testBusy = ref<Record<string, boolean>>({});
+const batchBusy = ref<SupplierTestCategory | "">("");
+// 门禁提示：把"哪一行还差什么"说清楚，而不是只让按钮变灰。
+const missingConnectivity = computed(() => rows.value.map((row, index) => ({ row, index })).filter(item => !item.row.connectivity_tested).map(item => item.index + 1));
+const hasStressTested = computed(() => rows.value.some(row => row.stress_tested));
+const pendingConnectivity = computed(() => rows.value.filter(row => !row.connectivity_job).length);
+const pendingStress = computed(() => rows.value.filter(row => !row.stress_job).length);
+const gateHint = computed(() => {
+  const issues: string[] = [];
+  if (!rows.value.length) issues.push("请至少添加一条模型。");
+  if (missingConnectivity.value.length) issues.push(`第 ${missingConnectivity.value.join("、")} 行尚未完成连通性测试。`);
+  if (rows.value.length && !hasStressTested.value) issues.push("至少需要一行完成压力测试。");
+  return issues.join(" ");
+});
 
 function blankRow(): EditableRow {
   return { id: "", interface_model_id: "", standard_model_id: "", standard_model_name: "", official_id: "", coefficient: "1", test_base_url: "", test_api_key: "", row_status: "DRAFT", connectivity_tested: false, connectivity_passed: false, stress_tested: false, stress_passed: false };
@@ -165,13 +178,39 @@ async function refreshTest(row: EditableRow, category: SupplierTestCategory) {
 }
 function testState(tested: boolean, passed: boolean) { return !tested ? "未测试" : passed ? "通过" : "已测试，未通过"; }
 function testFor(row: EditableRow, category: SupplierTestCategory) { return category === "CONNECTIVITY" ? row.connectivity_job : row.stress_job; }
+async function reloadKeepingKeys() {
+  if (!submissionID.value) return;
+  const result = await supplierSubmissionsApi.get(submissionID.value);
+  if (active) normalizeSaved(result, rows.value);
+}
+async function runBatch(category: SupplierTestCategory) {
+  if (batchBusy.value || !rows.value.length) return;
+  if (!submissionID.value || dirty.value) {
+    if (!(await saveDraft())) return;
+  }
+  if (!submissionID.value) { error.value = "草稿尚未保存，请先保存后再测试。"; return; }
+  batchBusy.value = category;
+  error.value = "";
+  const label = category === "CONNECTIVITY" ? "连通性" : "压力";
+  try {
+    const result = await supplierSubmissionsApi.batchTest(submissionID.value, category, lifecycle.value);
+    if (!active) return;
+    await reloadKeepingKeys();
+    const parts = [`已发起 ${result.started} 个${label}测试`];
+    if (result.skipped) parts.push(`${result.skipped} 个已完成跳过`);
+    if (result.failed) parts.push(`${result.failed} 个发起失败`);
+    ElMessage.success(parts.join("，"));
+  } catch (value) {
+    if (active) showError(value, `批量${label}测试未能启动，请重试。`);
+  } finally { if (active) batchBusy.value = ""; }
+}
 async function submitDraft() {
   if (submitting.value || !canEdit.value) return;
   if (dirty.value || !submissionID.value) {
     if (!(await saveDraft())) return;
   }
   if (!submissionID.value || !revision.value) { error.value = "草稿尚未保存，请先保存后再提交。"; return; }
-  if (!canSubmitBatch.value) { error.value = "提交要求：每个模型都完成连通性测试，且至少一个模型完成压力测试。测试是否通过由服务端按流程判断。"; return; }
+  if (!canSubmitBatch.value) { error.value = `还不能提交：${gateHint.value}`; return; }
   if (!reason.value.trim()) { error.value = "请填写申报说明。"; return; }
   submitting.value = true;
   error.value = "";
@@ -246,6 +285,12 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
       <span v-if="modelError" class="inline-error">{{ modelError }}</span>
     </div>
 
+    <div class="batch-actions">
+      <span class="batch-hint">一键测试会跳过已测过的行，只发起还没测的。</span>
+      <el-button size="small" type="primary" plain :loading="batchBusy === 'CONNECTIVITY'" :disabled="locked || !rows.length || (!!submissionID && !dirty && !pendingConnectivity)" @click="runBatch('CONNECTIVITY')">一键测连通（待测 {{ pendingConnectivity }}）</el-button>
+      <el-button size="small" :loading="batchBusy === 'STRESS'" :disabled="locked || !rows.length || (!!submissionID && !dirty && !pendingStress)" @click="runBatch('STRESS')">一键测压力（待测 {{ pendingStress }}）</el-button>
+    </div>
+
     <article v-for="(row, index) in rows" :key="row.id || `new-${index}`" class="submission-row">
       <header class="row-heading"><h2>模型 {{ index + 1 }}</h2><el-tag v-if="row.id">{{ row.row_status }}</el-tag><el-button text type="danger" :disabled="locked || rows.length === 1" @click="removeRow(index)">移除</el-button></header>
       <div class="row-grid">
@@ -268,7 +313,8 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
     <el-button :disabled="locked" @click="addRow">添加模型</el-button>
 
     <el-form-item label="申报说明 *"><el-input v-model="reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="locked" /></el-form-item>
-    <el-alert title="批次提交要求每个模型都做过连通性测试，并且至少一个模型做过压力测试。提交条件表示已测试，不代表测试通过；每个资源仍须自身两项测试均通过后才能接入和报价。" type="warning" :closable="false" />
+    <el-alert v-if="gateHint" :title="`尚不能提交：${gateHint}`" type="warning" :closable="false" show-icon />
+    <el-alert v-else title="提交条件已满足：每个模型都测过连通性，且至少一行测过压力。提交条件表示已测试，不代表测试通过；每个资源仍须两项测试均通过后才能接入和报价。" type="success" :closable="false" show-icon />
     <div class="form-actions">
       <el-button @click="router.push('/supplier/home')">返回</el-button>
       <el-button type="primary" :loading="saving" :disabled="locked || !dirty" @click="saveDraft">保存草稿</el-button>
@@ -285,6 +331,8 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
 .supplier-portal-head p { margin: 0; color: var(--app-text-muted); font-size: 13px; }
 .submission-panel,.price-change-panel { display: grid; gap: 18px; padding: 22px; }
 .options-search { display: flex; gap: 10px; align-items: center; }
+.batch-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.batch-hint { color: var(--app-text-muted); font-size: 12px; }
 .submission-row { border: 1px solid var(--app-border); border-radius: 8px; padding: 18px; }
 .row-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .row-heading h2 { margin: 0; font-size: 17px; flex: 1; }

@@ -439,7 +439,16 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 		response.Error(c, apperr.ErrInvalidParams)
 		return
 	}
-	category, platformCategory, ok := resolveTestCategory(c.Query("category"))
+	rawCategory := c.Query("category")
+	if strings.TrimSpace(rawCategory) == "" {
+		// 前端发起测试用 POST + body；查进度用 GET + query，两者都支持。
+		var body struct {
+			Category string `json:"category"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		rawCategory = body.Category
+	}
+	category, platformCategory, ok := resolveTestCategory(rawCategory)
 	if !ok {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 CONNECTIVITY / STRESS", 400))
 		return
@@ -711,6 +720,7 @@ func registerSupplierSubmissionRoutes(protected *gin.RouterGroup, deps Deps, ide
 	group.GET("/model-options", handler.modelOptions)
 	group.GET("/:id", handler.detail)
 	group.GET("/:id/rows/:rowId/test", handler.rowTest)
+	group.POST("/:id/rows/:rowId/test", idempotent, handler.rowTest)
 	// 写接口一律挂幂等（红线）。
 	group.POST("", idempotent, handler.create)
 	group.PUT("/:id", idempotent, handler.update)

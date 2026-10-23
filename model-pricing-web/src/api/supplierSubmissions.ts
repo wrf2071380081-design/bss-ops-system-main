@@ -53,6 +53,17 @@ export const supplierSubmissionsApi = {
     validateTest(result, category);
     return result;
   },
+  async batchTest(id: string, category: SupplierTestCategory, lifecycle: string) {
+    const url = `${base}/${submissionID(id)}/tests`;
+    const data = { category };
+    const result = await apiRequest<{ category: string; started: number; skipped: number; failed: number }>({
+      method: "POST", url, data, idempotency: { scope: `${url}:${category}`, payload: data, lifecycle },
+    });
+    if (!result || typeof result.started !== "number" || typeof result.skipped !== "number" || typeof result.failed !== "number") {
+      throw new Error("批量测试响应不符合约定，请重新查询进度。");
+    }
+    return result;
+  },
   async testStatus(id: string, rowID: string, category: SupplierTestCategory, signal?: AbortSignal) {
     const result = await apiRequest<SupplierTestJobDTO>({ url: `${base}/${submissionID(id)}/rows/${submissionID(rowID)}/test`, params: { category }, signal });
     standardModelVersion(result.job_id);
