@@ -234,6 +234,7 @@ func main() {
 		SessionReader:      authRepo,
 		IdemStore:          idemStore,
 		TestJobs:           testJobStarter(testPlatform),
+		TestCallbacks:      testCallbackReceiver(testPlatform),
 		SupplyRoutes:       &supplyRoutes,
 		SupplyChain:        supplyChain,
 		CustomerWorkspace:  customerWorkspace,

@@ -63,6 +63,8 @@ type reportRow struct {
 	tps        sql.NullString
 	hitTokens  sql.NullInt64
 	inTokens   sql.NullInt64
+	ratio      sql.NullString
+	ratioAvail sql.NullBool
 	scene      sql.NullString
 	reportFile sql.NullString
 }
@@ -70,11 +72,12 @@ type reportRow struct {
 const reportSelect = `
 SELECT j.id::text, j.status, j.verdict, j.category, j.created_at, j.finished_at,
        r.id::text, r.connection_ms::text, r.connection_passed, r.stress_passed,
-       r.rps::text, r.tps::text, r.cache_hit_tokens, r.cache_input_tokens, r.scene, r.report_file
+       r.rps::text, r.tps::text, r.cache_hit_tokens, r.cache_input_tokens, r.scene, r.report_file,
+       r.cache_hit_ratio::text, r.cache_ratio_available
 FROM %s.test_job j
 LEFT JOIN LATERAL (
   SELECT id, connection_ms, connection_passed, stress_passed, rps, tps,
-         cache_hit_tokens, cache_input_tokens, scene, report_file
+         cache_hit_tokens, cache_input_tokens, scene, report_file, cache_hit_ratio, cache_ratio_available
   FROM %s.test_report WHERE test_job_id = j.id ORDER BY id DESC LIMIT 1
 ) r ON TRUE`
 
@@ -85,7 +88,7 @@ func (r *TestReportReader) scanRows(rows *sql.Rows) ([]reportRow, error) {
 		var item reportRow
 		if err := rows.Scan(&item.jobID, &item.status, &item.verdict, &item.category, &item.createdAt, &item.finishedAt,
 			&item.reportID, &item.connMS, &item.connPassed, &item.stressPass, &item.rps, &item.tps,
-			&item.hitTokens, &item.inTokens, &item.scene, &item.reportFile); err != nil {
+			&item.hitTokens, &item.inTokens, &item.scene, &item.reportFile, &item.ratio, &item.ratioAvail); err != nil {
 			return nil, err
 		}
 		result = append(result, item)
@@ -295,11 +298,19 @@ func buildReportView(row reportRow, resourceID string, flags map[string]string) 
 	if row.scene.Valid && strings.TrimSpace(row.scene.String) != "" {
 		view.CacheStats.Scene = strings.TrimSpace(row.scene.String)
 	}
-	if row.hitTokens.Valid && row.inTokens.Valid && row.inTokens.Int64 > 0 &&
-		row.hitTokens.Int64 >= 0 && row.hitTokens.Int64 <= row.inTokens.Int64 {
+	switch {
+	case row.hitTokens.Valid && row.inTokens.Valid && row.inTokens.Int64 > 0 &&
+		row.hitTokens.Int64 >= 0 && row.hitTokens.Int64 <= row.inTokens.Int64:
+		// 有 Token 明细：按 token 口径给，比率由 A 侧反算。
 		view.CacheStats.Status = "PROVIDED"
 		view.CacheStats.HitTokens = strconv.FormatInt(row.hitTokens.Int64, 10)
 		view.CacheStats.InputTokens = strconv.FormatInt(row.inTokens.Int64, 10)
+	case row.ratioAvail.Valid && row.ratioAvail.Bool && row.ratio.Valid:
+		// 只有平台上报的比率（Q4）：直接给比率，不反算 Token。
+		if percent := decimalPtr(row.ratio); percent != nil {
+			view.CacheStats.Status = "PROVIDED"
+			view.CacheStats.HitPercent = *percent
+		}
 	}
 	return view, nil
 }

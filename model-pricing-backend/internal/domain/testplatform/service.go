@@ -24,6 +24,9 @@ var ErrNotConfigured = errors.New("test platform is not configured")
 // ErrInvalidCommand 表示发起参数不合法（缺凭据、模型为空等）。
 var ErrInvalidCommand = errors.New("test platform: invalid command")
 
+// ErrSignature 表示回调验签未通过（缺失、错误或超出时间窗）。
+var ErrSignature = errors.New("test platform: callback signature rejected")
+
 // ErrNotFound 表示任务或报告不存在。
 var ErrNotFound = errors.New("test platform: not found")
 
@@ -93,6 +96,10 @@ type Outcome struct {
 	TPS                *string
 	CacheHitTokens     *int64
 	CacheInputTokens   *int64
+	// CacheRatioPercent 是平台直接上报的命中率（0-100）；CacheRatioProvided 区分
+	// 「上报了 0%」与「根本没上报」——页面三态靠它（Q4）。
+	CacheRatioPercent  *string
+	CacheRatioProvided bool
 	Scene              string
 	// DataComplete 表示"该有的数据都有"，供 Q1 的提交门禁使用。
 	DataComplete bool
@@ -149,6 +156,10 @@ type Store interface {
 	AttachExternalJob(ctx context.Context, localID, externalID, status string) error
 	PendingJobs(context.Context, int) ([]PendingJob, error)
 	CompleteJob(context.Context, Completion) (string, error)
+	// ClaimEvent 登记回调事件；返回 false 表示该 event_id 已处理过（幂等命中）。
+	ClaimEvent(ctx context.Context, eventID, externalJobID string, payload []byte) (bool, error)
+	// JobByExternalID 按平台任务号找本地任务。
+	JobByExternalID(ctx context.Context, externalJobID string) (*PendingJob, error)
 }
 
 // Service 编排发起与收口。
@@ -291,6 +302,34 @@ func (s *Service) collect(ctx context.Context, job PendingJob) (bool, error) {
 		TestedBy: "", FinishedAt: finished,
 	})
 	return err == nil, err
+}
+
+// ApplyCallback 处理平台终态回调。
+//
+// 幂等：event_id 是平台派生的确定性键（同一任务重复投递同 ID），先登记再处理；
+// 已处理过的直接返回 duplicate=true，调用方照常回 2xx（平台 at-least-once）。
+//
+// 不信任回调内容：登记事件后仍以 GetJob 的平台真值为准再收口，
+// 避免伪造/过期载荷直接写库。
+func (s *Service) ApplyCallback(ctx context.Context, eventID, externalJobID string, payload []byte) (bool, error) {
+	if strings.TrimSpace(eventID) == "" || strings.TrimSpace(externalJobID) == "" {
+		return false, ErrInvalidCommand
+	}
+	fresh, err := s.store.ClaimEvent(ctx, eventID, externalJobID, payload)
+	if err != nil {
+		return false, err
+	}
+	if !fresh {
+		return true, nil
+	}
+	job, err := s.store.JobByExternalID(ctx, externalJobID)
+	if err != nil {
+		return false, err
+	}
+	if _, err := s.collect(ctx, *job); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // mapStatus 把平台状态映射为本地 test_job.status。

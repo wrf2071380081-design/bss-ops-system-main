@@ -23,6 +23,16 @@ type testPlatformRuntime struct {
 	Service *testplatform.Service
 	// Reader 是 A 侧模型广场报告面板的数据源，注入后不再返回 503。
 	Reader *supplypg.TestReportReader
+	// Receiver 处理平台终态回调；未配置 webhook secret 时为空（只靠轮询）。
+	Receiver *tpinfra.Receiver
+}
+
+// testCallbackReceiver 把可能为空的接收器转成接口值（避免"非空接口、空实现"）。
+func testCallbackReceiver(runtime *testPlatformRuntime) api.TestCallbackReceiver {
+	if runtime == nil || runtime.Receiver == nil {
+		return nil
+	}
+	return runtime.Receiver
 }
 
 // testJobStarter 把可能为空的运行期对象转成接口值。
@@ -75,5 +85,12 @@ func newTestPlatformRuntime(cfg *config.Config, db *gorm.DB, log *zap.Logger) (*
 	}
 	runtime.Service = service
 	log.Info("test platform outbound enabled", zap.String("base_url", cfg.TestPlatform.BaseURL))
+	receiver, err := tpinfra.NewReceiver(cfg.TestPlatform.WebhookSecret, service, time.Now)
+	if err != nil {
+		log.Warn("test platform callback disabled: webhook secret not configured")
+		return runtime, nil
+	}
+	runtime.Receiver = receiver
+	log.Info("test platform callback enabled")
 	return runtime, nil
 }

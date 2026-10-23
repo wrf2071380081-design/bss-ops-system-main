@@ -85,3 +85,33 @@ func TestFormatDecimal(t *testing.T) {
 		t.Fatal("negative must be nil")
 	}
 }
+
+func TestInterpretCacheRatio(t *testing.T) {
+	// 平台只上报比率：必须保留 0% 与"上报了值"的区别，且不反算 Token。
+	out := Interpret(CategoryStress, JobState{Status: "succeeded", Verdict: "pass",
+		Summary: json.RawMessage(`{"qps":12,"tps":900,"cache_hit_ratio_pct":60}`)}, nil)
+	if !out.CacheRatioProvided || out.CacheRatioPercent == nil || *out.CacheRatioPercent != "60" {
+		t.Fatalf("ratio not captured: %+v", out)
+	}
+	if out.CacheHitTokens != nil || out.CacheInputTokens != nil {
+		t.Fatalf("must not fabricate token counts: %+v", out)
+	}
+
+	zero := Interpret(CategoryStress, JobState{Status: "succeeded", Verdict: "pass",
+		Summary: json.RawMessage(`{"qps":1,"tps":1,"cache_hit_ratio_pct":0}`)}, nil)
+	if !zero.CacheRatioProvided || zero.CacheRatioPercent == nil || *zero.CacheRatioPercent != "0" {
+		t.Fatalf("0%% must be PROVIDED, not missing: %+v", zero)
+	}
+
+	missing := Interpret(CategoryStress, JobState{Status: "succeeded", Verdict: "pass",
+		Summary: json.RawMessage(`{"qps":1,"tps":1}`)}, nil)
+	if missing.CacheRatioProvided || missing.CacheRatioPercent != nil {
+		t.Fatalf("absent ratio must stay absent: %+v", missing)
+	}
+
+	outOfRange := Interpret(CategoryStress, JobState{Status: "succeeded", Verdict: "pass",
+		Summary: json.RawMessage(`{"qps":1,"tps":1,"cache_hit_ratio_pct":180}`)}, nil)
+	if outOfRange.CacheRatioProvided {
+		t.Fatalf("ratio above 100 is dirty data: %+v", outOfRange)
+	}
+}

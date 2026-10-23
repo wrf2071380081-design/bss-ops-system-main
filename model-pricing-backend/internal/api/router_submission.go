@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 
@@ -19,13 +20,49 @@ type TestJobStarter interface {
 	Start(context.Context, tpdomain.CreateCommand) (*tpdomain.StartResult, error)
 }
 
+// TestCallbackReceiver 是测试平台回调接收端口（infra/testplatform.Receiver 实现）。
+// body 必须是原始字节：签名按原文计算。
+type TestCallbackReceiver interface {
+	Receive(ctx context.Context, body []byte, signature string) (duplicate bool, err error)
+}
+
 // registerOpenCallbacks 注册开放接口的扩展回调（B：测试平台对接）。
 // 注意：这里是 /api/open 组，**不经过 AuthN**；回调必须自行验签（X-Signature + event_id 幂等）。
 // 归属 B 的路径：
 //   - /api/open/test-callback       测试平台终态回调
 func registerOpenCallbacks(g *gin.RouterGroup, deps Deps) {
-	// 回调属于"轮询为主、回调为辅"里的加速件（Q11）。M1 先靠轮询收口，
-	// 缺回调不影响结果正确性，只影响结果到达的即时性，因此排在 M2。
+	// 回调是"轮询为主、回调为辅"里的加速件（Q11）：未配置 webhook secret 时不注册，
+	// 轮询仍能把结果收回，接口保持不可见而不是返回 500。
+	if deps.TestCallbacks != nil {
+		g.POST("/test-callback", (&testCallbackHandler{receiver: deps.TestCallbacks}).receive)
+	}
+}
+
+// testCallbackHandler 接收平台终态回调。
+// 这是 /api/open 组，**没有 AuthN**，唯一凭据就是 X-Signature 签名。
+type testCallbackHandler struct{ receiver TestCallbackReceiver }
+
+func (h *testCallbackHandler) receive(c *gin.Context) {
+	// 上限 1MiB：与平台请求体上限一致，避免内存被撑爆。
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
+	if err != nil || len(body) == 0 {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "请求体不可读", 400))
+		return
+	}
+	duplicate, err := h.receiver.Receive(c.Request.Context(), body, c.GetHeader("X-Signature"))
+	switch {
+	case err == nil:
+		// 平台只要求 2xx；重复投递也回 2xx（at-least-once 语义）。
+		response.Success(c, gin.H{"duplicate": duplicate})
+	case errors.Is(err, tpdomain.ErrSignature):
+		response.Error(c, apperr.New(apperr.ErrUnauthorized.Code, "回调验签未通过", 401))
+	case errors.Is(err, tpdomain.ErrInvalidCommand):
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "回调内容不合法", 400))
+	case errors.Is(err, tpdomain.ErrNotFound):
+		response.Error(c, apperr.New(apperr.ErrNotFound.Code, "回调对应任务不存在", 404))
+	default:
+		response.Error(c, apperr.New(apperr.ErrSystem.Code, "回调处理失败", 500))
+	}
 }
 
 // registerSubmissionRoutes 注册 B（申报 / 办理 / 测试）的路由。

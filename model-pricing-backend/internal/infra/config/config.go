@@ -30,6 +30,8 @@ type TestPlatform struct {
 	Enable       bool          `mapstructure:"enable"`
 	BaseURL      string        `mapstructure:"base_url"`
 	Token        string        `mapstructure:"token"`
+	// WebhookSecret 用于校验回调 X-Signature；为空时回调路由不注册（只靠轮询）。
+	WebhookSecret string       `mapstructure:"webhook_secret"`
 	Timeout      time.Duration `mapstructure:"timeout"`
 	PollInterval time.Duration `mapstructure:"poll_interval"`
 	PollLimit    int           `mapstructure:"poll_limit"`

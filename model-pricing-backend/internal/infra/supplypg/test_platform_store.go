@@ -176,12 +176,14 @@ SET status=$2, verdict=NULLIF($3,''), response_summary=$4::jsonb, finished_at=$5
 		err = tx.QueryRowContext(ctx, `
 INSERT INTO `+s.table("test_report")+`(
   test_job_id, resource_id, connection_ms, connection_passed, stress_passed, rps, tps,
-  verdict, report_format, report_file, scene, tested_by, tested_at, created_at, cache_hit_tokens, cache_input_tokens)
-VALUES ($1,$2,$3::numeric,$4,$5,$6::numeric,$7::numeric,$8,$9,$10,$11,$12,$13,$13,$14,$15)
+  verdict, report_format, report_file, scene, tested_by, tested_at, created_at,
+  cache_hit_tokens, cache_input_tokens, cache_hit_ratio, cache_ratio_available)
+VALUES ($1,$2,$3::numeric,$4,$5,$6::numeric,$7::numeric,$8,$9,$10,$11,$12,$13,$13,$14,$15,$16::numeric,$17)
 RETURNING id`,
 			jobID, resourceID, outcomeValue(outcome.ConnectionMS), outcome.ConnectivityPassed, outcome.PressurePassed,
 			outcomeValue(outcome.RPS), outcomeValue(outcome.TPS), done.Verdict, "json", "", outcome.Scene,
-			testedBy, done.FinishedAt.UTC(), outcome.CacheHitTokens, outcome.CacheInputTokens).Scan(&reportID)
+			testedBy, done.FinishedAt.UTC(), outcome.CacheHitTokens, outcome.CacheInputTokens,
+			outcomeValue(outcome.CacheRatioPercent), outcome.CacheRatioProvided).Scan(&reportID)
 		if err != nil {
 			return "", err
 		}
@@ -217,6 +219,46 @@ func (s *TestPlatformStore) writeReportFiles(reportID int64, reportJSON, reportM
 		}
 	}
 	return jsonName, nil
+}
+
+// ClaimEvent 登记一次回调投递。event_id 是主键，冲突即"已处理过"。
+func (s *TestPlatformStore) ClaimEvent(ctx context.Context, eventID, externalJobID string, payload []byte) (bool, error) {
+	body := "{}"
+	if len(payload) > 0 {
+		if !json.Valid(payload) {
+			return false, errors.New("test platform: callback payload is not valid json")
+		}
+		body = string(payload)
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO `+s.table("webhook_event")+`
+(event_id, job_id, payload, received_at) VALUES ($1,$2,$3::jsonb,$4)
+ON CONFLICT (event_id) DO NOTHING`, eventID, externalJobID, body, time.Now().UTC())
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+// JobByExternalID 按平台任务号取本地任务；不存在返回 ErrNotFound。
+func (s *TestPlatformStore) JobByExternalID(ctx context.Context, externalJobID string) (*tpdomain.PendingJob, error) {
+	var item tpdomain.PendingJob
+	var category string
+	err := s.db.QueryRowContext(ctx, `
+SELECT id::text, resource_id::text, external_job_id, category, status, created_at
+FROM `+s.table("test_job")+` WHERE external_job_id = $1 ORDER BY id DESC LIMIT 1`, externalJobID).
+		Scan(&item.ID, &item.ResourceID, &item.ExternalJobID, &category, &item.Status, &item.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, tpdomain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	item.Category = tpdomain.Category(category)
+	return &item, nil
 }
 
 // outcomeValue 把可空十进制字符串转成可空 SQL 值。

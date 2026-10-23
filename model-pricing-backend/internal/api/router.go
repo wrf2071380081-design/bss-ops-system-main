@@ -43,6 +43,8 @@ type Deps struct {
 	SupplyRoutes *SupplyDeps
 	// TestJobs 是 B 线测试平台发起端口；未配置测试平台时保持 nil（路由不注册）。
 	TestJobs           TestJobStarter
+	// TestCallbacks 是测试平台终态回调接收端口；未配置 webhook secret 时保持 nil。
+	TestCallbacks      TestCallbackReceiver
 	ModelSvc           *model.Service
 	SupplierSvc        *supplier.Service
 	SupplierProfileSvc *supplier.ProfileService

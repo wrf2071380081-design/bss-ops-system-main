@@ -37,10 +37,42 @@ func Interpret(category Category, state JobState, reportJSON []byte) Outcome {
 		out.DataComplete = passed
 	}
 	out.CacheHitTokens, out.CacheInputTokens = firstTokens(summary, nested, document)
+	out.CacheRatioPercent = firstRatio(summary, nested, document,
+		"cache_hit_ratio_pct", "cache_hit_ratio", "cache.hit_ratio_pct")
+	out.CacheRatioProvided = out.CacheRatioPercent != nil
 	if scene := firstString(summary, nested, document, "scene", "cache_scene", "cache.scene"); scene != "" {
 		out.Scene = scene
 	}
 	return out
+}
+
+// firstRatio 取缓存命中率百分比。只认 0-100 的数值，超范围视为脏数据丢弃。
+func firstRatio(sources ...any) *string {
+	var objects []map[string]any
+	var keys []string
+	for _, source := range sources {
+		if object, ok := source.(map[string]any); ok {
+			objects = append(objects, object)
+			continue
+		}
+		if key, ok := source.(string); ok {
+			keys = append(keys, key)
+		}
+	}
+	for _, object := range objects {
+		for _, key := range keys {
+			value, ok := numericString(lookup(object, key))
+			if !ok {
+				continue
+			}
+			parsed, err := strconv.ParseFloat(value, 64)
+			if err != nil || parsed < 0 || parsed > 100 {
+				continue
+			}
+			return &value
+		}
+	}
+	return nil
 }
 
 // decodeObject 宽容解码：非法 JSON 或非对象一律返回空 map，调用方无需判空。
