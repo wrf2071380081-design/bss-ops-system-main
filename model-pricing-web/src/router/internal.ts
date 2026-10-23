@@ -19,6 +19,7 @@ import InternalWorkbench from "../views/internal/workbench/InternalWorkbench.vue
 import OrgPermissionCenter from "../views/internal/orgPermissions/OrgPermissionCenter.vue";
 import IntegrationCenter from "../views/internal/integration/IntegrationCenter.vue";
 import { ROUTE_REQUIREMENTS } from "../domain/permissions";
+import ApprovalCenter from "../views/internal/approvals/ApprovalCenter.vue";
 
 const page = (
   path: string,
@@ -286,7 +287,7 @@ export const internalRoutes: RouteRecordRaw = {
     page("quotes", "internal.quotes", "报价单", "按客户与资源生成报价单、计算毛利", 60),
     {
       path: "approvals",
-      component: ModulePlaceholderView,
+      component: ApprovalCenter,
       meta: {
         requiresAuth: true,
         portal: "internal",

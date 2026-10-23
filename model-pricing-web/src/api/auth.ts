@@ -10,6 +10,7 @@ export interface LoginResult {
     can_approve_supplier?: boolean;
     supplier_name?: string;
     supplier_region?: string;
+    staff_id?: number | string;
     roles: { code: string }[] | null;
     perms: string[] | null;
   };

@@ -20,7 +20,7 @@ const history = computed(() => submissions.value.filter(item => item.status !== 
 let active = true;
 let request: AbortController | undefined;
 
-function newModel() { void router.push({ path: "/supplier/submissions/new", query: { kind: "MODEL_NEW" } }); }
+function newModel() { void router.push({ path: "/supplier/submissions/simple", query: { kind: "MODEL_NEW" } }); }
 function editDraft(item: SupplierSubmissionDTO) { void router.push({ path: "/supplier/submissions/new", query: { kind: item.kind, id: item.id } }); }
 function onTabChange(tabName: string | number) { if (tabName !== "start") void load(); }
 function statusLabel(value: string) {

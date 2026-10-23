@@ -62,6 +62,7 @@ export const ROUTE_REQUIREMENTS: Record<string, PermissionCode | null> = {
   "supplier.home": null,
   "supplier.models": null,
   "supplier.submissionNew": null,
+  "supplier.submissionSimple": null,
   "supplier.quotes": null,
   "supplier.quoteNew": null,
   "supplier.quoteImport": null,

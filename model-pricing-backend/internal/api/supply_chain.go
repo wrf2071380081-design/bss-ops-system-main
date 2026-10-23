@@ -1,0 +1,616 @@
+package api
+
+import (
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"model_bss/internal/api/middleware"
+	"model_bss/internal/domain/supply"
+	"model_bss/internal/infra/supplypg"
+	"model_bss/pkg/apperr"
+	"model_bss/pkg/response"
+)
+
+// SupplyChainRuntime 是 Stage 2 的最小"申报→审批→测试→接入"编排。
+// 它直接复用 A 的 ResourceCreation / TestEvidence / ResourceAdmission 服务，
+// 并在同一事务里补齐 B 侧 hook（submission_row / onboarding / test_report / outbox）。
+type SupplyChainRuntime struct {
+	raw       *sql.DB
+	sealer    supply.SecretSealer
+	urlPolicy supply.FormalURLPolicy
+}
+
+func NewSupplyChainRuntime(raw *sql.DB, sealer supply.SecretSealer, policy supply.FormalURLPolicy) *SupplyChainRuntime {
+	if sealer == nil {
+		sealer = newDevSealer()
+	}
+	if policy == nil {
+		policy = devURLPolicy{}
+	}
+	return &SupplyChainRuntime{raw: raw, sealer: sealer, urlPolicy: policy}
+}
+
+type devSealer struct{ aead cipher.AEAD }
+
+func newDevSealer() supply.SecretSealer {
+	key := sha256.Sum256([]byte("stage2-local-only-key"))
+	block, _ := aes.NewCipher(key[:])
+	aead, _ := cipher.NewGCMWithRandomNonce(block)
+	return devSealer{aead: aead}
+}
+
+func (s devSealer) Seal(ctx context.Context, text string, binding supply.SecretBinding) (supply.SecretEnvelope, error) {
+	if err := ctx.Err(); err != nil {
+		return supply.SecretEnvelope{}, err
+	}
+	aad, _ := json.Marshal(binding)
+	return supply.SecretEnvelope{Ciphertext: s.aead.Seal(nil, nil, []byte(text), aad), KeyVersion: "stage2-dev-v1"}, nil
+}
+
+type devURLPolicy struct{}
+
+func (devURLPolicy) ValidateFormalURL(context.Context, string) error { return nil }
+
+// StandardModelOption 供应商申报可选的模型。
+type StandardModelOption struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Company    string `json:"company"`
+	ModelType  string `json:"model_type"`
+	OfficialID string `json:"official_id"`
+}
+
+func (r *SupplyChainRuntime) ListStandardModels(ctx context.Context) ([]StandardModelOption, error) {
+	rows, err := r.raw.QueryContext(ctx, `SELECT id::text,name,company,model_type,official_id
+FROM public.standard_model WHERE status='ACTIVE' ORDER BY company,name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []StandardModelOption{}
+	for rows.Next() {
+		var item StandardModelOption
+		if err := rows.Scan(&item.ID, &item.Name, &item.Company, &item.ModelType, &item.OfficialID); err != nil {
+			return nil, err
+		}
+		list = append(list, item)
+	}
+	return list, rows.Err()
+}
+
+// CreateSubmission 供应商提交一个模型申报（单行，PENDING_APPROVAL）。
+func (r *SupplyChainRuntime) CreateSubmission(ctx context.Context, supplierID int64, modelID int64, supplierModel, coefficient string) (int64, error) {
+	var region, status string
+	if err := r.raw.QueryRowContext(ctx, `SELECT region,status FROM public.supplier WHERE id=$1`, supplierID).Scan(&region, &status); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, supply.ErrNotFound
+		}
+		return 0, err
+	}
+	if status != "ACTIVE" {
+		return 0, supply.ErrInactive
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(coefficient), 64)
+	if err != nil || value <= 0 || value > 1 {
+		return 0, fmt.Errorf("coefficient must be in (0,1]")
+	}
+	if strings.TrimSpace(supplierModel) == "" {
+		return 0, fmt.Errorf("supplier_model_name is required")
+	}
+	var modelCount int
+	if err := r.raw.QueryRowContext(ctx, `SELECT count(*) FROM public.standard_model WHERE id=$1 AND status='ACTIVE'`, modelID).Scan(&modelCount); err != nil {
+		return 0, err
+	}
+	if modelCount == 0 {
+		return 0, supply.ErrNotFound
+	}
+	tx, err := r.raw.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var submissionID int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO public.submission(supplier_id,kind,region,status,reason)
+VALUES($1,'MODEL_NEW',$2,'PENDING_APPROVAL','供应商提交模型申报') RETURNING id`, supplierID, region).Scan(&submissionID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO public.submission_row
+(submission_id,standard_model_id,supplier_model_name,coefficient,participate_test,row_status)
+VALUES($1,$2,$3,$4::numeric,true,'PENDING')`, submissionID, modelID, strings.TrimSpace(supplierModel), strings.TrimSpace(coefficient)); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return submissionID, nil
+}
+
+// ApprovalRow 审批列表行。
+type ApprovalRow struct {
+	ID           int64  `json:"id"`
+	SupplierID   int64  `json:"supplier_id"`
+	SupplierName string `json:"supplier_name"`
+	Region       string `json:"region"`
+	Status       string `json:"status"`
+	RowCount     int    `json:"row_count"`
+	FirstModel   bool   `json:"first_model"`
+	SubmittedAt  string `json:"submitted_at"`
+}
+
+func (r *SupplyChainRuntime) ListApprovals(ctx context.Context) ([]ApprovalRow, error) {
+	rows, err := r.raw.QueryContext(ctx, `SELECT s.id,s.supplier_id,sp.name,s.region,s.status,
+       (SELECT count(*) FROM public.submission_row r WHERE r.submission_id=s.id),
+       NOT EXISTS (SELECT 1 FROM public.resource res WHERE res.supplier_id=s.supplier_id AND res.ever_admitted=true),
+       to_char(s.submitted_at,'YYYY-MM-DD"T"HH24:MI:SSOF')
+FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id
+WHERE s.status IN ('PENDING_APPROVAL','PROCESSING') ORDER BY s.id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []ApprovalRow{}
+	for rows.Next() {
+		var item ApprovalRow
+		if err := rows.Scan(&item.ID, &item.SupplierID, &item.SupplierName, &item.Region, &item.Status, &item.RowCount, &item.FirstModel, &item.SubmittedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, item)
+	}
+	return list, rows.Err()
+}
+
+func (r *SupplyChainRuntime) isApprover(ctx context.Context, staffID int64) (bool, error) {
+	var ok bool
+	if err := r.raw.QueryRowContext(ctx, `SELECT can_approve_supplier FROM public.internal_staff WHERE id=$1`, staffID).Scan(&ok); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return ok, nil
+}
+
+// Approve 领导通过申报并分配测试/合同办理人。
+func (r *SupplyChainRuntime) Approve(ctx context.Context, submissionID, actorID, testAssignee, contractAssignee int64, reason string) error {
+	ok, err := r.isApprover(ctx, actorID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return supply.ErrForbidden
+	}
+	if testAssignee <= 0 {
+		return fmt.Errorf("test assignee is required")
+	}
+	tx, err := r.raw.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var supplierID int64
+	var status, region string
+	if err := tx.QueryRowContext(ctx, `SELECT supplier_id,status,region FROM public.submission WHERE id=$1 FOR UPDATE`, submissionID).Scan(&supplierID, &status, &region); err != nil {
+		if err == sql.ErrNoRows {
+			return supply.ErrNotFound
+		}
+		return err
+	}
+	if status != "PENDING_APPROVAL" {
+		return supply.ErrRevisionConflict
+	}
+	var firstModel bool
+	if err := tx.QueryRowContext(ctx, `SELECT NOT EXISTS (SELECT 1 FROM public.resource WHERE supplier_id=$1 AND ever_admitted=true)`, supplierID).Scan(&firstModel); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE public.submission SET status='PROCESSING' WHERE id=$1`, submissionID); err != nil {
+		return err
+	}
+	var flowID int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO public.onboarding_flow(kind,owner_id,status,current_node)
+VALUES('SUPPLIER',$1,'PROCESSING','CONFIG') RETURNING id`, supplierID).Scan(&flowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO public.onboarding_node(flow_id,node_key,status,assignee_id)
+VALUES($1,'CONFIG','IN_PROGRESS',$2)`, flowID, testAssignee); err != nil {
+		return err
+	}
+	if firstModel && contractAssignee > 0 {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO public.onboarding_node(flow_id,node_key,status,assignee_id)
+VALUES($1,'CONTRACT','WAITING_PREDECESSOR',$2)`, flowID, contractAssignee); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO public.assignment_log(entity_type,entity_id,field,old_staff_id,new_staff_id,changed_by)
+SELECT 'supplier',$1,'buyer_id',NULL,$2,$3
+WHERE NOT EXISTS (SELECT 1 FROM public.assignment_log WHERE entity_type='supplier' AND entity_id=$1 AND field='buyer_id')`, supplierID, testAssignee, actorID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+type stageReportRefs struct {
+	m map[string]*supplypg.ReportEvidenceRef
+}
+
+func (s *stageReportRefs) put(ref *supplypg.ReportEvidenceRef) { s.m[ref.ReportID] = ref }
+
+func (s *stageReportRefs) get(id string) *supplypg.ReportEvidenceRef {
+	if s == nil {
+		return nil
+	}
+	return s.m[id]
+}
+
+// SimulateAndAdmit 由办理人触发：mock 测试 + 创建资源 + 绑定正式配置 + 登记接入。
+func (r *SupplyChainRuntime) SimulateAndAdmit(ctx context.Context, submissionID, actorID int64) (*supply.Resource, error) {
+	var supplierID, rowID, modelID int64
+	var supplierModel, coefficient, rowStatus string
+	if err := r.raw.QueryRowContext(ctx, `SELECT s.supplier_id,r.id,r.standard_model_id,r.supplier_model_name,r.coefficient::text,r.row_status
+FROM public.submission s JOIN public.submission_row r ON r.submission_id=s.id
+WHERE s.id=$1 ORDER BY r.id LIMIT 1`, submissionID).Scan(&supplierID, &rowID, &modelID, &supplierModel, &coefficient, &rowStatus); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, supply.ErrNotFound
+		}
+		return nil, err
+	}
+	if rowStatus == "ADMITTED" {
+		return nil, supply.ErrRevisionConflict
+	}
+	var flowID, nodeID int64
+	var assignee string
+	if err := r.raw.QueryRowContext(ctx, `SELECT f.id,n.id,n.assignee_id::text
+FROM public.onboarding_flow f JOIN public.onboarding_node n ON n.flow_id=f.id
+WHERE f.kind='SUPPLIER' AND f.owner_id=$1 AND n.node_key='CONFIG' AND n.status='IN_PROGRESS'
+ORDER BY f.id DESC, n.id DESC LIMIT 1`, supplierID).Scan(&flowID, &nodeID, &assignee); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, supply.ErrRevisionConflict
+		}
+		return nil, err
+	}
+	if assignee != fmt.Sprint(actorID) {
+		return nil, supply.ErrForbidden
+	}
+
+	rowIDStr := fmt.Sprint(rowID)
+	flowIDStr := fmt.Sprint(flowID)
+	nodeIDStr := fmt.Sprint(nodeID)
+	supplierStr := fmt.Sprint(supplierID)
+	actorStr := fmt.Sprint(actorID)
+	rowVersion := uint64(2)
+	targetVersion := uint64(1)
+	flowRevision := uint64(1)
+
+	tx, err := r.raw.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	resolve := func(context.Context) (*sql.Tx, error) { return tx, nil }
+	logFn := func(ctx context.Context, t *sql.Tx, e supplypg.ResourceStateLog) error {
+		var before any
+		if len(e.Before) > 0 {
+			before = string(e.Before)
+		}
+		_, err := t.ExecContext(ctx, `INSERT INTO public.operation_log
+(entity_type,entity_id,action,operator_id,operator_name_snapshot,"before","after",reason,request_id,created_at)
+VALUES($1,$2,$3,$4,(SELECT name FROM public.internal_staff WHERE id=$4),$5::jsonb,$6::jsonb,$7,$8,$9)`,
+			e.EntityType, e.EntityID, e.Action, e.ActorID, before, string(e.After), e.Reason, e.RequestID, e.OccurredAt.UTC())
+		return err
+	}
+	state, err := supplypg.NewResourceStateStore("public", logFn)
+	if err != nil {
+		return nil, err
+	}
+	configs, err := supplypg.NewFormalConfigStore("public", func(ctx context.Context, t *sql.Tx, e supplypg.FormalConfigLog) error {
+		return logFn(ctx, t, supplypg.ResourceStateLog(e))
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	creationWork := supplypg.NewResourceCreationWork(state, resolve, supplypg.ResourceCreationHooks{
+		LockSource: func(ctx context.Context, t *sql.Tx, row string, version uint64) (*supply.ResourceCreationContext, error) {
+			var mid, vendor, coef string
+			if err := t.QueryRowContext(ctx, `SELECT standard_model_id::text,supplier_model_name,coefficient::text
+FROM public.submission_row WHERE id=$1 FOR UPDATE`, row).Scan(&mid, &vendor, &coef); err != nil {
+				return nil, err
+			}
+			return &supply.ResourceCreationContext{Proof: &supply.SubmissionResourceProof{
+				RowID: row, RowVersion: rowVersion, TargetVersion: targetVersion, SupplierID: supplierStr,
+				StandardModelID: mid, Region: supplierRegionOf(ctx, r.raw, supplierID), SupplierModelID: vendor,
+				Coefficient: coef, BuyerID: actorStr, FlowID: flowIDStr, FlowRevision: flowRevision,
+				AuthorizedActorID: actorStr, ApprovedAndAssigned: true, EnteredHandling: true,
+			}}, nil
+		},
+		AttachRow: func(ctx context.Context, t *sql.Tx, e supply.ResourceCreationEffect) error {
+			res, err := t.ExecContext(ctx, `UPDATE public.submission_row SET resource_id=$1 WHERE id=$2`, e.Resource.ID, e.RowID)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			if n != 1 {
+				return supply.ErrRevisionConflict
+			}
+			return nil
+		},
+	})
+	creation := supply.NewResourceCreationService(creationWork, time.Now)
+	created, err := creation.CreateFromSubmission(ctx, supply.WriteMeta{ActorID: actorStr, Reason: "办理人创建资源", RequestID: fmt.Sprintf("stage2-create-%d", submissionID)}, supply.ResourceCreationCommand{RowID: rowIDStr, RowVersion: rowVersion})
+	if err != nil {
+		return nil, fmt.Errorf("create: %w", err)
+	}
+	resource := created.Resource
+
+	refs := &stageReportRefs{m: map[string]*supplypg.ReportEvidenceRef{}}
+	addReport := func(sequence uint64, connection, pressure bool) (string, error) {
+		var job, report string
+		if err := tx.QueryRowContext(ctx, `INSERT INTO public.test_job(resource_id,category,status,verdict,created_by,finished_at)
+VALUES($1,'stress','SUCCEEDED','PASS',$2,now()) RETURNING id::text`, resource.ID, actorID).Scan(&job); err != nil {
+			return "", err
+		}
+		if err := tx.QueryRowContext(ctx, `INSERT INTO public.test_report
+(test_job_id,resource_id,connection_ms,connection_passed,stress_passed,rps,tps,availability,error_rate,ttft_ms,tpot_ms,sample_count,verdict,report_url,report_format,scene,tested_by,tested_at,cache_hit_tokens,cache_input_tokens)
+VALUES($1,$2,86,$3,$4,24.5,19750,99.9,0.1,320,28,100,'PASS','https://example.com/report/stage2','JSON','stage2',$5,now(),300,1000)
+RETURNING id::text`, job, resource.ID, connection, pressure, actorID).Scan(&report); err != nil {
+			return "", err
+		}
+		refs.put(&supplypg.ReportEvidenceRef{ReportID: report, JobID: job, ResourceID: resource.ID, SupplierID: resource.SupplierID,
+			StandardModelID: resource.StandardModelID, Region: resource.Region, OriginRowID: resource.OriginRowID,
+			OriginRowVersion: resource.OriginRowVersion, TargetVersion: resource.TargetVersion, Sequence: sequence, Valid: true})
+		return report, nil
+	}
+	authority := func(ctx context.Context, t *sql.Tx, res *supply.Resource, report string) (*supplypg.ReportEvidenceRef, bool, error) {
+		ref := refs.get(report)
+		if ref == nil {
+			return nil, true, supply.ErrNotFound
+		}
+		copy := *ref
+		return &copy, true, nil
+	}
+	evidence := supply.NewTestEvidenceService(supplypg.NewTestEvidenceWork(state, resolve, authority), time.Now)
+	failed, err := addReport(1, true, false)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := evidence.AttachTestEvidence(ctx, supply.WriteMeta{ActorID: actorStr, Reason: "mock 失败测试", RequestID: fmt.Sprintf("stage2-fail-%d", submissionID)}, supply.TestEvidenceCommand{ResourceID: resource.ID, ReportID: failed}); err != nil {
+		return nil, fmt.Errorf("evidence-failed: %w", err)
+	}
+	passed, err := addReport(2, true, true)
+	if err != nil {
+		return nil, err
+	}
+	selected, err := evidence.AttachTestEvidence(ctx, supply.WriteMeta{ActorID: actorStr, Reason: "mock 通过测试", RequestID: fmt.Sprintf("stage2-pass-%d", submissionID)}, supply.TestEvidenceCommand{ResourceID: resource.ID, ReportID: passed})
+	if err != nil {
+		return nil, fmt.Errorf("evidence-passed: %w", err)
+	}
+
+	formalID, formalRevision, err := r.ensureFormalConfig(ctx, tx, supplierID, actorID, configs)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	proof := func(ctx context.Context, t *sql.Tx, res *supply.Resource) (*supply.AdmissionProof, error) {
+		var assigneeID, nodeStatus, flowStatus string
+		if err := t.QueryRowContext(ctx, `SELECT n.assignee_id::text,n.status,f.status
+FROM public.onboarding_node n JOIN public.onboarding_flow f ON f.id=n.flow_id
+WHERE n.id=$1 AND f.id=$2 FOR UPDATE OF n,f`, nodeIDStr, flowIDStr).Scan(&assigneeID, &nodeStatus, &flowStatus); err != nil {
+			return nil, err
+		}
+		return &supply.AdmissionProof{FlowID: flowIDStr, NodeID: nodeIDStr, FlowRevision: flowRevision, ResourceID: res.ID,
+			SupplierID: res.SupplierID, Region: res.Region, OriginRowID: res.OriginRowID, OriginRowVersion: res.OriginRowVersion,
+			TargetVersion: res.TargetVersion, AssigneeID: assigneeID, FlowInProgress: flowStatus == "PROCESSING",
+			NodeInProgress: nodeStatus == "IN_PROGRESS", PrerequisitesReady: true}, nil
+	}
+	readRef := func(ctx context.Context, t *sql.Tx, res *supply.Resource) (*supplypg.ReportEvidenceRef, error) {
+		ref := refs.get(res.LatestReportID)
+		if ref == nil {
+			return nil, supply.ErrNotFound
+		}
+		copy := *ref
+		return &copy, nil
+	}
+	binding := supply.NewResourceConfigBindingService(supplypg.NewResourceBindingWork(state, configs, resolve, proof), time.Now)
+	bound, err := binding.BindFormalConfig(ctx, supply.WriteMeta{ActorID: actorStr, Reason: "绑定正式配置", RequestID: fmt.Sprintf("stage2-bind-%d", submissionID)}, supply.ResourceConfigBindingCommand{
+		ResourceID: resource.ID, ConfigID: formalID, ExpectedRevision: selected.Resource.Revision, ExpectedConfigRevision: formalRevision,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bind: %w", err)
+	}
+	admission := supply.NewResourceAdmissionService(supplypg.NewResourceAdmissionWork(state, configs, resolve, supplypg.ResourceAdmissionHooks{
+		Proof:  proof,
+		Report: readRef,
+		CompleteRow: func(ctx context.Context, t *sql.Tx, e supply.ResourceAdmissionEffect) error {
+			res, err := t.ExecContext(ctx, `UPDATE public.submission_row SET row_status='ADMITTED' WHERE id=$1 AND resource_id=$2`, e.After.OriginRowID, e.After.ID)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			if n != 1 {
+				return supply.ErrRevisionConflict
+			}
+			return nil
+		},
+		Outbox: func(ctx context.Context, t *sql.Tx, e supplypg.AdmissionOutboxEntry) (string, error) {
+			var id string
+			err := t.QueryRowContext(ctx, `INSERT INTO public.event_outbox(event_type,payload,request_id,created_by,updated_by)
+VALUES($1,$2::jsonb,$3,$4,$4) RETURNING id::text`, e.EventType, string(e.Payload), e.RequestID, e.ActorID).Scan(&id)
+			return id, err
+		},
+	}), time.Now)
+	admitted, err := admission.Admit(ctx, supply.WriteMeta{ActorID: actorStr, Reason: "登记接入", RequestID: fmt.Sprintf("stage2-admit-%d", submissionID)}, supply.ResourceAdmissionCommand{
+		ResourceID: resource.ID, ExpectedRevision: bound.Resource.Revision, ExternalConfirmed: true, CompletionNote: "mock 测试通过，已登记接入",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE public.onboarding_node SET status='DONE',completed_at=now() WHERE id=$1`, nodeID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE public.submission SET status='COMPLETED',completed_at=now() WHERE id=$1`, submissionID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return admitted, nil
+}
+
+func supplierRegionOf(ctx context.Context, db *sql.DB, supplierID int64) string {
+	var region string
+	_ = db.QueryRowContext(ctx, `SELECT region FROM public.supplier WHERE id=$1`, supplierID).Scan(&region)
+	return region
+}
+
+func (r *SupplyChainRuntime) ensureFormalConfig(ctx context.Context, tx *sql.Tx, supplierID, actorID int64, configs *supplypg.FormalConfigStore) (string, uint64, error) {
+	buyerID := actorID
+	var buyer sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT new_staff_id::text FROM public.assignment_log
+WHERE entity_type='supplier' AND entity_id=$1 AND field='buyer_id' ORDER BY id DESC LIMIT 1`, supplierID).Scan(&buyer); err == nil && buyer.Valid {
+		if n, err := strconv.ParseInt(buyer.String, 10, 64); err == nil && n > 0 {
+			buyerID = n
+		}
+	}
+	svc := supply.NewFormalConfigService(supplypg.NewFormalConfigWork(configs, func(context.Context) (*sql.Tx, error) { return tx, nil }), r.sealer, r.urlPolicy, time.Now)
+	secret := "stage2-local-secret"
+	view, err := svc.Create(ctx, supply.WriteMeta{ActorID: fmt.Sprint(buyerID), Reason: "Stage2 正式配置", RequestID: fmt.Sprintf("stage2-config-%d", supplierID)}, fmt.Sprint(supplierID), supply.FormalConfigInput{
+		Scope: "全部模型", BaseURL: "https://formal.example/v1", APIKey: &secret, ExternalConfirmed: true,
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	return view.ID, view.Revision, nil
+}
+
+// SupplyChainHandler Stage 2 HTTP 入口。
+type SupplyChainHandler struct{ rt *SupplyChainRuntime }
+
+func NewSupplyChainHandler(rt *SupplyChainRuntime) *SupplyChainHandler {
+	return &SupplyChainHandler{rt: rt}
+}
+
+func (h *SupplyChainHandler) ListStandardModels(c *gin.Context) {
+	list, err := h.rt.ListStandardModels(c.Request.Context())
+	if err != nil {
+		response.Error(c, apperr.ErrSystem)
+		return
+	}
+	response.Success(c, gin.H{"list": list})
+}
+
+type createSubmissionRequest struct {
+	ModelID           int64  `json:"model_id"`
+	SupplierModelName string `json:"supplier_model_name"`
+	Coefficient       string `json:"coefficient"`
+}
+
+func (h *SupplyChainHandler) CreateSubmission(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil || op.OperatorType != "SUPPLIER" {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	var req createSubmissionRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.ModelID <= 0 {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	id, err := h.rt.CreateSubmission(c.Request.Context(), op.OperatorID, req.ModelID, req.SupplierModelName, req.Coefficient)
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	response.Success(c, gin.H{"submission_id": id})
+}
+
+func (h *SupplyChainHandler) ListApprovals(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	ok, err := h.rt.isApprover(c.Request.Context(), op.StaffID)
+	if err != nil || !ok {
+		response.Error(c, apperr.ErrForbidden)
+		return
+	}
+	list, err := h.rt.ListApprovals(c.Request.Context())
+	if err != nil {
+		response.Error(c, apperr.ErrSystem)
+		return
+	}
+	response.Success(c, gin.H{"list": list})
+}
+
+type approveRequest struct {
+	TestAssigneeID     int64  `json:"test_assignee_id"`
+	ContractAssigneeID int64  `json:"contract_assignee_id"`
+	Reason             string `json:"reason"`
+}
+
+func (h *SupplyChainHandler) Approve(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	var req approveRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.TestAssigneeID <= 0 {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	if err := h.rt.Approve(c.Request.Context(), id, op.StaffID, req.TestAssigneeID, req.ContractAssigneeID, req.Reason); err != nil {
+		if err == supply.ErrForbidden {
+			response.Error(c, apperr.ErrForbidden)
+			return
+		}
+		if err == supply.ErrNotFound {
+			response.Error(c, apperr.ErrNotFound)
+			return
+		}
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	response.Success(c, gin.H{"submission_id": id, "status": "PROCESSING"})
+}
+
+func (h *SupplyChainHandler) Simulate(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	res, err := h.rt.SimulateAndAdmit(c.Request.Context(), id, op.StaffID)
+	if err != nil {
+		fmt.Printf("stage2 simulate error: %v\n", err)
+		if err == supply.ErrForbidden {
+			response.Error(c, apperr.ErrForbidden)
+			return
+		}
+		if err == supply.ErrNotFound {
+			response.Error(c, apperr.ErrNotFound)
+			return
+		}
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	response.Success(c, gin.H{"resource_id": res.ID, "state": res.State, "revision": res.Revision})
+}

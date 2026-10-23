@@ -28,6 +28,7 @@ export interface CurrentUser {
   canApproveSupplier?: boolean;
   supplierName?: string;
   supplierRegion?: string;
+  staffId?: number;
 }
 
 interface DevIdentity {
@@ -301,6 +302,7 @@ export const useSessionStore = defineStore("session", () => {
       canApproveSupplier: Boolean(snapshot.can_approve_supplier),
       supplierName: snapshot.supplier_name,
       supplierRegion: snapshot.supplier_region,
+      staffId: snapshot.staff_id ? Number(snapshot.staff_id) : undefined,
       roleLabel: roleCodes.join(" / ") || (targetPortal === "internal" ? "内部用户" : targetPortal === "supplier" ? "供应商" : "客户") };
     permissionCodes.value = [...(snapshot.perms || [])];
     legacyRole.value = "VIEWER";

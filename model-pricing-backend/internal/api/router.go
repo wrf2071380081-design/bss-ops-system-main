@@ -87,6 +87,8 @@ type Deps struct {
 	StaffStore orgperm.StaffStore
 	// 阶段 12：供应商门户主体档案只读视图（批次 7a，只做 GET）。
 	SupplierPortalProfileSvc *supplier.PortalProfileService
+	// Stage 2：供应商申报 → 领导审批 → mock 测试 → 登记接入。
+	SupplyChain *SupplyChainRuntime
 }
 
 // New 构建并返回应用使用的 Gin Engine。
@@ -515,6 +517,30 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 			ph := NewSupplierPortalProfileHandler(deps.SupplierPortalProfileSvc, deps.SupplierSvc)
 			protected.GET("/profile", ph.GetPortalProfile)
 		}
+	}
+
+	// Stage 2：供应商申报（最少单行链路）。
+	if portal == "supplier" && deps.SupplyChain != nil {
+		sch := NewSupplyChainHandler(deps.SupplyChain)
+		protected.GET("/standard-models", sch.ListStandardModels)
+		protected.POST("/submissions",
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			sch.CreateSubmission,
+		)
+	}
+
+	// Stage 2：领导审批 + 办理人模拟测试/接入。
+	if portal == "internal" && deps.SupplyChain != nil {
+		sch := NewSupplyChainHandler(deps.SupplyChain)
+		protected.GET("/approvals/submissions", sch.ListApprovals)
+		protected.POST("/approvals/submissions/:id/approve",
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			sch.Approve,
+		)
+		protected.POST("/approvals/submissions/:id/simulate",
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			sch.Simulate,
+		)
 	}
 
 	// 业务接口：客户门户（09-customer-quote.md §6）。
