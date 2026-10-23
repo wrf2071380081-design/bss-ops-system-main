@@ -241,6 +241,8 @@ func main() {
 		IdemStore:          idemStore,
 		TestJobs:           testJobStarter(testPlatform),
 		TestCallbacks:      testCallbackReceiver(testPlatform),
+		ResourceTestTargets: testTargets(testPlatform),
+		TestCredentialDecoder: testCredentialDecoder(testPlatform),
 		SupplyRoutes:       &supplyRoutes,
 		SupplierSubmissions: submissionSvc,
 		SupplyChain:        supplyChain,

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"model_bss/internal/domain/supply"
 	tpdomain "model_bss/internal/domain/testplatform"
 )
 
@@ -276,4 +277,36 @@ func parseID(raw string) (int64, error) {
 		return 0, mappingError("id must be a positive integer")
 	}
 	return id, nil
+}
+
+// ResourceTestTarget 是资源自身的测试目标配置（内部复测用，T-10）。
+type ResourceTestTarget struct {
+	Model        string
+	BaseURL      string
+	SealedAPIKey string
+	SupplierID   string
+	SupplierName string
+}
+
+// ResourceTestConfig 读取资源上登记的测试目标；内部复测不要求人工再填一遍。
+func (s *TestPlatformStore) ResourceTestConfig(ctx context.Context, resourceID string) (*ResourceTestTarget, error) {
+	id, err := parseID(resourceID)
+	if err != nil {
+		return nil, supply.ErrNotFound
+	}
+	var target ResourceTestTarget
+	err = s.db.QueryRowContext(ctx, `
+SELECT r.supplier_model_name, COALESCE(r.test_base_url,''), COALESCE(r.test_api_key_enc,''),
+       r.supplier_id::text, sp.name
+FROM `+s.table("resource")+` r
+JOIN `+s.table("supplier")+` sp ON sp.id = r.supplier_id
+WHERE r.id = $1`, id).
+		Scan(&target.Model, &target.BaseURL, &target.SealedAPIKey, &target.SupplierID, &target.SupplierName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, supply.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &target, nil
 }

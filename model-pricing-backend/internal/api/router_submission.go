@@ -20,6 +20,16 @@ type TestJobStarter interface {
 	Start(context.Context, tpdomain.CreateCommand) (*tpdomain.StartResult, error)
 }
 
+// ResourceTestTarget 是资源自身登记的测试目标（内部复测 T-10 用）。
+type ResourceTestTarget struct {
+	Model, BaseURL, SealedAPIKey, SupplierID, SupplierName string
+}
+
+// ResourceTestTargetLoader 读取资源测试目标。
+type ResourceTestTargetLoader interface {
+	TestTarget(ctx context.Context, resourceID string) (*ResourceTestTarget, error)
+}
+
 // TestCallbackReceiver 是测试平台回调接收端口（infra/testplatform.Receiver 实现）。
 // body 必须是原始字节：签名按原文计算。
 type TestCallbackReceiver interface {
@@ -86,7 +96,7 @@ func registerSubmissionRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, po
 	}
 	// 一期只开放内部触发：供应商侧自助发起要等申报多行（M3）。
 	if portal == "internal" && deps.TestJobs != nil && deps.IdemStore != nil {
-		handler := &submissionTestHandler{starter: deps.TestJobs}
+		handler := &submissionTestHandler{starter: deps.TestJobs, targets: deps.ResourceTestTargets, decode: deps.TestCredentialDecoder}
 		protected.POST("/resources/:id/tests",
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			handler.start,
@@ -108,7 +118,11 @@ type startTestRequest struct {
 	Params   map[string]any `json:"params"`
 }
 
-type submissionTestHandler struct{ starter TestJobStarter }
+type submissionTestHandler struct {
+	starter TestJobStarter
+	targets ResourceTestTargetLoader
+	decode  func(ctx context.Context, stored, supplierID string) (string, error)
+}
 
 func (h *submissionTestHandler) start(c *gin.Context) {
 	operator := middleware.OperatorFrom(c)
@@ -131,11 +145,51 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 baseline 或 stress", 400))
 		return
 	}
-	if strings.TrimSpace(body.Model) == "" || strings.TrimSpace(body.BaseURL) == "" {
+	model, baseURL, apiKey := strings.TrimSpace(body.Model), strings.TrimSpace(body.BaseURL), strings.TrimSpace(body.APIKey)
+	supplierName := ""
+	// 内部复测（T-10）：不填目标就用资源上登记的那一套，避免人工重复录入。
+	if model == "" || baseURL == "" {
+		if h.targets == nil {
+			response.Error(c, apperr.New(apperr.ErrSystem.Code, "资源测试配置不可用", 503))
+			return
+		}
+		target, err := h.targets.TestTarget(c.Request.Context(), resourceID)
+		if err != nil {
+			supplyHTTPError(c, err)
+			return
+		}
+		if model == "" {
+			model = target.Model
+		}
+		if baseURL == "" {
+			baseURL = target.BaseURL
+		}
+		supplierName = target.SupplierName
+		if apiKey == "" {
+			if baseURL == "demo" {
+				apiKey = "demo-key"
+			} else {
+				if h.decode == nil {
+					response.Error(c, apperr.New(apperr.ErrSystem.Code, "凭据解密不可用，无法复测真实目标", 503))
+					return
+				}
+				plain, err := h.decode(c.Request.Context(), target.SealedAPIKey, target.SupplierID)
+				if err != nil {
+					response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试凭据无法解密（密钥版本或主体不匹配）", 503))
+					return
+				}
+				apiKey = plain
+			}
+		}
+	}
+	if model == "" || baseURL == "" {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "model 与 base_url 必填", 400))
 		return
 	}
 	owner := strings.TrimSpace(body.Owner)
+	if owner == "" {
+		owner = supplierName
+	}
 	if owner == "" {
 		owner = "resource-" + resourceID
 	}
@@ -145,7 +199,7 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 		ActorID:        strconv.FormatInt(operator.StaffID, 10),
 		Category:       category,
 		Owner:          owner,
-		Target:         tpdomain.Target{Model: body.Model, BaseURL: body.BaseURL, Protocol: body.Protocol, APIKey: body.APIKey},
+		Target:         tpdomain.Target{Model: model, BaseURL: baseURL, Protocol: body.Protocol, APIKey: apiKey},
 		Params:         body.Params,
 		IdempotencyKey: strings.TrimSpace(c.GetHeader("Idempotency-Key")),
 	})

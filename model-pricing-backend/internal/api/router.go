@@ -8,6 +8,7 @@
 package api
 
 import (
+	"context"
 	"os"
 
 	"github.com/gin-gonic/gin"
@@ -47,6 +48,10 @@ type Deps struct {
 	TestCallbacks TestCallbackReceiver
 	// SupplierSubmissions 是供应商申报（B-1）服务；未配置时申报路由不注册。
 	SupplierSubmissions *SupplierSubmissionService
+	// ResourceTestTargets 供内部复测（T-10）读取资源自身测试目标。
+	ResourceTestTargets ResourceTestTargetLoader
+	// TestCredentialDecoder 解密测试凭据；为空表示禁止解密。
+	TestCredentialDecoder func(ctx context.Context, stored, supplierID string) (string, error)
 	ModelSvc           *model.Service
 	SupplierSvc        *supplier.Service
 	SupplierProfileSvc *supplier.ProfileService

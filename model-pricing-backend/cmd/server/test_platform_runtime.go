@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"model_bss/internal/domain/testplatform"
 	"model_bss/internal/infra/config"
 	"model_bss/internal/infra/supplypg"
+	"model_bss/internal/infra/supplysecurity"
 	tpinfra "model_bss/internal/infra/testplatform"
 )
 
@@ -25,6 +27,32 @@ type testPlatformRuntime struct {
 	Reader *supplypg.TestReportReader
 	// Receiver 处理平台终态回调；未配置 webhook secret 时为空（只靠轮询）。
 	Receiver *tpinfra.Receiver
+	// Store 供内部复测读取资源测试目标（T-10）。
+	Store *supplypg.TestPlatformStore
+	// Decode 解密测试凭据；为 nil 表示禁止解密。
+	Decode func(ctx context.Context, stored, supplierID string) (string, error)
+}
+
+// resourceTestTargets 把存储层的资源测试目标适配成 api 侧端口。
+type resourceTestTargets struct{ store *supplypg.TestPlatformStore }
+
+func (r resourceTestTargets) TestTarget(ctx context.Context, resourceID string) (*api.ResourceTestTarget, error) {
+	target, err := r.store.ResourceTestConfig(ctx, resourceID)
+	if err != nil {
+		return nil, err
+	}
+	return &api.ResourceTestTarget{
+		Model: target.Model, BaseURL: target.BaseURL, SealedAPIKey: target.SealedAPIKey,
+		SupplierID: target.SupplierID, SupplierName: target.SupplierName,
+	}, nil
+}
+
+// Targets 返回内部复测用的目标加载器；未构造存储时返回 nil。
+func (r *testPlatformRuntime) Targets() api.ResourceTestTargetLoader {
+	if r == nil || r.Store == nil {
+		return nil
+	}
+	return resourceTestTargets{store: r.Store}
 }
 
 // testCallbackReceiver 把可能为空的接收器转成接口值（避免"非空接口、空实现"）。
@@ -69,6 +97,7 @@ func newTestPlatformRuntime(cfg *config.Config, db *gorm.DB, log *zap.Logger) (*
 	if err != nil {
 		return nil, err
 	}
+	runtime.Store = store
 	gateway, err := tpinfra.NewGateway(tpinfra.Config{
 		BaseURL: cfg.TestPlatform.BaseURL,
 		Token:   cfg.TestPlatform.Token,
@@ -85,6 +114,12 @@ func newTestPlatformRuntime(cfg *config.Config, db *gorm.DB, log *zap.Logger) (*
 	}
 	runtime.Service = service
 	log.Info("test platform outbound enabled", zap.String("base_url", cfg.TestPlatform.BaseURL))
+	// 解密端口（T-10 内部复测要还原真实目标凭据）。
+	if sealer, sealErr := supplysecurity.AESGCMSealerFromEnv(); sealErr == nil && sealer != nil && cfg.TestPlatform.AllowCredentialOpen {
+		runtime.Decode = func(ctx context.Context, stored, supplierID string) (string, error) {
+			return supplysecurity.DecodeTestCredential(ctx, sealer, stored, supplierID)
+		}
+	}
 	receiver, err := tpinfra.NewReceiver(cfg.TestPlatform.WebhookSecret, service, time.Now)
 	if err != nil {
 		log.Warn("test platform callback disabled: webhook secret not configured")
@@ -93,4 +128,20 @@ func newTestPlatformRuntime(cfg *config.Config, db *gorm.DB, log *zap.Logger) (*
 	runtime.Receiver = receiver
 	log.Info("test platform callback enabled")
 	return runtime, nil
+}
+
+// testTargets 把运行期对象转成接口值（nil 安全）。
+func testTargets(runtime *testPlatformRuntime) api.ResourceTestTargetLoader {
+	if runtime == nil {
+		return nil
+	}
+	return runtime.Targets()
+}
+
+// testCredentialDecoder 返回解密端口；未启用时返回 nil。
+func testCredentialDecoder(runtime *testPlatformRuntime) func(ctx context.Context, stored, supplierID string) (string, error) {
+	if runtime == nil {
+		return nil
+	}
+	return runtime.Decode
 }
