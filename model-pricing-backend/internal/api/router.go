@@ -42,9 +42,11 @@ type Deps struct {
 	// It stays nil in environments where the A module is not configured.
 	SupplyRoutes *SupplyDeps
 	// TestJobs 是 B 线测试平台发起端口；未配置测试平台时保持 nil（路由不注册）。
-	TestJobs           TestJobStarter
+	TestJobs TestJobStarter
 	// TestCallbacks 是测试平台终态回调接收端口；未配置 webhook secret 时保持 nil。
-	TestCallbacks      TestCallbackReceiver
+	TestCallbacks TestCallbackReceiver
+	// SupplierSubmissions 是供应商申报（B-1）服务；未配置时申报路由不注册。
+	SupplierSubmissions *SupplierSubmissionService
 	ModelSvc           *model.Service
 	SupplierSvc        *supplier.Service
 	SupplierProfileSvc *supplier.ProfileService
@@ -527,12 +529,10 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 
 	// Stage 2：供应商申报（最少单行链路）。
 	if portal == "supplier" && deps.SupplyChain != nil {
+		// 申报写接口由 B 线的 registerSubmissionRoutes 正式接管
+		// （原简化版 POST /submissions 已删除，避免同路径重复注册导致启动 panic）。
 		sch := NewSupplyChainHandler(deps.SupplyChain)
 		protected.GET("/standard-models", sch.ListStandardModels)
-		protected.POST("/submissions",
-			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
-			sch.CreateSubmission,
-		)
 	}
 
 	// Stage 2：领导审批 + 办理人模拟测试/接入。

@@ -78,6 +78,12 @@ func registerSubmissionRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, po
 	if portal != "internal" && portal != "supplier" {
 		return
 	}
+	// 供应商门户：申报正式接口（B-1）。写接口一律挂幂等（红线）。
+	// 注意：原 supply_chain.go 里的简化版 POST /submissions 已删除，
+	// 同路径重复注册会让 gin 启动 panic。
+	if portal == "supplier" && deps.SupplierSubmissions != nil && deps.IdemStore != nil {
+		registerSupplierSubmissionRoutes(protected, deps, middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey))
+	}
 	// 一期只开放内部触发：供应商侧自助发起要等申报多行（M3）。
 	if portal == "internal" && deps.TestJobs != nil && deps.IdemStore != nil {
 		handler := &submissionTestHandler{starter: deps.TestJobs}
