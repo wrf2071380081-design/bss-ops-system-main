@@ -255,6 +255,9 @@ WHERE id=$2 AND supplier_id=$3 AND status='DRAFT' AND revision=$4 RETURNING revi
 	if err != nil {
 		return 0, err
 	}
+	if err := s.ensureNoRunningTests(ctx, tx, id); err != nil {
+		return 0, err
+	}
 	if err := syncRows(ctx, tx, s.table("submission_row"), id, rows); err != nil {
 		return 0, err
 	}
@@ -264,10 +267,34 @@ WHERE id=$2 AND supplier_id=$3 AND status='DRAFT' AND revision=$4 RETURNING revi
 	return revision, nil
 }
 
+// ensureNoRunningTests 是测试期写锁（T-21）：
+// 还有任务排队/运行时，不允许改测试目标或撤回，否则结果落库后立刻失效、白跑一轮。
+func (s *SubmissionStore) ensureNoRunningTests(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, submissionID int64) error {
+	var running int
+	if err := q.QueryRowContext(ctx, `
+SELECT count(*) FROM `+s.table("submission_row")+` r
+JOIN `+s.table("test_job")+` j ON j.id = r.test_job_id OR j.id = r.stress_job_id
+WHERE r.submission_id = $1 AND j.status IN ('QUEUED','RUNNING')`, submissionID).Scan(&running); err != nil {
+		return err
+	}
+	if running > 0 {
+		return supply.ErrTestInProgress
+	}
+	return nil
+}
+
 // Transition 做状态流转（乐观锁）。fromStatuses 为空表示不限来源状态。
 func (s *SubmissionStore) Transition(ctx context.Context, supplierID, id, expectedRevision int64, fromStatuses []string, to string, markSubmitted bool) (int64, error) {
 	args := []any{to, id, supplierID, expectedRevision}
 	clause := "id=$2 AND supplier_id=$3 AND revision=$4"
+	if to == "WITHDRAWN" {
+		// 测试期写锁：还在跑的时候撤回，结果会落在一条已撤回的单子上。
+		if err := s.ensureNoRunningTests(ctx, s.db, id); err != nil {
+			return 0, err
+		}
+	}
 	if len(fromStatuses) > 0 {
 		placeholders := make([]string, 0, len(fromStatuses))
 		for _, status := range fromStatuses {
