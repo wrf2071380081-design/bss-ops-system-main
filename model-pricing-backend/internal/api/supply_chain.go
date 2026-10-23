@@ -88,52 +88,6 @@ FROM public.standard_model WHERE status='ACTIVE' ORDER BY company,name`)
 	return list, rows.Err()
 }
 
-// CreateSubmission 供应商提交一个模型申报（单行，PENDING_APPROVAL）。
-func (r *SupplyChainRuntime) CreateSubmission(ctx context.Context, supplierID int64, modelID int64, supplierModel, coefficient string) (int64, error) {
-	var region, status string
-	if err := r.raw.QueryRowContext(ctx, `SELECT region,status FROM public.supplier WHERE id=$1`, supplierID).Scan(&region, &status); err != nil {
-		if err == sql.ErrNoRows {
-			return 0, supply.ErrNotFound
-		}
-		return 0, err
-	}
-	if status != "ACTIVE" {
-		return 0, supply.ErrInactive
-	}
-	value, err := strconv.ParseFloat(strings.TrimSpace(coefficient), 64)
-	if err != nil || value <= 0 || value > 1 {
-		return 0, fmt.Errorf("coefficient must be in (0,1]")
-	}
-	if strings.TrimSpace(supplierModel) == "" {
-		return 0, fmt.Errorf("supplier_model_name is required")
-	}
-	var modelCount int
-	if err := r.raw.QueryRowContext(ctx, `SELECT count(*) FROM public.standard_model WHERE id=$1 AND status='ACTIVE'`, modelID).Scan(&modelCount); err != nil {
-		return 0, err
-	}
-	if modelCount == 0 {
-		return 0, supply.ErrNotFound
-	}
-	tx, err := r.raw.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	var submissionID int64
-	if err := tx.QueryRowContext(ctx, `INSERT INTO public.submission(supplier_id,kind,region,status,reason)
-VALUES($1,'MODEL_NEW',$2,'PENDING_APPROVAL','供应商提交模型申报') RETURNING id`, supplierID, region).Scan(&submissionID); err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO public.submission_row
-(submission_id,standard_model_id,supplier_model_name,coefficient,participate_test,row_status)
-VALUES($1,$2,$3,$4::numeric,true,'PENDING')`, submissionID, modelID, strings.TrimSpace(supplierModel), strings.TrimSpace(coefficient)); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return submissionID, nil
-}
 
 // ApprovalRow 审批列表行。
 type ApprovalRow struct {
@@ -596,30 +550,7 @@ func (h *SupplyChainHandler) ListStandardModels(c *gin.Context) {
 	response.Success(c, gin.H{"list": list})
 }
 
-type createSubmissionRequest struct {
-	ModelID           int64  `json:"model_id"`
-	SupplierModelName string `json:"supplier_model_name"`
-	Coefficient       string `json:"coefficient"`
-}
 
-func (h *SupplyChainHandler) CreateSubmission(c *gin.Context) {
-	op := middleware.OperatorFrom(c)
-	if op == nil || op.OperatorType != "SUPPLIER" {
-		response.Error(c, apperr.ErrUnauthorized)
-		return
-	}
-	var req createSubmissionRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.ModelID <= 0 {
-		response.Error(c, apperr.ErrInvalidParams)
-		return
-	}
-	id, err := h.rt.CreateSubmission(c.Request.Context(), op.OperatorID, req.ModelID, req.SupplierModelName, req.Coefficient)
-	if err != nil {
-		response.Error(c, apperr.ErrInvalidParams)
-		return
-	}
-	response.Success(c, gin.H{"submission_id": id})
-}
 
 func (h *SupplyChainHandler) ListApprovals(c *gin.Context) {
 	op := middleware.OperatorFrom(c)

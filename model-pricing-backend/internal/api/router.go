@@ -41,6 +41,8 @@ type Deps struct {
 	// SupplyRoutes contains A-owned handlers assembled over the current schema.
 	// It stays nil in environments where the A module is not configured.
 	SupplyRoutes       *SupplyDeps
+	// SupplierSubmissions 是供应商申报（B-1）服务；未配置时申报路由不注册。
+	SupplierSubmissions *SupplierSubmissionService
 	ModelSvc           *model.Service
 	SupplierSvc        *supplier.Service
 	SupplierProfileSvc *supplier.ProfileService
@@ -523,12 +525,10 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 
 	// Stage 2：供应商申报（最少单行链路）。
 	if portal == "supplier" && deps.SupplyChain != nil {
+		// 申报写接口由 B 线的 registerSubmissionRoutes 正式接管
+		// （原简化版 POST /submissions 已删除，避免同路径重复注册导致启动 panic）。
 		sch := NewSupplyChainHandler(deps.SupplyChain)
 		protected.GET("/standard-models", sch.ListStandardModels)
-		protected.POST("/submissions",
-			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
-			sch.CreateSubmission,
-		)
 	}
 
 	// Stage 2：领导审批 + 办理人模拟测试/接入。

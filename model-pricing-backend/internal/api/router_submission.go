@@ -2,6 +2,7 @@ package api
 
 import (
 	"github.com/gin-gonic/gin"
+	"model_bss/internal/api/middleware"
 )
 
 // registerOpenCallbacks 注册开放接口的扩展回调（B：测试平台对接）。
@@ -25,5 +26,11 @@ func registerSubmissionRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, po
 	if portal != "internal" && portal != "supplier" {
 		return
 	}
-	// 新路由加在这里。
+	// 供应商门户：申报正式接口（B-1）。写接口一律挂幂等（红线）。
+	// 注意：原 supply_chain.go 里的简化版 POST /submissions 已删除，
+	// 同路径重复注册会让 gin 启动 panic。
+	if portal == "supplier" && deps.SupplierSubmissions != nil && deps.IdemStore != nil {
+		registerSupplierSubmissionRoutes(protected, deps, middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey))
+	}
+	// 测试触发 / 办理台账：依赖测试平台分支，随 B-2/M3 推进。
 }

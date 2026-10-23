@@ -211,6 +211,11 @@ func main() {
 	if err != nil {
 		log.Fatal("initialize A supply routes", zap.Error(err))
 	}
+	submissionSvc, err := newSupplierSubmissionService(dbClient.DB)
+	if err != nil {
+		log.Warn("initialize supplier submission service", zap.Error(err))
+		submissionSvc = nil
+	}
 	planReminderStore, err := newSupplyPlanReminderStore(dbClient.DB)
 	if err != nil {
 		log.Fatal("initialize A plan reminders", zap.Error(err))
@@ -223,6 +228,7 @@ func main() {
 		SessionReader:      authRepo,
 		IdemStore:          idemStore,
 		SupplyRoutes:       &supplyRoutes,
+		SupplierSubmissions: submissionSvc,
 		SupplyChain:        supplyChain,
 		CustomerWorkspace:  customerWorkspace,
 		ModelSvc:           modelSvc,
