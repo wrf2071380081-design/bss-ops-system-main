@@ -83,6 +83,30 @@ func (s *AESGCMSealer) Seal(ctx context.Context, plaintext string, binding suppl
 	return supply.SecretEnvelope{KeyVersion: s.version, Ciphertext: sealed}, nil
 }
 
+// Open 解开由 Seal 生成的信封，仅供「必须拿到明文去调外部系统」的受限场景使用
+// （当前唯一调用方是测试平台对接）。刻意不放进 supply.SecretSealer 接口：
+// A 侧领域契约写明 must never return plaintext，不该为了一个用途放宽公共接口。
+//
+// 约束：只能解当前活动密钥版本的密文；版本不一致直接失败，不做静默降级。
+func (s *AESGCMSealer) Open(ctx context.Context, envelope supply.SecretEnvelope, binding supply.SecretBinding) (string, error) {
+	if s == nil || s.aead == nil || s.version == "" || ctx == nil || ctx.Err() != nil {
+		return "", supply.ErrDependencyUnavailable
+	}
+	if envelope.KeyVersion != s.version || len(envelope.Ciphertext) <= s.aead.NonceSize() || !validBinding(binding) {
+		return "", supply.ErrDependencyUnavailable
+	}
+	aad := []byte(binding.Purpose + "\x00" + binding.SupplierID + "\x00" + binding.ConfigID)
+	nonce := envelope.Ciphertext[:s.aead.NonceSize()]
+	plaintext, err := s.aead.Open(nil, nonce, envelope.Ciphertext[s.aead.NonceSize():], aad)
+	if err != nil {
+		return "", fmt.Errorf("open secret: %w", err)
+	}
+	if !utf8.ValidString(string(plaintext)) {
+		return "", supply.ErrReadContract
+	}
+	return string(plaintext), nil
+}
+
 func validBinding(binding supply.SecretBinding) bool {
 	for _, value := range []string{binding.Purpose, binding.SupplierID, binding.ConfigID} {
 		if value == "" || !utf8.ValidString(value) || strings.ContainsRune(value, 0) {

@@ -36,6 +36,9 @@ type TestPlatform struct {
 	PollInterval time.Duration `mapstructure:"poll_interval"`
 	PollLimit    int           `mapstructure:"poll_limit"`
 	ReportDir    string        `mapstructure:"report_dir"`
+	// AllowCredentialOpen 控制是否允许把供应商测试凭据还原成明文（调外部平台所需）。
+	// 设为 false 可一键关闭该能力，真实目标测试会退回 503。
+	AllowCredentialOpen bool `mapstructure:"allow_credential_open"`
 }
 
 // Features 是"模块开关"（重构收敛用）：true = 对外保留，false = 不暴露（路由返回 404）。

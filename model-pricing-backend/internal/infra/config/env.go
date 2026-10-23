@@ -74,6 +74,7 @@ func Load() (*Config, error) {
 	v.SetDefault("test_platform.poll_interval", 15*time.Second)
 	v.SetDefault("test_platform.poll_limit", 50)
 	v.SetDefault("test_platform.report_dir", "bin/test-reports")
+	v.SetDefault("test_platform.allow_credential_open", true)
 
 	// 模块开关（重构收敛）：原型 v0.19 用不到的模块默认关闭，路由返回 404。
 	// configs/config.yaml 被 .gitignore 忽略，默认值必须落在代码里；

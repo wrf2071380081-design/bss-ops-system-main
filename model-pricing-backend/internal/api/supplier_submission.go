@@ -1,7 +1,7 @@
 package api
 
 import (
-	"encoding/base64"
+	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -12,6 +12,7 @@ import (
 	"model_bss/internal/domain/supply"
 	tpdomain "model_bss/internal/domain/testplatform"
 	"model_bss/internal/infra/supplypg"
+	"model_bss/internal/infra/supplysecurity"
 	"model_bss/pkg/apperr"
 	"model_bss/pkg/response"
 )
@@ -29,16 +30,20 @@ const (
 type SupplierSubmissionService struct {
 	store   *supplypg.SubmissionStore
 	sealer  supply.SecretSealer
-	starter TestJobStarter
-	clock   func() time.Time
+	// decodeCredential 为 nil 表示「禁止解密」（配置可一键关闭）。
+	decodeCredential func(ctx context.Context, stored, supplierID string) (string, error)
+	starter          TestJobStarter
+	clock            func() time.Time
 }
 
 // NewSupplierSubmissionService 构造服务；sealer 可为空（此时不接受携带 Key 的写入）。
-func NewSupplierSubmissionService(store *supplypg.SubmissionStore, sealer supply.SecretSealer, starter TestJobStarter, clock func() time.Time) *SupplierSubmissionService {
+func NewSupplierSubmissionService(store *supplypg.SubmissionStore, sealer supply.SecretSealer,
+	decodeCredential func(ctx context.Context, stored, supplierID string) (string, error),
+	starter TestJobStarter, clock func() time.Time) *SupplierSubmissionService {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &SupplierSubmissionService{store: store, sealer: sealer, starter: starter, clock: clock}
+	return &SupplierSubmissionService{store: store, sealer: sealer, decodeCredential: decodeCredential, starter: starter, clock: clock}
 }
 
 // ---- DTO（字段名与前端 supplierSubmissions.types.ts 严格一致）----
@@ -339,10 +344,28 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 		writeSubmissionError(c, err)
 		return
 	}
+	// demo 目标走平台模拟人格，不需要真 Key；真实目标必须解出供应商凭据。
+	apiKey := "demo-key"
 	if row.TestBaseURL != "demo" {
-		response.Error(c, apperr.New(apperr.ErrSystem.Code,
-			"该申报行使用真实测试地址；测试凭据目前无法解密，请先用 demo 目标联调", 503))
-		return
+		if h.svc.decodeCredential == nil {
+			response.Error(c, apperr.New(apperr.ErrSystem.Code, "凭据解密已被配置禁用，暂无法测试真实目标", 503))
+			return
+		}
+		if strings.TrimSpace(row.SealedAPIKey) == "" {
+			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "该申报行未填写测试 API Key", 400))
+			return
+		}
+		plain, err := h.svc.decodeCredential(ctx, row.SealedAPIKey, strconv.FormatInt(supplierID, 10))
+		if err != nil {
+			response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试凭据无法解密（密钥版本或主体不匹配）", 503))
+			return
+		}
+		apiKey = plain
+		// 审计：每次把凭据还原成明文都留痕。
+		if err := h.svc.store.LogCredentialOpen(ctx, supplierID, rowID); err != nil {
+			response.Error(c, apperr.ErrSystem)
+			return
+		}
 	}
 	if row.TestJobID != nil {
 		// 已发过测试：不重复建任务（Q6 测试机会由 M3 统一管，这里先幂等返回）。
@@ -372,7 +395,7 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 		Owner:      row.SupplierName,
 		Target: tpdomain.Target{
 			Model: row.SupplierModelName, BaseURL: row.TestBaseURL,
-			Protocol: "openai", APIKey: "demo-key",
+			Protocol: "openai", APIKey: apiKey,
 		},
 		Params:         params,
 		IdempotencyKey: strings.TrimSpace(c.GetHeader("Idempotency-Key")),
@@ -419,16 +442,13 @@ func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, 
 				response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试凭据加密未配置，无法保存 API Key", 503))
 				return nil, false
 			}
-			envelope, err := h.svc.sealer.Seal(c.Request.Context(), key, supply.SecretBinding{
-				Purpose:    "test-api-key",
-				SupplierID: strconv.FormatInt(supplierID, 10),
-			})
+			envelope, err := h.svc.sealer.Seal(c.Request.Context(), key,
+				supplysecurity.TestCredentialBinding(strconv.FormatInt(supplierID, 10)))
 			if err != nil {
 				writeSubmissionError(c, err)
 				return nil, false
 			}
-			// 密文是二进制：base64 后连同密钥版本一起存，便于将来轮换。
-			sealed = envelope.KeyVersion + ":" + base64.StdEncoding.EncodeToString(envelope.Ciphertext)
+			sealed = supplysecurity.EncodeTestCredential(envelope)
 		}
 		rows = append(rows, supplypg.SubmissionRowInput{
 			StandardModelID: modelID, SupplierModelName: strings.TrimSpace(row.InterfaceModelID),

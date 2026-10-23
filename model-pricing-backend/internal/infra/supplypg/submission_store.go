@@ -437,3 +437,33 @@ func (s *SubmissionStore) AttachTestJob(ctx context.Context, rowID, jobID int64)
 SET test_job_id=$2, participate_test=true WHERE id=$1`, rowID, jobID)
 	return err
 }
+
+// LogCredentialOpen 记录一次测试凭据解密（审计留痕）。
+// 供应商不是内部员工，operator_id 留空；用 reason 写明主体，便于追查。
+func (s *SubmissionStore) LogCredentialOpen(ctx context.Context, supplierID, rowID int64) error {
+	after := `{"event":"test_credential_opened","supplier_id":` + itoa64(supplierID) + `,"row_id":` + itoa64(rowID) + `}`
+	_, err := s.db.ExecContext(ctx, `INSERT INTO `+s.table("operation_log")+`
+(entity_type, entity_id, action, "after", reason, created_at)
+VALUES ('submission_row', $1, 'TEST_CREDENTIAL_OPENED', $2::jsonb, $3, now())`,
+		itoa64(rowID), after, "测试平台发起测试需要明文凭据，供应商 "+itoa64(supplierID))
+	return err
+}
+
+func itoa64(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	negative := n < 0
+	if negative {
+		n = -n
+	}
+	digits := make([]byte, 0, 20)
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	if negative {
+		return "-" + string(digits)
+	}
+	return string(digits)
+}

@@ -227,7 +227,7 @@ func main() {
 		log.Info("supply report reader enabled")
 	}
 	// 申报的「发起测试」需要测试平台端口（T-03）。
-	submissionSvc, err := newSupplierSubmissionService(dbClient.DB, testJobStarter(testPlatform))
+	submissionSvc, err := newSupplierSubmissionService(dbClient.DB, cfg, testJobStarter(testPlatform))
 	if err != nil {
 		log.Warn("initialize supplier submission service", zap.Error(err))
 		submissionSvc = nil

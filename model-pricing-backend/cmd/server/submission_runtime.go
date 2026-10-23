@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"time"
 
 	"gorm.io/gorm"
 
 	"model_bss/internal/api"
+	"model_bss/internal/infra/config"
 	"model_bss/internal/infra/supplypg"
 	"model_bss/internal/infra/supplysecurity"
 )
@@ -15,7 +17,7 @@ import (
 // 独立成文件：避免改动 A 的 supply_runtime.go，减少共享文件冲突。
 // 加密密钥来自环境变量（MODEL_BSS_FORMAL_CONFIG_KEY），未配置时 sealer 为 nil，
 // 此时「带 API Key 的写入」会返回 503，而不是把明文落库。
-func newSupplierSubmissionService(db *gorm.DB, starter api.TestJobStarter) (*api.SupplierSubmissionService, error) {
+func newSupplierSubmissionService(db *gorm.DB, cfg *config.Config, starter api.TestJobStarter) (*api.SupplierSubmissionService, error) {
 	if db == nil {
 		return nil, nil
 	}
@@ -31,5 +33,12 @@ func newSupplierSubmissionService(db *gorm.DB, starter api.TestJobStarter) (*api
 	if err != nil {
 		return nil, err
 	}
-	return api.NewSupplierSubmissionService(store, sealer, starter, time.Now), nil
+	// 解密端口：未配置密钥或开关关闭时保持 nil，真实目标测试会明确返回 503。
+	var decode func(ctx context.Context, stored, supplierID string) (string, error)
+	if sealer != nil && cfg != nil && cfg.TestPlatform.AllowCredentialOpen {
+		decode = func(ctx context.Context, stored, supplierID string) (string, error) {
+			return supplysecurity.DecodeTestCredential(ctx, sealer, stored, supplierID)
+		}
+	}
+	return api.NewSupplierSubmissionService(store, sealer, decode, starter, time.Now), nil
 }
