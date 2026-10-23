@@ -206,6 +206,7 @@ func main() {
 		log.Fatal("get sql db", zap.Error(err))
 	}
 	supplyChain := api.NewSupplyChainRuntime(rawDB, nil, nil)
+	customerWorkspace := api.NewCustomerWorkspaceRuntime(rawDB)
 	supplyRoutes, err := newSupplyRuntimeDeps(dbClient.DB, idemStore)
 	if err != nil {
 		log.Fatal("initialize A supply routes", zap.Error(err))
@@ -223,6 +224,7 @@ func main() {
 		IdemStore:          idemStore,
 		SupplyRoutes:       &supplyRoutes,
 		SupplyChain:        supplyChain,
+		CustomerWorkspace:  customerWorkspace,
 		ModelSvc:           modelSvc,
 		SupplierSvc:        supplier.NewService(repo.NewSupplierRepo(dbClient.DB)),
 		SupplierProfileSvc: supplier.NewProfileService(repo.NewSupplierRepo(dbClient.DB)),

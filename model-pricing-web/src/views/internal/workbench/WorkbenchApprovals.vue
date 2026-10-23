@@ -31,7 +31,7 @@ async function load() {
     rows.value = list;
     people.value = staff;
   } catch (value) {
-    error.value = value instanceof Error ? value.message : "审批列表加载失败，请确认当前账号有审批权。";
+    error.value = value instanceof Error ? value.message : "待审批列表加载失败；请确认当前账号有审批权。";
   } finally {
     loading.value = false;
   }
@@ -56,7 +56,7 @@ async function approve() {
       contract_assignee_id: contractAssignee.value || undefined,
       reason: reason.value.trim() || "同意接入",
     });
-    ElMessage.success("已通过，办理人可以在审批中心执行模拟测试与接入");
+    ElMessage.success("已通过，办理人可在待审批列表执行模拟测试与接入");
     dialogVisible.value = false;
     await load();
   } catch (value) {
@@ -84,39 +84,33 @@ onMounted(load);
 </script>
 
 <template>
-  <section class="page-heading">
-    <div>
-      <div class="eyebrow">INTERNAL / APPROVALS</div>
-      <h1>审批中心</h1>
-      <p>供应商申报的整批审批；任一领导通过即可，办理人随后完成测试与登记接入。</p>
+  <div class="workbench-approvals">
+    <div class="approval-toolbar">
+      <span class="muted">供应商新增模型/价格变更的整批审批；通过后由办理人模拟测试并接入。</span>
+      <el-button size="small" :loading="loading" @click="load">刷新</el-button>
     </div>
-    <el-button :loading="loading" @click="load">刷新</el-button>
-  </section>
-
-  <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
-
-  <section class="panel approval-panel">
+    <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
     <el-table v-loading="loading" :data="rows" style="width: 100%">
-      <el-table-column prop="supplier_name" label="供应商" min-width="160" />
-      <el-table-column label="区域" width="90">
+      <el-table-column prop="supplier_name" label="供应商" min-width="150" />
+      <el-table-column label="区域" width="80">
         <template #default="{ row }">{{ regionLabel(row.region) }}</template>
       </el-table-column>
-      <el-table-column prop="row_count" label="模型数" width="90" />
-      <el-table-column label="首个模型" width="100">
+      <el-table-column prop="row_count" label="模型数" width="80" />
+      <el-table-column label="首个模型" width="90">
         <template #default="{ row }">
           <el-tag v-if="row.first_model" type="warning" size="small">是</el-tag>
           <span v-else class="muted">否</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="状态" width="90">
         <template #default="{ row }">
           <el-tag :type="row.status === 'PENDING_APPROVAL' ? 'warning' : 'success'" size="small">{{ statusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="提交时间" width="180">
+      <el-table-column label="提交时间" width="170">
         <template #default="{ row }">{{ formatTime(row.submitted_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="180">
+      <el-table-column label="操作" width="170">
         <template #default="{ row }">
           <el-button v-if="row.status === 'PENDING_APPROVAL'" type="primary" size="small" @click="openApprove(row)">审批</el-button>
           <el-button v-else-if="row.status === 'PROCESSING'" size="small" :loading="simulatingId === row.id" @click="simulate(row)">模拟测试并接入</el-button>
@@ -125,38 +119,39 @@ onMounted(load);
       </el-table-column>
       <template #empty><el-empty description="暂无待审批/办理中的申报" :image-size="64" /></template>
     </el-table>
-  </section>
 
-  <el-dialog v-model="dialogVisible" title="通过申报并分配办理人" width="520px">
-    <template v-if="current">
-      <p class="dialog-summary">{{ current.supplier_name }} · {{ regionLabel(current.region) }} · {{ current.row_count }} 个模型</p>
-      <el-form label-position="top">
-        <el-form-item label="测试与资源配置办理人 *">
-          <el-select v-model="testAssignee" filterable style="width: 100%">
-            <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.name" />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="current.first_model" label="合同与授信办理人">
-          <el-select v-model="contractAssignee" filterable style="width: 100%">
-            <el-option :value="0" label="暂不分配" />
-            <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.name" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="审批意见">
-          <el-input v-model="reason" type="textarea" :rows="3" maxlength="200" show-word-limit />
-        </el-form-item>
-      </el-form>
-      <p class="dialog-hint">通过后由办理人在列表点"模拟测试并接入"；测试为 mock，仅用于打通链路。</p>
-    </template>
-    <template #footer>
-      <el-button :disabled="busy" @click="dialogVisible = false">取消</el-button>
-      <el-button type="primary" :loading="busy" @click="approve">通过并分配</el-button>
-    </template>
-  </el-dialog>
+    <el-dialog v-model="dialogVisible" title="通过申报并分配办理人" width="520px">
+      <template v-if="current">
+        <p class="dialog-summary">{{ current.supplier_name }} · {{ regionLabel(current.region) }} · {{ current.row_count }} 个模型</p>
+        <el-form label-position="top">
+          <el-form-item label="测试与资源配置办理人 *">
+            <el-select v-model="testAssignee" filterable style="width: 100%">
+              <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.name" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="current.first_model" label="合同与授信办理人">
+            <el-select v-model="contractAssignee" filterable style="width: 100%">
+              <el-option :value="0" label="暂不分配" />
+              <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.name" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="审批意见">
+            <el-input v-model="reason" type="textarea" :rows="3" maxlength="200" show-word-limit />
+          </el-form-item>
+        </el-form>
+        <p class="dialog-hint">通过后由办理人在本列表点"模拟测试并接入"；测试为 mock。</p>
+      </template>
+      <template #footer>
+        <el-button :disabled="busy" @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="busy" @click="approve">通过并分配</el-button>
+      </template>
+    </el-dialog>
+  </div>
 </template>
 
 <style scoped>
-.approval-panel { padding: 18px 20px; }
+.workbench-approvals { display: grid; gap: 10px; }
+.approval-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .muted { color: var(--app-text-muted); font-size: 12px; }
 .dialog-summary { margin: 0 0 14px; color: var(--app-text-secondary); }
 .dialog-hint { margin: 8px 0 0; color: var(--app-text-muted); font-size: 12px; }

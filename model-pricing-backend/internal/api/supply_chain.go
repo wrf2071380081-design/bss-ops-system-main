@@ -145,13 +145,16 @@ type ApprovalRow struct {
 	RowCount     int    `json:"row_count"`
 	FirstModel   bool   `json:"first_model"`
 	SubmittedAt  string `json:"submitted_at"`
+	Submitter    string `json:"submitter"`
+	Kind         string `json:"kind"`
 }
 
 func (r *SupplyChainRuntime) ListApprovals(ctx context.Context) ([]ApprovalRow, error) {
-	rows, err := r.raw.QueryContext(ctx, `SELECT s.id,s.supplier_id,sp.name,s.region,s.status,
+	rows, err := r.raw.QueryContext(ctx, `SELECT s.id,s.supplier_id,sp.name,s.region,s.status,s.kind,
        (SELECT count(*) FROM public.submission_row r WHERE r.submission_id=s.id),
        NOT EXISTS (SELECT 1 FROM public.resource res WHERE res.supplier_id=s.supplier_id AND res.ever_admitted=true),
-       to_char(s.submitted_at,'YYYY-MM-DD"T"HH24:MI:SSOF')
+       to_char(s.submitted_at,'YYYY-MM-DD"T"HH24:MI:SSOF'),
+       COALESCE(NULLIF(sp.contact,''),sp.phone,'—')
 FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id
 WHERE s.status IN ('PENDING_APPROVAL','PROCESSING') ORDER BY s.id DESC`)
 	if err != nil {
@@ -161,7 +164,88 @@ WHERE s.status IN ('PENDING_APPROVAL','PROCESSING') ORDER BY s.id DESC`)
 	list := []ApprovalRow{}
 	for rows.Next() {
 		var item ApprovalRow
-		if err := rows.Scan(&item.ID, &item.SupplierID, &item.SupplierName, &item.Region, &item.Status, &item.RowCount, &item.FirstModel, &item.SubmittedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.SupplierID, &item.SupplierName, &item.Region, &item.Status, &item.Kind, &item.RowCount, &item.FirstModel, &item.SubmittedAt, &item.Submitter); err != nil {
+			return nil, err
+		}
+		list = append(list, item)
+	}
+	return list, rows.Err()
+}
+
+// ApprovalHistoryRow 审批记录行。
+type ApprovalHistoryRow struct {
+	ID           int64  `json:"id"`
+	SupplierID   int64  `json:"supplier_id"`
+	SupplierName string `json:"supplier_name"`
+	Kind         string `json:"kind"`
+	Status       string `json:"status"`
+	Region       string `json:"region"`
+	RowCount     int    `json:"row_count"`
+	Approver     string `json:"approver"`
+	ApprovedAt   string `json:"approved_at"`
+	Result       string `json:"result"`
+	Note         string `json:"note"`
+}
+
+func (r *SupplyChainRuntime) ListApprovalHistory(ctx context.Context) ([]ApprovalHistoryRow, error) {
+	rows, err := r.raw.QueryContext(ctx, `SELECT s.id,s.supplier_id,sp.name,s.kind,s.status,s.region,
+       (SELECT count(*) FROM public.submission_row r WHERE r.submission_id=s.id),
+       COALESCE((SELECT operator_name_snapshot FROM public.operation_log l
+         WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),''),
+       COALESCE(to_char((SELECT created_at FROM public.operation_log l
+         WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),'YYYY-MM-DD"T"HH24:MI:SSOF'),''),
+       COALESCE((SELECT action FROM public.operation_log l
+         WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),''),
+       COALESCE((SELECT reason FROM public.operation_log l
+         WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),'')
+FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id
+WHERE s.status IN ('PROCESSING','COMPLETED','REJECTED') ORDER BY s.id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []ApprovalHistoryRow{}
+	for rows.Next() {
+		var item ApprovalHistoryRow
+		if err := rows.Scan(&item.ID, &item.SupplierID, &item.SupplierName, &item.Kind, &item.Status, &item.Region, &item.RowCount, &item.Approver, &item.ApprovedAt, &item.Result, &item.Note); err != nil {
+			return nil, err
+		}
+		list = append(list, item)
+	}
+	return list, rows.Err()
+}
+
+// SupplierWorkspaceRow 供应商管理列表行。
+type SupplierWorkspaceRow struct {
+	ID                 int64  `json:"id"`
+	Name               string `json:"name"`
+	Region             string `json:"region"`
+	Phone              string `json:"phone"`
+	ResourceCount      int    `json:"resource_count"`
+	CreditAmount       string `json:"credit_amount"`
+	SettlementCurrency string `json:"settlement_currency"`
+	TaxRate            string `json:"tax_rate"`
+	ContractStatus     string `json:"contract_status"`
+	CooperationStage   string `json:"cooperation_stage"`
+	HandlingStatus     string `json:"handling_status"`
+}
+
+func (r *SupplyChainRuntime) ListSuppliers(ctx context.Context) ([]SupplierWorkspaceRow, error) {
+	rows, err := r.raw.QueryContext(ctx, `SELECT s.id,s.name,s.region,COALESCE(s.phone,''),
+       (SELECT count(*) FROM public.resource r WHERE r.supplier_id=s.id),
+       COALESCE(s.credit_amount::text,''), COALESCE(s.settlement_currency,''), COALESCE(s.tax_rate::text,''),
+       CASE WHEN EXISTS (SELECT 1 FROM public.supplier_formal_config c WHERE c.supplier_id=s.id) THEN '已归档' ELSE '办理中' END,
+       CASE WHEN EXISTS (SELECT 1 FROM public.resource r WHERE r.supplier_id=s.id) THEN '已有' ELSE '待接入' END,
+       CASE WHEN EXISTS (SELECT 1 FROM public.submission sub WHERE sub.supplier_id=s.id AND sub.status IN ('PENDING_APPROVAL','PROCESSING')) THEN '有未完成事项' ELSE '无未完成事项' END
+FROM public.supplier s ORDER BY s.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []SupplierWorkspaceRow{}
+	for rows.Next() {
+		var item SupplierWorkspaceRow
+		if err := rows.Scan(&item.ID, &item.Name, &item.Region, &item.Phone, &item.ResourceCount, &item.CreditAmount, &item.SettlementCurrency, &item.TaxRate, &item.ContractStatus, &item.CooperationStage, &item.HandlingStatus); err != nil {
 			return nil, err
 		}
 		list = append(list, item)
@@ -233,6 +317,12 @@ VALUES($1,'CONTRACT','WAITING_PREDECESSOR',$2)`, flowID, contractAssignee); err 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO public.assignment_log(entity_type,entity_id,field,old_staff_id,new_staff_id,changed_by)
 SELECT 'supplier',$1,'buyer_id',NULL,$2,$3
 WHERE NOT EXISTS (SELECT 1 FROM public.assignment_log WHERE entity_type='supplier' AND entity_id=$1 AND field='buyer_id')`, supplierID, testAssignee, actorID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO public.operation_log
+(entity_type,entity_id,action,operator_id,operator_name_snapshot,reason,request_id,created_at)
+VALUES('submission',$1,'APPROVE',$2,(SELECT name FROM public.internal_staff WHERE id=$2),$3,$4,now())`,
+		submissionID, actorID, strings.TrimSpace(reason), fmt.Sprintf("stage2-approve-%d", submissionID)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -585,6 +675,33 @@ func (h *SupplyChainHandler) Approve(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"submission_id": id, "status": "PROCESSING"})
+}
+
+func (h *SupplyChainHandler) ListSuppliers(c *gin.Context) {
+	if middleware.OperatorFrom(c) == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	list, err := h.rt.ListSuppliers(c.Request.Context())
+	if err != nil {
+		response.Error(c, apperr.ErrSystem)
+		return
+	}
+	response.Success(c, gin.H{"list": list})
+}
+
+func (h *SupplyChainHandler) ListApprovalHistory(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	list, err := h.rt.ListApprovalHistory(c.Request.Context())
+	if err != nil {
+		response.Error(c, apperr.ErrSystem)
+		return
+	}
+	response.Success(c, gin.H{"list": list})
 }
 
 func (h *SupplyChainHandler) Simulate(c *gin.Context) {

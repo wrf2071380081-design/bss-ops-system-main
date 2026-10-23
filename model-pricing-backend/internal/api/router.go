@@ -89,6 +89,8 @@ type Deps struct {
 	SupplierPortalProfileSvc *supplier.PortalProfileService
 	// Stage 2：供应商申报 → 领导审批 → mock 测试 → 登记接入。
 	SupplyChain *SupplyChainRuntime
+	// 客户管理合并页：客户列表派生列 / 客户报价 / 特价审批记录（纯只读）。
+	CustomerWorkspace *CustomerWorkspaceRuntime
 }
 
 // New 构建并返回应用使用的 Gin Engine。
@@ -533,6 +535,8 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 	if portal == "internal" && deps.SupplyChain != nil {
 		sch := NewSupplyChainHandler(deps.SupplyChain)
 		protected.GET("/approvals/submissions", sch.ListApprovals)
+		protected.GET("/approvals/history", sch.ListApprovalHistory)
+		protected.GET("/supply/suppliers", sch.ListSuppliers)
 		protected.POST("/approvals/submissions/:id/approve",
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			sch.Approve,
@@ -541,6 +545,14 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			sch.Simulate,
 		)
+	}
+
+	// 客户管理合并页：客户列表 / 客户报价 / 特价审批记录（只读）。
+	if portal == "internal" && deps.CustomerWorkspace != nil {
+		cwh := NewCustomerWorkspaceHandler(deps.CustomerWorkspace)
+		protected.GET("/customer-workspace/customers", middleware.RequirePerm(perm.M8View), cwh.ListCustomers)
+		protected.GET("/customer-workspace/quotes", middleware.RequirePerm(perm.M9View), cwh.ListQuotes)
+		protected.GET("/customer-workspace/approvals", middleware.RequirePerm(perm.M9View), cwh.ListApprovals)
 	}
 
 	// 业务接口：客户门户（09-customer-quote.md §6）。

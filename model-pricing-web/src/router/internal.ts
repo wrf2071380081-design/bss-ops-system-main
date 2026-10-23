@@ -2,6 +2,7 @@ import type { RouteRecordRaw } from "vue-router";
 import AppLayout from "../layouts/AppLayout.vue";
 import StandardModelList from "../views/internal/models/StandardModelList.vue";
 import ModelPlaza from "../views/internal/resources/ModelPlaza.vue";
+import ModelPlazaDetail from "../views/internal/resources/ModelPlazaDetail.vue";
 import ModelApplicationReview from "../views/internal/models/ModelApplicationReview.vue";
 import Sync from "../modules/pricing/views/OfficialPriceSync.vue";
 import ModulePlaceholderView from "../views/ModulePlaceholderView.vue";
@@ -11,7 +12,7 @@ import AuditLogList from "../views/internal/audit/AuditLogList.vue";
 import CurrentCostBaselineList from "../views/internal/cost/CurrentCostBaselineList.vue";
 import PriceBookList from "../views/internal/pricing/PriceBookList.vue";
 import PricingPolicyList from "../views/internal/pricing/PricingPolicyList.vue";
-import SupplierList from "../views/internal/suppliers/SupplierList.vue";
+import SupplierWorkspace from "../views/internal/suppliers/SupplierWorkspace.vue";
 import SupplierEntityList from "../views/internal/suppliers/SupplierEntityList.vue";
 import CustomerWorkspace from "../views/internal/customers/CustomerWorkspace.vue";
 import FinanceCenter from "../views/internal/finance/FinanceCenter.vue";
@@ -19,7 +20,6 @@ import InternalWorkbench from "../views/internal/workbench/InternalWorkbench.vue
 import OrgPermissionCenter from "../views/internal/orgPermissions/OrgPermissionCenter.vue";
 import IntegrationCenter from "../views/internal/integration/IntegrationCenter.vue";
 import { ROUTE_REQUIREMENTS } from "../domain/permissions";
-import ApprovalCenter from "../views/internal/approvals/ApprovalCenter.vue";
 
 const page = (
   path: string,
@@ -102,7 +102,7 @@ export const internalRoutes: RouteRecordRaw = {
     },
     {
       path: "suppliers",
-      component: SupplierEntityList,
+      component: SupplierWorkspace,
       meta: {
         requiresAuth: true,
         portal: "internal",
@@ -110,18 +110,18 @@ export const internalRoutes: RouteRecordRaw = {
         requiredPermission: ROUTE_REQUIREMENTS["internal.suppliers"],
         title: "供应商管理",
         menu: true,
-        order: 50,
+        order: 40,
       },
     },
     {
-      path: "supplier-profile-legacy",
-      component: SupplierList,
+      path: "supplier-entities",
+      component: SupplierEntityList,
       meta: {
         requiresAuth: true,
         portal: "internal",
         routeKey: "internal.suppliers",
         requiredPermission: ROUTE_REQUIREMENTS["internal.suppliers"],
-        title: "供应商结算档案",
+        title: "供应商主体档案",
         menu: false,
         order: 51,
       },
@@ -135,8 +135,8 @@ export const internalRoutes: RouteRecordRaw = {
         routeKey: "internal.supplierQuotes",
         requiredPermission: ROUTE_REQUIREMENTS["internal.supplierQuotes"],
         title: "供应商报价",
-        menu: true,
-        order: 40,
+        menu: false,
+        order: 50,
       },
     },
     {
@@ -271,6 +271,20 @@ export const internalRoutes: RouteRecordRaw = {
       },
     },
     {
+      path: "model-detail/:id",
+      component: ModelPlazaDetail,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.modelPlaza",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.modelPlaza"],
+        title: "模型详情",
+        description: "供应来源、测试指标与资源状态",
+        menu: false,
+        order: 32,
+      },
+    },
+    {
       path: "model-plaza/:resourceId",
       component: ModelPlaza,
       meta: {
@@ -284,19 +298,18 @@ export const internalRoutes: RouteRecordRaw = {
         order: 31,
       },
     },
-    page("quotes", "internal.quotes", "报价单", "按客户与资源生成报价单、计算毛利", 60),
+    // 报价单已并入「客户管理」，保留路由兼容旧链接，不再出现在左菜单
     {
-      path: "approvals",
-      component: ApprovalCenter,
+      path: "quotes",
+      component: ModulePlaceholderView,
       meta: {
         requiresAuth: true,
         portal: "internal",
-        routeKey: "internal.approvals",
-        title: "审批中心",
-        description: "供应商新增模型 / 价格变更审批",
-        menu: true,
-        order: 80,
-        requiresApproval: true,
+        routeKey: "internal.quotes",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.quotes"],
+        title: "报价单",
+        menu: false,
+        order: 60,
       },
     },
   ],

@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { customersApi } from "../../../api/customers";
+import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow, type CustomerWorkspaceRow } from "../../../api/customerWorkspace";
 import type { CustomerListItemDTO, CustomerTransferImpactDTO } from "../../../api/customers.types";
 import { customerQuotesApi } from "../../../api/customerQuotes";
 import { modelsApi } from "../../../api/models";
@@ -13,6 +14,9 @@ import { isDecimalAmount } from "../../../domain/money";
 import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
 import * as e2e from "../../../e2e/priceBookQuote";
+
+// 详情弹窗发起报价 / 移交时只需要这三个字段，避免与列表行类型强绑。
+interface QuoteTarget { id: string; legalName: string; levelCode: string }
 
 const permissions = usePermissionStore();
 const canTransfer = computed(() => permissions.canAction(PERMISSIONS.CUSTOMER_EDIT));
@@ -46,7 +50,8 @@ function rememberSku(id: string) {
 const message = (value: unknown) => value instanceof ApiError ? value.message : value instanceof Error ? value.message : "操作失败，请稍后重试。";
 const positiveId = (value: string) => /^[1-9]\d*$/.test(value.trim()) && Number.isSafeInteger(Number(value));
 
-const rows = ref<CustomerListItemDTO[]>([]);
+const activeTab = ref<"customers" | "quotes" | "approvals">("customers");
+const rows = ref<CustomerWorkspaceRow[]>([]);
 const loading = ref(false);
 const loadError = ref("");
 const pagination = reactive({ page: 1, size: 10, total: 0 });
@@ -58,7 +63,7 @@ async function loadCustomers() {
   loading.value = true;
   loadError.value = "";
   try {
-    const result = await customersApi.list({ page: pagination.page, size: pagination.size, keyword: keyword.value.trim() || undefined });
+    const result = await customerWorkspaceApi.customers({ page: pagination.page, size: pagination.size, keyword: keyword.value.trim() || undefined });
     if (sequence !== listSequence) return;
     rows.value = result.list;
     pagination.total = result.total;
@@ -75,6 +80,77 @@ function query() { pagination.page = 1; void loadCustomers(); }
 function reset() { keyword.value = ""; query(); }
 function changePage(page: number) { pagination.page = page; void loadCustomers(); }
 
+// 报价 tab
+const quoteRows = ref<CustomerQuoteRow[]>([]);
+const quoteLoading = ref(false);
+const quoteListError = ref("");
+const quoteFilters = reactive({ keyword: "", status: "" });
+const quotePagination = reactive({ page: 1, size: 20, total: 0 });
+let quoteSequence = 0;
+async function loadQuotes() {
+  const sequence = ++quoteSequence;
+  quoteLoading.value = true;
+  quoteListError.value = "";
+  try {
+    const result = await customerWorkspaceApi.quotes({
+      page: quotePagination.page, size: quotePagination.size,
+      keyword: quoteFilters.keyword.trim() || undefined,
+      status: quoteFilters.status || undefined,
+    });
+    if (sequence !== quoteSequence) return;
+    quoteRows.value = result.list;
+    quotePagination.total = result.total;
+  } catch (error) {
+    if (sequence !== quoteSequence) return;
+    quoteRows.value = [];
+    quotePagination.total = 0;
+    quoteListError.value = message(error);
+  } finally {
+    if (sequence === quoteSequence) quoteLoading.value = false;
+  }
+}
+function queryQuotes() { quotePagination.page = 1; void loadQuotes(); }
+function resetQuotes() { quoteFilters.keyword = ""; quoteFilters.status = ""; queryQuotes(); }
+function changeQuotePage(page: number) { quotePagination.page = page; void loadQuotes(); }
+
+// 审批记录 tab
+const approvalRows = ref<CustomerApprovalRow[]>([]);
+const approvalLoading = ref(false);
+const approvalError = ref("");
+async function loadApprovals() {
+  approvalLoading.value = true;
+  approvalError.value = "";
+  try { approvalRows.value = await customerWorkspaceApi.approvals(); }
+  catch (error) { approvalRows.value = []; approvalError.value = message(error); }
+  finally { approvalLoading.value = false; }
+}
+
+// 详情弹窗
+const detailVisible = ref(false);
+const detailRow = ref<CustomerWorkspaceRow>();
+function openDetail(row: CustomerWorkspaceRow) { detailRow.value = row; detailVisible.value = true; }
+function quoteFromDetail() {
+  const row = detailRow.value;
+  if (!row) return;
+  detailVisible.value = false;
+  openQuote({ id: String(row.id), legalName: row.name, levelCode: row.level_code });
+}
+function transferFromDetail() {
+  const row = detailRow.value;
+  if (!row) return;
+  detailVisible.value = false;
+  openTransfer({ id: String(row.id), legalName: row.name, levelCode: row.level_code });
+}
+function switchTab(name: string | number) {
+  if (name === "quotes" && !quoteRows.value.length) void loadQuotes();
+  if (name === "approvals" && !approvalRows.value.length) void loadApprovals();
+}
+
+const statusText = (status: string) => ({ EFFECTIVE: "生效", DRAFT: "草稿", PENDING: "待审批", APPROVED: "已批准", EXPIRED: "已过期", REJECTED: "已驳回", FORMAL: "正式" } as Record<string, string>)[status] || status;
+const quoteTypeText = (type: string) => ({ APPLY: "套用价目表", CLONE: "克隆历史", TEMP: "临时报价", SPECIAL: "特价", CONTRACT: "合同" } as Record<string, string>)[type] || type;
+const approvalStatusText = (status: string) => ({ PENDING: "待审批", APPROVED: "已通过", REJECTED: "已驳回" } as Record<string, string>)[status] || status;
+const approvalStatusType = (status: string) => status === "APPROVED" ? "success" : status === "REJECTED" ? "danger" : "warning";
+
 const quoteOpen = ref(false);
 const quotePreviewOpen = ref(false);
 const quoteSubmitting = ref(false);
@@ -84,8 +160,8 @@ const quotePreview = ref<{ draft: GenerateCustomerQuoteDraft; customerName: stri
 const quoteForm = reactive<{ customerId: string; quoteType: CustomerQuoteType; sourceQuoteId: string; validTo: string; items: GenerateCustomerQuoteItem[] }>({
   customerId: "", quoteType: "APPLY", sourceQuoteId: "", validTo: "", items: [],
 });
-const quoteCustomers = ref<CustomerListItemDTO[]>([]);
-const selectedQuoteCustomer = ref<CustomerListItemDTO>();
+const quoteCustomers = ref<QuoteTarget[]>([]);
+const selectedQuoteCustomer = ref<QuoteTarget>();
 const quoteCustomerOptions = computed(() => selectedQuoteCustomer.value && !quoteCustomers.value.some(row => row.id === selectedQuoteCustomer.value?.id)
   ? [...quoteCustomers.value, selectedQuoteCustomer.value] : quoteCustomers.value);
 const quoteCustomerKeyword = ref(""), quoteCustomerPage = ref(1), quoteCustomerTotal = ref(0);
@@ -118,7 +194,8 @@ async function searchQuoteCustomers(value = "", append = false) {
   try {
     const result = await customersApi.list({ page, size: 20, keyword: value.trim() || undefined });
     if (sequence !== quoteCustomerSequence) return;
-    quoteCustomers.value = append ? [...quoteCustomers.value, ...result.list] : result.list;
+    const mapped = result.list.map(row => ({ id: row.id, legalName: row.legalName, levelCode: row.levelCode }));
+    quoteCustomers.value = append ? [...quoteCustomers.value, ...mapped] : mapped;
     quoteCustomerPage.value = page; quoteCustomerTotal.value = result.total;
   } catch (error) { if (sequence === quoteCustomerSequence) quoteCustomerError.value = message(error); }
   finally { if (sequence === quoteCustomerSequence) quoteCustomerLoading.value = false; }
@@ -154,10 +231,10 @@ function openQuoteActions(id = "") {
   quoteActionOpen.value = true;
 }
 
-function openQuote(customer?: CustomerListItemDTO) {
+function openQuote(customer?: QuoteTarget) {
   Object.assign(quoteForm, { customerId: customer?.id || "", quoteType: "APPLY", sourceQuoteId: "", validTo: "", items: [] });
   selectedQuoteCustomer.value = customer;
-  quoteCustomers.value = customer ? [customer] : [];
+  quoteCustomers.value = customer ? [{ ...customer }] : [];
   quoteCustomerKeyword.value = "";
   quoteContext.value = undefined;
   quoteContextError.value = "";
@@ -288,13 +365,13 @@ async function exportQuote() {
 
 const transferOpen = ref(false);
 const transferSubmitting = ref(false);
-const transferCustomer = ref<CustomerListItemDTO>();
+const transferCustomer = ref<QuoteTarget>();
 const transferForm = reactive({ toOperatorId: "", reason: "" });
 const transferImpact = ref<CustomerTransferImpactDTO>();
 const transferError = ref("");
 let transferSequence = 0;
 
-function openTransfer(customer: CustomerListItemDTO) {
+function openTransfer(customer: QuoteTarget) {
   ++transferSequence;
   transferCustomer.value = customer;
   transferSubmitting.value = false;
@@ -343,7 +420,7 @@ async function confirmTransfer() {
   }
 }
 
-onMounted(loadCustomers);
+onMounted(() => { void loadCustomers(); });
 </script>
 
 <template>
@@ -352,10 +429,82 @@ onMounted(loadCustomers);
       <div><h2>客户管理 <span>{{ pagination.total }}</span></h2><p class="muted">真实后端阶段 9a/9b：客户、报价生成、特价、刷新与导出。</p></div>
       <div class="header-actions"><el-button :loading="loading" @click="loadCustomers">刷新</el-button><el-button v-if="canGenerateQuote" @click="openQuoteActions()">报价后续操作</el-button><el-button v-if="canGenerateQuote" type="primary" @click="openQuote()">生成报价</el-button></div>
     </div>
-    <div class="filters customer-filters"><el-input v-model="keyword" clearable aria-label="客户关键字" placeholder="按客户法定名称搜索" @keyup.enter="query" /><el-button type="primary" @click="query">查询</el-button><el-button text @click="reset">重置</el-button></div>
-    <el-alert v-if="loadError" :title="loadError" type="error" show-icon :closable="false"><el-button text @click="loadCustomers">重新加载</el-button></el-alert>
-    <div v-loading="loading" class="customer-list"><el-empty v-if="!rows.length && !loading && !loadError" description="没有符合条件的客户" /><el-table v-else :data="rows" row-key="id"><el-table-column label="客户" min-width="210"><template #default="{ row }"><b>{{ row.legalName }}</b><div class="mono muted">ID {{ row.id }} · 主体 {{ row.subjectId }}</div></template></el-table-column><el-table-column prop="levelCode" label="等级" width="105" /><el-table-column label="归属销售" min-width="150"><template #default="{ row }">{{ row.ownerSalesName }}<div class="mono muted">{{ row.ownerSalesOperatorId }}</div></template></el-table-column><el-table-column label="授信" min-width="170"><template #default="{ row }"><span class="mono">{{ row.creditUsed }} / {{ row.creditLimit }}</span></template></el-table-column><el-table-column label="押金" min-width="135"><template #default="{ row }"><span class="mono">{{ row.depositAmount }}</span><div class="muted">{{ row.depositStatus }}</div></template></el-table-column><el-table-column label="状态 / 创建" min-width="170"><template #default="{ row }"><el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ row.status }}</el-tag><div class="muted">{{ formatDateTime(row.createdAt, '暂缺', false) }}</div></template></el-table-column><el-table-column label="操作" width="170" fixed="right"><template #default="{ row }"><el-button v-if="canGenerateQuote" link type="primary" @click="openQuote(row)">生成报价</el-button><el-button v-if="canTransfer" link @click="openTransfer(row)">移交</el-button></template></el-table-column></el-table></div>
-    <div class="catalog-pagination"><el-pagination :current-page="pagination.page" :page-size="pagination.size" :total="pagination.total" layout="total, prev, pager, next" @current-change="changePage" /></div>
+    <el-tabs v-model="activeTab" class="customer-tabs" @tab-change="switchTab">
+      <el-tab-pane label="客户列表" name="customers">
+        <div class="filters customer-filters">
+          <el-input v-model="keyword" clearable aria-label="客户关键字" placeholder="按客户名称搜索" @keyup.enter="query" />
+          <el-button type="primary" @click="query">查询</el-button>
+          <el-button text @click="reset">重置</el-button>
+        </div>
+        <el-alert v-if="loadError" :title="loadError" type="error" show-icon :closable="false"><el-button text @click="loadCustomers">重新加载</el-button></el-alert>
+        <div v-loading="loading" class="customer-list">
+          <el-empty v-if="!rows.length && !loading && !loadError" description="没有符合条件的客户" />
+          <el-table v-else :data="rows" row-key="id">
+            <el-table-column label="客户名称" min-width="180">
+              <template #default="{ row }"><b>{{ row.name }}</b><div class="mono muted">ID {{ row.id }}</div></template>
+            </el-table-column>
+            <el-table-column label="客户等级" width="100"><template #default="{ row }">{{ row.level_code }}</template></el-table-column>
+            <el-table-column label="客户来源" width="110"><template #default="{ row }">{{ row.source || "—" }}</template></el-table-column>
+            <el-table-column label="归属销售" min-width="120"><template #default="{ row }">{{ row.owner_name }}</template></el-table-column>
+            <el-table-column label="合同状态" width="110">
+              <template #default="{ row }"><el-tag :type="row.contract_status === '已归档' ? 'success' : 'info'" size="small">{{ row.contract_status }}</el-tag></template>
+            </el-table-column>
+            <el-table-column label="合作阶段" width="100"><template #default="{ row }">{{ row.cooperation_stage }}</template></el-table-column>
+            <el-table-column label="办理状态" width="130">
+              <template #default="{ row }"><el-tag :type="row.handling_status === '有未完成事项' ? 'warning' : 'info'" size="small">{{ row.handling_status }}</el-tag></template>
+            </el-table-column>
+            <el-table-column label="客户状态" width="100">
+              <template #default="{ row }"><el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'" size="small">{{ row.status === "ACTIVE" ? "正常" : row.status }}</el-tag></template>
+            </el-table-column>
+            <el-table-column label="详情" width="80" fixed="right">
+              <template #default="{ row }"><el-button size="small" @click="openDetail(row)">详情</el-button></template>
+            </el-table-column>
+          </el-table>
+        </div>
+        <div class="catalog-pagination"><el-pagination :current-page="pagination.page" :page-size="pagination.size" :total="pagination.total" layout="total, prev, pager, next" @current-change="changePage" /></div>
+      </el-tab-pane>
+
+      <el-tab-pane label="报价" name="quotes">
+        <div class="filters customer-filters">
+          <el-input v-model="quoteFilters.keyword" clearable placeholder="按客户名称搜索" @keyup.enter="queryQuotes" />
+          <el-select v-model="quoteFilters.status" clearable placeholder="报价状态" style="width: 150px" @change="queryQuotes">
+            <el-option value="DRAFT" label="草稿" /><el-option value="PENDING" label="待审批" />
+            <el-option value="EFFECTIVE" label="生效" /><el-option value="EXPIRED" label="已过期" />
+          </el-select>
+          <el-button type="primary" @click="queryQuotes">查询</el-button>
+          <el-button text @click="resetQuotes">重置</el-button>
+        </div>
+        <el-alert v-if="quoteListError" :title="quoteListError" type="error" show-icon :closable="false"><el-button text @click="loadQuotes">重新加载</el-button></el-alert>
+        <el-table v-loading="quoteLoading" :data="quoteRows" row-key="id">
+          <el-table-column label="报价单号" width="110"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
+          <el-table-column label="客户名称" min-width="170"><template #default="{ row }">{{ row.customer_name }}</template></el-table-column>
+          <el-table-column label="版本" width="80"><template #default="{ row }">V{{ row.version_no }}</template></el-table-column>
+          <el-table-column label="类型" width="120"><template #default="{ row }">{{ quoteTypeText(row.quote_type) }}</template></el-table-column>
+          <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag size="small" :type="row.status === 'EFFECTIVE' ? 'success' : row.status === 'EXPIRED' ? 'info' : 'warning'">{{ statusText(row.status) }}</el-tag></template></el-table-column>
+          <el-table-column label="明细项" width="90"><template #default="{ row }">{{ row.item_count }}</template></el-table-column>
+          <el-table-column label="价目表版本" width="110"><template #default="{ row }">V{{ row.price_book_version }}</template></el-table-column>
+          <el-table-column label="有效期至" width="170"><template #default="{ row }">{{ row.valid_until ? formatDateTime(row.valid_until, "—", false) : "—" }}</template></el-table-column>
+          <el-table-column label="归属销售" width="110"><template #default="{ row }">{{ row.owner_name }}</template></el-table-column>
+          <el-table-column label="创建时间" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
+          <template #empty><el-empty description="暂无报价" :image-size="64" /></template>
+        </el-table>
+        <div class="catalog-pagination"><el-pagination :current-page="quotePagination.page" :page-size="quotePagination.size" :total="quotePagination.total" layout="total, prev, pager, next" @current-change="changeQuotePage" /></div>
+      </el-tab-pane>
+
+      <el-tab-pane label="审批记录" name="approvals">
+        <el-alert v-if="approvalError" :title="approvalError" type="error" show-icon :closable="false"><el-button text @click="loadApprovals">重新加载</el-button></el-alert>
+        <el-table v-loading="approvalLoading" :data="approvalRows" row-key="id">
+          <el-table-column label="变更单号" width="110"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
+          <el-table-column label="客户名称" min-width="170"><template #default="{ row }">{{ row.customer_name || "—" }}</template></el-table-column>
+          <el-table-column label="关联报价" width="110"><template #default="{ row }">{{ row.quote_id ? `#${row.quote_id}` : "—" }}</template></el-table-column>
+          <el-table-column label="审批结果" width="110"><template #default="{ row }"><el-tag size="small" :type="approvalStatusType(row.status)">{{ approvalStatusText(row.status) }}</el-tag></template></el-table-column>
+          <el-table-column label="申请原因" min-width="200" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "—" }}</template></el-table-column>
+          <el-table-column label="提交人" width="110"><template #default="{ row }">{{ row.created_by || "—" }}</template></el-table-column>
+          <el-table-column label="提交时间" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
+          <template #empty><el-empty description="暂无特价审批记录" :image-size="64" /></template>
+        </el-table>
+      </el-tab-pane>
+    </el-tabs>
   </section>
 
   <el-dialog v-model="quoteOpen" title="生成客户报价" width="min(760px, 96vw)" :close-on-click-modal="false" :close-on-press-escape="!quoteSubmitting" :show-close="!quoteSubmitting">
@@ -391,11 +540,32 @@ onMounted(loadCustomers);
   </el-dialog>
 
   <el-dialog v-model="transferOpen" title="移交客户" width="min(680px, 96vw)" :close-on-click-modal="false" :close-on-press-escape="!transferSubmitting" :show-close="!transferSubmitting">
-    <p v-if="transferCustomer">客户：<b>{{ transferCustomer.legalName }}</b> · 当前归属 {{ transferCustomer.ownerSalesName }}</p>
+    <p v-if="transferCustomer">客户：<b>{{ transferCustomer.legalName }}</b> · 客户 ID {{ transferCustomer.id }}</p>
     <el-form class="dialog-form" label-position="top" :disabled="transferSubmitting"><el-form-item label="目标销售人员 ID *"><el-input v-model="transferForm.toOperatorId" inputmode="numeric" @input="invalidateTransferPreview" /></el-form-item><el-form-item label="移交原因"><el-input v-model="transferForm.reason" type="textarea" :rows="3" maxlength="200" show-word-limit @input="invalidateTransferPreview" /></el-form-item></el-form>
     <el-descriptions v-if="transferImpact" :column="2" border><el-descriptions-item label="原归属">{{ transferImpact.fromOperatorName }}（{{ transferImpact.fromOperatorId }}）</el-descriptions-item><el-descriptions-item label="新归属">{{ transferImpact.toOperatorName }}（{{ transferImpact.toOperatorId }}）</el-descriptions-item><el-descriptions-item label="随迁报价">{{ transferImpact.quoteCount }} 份</el-descriptions-item><el-descriptions-item label="关联价目表">{{ transferImpact.priceBookCount }} 条</el-descriptions-item></el-descriptions>
     <el-alert v-if="transferError" class="form-error" :title="transferError" type="error" show-icon :closable="false" />
     <template #footer><el-button :disabled="transferSubmitting" @click="transferOpen = false">取消</el-button><el-button v-if="!transferImpact" type="primary" :loading="transferSubmitting" @click="previewTransfer">检查影响</el-button><el-button v-else type="danger" :loading="transferSubmitting" @click="confirmTransfer">确认移交</el-button></template>
+  </el-dialog>
+  <el-dialog v-model="detailVisible" title="客户详情" width="min(680px, 96vw)">
+    <el-descriptions v-if="detailRow" :column="2" border>
+      <el-descriptions-item label="客户名称">{{ detailRow.name }}</el-descriptions-item>
+      <el-descriptions-item label="客户 ID">{{ detailRow.id }}</el-descriptions-item>
+      <el-descriptions-item label="客户等级">{{ detailRow.level_code }}</el-descriptions-item>
+      <el-descriptions-item label="客户来源">{{ detailRow.source || "—" }}</el-descriptions-item>
+      <el-descriptions-item label="归属销售">{{ detailRow.owner_name }}</el-descriptions-item>
+      <el-descriptions-item label="客户状态">{{ detailRow.status }}</el-descriptions-item>
+      <el-descriptions-item label="合同状态">{{ detailRow.contract_status }}</el-descriptions-item>
+      <el-descriptions-item label="合作阶段">{{ detailRow.cooperation_stage }}</el-descriptions-item>
+      <el-descriptions-item label="办理状态">{{ detailRow.handling_status }}</el-descriptions-item>
+      <el-descriptions-item label="授信额度 / 已用"><span class="mono">{{ detailRow.credit_used }} / {{ detailRow.credit_limit }}</span></el-descriptions-item>
+      <el-descriptions-item label="生效报价">{{ detailRow.active_quotes }} 份</el-descriptions-item>
+      <el-descriptions-item label="未完成报价">{{ detailRow.pending_quotes }} 份</el-descriptions-item>
+    </el-descriptions>
+    <template #footer>
+      <el-button @click="detailVisible = false">关闭</el-button>
+      <el-button v-if="canTransfer" @click="transferFromDetail">移交客户</el-button>
+      <el-button v-if="canGenerateQuote" type="primary" @click="quoteFromDetail">生成报价</el-button>
+    </template>
   </el-dialog>
 </template>
 
