@@ -1,6 +1,6 @@
 # A 模块 TDD 汇总
 
-> 当前交接入口（截至 2026-10-24）：[责任与接入参数](../supply/2026-10-22-handoff.md)、[交接验收清单](./2026-10-22-handoff-acceptance.md)。Stage83 完成本轮快速交付计划中的定向收尾；Stage84补齐模型广场在模型详情与供应商详情之间往返时恢复列表及来源筛选状态，并通过定向浏览器脚本和生产构建。主 Docker 当前快照为 v36/dirty=false，API 与 PostgreSQL 运行且健康，工作区 API 已更新到 `model_bss_api_latest`。主库业务表为空，真实登录页面验收覆盖空数据状态；报告附件、B真实办理/报告来源、资源绑定准入等跨模块场景仍待提供方联调。下方阶段条目保留执行时状态；最新状态以 Stage83–84 和交接清单为准。
+> 当前交接入口（截至 2026-10-24）：[责任与接入参数](../supply/2026-10-22-handoff.md)、[交接验收清单](./handoff-acceptance.md)。Stage83 完成本轮快速交付计划中的定向收尾；Stage84补齐模型广场在模型详情与供应商详情之间往返时恢复列表及来源筛选状态，并通过定向浏览器脚本和生产构建。主 Docker 当前快照为 v36/dirty=false，API 与 PostgreSQL 运行且健康，工作区 API 已更新到 `model_bss_api_latest`。主库业务表为空，真实登录页面验收覆盖空数据状态；报告附件、B真实办理/报告来源、资源绑定准入等跨模块场景仍待提供方联调。下方阶段条目保留执行时状态；最新状态以 Stage83–84 和交接清单为准。
 
 > 职责更正：总览/A任务书/共享契约只有A/B/C三条线，没有独立公共负责人；共享文件统一维护未点名全部由谁负责。A负责F4/F13等业务闭环，C明确提供F14日志/绑定helper。历史阶段的“待公共负责人”只保留当时表述，不能据此移交A责任；最新交接清单已校正。
 
@@ -551,7 +551,7 @@ go test -p 1 -count=1 ./internal/api ./internal/infra/supplypg                  
 
 ## 2026-10-22 交接文档补充
 
-新增[supply三模块协作交接清单](../supply/2026-10-22-handoff.md)与[TDD交接验收清单](./2026-10-22-handoff-acceptance.md)。按公共/B/C明确真实提供方、A接续实现、代码入口、参数和最小验收条件；将Stage54/56/57已通过范围与配置/准入/报告/执行/提醒等待项分开。同步修正入口、规划和核查清单中的运行库32、主路由未挂载、前端审批守卫未实现、运行PlanExecutor已注入等过时状态。
+新增[supply三模块协作交接清单](../supply/2026-10-22-handoff.md)与[TDD交接验收清单](./handoff-acceptance.md)。按公共/B/C明确真实提供方、A接续实现、代码入口、参数和最小验收条件；将Stage54/56/57已通过范围与配置/准入/报告/执行/提醒等待项分开。同步修正入口、规划和核查清单中的运行库32、主路由未挂载、前端审批守卫未实现、运行PlanExecutor已注入等过时状态。
 
 本次仅核对源码及现有阶段记录、补交接说明，不执行新业务测试、不增加“通过”结论，不修改功能代码/数据库/容器，也不提交或推送。交接后的真实结果继续追加本文件，不新增分散results或上传evidence。
 
@@ -684,14 +684,6 @@ Go 1.26环境下`go test ./internal/api -run 'TestResourceReportHTTP' -count=1`�
 
 当前未设置专用 PostgreSQL 测试库，因此未验证数据库中的改价成功事务、BLOCKED/409真实提交及重放，也未更新或重启 `model_bss_api_latest`。运行库没有因本切片执行迁移或业务写入。工作区未提交或推送。
 
-## Stage 76：标准模型单一保存与原子人工核验（2026-10-23）
-
-按最新“手动补全”原型将维护弹窗收敛为单一“保存并留痕”按钮。新增/更新统一走 `manual-completion` API：不完整资料可保存为待补齐且不可报价；完整资料需要当前维护人、官方来源策略、核对日期、完整性及 revision 均通过，后端在同一事务内保存当前状态、一个新版本快照和操作记录，并写入核验人。资料变化只递增一个 revision/version；保存不再先写更新再单独调用 verify。旧创建/更新/核验路由仍保留兼容。
-
-定向验证通过：Go 1.26 Docker 下 `go test ./internal/domain/supply -run 'TestModelServiceManualSave'`、`go test ./internal/api -run 'TestSupplyHTTPManualCompletionUsesOneAtomicSaveContract'`；前端标准模型 API scenario 2项通过；`npm.cmd run typecheck` 与 `npm.cmd run build` 通过，构建保留既有大 chunk 提示。浏览器交互脚本未执行，因为当前项目环境未安装 `playwright` 模块。
-
-未进行 PostgreSQL 运行库写入、迁移或 API 容器更新；本阶段未提交或推送。原型差异记录已同步到需求规划、决策记录和标准模型 API 契约。
-
 ## Stage 75：改价计划 v36 HTTP 事务验收与报价审批待办接入（2026-10-23）
 
 工作台收件箱在共享 `v_work_item` 投影之外增加待审批报价投影：每条 `APPROVING` 报价分配给所有在职且 `can_approve_supplier=true` 的员工；同一报价原先分配给采购人的通用 `QUOTE` 待办在审批中隐藏，避免把审批误交给供应商归属采购人。工作台详情深链进入既有 `/internal/supplier-quotes?quote_id=...`；报价页读取该 ID 后打开原有差异抽屉并沿用现有审批资格、行级范围和 approve/reject API。没有恢复独立审批中心，也没有修改报价审批事务。
@@ -701,6 +693,14 @@ Go 1.26环境下`go test ./internal/api -run 'TestResourceReportHTTP' -count=1`�
 验证：Docker Go 1.26 下收件箱仓储/深链/改价路由定向单测通过；隔离 v36 PostgreSQL 上 `TestWorkbenchInboxHTTPProjectsQuoteApprovalsOnlyToEligibleStaffPostgres36` 与 `TestPriceChangePlanHTTPPostgres36CommitsExecutionAndBlockedReplay` 通过。`npm.cmd run build`（含 `vue-tsc --noEmit`）通过，保留既有大 chunk 提示；当前 API 二进制构建成功并更新现有 `model_bss_api_latest`，健康检查为 `db=up/status=ok`，未认证的工作台 API 返回401。
 
 验收库从主库只读克隆，测试夹具已清空后删除；临时低权限数据库角色也已删除。主运行库只读复核仍为 v36，供应商/资源/计划/报价记录均为0；未执行迁移或业务写入。保留旧 API 二进制回滚副本 `model-pricing-backend/bin/server-v36.before-stage75`（Git 忽略目录）。未提交或推送，未运行完整测试套件。
+
+## Stage 76：标准模型单一保存与原子人工核验（2026-10-23）
+
+按最新“手动补全”原型将维护弹窗收敛为单一“保存并留痕”按钮。新增/更新统一走 `manual-completion` API：不完整资料可保存为待补齐且不可报价；完整资料需要当前维护人、官方来源策略、核对日期、完整性及 revision 均通过，后端在同一事务内保存当前状态、一个新版本快照和操作记录，并写入核验人。资料变化只递增一个 revision/version；保存不再先写更新再单独调用 verify。旧创建/更新/核验路由仍保留兼容。
+
+定向验证通过：Go 1.26 Docker 下 `go test ./internal/domain/supply -run 'TestModelServiceManualSave'`、`go test ./internal/api -run 'TestSupplyHTTPManualCompletionUsesOneAtomicSaveContract'`；前端标准模型 API scenario 2项通过；`npm.cmd run typecheck` 与 `npm.cmd run build` 通过，构建保留既有大 chunk 提示。浏览器交互脚本未执行，因为当前项目环境未安装 `playwright` 模块。
+
+未进行 PostgreSQL 运行库写入、迁移或 API 容器更新；本阶段未提交或推送。原型差异记录已同步到需求规划、决策记录和标准模型 API 契约。
 
 ## Stage 77：供应商申报测试 Key 一次录入与复用（2026-10-23）
 

@@ -37,7 +37,7 @@
 
 上述真实登录仅使用主库空数据；四页签和详情往返筛选恢复由fixture场景验证，不能替代真实供应商、报告或办理数据验收。实际结果统一记入[TDD汇总](../TDD/SUMMARY.md#stage-83三模块快速交付收尾与改价目标id-v36-联调)及[Stage84](../TDD/SUMMARY.md#stage-84模型广场详情往返保留筛选上下文2026-10-24)。
 
-交接与验收以本复核、[A三模块交接清单](./2026-10-22-handoff.md)和[TDD交接验收清单](../TDD/2026-10-22-handoff-acceptance.md)的当前差距为准；Stage72–81具体验证范围见[TDD汇总](../TDD/SUMMARY.md)。
+交接与验收以本复核、[A三模块交接清单](./2026-10-22-handoff.md)和[TDD交接验收清单](../TDD/handoff-acceptance.md)的当前差距为准；Stage72–81具体验证范围见[TDD汇总](../TDD/SUMMARY.md)。
 
 原型：[Token Operations Demo](https://lovable.dev/preview/IY9qK7VzVwem0q5Aa0Dm23gaoKkzgkqI)。页面标识为“主体池迭代 / 人工登记 · 不操作生产平台”，未观察到正式版本号，不将其自行命名为 v0.23。引用原始分享链接，不保存预览访问令牌。
 
