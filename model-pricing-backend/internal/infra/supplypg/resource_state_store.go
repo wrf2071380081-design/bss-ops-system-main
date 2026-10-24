@@ -180,8 +180,8 @@ func (e resourceControlEnvelope) domain() (*supply.Resource, error) {
 			return nil, supply.ErrReadContract
 		}
 	}
-	if e.Operation == "PLAN_ONLINE" || e.Operation == "PLAN_OFFLINE" {
-		if e.PlanExecution == nil || strings.TrimSpace(e.CompletionNote) == "" || !e.Resource.EverAdmitted || (e.Operation == "PLAN_ONLINE" && e.Resource.State != "ADMITTED") || (e.Operation == "PLAN_OFFLINE" && e.Resource.State != "OFFLINE") {
+	if e.Operation == "PLAN_ONLINE" || e.Operation == "PLAN_OFFLINE" || e.Operation == "PLAN_PRICE_CHANGE" {
+		if e.PlanExecution == nil || strings.TrimSpace(e.CompletionNote) == "" || !e.Resource.EverAdmitted || (e.Operation == "PLAN_ONLINE" && e.Resource.State != "ADMITTED") || (e.Operation == "PLAN_OFFLINE" && e.Resource.State != "OFFLINE") || (e.Operation == "PLAN_PRICE_CHANGE" && e.Resource.State != "ADMITTED" && e.Resource.State != "OFFLINE") {
 			return nil, supply.ErrReadContract
 		}
 	}
@@ -406,6 +406,14 @@ func (s *ResourceStateStore) appendProof(ctx context.Context, tx *sql.Tx, before
 	return s.appendContext(ctx, tx, before, after, meta, operation, resourceWriteContext{Proof: proof})
 }
 func (s *ResourceStateStore) appendContext(ctx context.Context, tx *sql.Tx, before, after *supply.Resource, meta supply.WriteMeta, operation string, write resourceWriteContext) error {
+	if operation == "PLAN_PRICE_CHANGE" {
+		if before == nil || after == nil || before.ID != after.ID || (before.Coefficient == after.Coefficient && before.SupplierModelID == after.SupplierModelID) || before.State != after.State || !before.EverAdmitted || !after.EverAdmitted || after.Revision != before.Revision+1 || write.PlanExecution == nil || strings.TrimSpace(write.CompletionNote) == "" {
+			return supply.ErrReadContract
+		}
+		if before.SupplierModelID != after.SupplierModelID && (before.TargetVersion >= math.MaxInt64 || after.TargetVersion != before.TargetVersion+1) || before.SupplierModelID == after.SupplierModelID && after.TargetVersion != before.TargetVersion {
+			return supply.ErrReadContract
+		}
+	}
 	e := resourceControlFrom(after, operation)
 	e.Proof = controlProof(write.Proof)
 	e.TestEvidence = write.TestEvidence

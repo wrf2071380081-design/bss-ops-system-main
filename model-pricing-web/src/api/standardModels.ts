@@ -27,15 +27,9 @@ export const standardModelsApi = {
   async versions(id: string, page: number, signal?: AbortSignal) {
     return normalizePage(await apiRequest<StandardModelPage>({ url: `${base}/${standardModelVersion(id)}/versions`, params: { page, size: 20 }, signal }));
   },
-  async save(data: StandardModelData, reason: string, lifecycle: string, current?: StandardModelDTO) {
+  async manualSave(data: StandardModelData, reason: string, lifecycle: string, current?: StandardModelDTO) {
     const body = buildStandardModelSave(data, reason, current?.revision);
-    const url = current ? `${base}/${standardModelVersion(current.id)}` : base;
+    const url = current ? `${base}/${standardModelVersion(current.id)}/manual-completion` : `${base}/manual-completion`;
     return normalizeStandardModel(await apiRequest<StandardModelDTO>({ method: current ? "PUT" : "POST", url, data: body, idempotency: { scope: url, payload: body, lifecycle } }));
-  },
-  async verify(current: StandardModelDTO, reason: string, lifecycle: string) {
-    if (!reason.trim()) throw new Error("请填写核验说明。");
-    const url = `${base}/${standardModelVersion(current.id)}/verify`;
-    const body = { expected_revision: standardModelVersion(current.revision), checked_at: current.checked_at, reason: reason.trim() };
-    return normalizeStandardModel(await apiRequest<StandardModelDTO>({ method: "POST", url, data: body, idempotency: { scope: url, payload: body, lifecycle } }));
   },
 };

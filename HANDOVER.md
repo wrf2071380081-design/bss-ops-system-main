@@ -1,6 +1,8 @@
 # BSS 模型管理与定价系统交接说明
 
-本文以 `bss-ops-system` 当前代码和已完成验证为准。前后端现已统一放在本仓库；测试服务器是否已经部署某项功能，需与“代码已实现”分开判断。
+> **历史交接基线提示（2026-10-24）**：本文的目录路径、`feature/model-pricing` 分支和 v28 数据库记录来自较早的聚合仓库交接，不能作为当前 `bss-ops-system-main` / `work-A-fix` 的工作区或运行库状态。当前 A 工作交接请以 [docs/Work_A/supply/2026-10-22-handoff.md](docs/Work_A/supply/2026-10-22-handoff.md)、[docs/Work_A/TDD/2026-10-22-handoff-acceptance.md](docs/Work_A/TDD/2026-10-22-handoff-acceptance.md) 和 [docs/Work_A/TDD/SUMMARY.md](docs/Work_A/TDD/SUMMARY.md) 为准；本文以下内容仅保留其原历史记录。
+
+以下章节是旧聚合仓库的历史交接稿，只保留作历史参考；其中的分支、目录、数据库版本、部署和功能状态均不代表当前 `bss-ops-system-main`。当前 A 工作区和交接状态请使用上方链接指向的 `docs/Work_A/` 文档。
 
 ## 1. 项目简介
 

@@ -90,19 +90,18 @@ func newSupplyRuntimeDeps(db *gorm.DB, idem middleware.IdempotencyStore) (api.Su
 		return api.SupplyDeps{}, err
 	}
 	deps.Resources = supply.NewResourceReader(resourceStore)
+	reportReader, err := supplypg.NewResourceReportReader("public", read)
+	if err != nil {
+		return api.SupplyDeps{}, err
+	}
+	deps.ResourceReports = reportReader
 	formalRead, err := supplypg.NewFormalConfigReadStore("public", read, configs)
 	if err != nil {
 		return api.SupplyDeps{}, err
 	}
 	deps.FormalConfigReader = supply.NewFormalConfigReader(formalRead)
-	sealer, err := supplysecurity.AESGCMSealerFromEnv()
-	if err != nil {
-		return api.SupplyDeps{}, err
-	}
-	if sealer != nil {
-		formalWork := supplypg.NewFormalConfigWork(configs, supplypg.GORMModelTxFromContext)
-		deps.FormalConfigs = supply.NewFormalConfigService(formalWork, sealer, supplysecurity.NewFormalURLPolicy(nil), time.Now)
-	}
+	formalWork := supplypg.NewFormalConfigWork(configs, supplypg.GORMModelTxFromContext)
+	deps.FormalConfigs = supply.NewFormalConfigService(formalWork, supplysecurity.NewFormalURLPolicy(nil), time.Now)
 	deps.Notices = supply.NewNoticeReader(supplypg.NewNoticeReadStore(raw))
 	noticeWork := supplypg.NewNoticeUnitOfWork(supplypg.GORMModelTxFromContext, appendSupplyNoticeLog)
 	deps.NoticeWriter = supply.NewNoticeService(noticeWork, time.Now)
@@ -133,7 +132,9 @@ func newSupplyRuntimeDeps(db *gorm.DB, idem middleware.IdempotencyStore) (api.Su
 		return api.SupplyDeps{}, err
 	}
 	deps.Plans = supply.NewPlanReader(planStore)
-	deps.PlanWriter = supply.NewPlanMaintenanceService(planStore, time.Now)
+	planWriter := supply.NewPlanMaintenanceService(planStore, time.Now)
+	deps.PlanWriter = planWriter
+	deps.PricePlanWriter = planWriter
 	deps.PlanExecutor = supply.NewPlanExecutionService(supplypg.NewPlanExecutionWork(planStore, configs, report), time.Now)
 	return deps, nil
 }

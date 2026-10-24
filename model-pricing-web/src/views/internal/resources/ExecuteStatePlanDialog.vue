@@ -34,14 +34,15 @@ onBeforeUnmount(() => { active = false; });
 </script>
 
 <template>
-  <el-dialog :model-value="true" title="登记计划实际完成" width="min(640px, 94vw)" append-to-body :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" @close="!busy && emit('close')">
+  <el-dialog :model-value="true" :title="plan.kind === 'PRICE_CHANGE' ? '登记内部改价完成' : '登记计划实际完成'" width="min(640px, 94vw)" append-to-body :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" @close="!busy && emit('close')">
     <p>{{ planKindLabels[plan.kind] }}计划 · 资源 {{ plan.resource_id }} · 预计 {{ formatDateTime(plan.due_at) }}</p>
+    <p v-if="plan.kind === 'PRICE_CHANGE'">接口模型 ID：{{ plan.before_supplier_model_id || plan.supplier_model_id }} → {{ plan.after_supplier_model_id || plan.supplier_model_id }}；采购系数：{{ plan.before_coefficient }} → {{ plan.after_coefficient }}。登记后资源目标会更新，接口模型 ID 变化时旧报告失效。</p>
     <p>本次登记依据资源版本 {{ plan.expected_resource_revision }}；当前版本 {{ plan.current_resource_revision }}。</p>
     <el-alert v-if="!plan.precondition_matches" title="资源版本已经变化，请核对外部操作；登记可能被阻断。" type="warning" :closable="false" />
     <el-form label-position="top" @submit.prevent="save">
-      <el-form-item label="实际完成依据（必填）"><el-input v-model="completionNote" type="textarea" :rows="3" placeholder="填写外部操作结果、工单号或其他可追溯依据" :disabled="busy || conflict" /></el-form-item>
+      <el-form-item :label="plan.kind === 'PRICE_CHANGE' ? '系数调整完成依据（必填）' : '实际完成依据（必填）'"><el-input v-model="completionNote" type="textarea" :rows="3" :placeholder="plan.kind === 'PRICE_CHANGE' ? '填写外部采购系数调整结果、工单号或其他可追溯依据' : '填写外部操作结果、工单号或其他可追溯依据'" :disabled="busy || conflict" /></el-form-item>
       <el-form-item label="登记原因（必填）"><el-input v-model="reason" type="textarea" :rows="2" :disabled="busy || conflict" /></el-form-item>
-      <el-checkbox v-model="confirmed" :disabled="busy || conflict">已在外部平台完成本计划对应的操作，并核对上述依据</el-checkbox>
+      <el-checkbox v-model="confirmed" :disabled="busy || conflict">{{ plan.kind === 'PRICE_CHANGE' ? '已完成外部系数调整，并核对上述依据' : '已在外部平台完成本计划对应的操作，并核对上述依据' }}</el-checkbox>
     </el-form>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <el-alert v-if="conflict" :title="blocked ? '本次登记已阻断。输入已保留，请返回详情查看原因和最新状态。' : '计划状态或权限已变化。输入已保留，请返回详情重新核对。'" type="warning" :closable="false" />

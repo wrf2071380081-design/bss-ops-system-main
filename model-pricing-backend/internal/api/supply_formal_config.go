@@ -196,7 +196,7 @@ func (h *supplyFormalConfigHandler) disable(c *gin.Context) {
 		return
 	}
 	validRevision := view != nil && (view.Revision == expected || (expected < math.MaxInt64 && view.Revision == expected+1))
-	if !validFormalConfigView(view, supplierID) || view.ID != configID || view.Status != "INACTIVE" || !validRevision || !view.HasAPIKey {
+	if !validFormalConfigView(view, supplierID) || view.ID != configID || view.Status != "INACTIVE" || !validRevision {
 		supplyHTTPError(c, supply.ErrReadContract)
 		return
 	}

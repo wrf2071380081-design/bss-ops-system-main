@@ -6,8 +6,8 @@ import (
 )
 
 type SourceOperationQuery struct {
-	ModelID, ResourceID string
-	Page, Size          int
+	ModelID, SupplierID, ResourceID string
+	Page, Size                      int
 }
 
 // SourceOperation contains display fields only, never operation snapshots.
@@ -43,8 +43,8 @@ func (r *SourceOperationReader) List(ctx context.Context, q SourceOperationQuery
 	if r == nil || r.store == nil {
 		return nil, ErrDependencyUnavailable
 	}
-	if !validID(q.ModelID) || (q.ResourceID != "" && !validID(q.ResourceID)) {
-		return nil, invalid("id", "expected model/resource bigint strings")
+	if (validID(q.ModelID) == validID(q.SupplierID)) || (q.ResourceID != "" && (q.ModelID == "" || !validID(q.ResourceID))) {
+		return nil, invalid("id", "exactly one model or supplier scope is required")
 	}
 	var err error
 	q.Page, q.Size, err = readPagination(q.Page, q.Size)
@@ -61,7 +61,7 @@ func (r *SourceOperationReader) List(ctx context.Context, q SourceOperationQuery
 	seen := map[string]bool{}
 	for i := range rows {
 		row := &rows[i]
-		if !validID(row.ID) || !validID(row.EntityID) || (row.EntityType != "resource" && row.EntityType != "plan") || (row.EntityType == "resource" && row.EntityID != row.ResourceID) || !validID(row.ResourceID) || !validID(row.SupplierID) || seen[row.ID] || (q.ResourceID != "" && row.ResourceID != q.ResourceID) || (row.Region != "CN" && row.Region != "OVERSEAS") || row.Action == "" || row.CreatedAt.IsZero() {
+		if !validID(row.ID) || !validID(row.EntityID) || (row.EntityType != "resource" && row.EntityType != "plan") || (row.EntityType == "resource" && row.EntityID != row.ResourceID) || !validID(row.ResourceID) || !validID(row.SupplierID) || seen[row.ID] || (q.ResourceID != "" && row.ResourceID != q.ResourceID) || (q.SupplierID != "" && row.SupplierID != q.SupplierID) || (row.Region != "CN" && row.Region != "OVERSEAS") || row.Action == "" || row.CreatedAt.IsZero() {
 			return nil, ErrReadContract
 		}
 		seen[row.ID] = true

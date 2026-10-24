@@ -28,6 +28,7 @@ export interface SupplierSubmissionRowDTO {
   official_id: string;
   coefficient: string;
   test_base_url: string;
+  test_api_key_configured?: boolean;
   row_status: string;
   connectivity_tested: boolean;
   connectivity_passed: boolean;

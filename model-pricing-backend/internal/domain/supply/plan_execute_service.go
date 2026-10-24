@@ -100,6 +100,8 @@ func (s *PlanExecutionService) Execute(ctx context.Context, meta WriteMeta, id s
 			effect.EventType = "RESOURCE_OFFLINED"
 			if plan.Kind == "ONLINE" {
 				effect.EventType = "RESOURCE_ONLINED"
+			} else if plan.Kind == "PRICE_CHANGE" {
+				effect.EventType = "RESOURCE_COEFFICIENT_CHANGED"
 			}
 		}
 		if err := tx.AppendPlanExecutionEffect(ctx, effect); err != nil {

@@ -24,3 +24,22 @@ func (h *supplyModelHandler) sourceOperations(c *gin.Context) {
 	}
 	response.Success(c, result)
 }
+
+func (h *supplyModelHandler) supplierOperations(c *gin.Context) {
+	values, err := supplyQuery(c, "page", "size")
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	page, size, err := supplyPageParams(values)
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	result, err := h.operations.List(c.Request.Context(), supply.SourceOperationQuery{SupplierID: c.Param("id"), Page: page, Size: size})
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	response.Success(c, result)
+}

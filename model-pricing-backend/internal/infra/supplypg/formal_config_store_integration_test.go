@@ -2,9 +2,6 @@ package supplypg
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -14,17 +11,6 @@ import (
 	"testing"
 	"time"
 )
-
-// Real authenticated encryption is a test provider, not a production key setup.
-type configPGSealer struct{ aead cipher.AEAD }
-
-func (s configPGSealer) Seal(ctx context.Context, text string, binding supply.SecretBinding) (supply.SecretEnvelope, error) {
-	if err := ctx.Err(); err != nil {
-		return supply.SecretEnvelope{}, err
-	}
-	aad, _ := json.Marshal(binding)
-	return supply.SecretEnvelope{Ciphertext: s.aead.Seal(nil, nil, []byte(text), aad), KeyVersion: "test-config-key-v1"}, nil
-}
 
 type configPGURL struct{}
 
@@ -94,18 +80,9 @@ func TestFormalConfigServicePostgres34Native(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := sha256.Sum256([]byte("dedicated-test-key-never-production"))
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead, err := cipher.NewGCMWithRandomNonce(block)
-	if err != nil {
-		t.Fatal(err)
-	}
 	work := NewFormalConfigWork(store, func(context.Context) (*sql.Tx, error) { return tx, nil })
 	now := time.Date(2026, 10, 21, 6, 0, 0, 0, time.UTC)
-	service := supply.NewFormalConfigService(work, configPGSealer{aead}, configPGURL{}, func() time.Time { return now })
+	service := supply.NewFormalConfigService(work, configPGURL{}, func() time.Time { return now })
 	meta := supply.WriteMeta{ActorID: "7", Reason: "外部配置已完成", RequestID: "pg-formal-config"}
 	secret := "private-provider-key-for-test"
 	input := supply.FormalConfigInput{Scope: "全部模型", BaseURL: "https://formal.example/v1", APIKey: &secret, ExternalConfirmed: true}
@@ -135,23 +112,15 @@ func TestFormalConfigServicePostgres34Native(t *testing.T) {
 	if got, err := supply.NewFormalConfigReader(readStore).List(ctx, "999"); got != nil || !errors.Is(err, supply.ErrNotFound) {
 		t.Fatalf("missing supplier did not return 404 contract: %+v %v", got, err)
 	}
-	binding := supply.SecretBinding{Purpose: "SUPPLIER_FORMAL_API_KEY", SupplierID: "21", ConfigID: first.ID}
-	aad, _ := json.Marshal(binding)
-	plain, err := aead.Open(nil, nil, config.Secret.Ciphertext, aad)
-	if err != nil || string(plain) != secret {
-		t.Fatal("envelope round trip failed", err)
-	}
-	binding.ConfigID = "999"
-	wrongAAD, _ := json.Marshal(binding)
-	if _, err := aead.Open(nil, nil, config.Secret.Ciphertext, wrongAAD); err == nil {
-		t.Fatal("test provider did not authenticate config identity")
+	if config.APIKey != secret || config.LegacyEncrypted {
+		t.Fatal("formal key did not round trip as entered")
 	}
 	var stored, note string
 	if err := tx.QueryRowContext(ctx, `SELECT api_key_enc,COALESCE(note,'') FROM pg_temp.supplier_formal_config WHERE id=$1`, first.ID).Scan(&stored, &note); err != nil {
 		t.Fatal(err)
 	}
-	if stored == secret || strings.Contains(stored, secret) || note != "" {
-		t.Fatal("plaintext stored or note repurposed")
+	if stored != secret || note != "" {
+		t.Fatal("formal key was transformed before storage or note repurposed")
 	}
 	assertSafe := func() {
 		t.Helper()
@@ -160,7 +129,7 @@ func TestFormalConfigServicePostgres34Native(t *testing.T) {
 			t.Fatal(err)
 		}
 		view, _ := json.Marshal(first)
-		for _, bad := range []string{secret, stored, "test-config-key-v1", "ciphertext"} {
+		for _, bad := range []string{secret, "ciphertext"} {
 			if strings.Contains(logs, bad) || strings.Contains(string(view), bad) {
 				t.Fatal("credential leaked into log/view")
 			}
@@ -234,7 +203,7 @@ func TestFormalConfigServicePostgres34Native(t *testing.T) {
 					t.Fatal(err)
 				}
 				if got, err := store.Current(ctx, tx, "21", first.ID); !errors.Is(err, supply.ErrReadContract) || got != nil {
-					t.Fatal("old ciphertext paired with new revision", err)
+					t.Fatal("changed key was not detected against the current revision", err)
 				}
 			case "bad_head":
 				if _, err := tx.ExecContext(ctx, `INSERT INTO pg_temp.operation_log(entity_type,entity_id,action,"after") VALUES('supplier_formal_config',$1,'FORMAL_CONFIG_REVISION','{}')`, first.ID); err != nil {

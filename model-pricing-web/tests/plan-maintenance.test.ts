@@ -11,11 +11,17 @@ test("revise sends only expected plan revision, reason and time; cancel sends re
   assert.throws(() => contract.buildPlanCancellation(plan(), " "));
 });
 test("maintenance requires initiator, state kind and explicit capability; blocked only permits cancellation", () => {
-  for (const patch of [{ is_initiator: false }, { kind: "PRICE_CHANGE" }, { status: "EXECUTED" }, { permissions: { can_revise: false, can_cancel: false, can_execute: false } }]) {
+  for (const patch of [{ is_initiator: false }, { status: "EXECUTED" }, { permissions: { can_revise: false, can_cancel: false, can_execute: false } }]) {
     const p = { ...plan(), ...patch };
     assert.throws(() => contract.buildPlanRevision(p, "维护", "2027-01-02T01:00:00Z"));
     assert.throws(() => contract.buildPlanCancellation(p, "撤销"));
   }
+  const pricePlan = { ...plan(), kind: "PRICE_CHANGE", assignee_id: "8", before_coefficient: "0.6800", after_coefficient: "0.5000" };
+  assert.throws(() => contract.buildPlanRevision(pricePlan, "维护", "2027-01-02T01:00:00Z"));
+  assert.equal(contract.buildPlanCancellation(pricePlan, "撤销").reason, "撤销");
+  const canceledPricePlan = { ...pricePlan, status: "CANCELED", revision: "9007199254740994" };
+  assert.equal(contract.validateMaintainedPlan(canceledPricePlan, pricePlan, contract.buildPlanCancellation(pricePlan, "撤销"), "cancel").status, "CANCELED");
+  assert.throws(() => contract.validateMaintainedPlan({ ...canceledPricePlan, after_coefficient: "0.4500" }, pricePlan, contract.buildPlanCancellation(pricePlan, "撤销"), "cancel"));
   const blocked = { ...plan(), status: "BLOCKED", permissions: { can_revise: false, can_cancel: true, can_execute: false } };
   assert.throws(() => contract.buildPlanRevision(blocked, "维护", "2027-01-02T01:00:00Z"));
   assert.equal(contract.buildPlanCancellation(blocked, "撤销").reason, "撤销");

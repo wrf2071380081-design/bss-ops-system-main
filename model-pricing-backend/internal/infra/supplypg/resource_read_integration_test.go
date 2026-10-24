@@ -36,10 +36,16 @@ func TestResourceReadPostgres34Native(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"standard_model", "standard_model_version", "supplier", "resource", "test_job", "test_report"} {
+	for _, table := range []string{"standard_model", "standard_model_version", "supplier", "resource", "test_job", "test_report", "operation_log"} {
 		if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE `+table+` (LIKE public.`+table+` INCLUDING DEFAULTS INCLUDING IDENTITY INCLUDING CONSTRAINTS) ON COMMIT DROP`); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE internal_staff(id bigint PRIMARY KEY,name varchar(64) NOT NULL) ON COMMIT DROP`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO pg_temp.internal_staff(id,name) VALUES(7,'测评人员甲')`); err != nil {
+		t.Fatal(err)
 	}
 	work, err := NewModelUnitOfWork("pg_temp", func(context.Context) (*sql.Tx, error) { return tx, nil }, func(context.Context, *sql.Tx, supply.ModelOperation) error { return nil })
 	if err != nil {
@@ -76,6 +82,8 @@ func TestResourceReadPostgres34Native(t *testing.T) {
 		}
 	}
 	facts := map[string]*ResourceReadFacts{}
+	var wantAdmission time.Time
+	reportIDs := map[string]string{}
 	for i, item := range []struct {
 		id, supplier, model, region, coefficient, state string
 		admitted, report                                bool
@@ -91,6 +99,12 @@ func TestResourceReadPostgres34Native(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if i == 0 {
+			wantAdmission = updated.UTC()
+			if _, err := tx.ExecContext(ctx, `INSERT INTO pg_temp.operation_log(entity_type,entity_id,action,"after",created_at) VALUES('resource',$1,'RESOURCE_REVISION','{"operation":"ADMIT"}'::jsonb,$2)`, item.id, wantAdmission); err != nil {
+				t.Fatal(err)
+			}
+		}
 		f := &ResourceReadFacts{ResourceID: item.id, ProjectionUpdatedAt: updated, Revision: 3, OriginRowID: item.id + "00", OriginRowVersion: 1, TargetVersion: 2, FormalConfigID: "91", FormalConfigRevision: 1,
 			Config: &supply.FormalConfigView{ID: "91", SupplierID: item.supplier, Region: item.region, Status: "ACTIVE", HasAPIKey: true, Revision: 1, ConfirmedRevision: 1}}
 		f.Projection = ResourceProjection{ID: item.id, SupplierID: item.supplier, StandardModelID: item.model, Region: item.region, SupplierModelID: "vendor %_", Coefficient: item.coefficient, State: item.state, EverAdmitted: item.admitted, BuyerID: "7", CreatedAt: created, UpdatedAt: updated}
@@ -99,9 +113,10 @@ func TestResourceReadPostgres34Native(t *testing.T) {
 			if err := tx.QueryRowContext(ctx, `INSERT INTO pg_temp.test_job(resource_id,category) VALUES($1,'stress') RETURNING id::text`, item.id).Scan(&job); err != nil {
 				t.Fatal(err)
 			}
-			if err := tx.QueryRowContext(ctx, `INSERT INTO pg_temp.test_report(test_job_id,resource_id,connection_ms,rps,connection_passed,stress_passed,cache_hit_tokens,cache_input_tokens) VALUES($1,$2,$3,$4,true,$5,$6,9007199254740994) RETURNING id::text`, job, item.id, item.ms, item.rps, i == 0, []string{"9007199254740993", "0"}[i]).Scan(&report); err != nil {
+			if err := tx.QueryRowContext(ctx, `INSERT INTO pg_temp.test_report(test_job_id,resource_id,connection_ms,rps,connection_passed,stress_passed,cache_hit_tokens,cache_input_tokens,scene,tested_by,tested_at) VALUES($1,$2,$3,$4,true,$5,$6,9007199254740994,'压力组合场景',7,$7) RETURNING id::text`, job, item.id, item.ms, item.rps, i == 0, []string{"9007199254740993", "0"}[i], now).Scan(&report); err != nil {
 				t.Fatal(err)
 			}
+			reportIDs[item.id] = report
 			if _, err := tx.ExecContext(ctx, `UPDATE pg_temp.resource SET latest_test_report_id=$1 WHERE id=$2`, report, item.id); err != nil {
 				t.Fatal(err)
 			}
@@ -130,6 +145,29 @@ func TestResourceReadPostgres34Native(t *testing.T) {
 	}
 	if !detail.QuoteReadiness.Eligible || detail.ModelName != "Alpha" || detail.Test.Metrics.ConnectionMS == nil || *detail.Test.Metrics.ConnectionMS != "10.00" || detail.Test.CacheStats.HitTokens != "9007199254740993" {
 		t.Fatalf("bad native projection %+v", detail)
+	}
+	if detail.AdmittedAt == nil || !detail.AdmittedAt.Equal(wantAdmission) {
+		t.Fatalf("admission timestamp must come from the admission operation record: %+v", detail.AdmittedAt)
+	}
+	reportReader, err := NewResourceReportReader("pg_temp", runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := reportReader.List(ctx, "7", "2", 1, 10)
+	if err != nil || history.Total != 1 || len(history.List) != 1 {
+		t.Fatalf("report history unavailable: %+v %v", history, err)
+	}
+	gotReport := history.List[0]
+	if !gotReport.TestedAt.Equal(now) || gotReport.TestItem != "stress" || gotReport.OperatorName != "测评人员甲" || gotReport.Source != "" || gotReport.Scene != "压力组合场景" {
+		t.Fatalf("report history omitted trustworthy facts or invented a source: %+v", gotReport)
+	}
+	reportDetail, err := reportReader.Get(ctx, "7", "2", reportIDs["2"])
+	if err != nil || reportDetail.TestItem != "stress" || reportDetail.OperatorName != "测评人员甲" || reportDetail.Scene != "压力组合场景" {
+		t.Fatalf("report detail lost source facts: %+v %v", reportDetail, err)
+	}
+	legacy, err := reader.Get(ctx, "10", "CN")
+	if err != nil || legacy.AdmittedAt != nil {
+		t.Fatalf("missing admission history must remain unrecorded: %+v %v", legacy, err)
 	}
 	encoded, _ := json.Marshal(detail)
 	for _, secret := range []string{"test-secret", "supplier-secret", "secret.invalid", "test_api_key_enc", "password_enc"} {

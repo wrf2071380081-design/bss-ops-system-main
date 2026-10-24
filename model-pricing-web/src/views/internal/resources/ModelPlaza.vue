@@ -33,7 +33,55 @@ const optionError = ref(""), supplierLoading = ref(false), suppliers = ref<Resou
 const supplierNames = new Map<string, ResourceFilterOptions["suppliers"][number]>();
 const supplierChoices = computed(() => filters.supplier_id && !suppliers.value.some(supplier => supplier.id === filters.supplier_id) && supplierNames.has(filters.supplier_id) ? [supplierNames.get(filters.supplier_id)!, ...suppliers.value] : suppliers.value);
 let active = true, listRequest: AbortController | undefined, supplierRequest: AbortController | undefined, companyRequest: AbortController | undefined;
+let restoringRouteState = false;
 const message = (value: unknown) => value instanceof Error ? value.message : "数据暂时无法加载，请重试。";
+const groupedSortFields = ["name", "company", "supplier_count", "available_count", "coefficient_min"];
+function routeText(value: unknown) { return typeof value === "string" ? value : ""; }
+function positiveRouteInt(value: unknown, fallback: number, max = Number.MAX_SAFE_INTEGER) {
+  const parsed = Number(routeText(value));
+  return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= max ? parsed : fallback;
+}
+function restoreRouteState() {
+  restoringRouteState = true;
+  try {
+    Object.assign(filters, {
+      keyword: routeText(route.query.keyword), company: routeText(route.query.company),
+      model_type: routeText(route.query.model_type), supplier_id: routeText(route.query.supplier_id),
+      region: routeText(route.query.region), state: routeText(route.query.state),
+    });
+    page.value = positiveRouteInt(route.query.page, 1);
+    size.value = positiveRouteInt(route.query.size, 10, 100);
+    sortBy.value = groupedSortFields.includes(routeText(route.query.sort_by)) ? routeText(route.query.sort_by) : "name";
+    order.value = route.query.order === "desc" ? "desc" : "asc";
+    const supplierName = routeText(route.query.supplier_name), supplierRegion = routeText(route.query.supplier_region);
+    if (filters.supplier_id && supplierName && ["CN", "OVERSEAS"].includes(supplierRegion)) {
+      supplierNames.set(filters.supplier_id, { id: filters.supplier_id, name: supplierName, region: supplierRegion });
+    }
+    applied.value = buildResourceQuery(filters);
+  } catch {
+    Object.assign(filters, { keyword: "", company: "", model_type: "", supplier_id: "", region: "", state: "" });
+    page.value = 1;
+    size.value = 10;
+    sortBy.value = "name";
+    order.value = "asc";
+    applied.value = buildResourceQuery(filters);
+  } finally {
+    restoringRouteState = false;
+  }
+}
+function modelPlazaReturnState() {
+  const selectedSupplier = supplierChoices.value.find(supplier => supplier.id === filters.supplier_id) || supplierNames.get(filters.supplier_id);
+  const values: Record<string, string> = {
+    keyword: filters.keyword, company: filters.company, model_type: filters.model_type, supplier_id: filters.supplier_id,
+    region: filters.region, state: filters.state, page: String(page.value), size: String(size.value),
+    sort_by: sortBy.value, order: order.value,
+  };
+  if (selectedSupplier) {
+    values.supplier_name = selectedSupplier.name;
+    values.supplier_region = selectedSupplier.region;
+  }
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== "").map(([key, value]) => [`return_${key}`, value]));
+}
 
 const viewPage = computed(() => {
   const groupByID = new Map(groups.value.map(group => [group.id, group]));
@@ -105,7 +153,7 @@ function reset() {
   sortBy.value = "name"; order.value = "asc"; apply();
 }
 function sort(key: string) { order.value = sortBy.value === key && order.value === "asc" ? "desc" : "asc"; sortBy.value = key; page.value = 1; }
-function openDetail(row: PlazaRow) { void router.push(`/internal/model-detail/${row.id}`); }
+function openDetail(row: PlazaRow) { void router.push({ path: `/internal/model-detail/${row.id}`, query: modelPlazaReturnState() }); }
 
 async function searchSuppliers(keyword = "") {
   supplierRequest?.abort();
@@ -134,9 +182,9 @@ async function companySuggestions(keyword: string, callback: (values: { value: s
   }
 }
 function supplierOpened(visible: boolean) { if (visible) void searchSuppliers(); }
-watch(() => filters.region, () => { filters.supplier_id = ""; suppliers.value = []; supplierRequest?.abort(); });
+watch(() => filters.region, () => { if (restoringRouteState) return; filters.supplier_id = ""; suppliers.value = []; supplierRequest?.abort(); }, { flush: "sync" });
 function closeDirectResource() { void router.replace("/internal/model-plaza"); }
-onMounted(() => { void load(); });
+onMounted(() => { restoreRouteState(); void load(); });
 watch(directResourceID, (id) => { if (!id) void load(); });
 onBeforeUnmount(() => { active = false; listRequest?.abort(); supplierRequest?.abort(); companyRequest?.abort(); });
 </script>

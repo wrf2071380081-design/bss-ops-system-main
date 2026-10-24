@@ -58,7 +58,19 @@ export function validatePlanSummary(value: unknown, expectedID: string): PlanSum
   if (typeof plan.creator_name !== "string" || typeof plan.reason !== "string" || !plan.reason.trim()) invalid();
   const permissions = plan.permissions === undefined ? { can_revise: false, can_cancel: false, can_execute: false } : object(plan.permissions);
   if (["can_revise", "can_cancel", "can_execute"].some(key => typeof permissions[key] !== "boolean")) invalid();
-  const statePlan = ["ONLINE", "OFFLINE"].includes(String(plan.kind));
-  if ((permissions.can_revise && (!plan.is_initiator || plan.status !== "PENDING" || !statePlan)) || (permissions.can_cancel && (!plan.is_initiator || !["PENDING", "BLOCKED"].includes(String(plan.status)) || !statePlan)) || (permissions.can_execute && (!plan.is_initiator || plan.status !== "PENDING" || !statePlan))) invalid();
+	const statePlan = ["ONLINE", "OFFLINE"].includes(String(plan.kind));
+	if (plan.kind === "PRICE_CHANGE") {
+		if (typeof plan.assignee_id !== "string" || typeof plan.supplier_model_id !== "string" || !plan.supplier_model_id.trim() || plan.supplier_model_id.length > 128 ||
+			typeof plan.before_supplier_model_id !== "string" || !plan.before_supplier_model_id.trim() || plan.before_supplier_model_id.length > 128 ||
+			typeof plan.after_supplier_model_id !== "string" || !plan.after_supplier_model_id.trim() || plan.after_supplier_model_id.length > 128 || plan.supplier_model_id !== plan.after_supplier_model_id ||
+			typeof plan.before_coefficient !== "string" || typeof plan.after_coefficient !== "string" ||
+			!/^\d+(?:\.\d{1,4})?$/.test(plan.before_coefficient) || !/^\d+(?:\.\d{1,4})?$/.test(plan.after_coefficient) ||
+			Number(plan.before_coefficient) <= 0 || Number(plan.before_coefficient) > 1 || Number(plan.after_coefficient) <= 0 || Number(plan.after_coefficient) > 1 ||
+			(plan.before_supplier_model_id === plan.after_supplier_model_id && Number(plan.before_coefficient) === Number(plan.after_coefficient))) invalid();
+		standardModelVersion(plan.assignee_id);
+		if (plan.status === "EXECUTED" && (plan.executed_by !== plan.assignee_id || typeof plan.completion_note !== "string" || !plan.completion_note.trim())) invalid();
+	} else if (plan.assignee_id !== undefined || plan.supplier_model_id !== undefined || plan.before_supplier_model_id !== undefined || plan.after_supplier_model_id !== undefined || plan.before_coefficient !== undefined || plan.after_coefficient !== undefined) invalid();
+	if ((permissions.can_revise && (!plan.is_initiator || plan.status !== "PENDING")) || (permissions.can_cancel && (!plan.is_initiator || !["PENDING", "BLOCKED"].includes(String(plan.status)))) ||
+		(permissions.can_execute && (plan.status !== "PENDING" || (statePlan ? !plan.is_initiator : plan.kind !== "PRICE_CHANGE" || plan.assignee_id === undefined)))) invalid();
   return structuredClone({ ...plan, permissions }) as unknown as PlanSummary;
 }

@@ -194,6 +194,54 @@ func (m *StandardModel) Updated(actorID string, expectedRevision uint64, data Mo
 	return next, true, nil
 }
 
+// ManuallySaved records one maintainer action. Complete official data becomes the
+// attested version in this same transition; incomplete data is saved unverified.
+func (m *StandardModel) ManuallySaved(actorID string, expectedRevision uint64, data ModelData, now time.Time) (*StandardModel, bool, bool, error) {
+	if err := m.authorize(actorID, expectedRevision); err != nil {
+		return nil, false, false, err
+	}
+	if err := validateModelData(data, now); err != nil {
+		return nil, false, false, err
+	}
+	next := m.Clone()
+	next.Data = canonicalData(data)
+	complete := len(next.MissingFields()) == 0
+	if complete && m.Status != "ACTIVE" {
+		return nil, false, false, ErrInactive
+	}
+	if complete {
+		next.VerifyStatus = "VERIFIED"
+		next.CheckedBy = actorID
+	} else {
+		next.VerifyStatus = next.unverifiedStatus()
+		next.CheckedBy = ""
+	}
+	changed := !reflect.DeepEqual(m.Data, next.Data) || m.VerifyStatus != next.VerifyStatus || m.CheckedBy != next.CheckedBy
+	if changed {
+		next.Revision++
+		next.VersionNo++
+		next.UpdatedAt = now.UTC()
+	}
+	return next, changed, complete, nil
+}
+
+// attestInitialVersion marks a complete creation as checked by its authenticated
+// maintainer without creating a redundant second version.
+func (m *StandardModel) attestInitialVersion(actorID string) error {
+	if m == nil || actorID != m.MaintainerID {
+		return ErrForbidden
+	}
+	if m.Status != "ACTIVE" {
+		return ErrInactive
+	}
+	if len(m.MissingFields()) > 0 {
+		return ErrIncomplete
+	}
+	m.VerifyStatus = "VERIFIED"
+	m.CheckedBy = actorID
+	return nil
+}
+
 // verified is used only after ModelService has checked the injected official-source policy.
 func (m *StandardModel) verified(actorID string, expectedRevision uint64, date string, now time.Time) (*StandardModel, bool, error) {
 	if err := m.authorize(actorID, expectedRevision); err != nil {
