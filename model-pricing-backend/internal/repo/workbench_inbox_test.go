@@ -21,3 +21,21 @@ func TestWorkbenchInboxSourceUsesNativePlanID(t *testing.T) {
 		t.Fatal("plan IDs must not be inferred from a timestamp match")
 	}
 }
+
+func TestWorkbenchInboxSourceProjectsPendingQuoteApprovalToEligibleStaff(t *testing.T) {
+	source := strings.ToLower(strings.Join(strings.Fields(workbenchInboxSource), " "))
+	for _, fragment := range []string{
+		"union all",
+		"from quote_sheet qs",
+		"join internal_staff st",
+		"st.can_approve_supplier = true",
+		"qs.status = 'approving'",
+		"'quote_approval'::varchar(32)",
+		"not exists (",
+		"from todo_task t",
+	} {
+		if !strings.Contains(source, fragment) {
+			t.Fatalf("workbench inbox source is missing approval projection rule %q", fragment)
+		}
+	}
+}

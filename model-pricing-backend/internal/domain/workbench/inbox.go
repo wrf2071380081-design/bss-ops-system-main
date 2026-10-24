@@ -192,6 +192,8 @@ func inboxDeeplink(bizType string, bizID int64) string {
 		return fmt.Sprintf("/internal/model-plaza/%d", bizID)
 	case "ONBOARDING_NODE":
 		return fmt.Sprintf("/internal/supplier-quotes/%d", bizID)
+	case "QUOTE_APPROVAL":
+		return fmt.Sprintf("/internal/supplier-quotes?quote_id=%d", bizID)
 	default:
 		return ""
 	}

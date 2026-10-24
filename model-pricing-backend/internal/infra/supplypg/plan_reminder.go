@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// PlanReminderStore publishes one all-staff notice when an active state plan
+// PlanReminderStore publishes one all-staff notice when an active resource plan
 // reaches its expected time. It only creates a notice; resource state is never
 // changed by this worker.
 type PlanReminderStore struct {
@@ -42,10 +42,10 @@ JOIN LATERAL (
     AND e.payload->>'revision'=p."after"->'plan'->>'revision'
   ORDER BY e.id DESC LIMIT 1
 ) scheduled ON true
-WHERE p.kind IN ('ONLINE','OFFLINE') AND p.status='PENDING' AND p.due_at <= $1
+WHERE p.kind IN ('ONLINE','OFFLINE','PRICE_CHANGE') AND p.status='PENDING' AND p.due_at <= $1
   AND NOT EXISTS (
     SELECT 1 FROM public.notice n
-    WHERE n.type='ONLINE_OFFLINE_PLAN' AND n.payload->>'source_event_id'=scheduled.id::text
+    WHERE n.payload->>'source_event_id'=scheduled.id::text
   )
 ORDER BY p.due_at,p.id LIMIT $2`, now.UTC(), limit)
 	if err != nil {
@@ -98,7 +98,7 @@ func (s *PlanReminderStore) publishOne(ctx context.Context, id string, now time.
 	if err != nil {
 		return false, err
 	}
-	if plan.Status != "PENDING" || (plan.Kind != "ONLINE" && plan.Kind != "OFFLINE") || plan.DueAt.After(now) {
+	if plan.Status != "PENDING" || (plan.Kind != "ONLINE" && plan.Kind != "OFFLINE" && plan.Kind != "PRICE_CHANGE") || plan.DueAt.After(now) {
 		return false, tx.Commit()
 	}
 	var eventID string
@@ -117,28 +117,30 @@ ORDER BY id DESC LIMIT 1`, plan.ID, strconv.FormatUint(plan.Revision, 10)).Scan(
 		return false, err
 	}
 	var exists bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.notice WHERE type='ONLINE_OFFLINE_PLAN' AND payload->>'source_event_id'=$1)`, eventID).Scan(&exists)
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.notice WHERE payload->>'source_event_id'=$1)`, eventID).Scan(&exists)
 	if err != nil {
 		return false, err
 	}
 	if exists {
 		return false, tx.Commit()
 	}
-	title := "下架计划到点提醒"
+	title, kind, content := "下架计划到点提醒", "ONLINE_OFFLINE_PLAN", "预计时间已到，请在对应平台完成实际操作后登记。"
 	if plan.Kind == "ONLINE" {
 		title = "上架计划到点提醒"
+	} else if plan.Kind == "PRICE_CHANGE" {
+		title, kind, content = "采购系数调整计划到点提醒", "COST_CHANGE", "约定时间已到，请指定办理人核对外部执行结果并登记完成。"
 	}
 	notice := &supply.Notice{
 		ResourceID: resource.ID, ResourceName: resource.SupplierModelID, Region: resource.Region,
-		Kind: "ONLINE_OFFLINE_PLAN", Title: title,
-		Content: "预计时间已到，请在对应平台完成实际操作后登记。", Reason: plan.Reason,
+		Kind: kind, Title: title,
+		Content: content, Reason: plan.Reason,
 		SourceEventID: eventID, AffectedStatus: "PENDING", PublishedAt: now,
 	}
 	payload, err := EncodeNoticePayload(notice)
 	if err != nil {
 		return false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO public.notice(type,target_type,target_id,payload,created_at) VALUES('ONLINE_OFFLINE_PLAN','RESOURCE',$1,$2::jsonb,$3)`, resource.ID, string(payload), now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO public.notice(type,target_type,target_id,payload,created_at) VALUES($1,'RESOURCE',$2,$3::jsonb,$4)`, kind, resource.ID, string(payload), now); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {

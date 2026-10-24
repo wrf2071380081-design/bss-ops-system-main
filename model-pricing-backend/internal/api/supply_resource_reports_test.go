@@ -64,10 +64,11 @@ func (f *resourceReportReaderHTTPFake) OpenFile(_ context.Context, actorID, _, _
 
 func resourceReportHTTPFixture() supply.ResourceReportView {
 	finished := time.Date(2026, 10, 22, 10, 1, 0, 0, time.UTC)
+	testedAt := finished.Add(-30 * time.Second)
 	connectivity, pressure := true, true
 	targetMatches := true
 	return supply.ResourceReportView{
-		ID: "21", ResourceID: "11", Status: "COMPLETED", CreatedAt: finished.Add(-time.Minute), FinishedAt: &finished,
+		ID: "21", ResourceID: "11", Status: "COMPLETED", CreatedAt: finished.Add(-time.Minute), TestedAt: testedAt, TestItem: "stress", OperatorName: "测评人员甲", Scene: "压力组合场景", FinishedAt: &finished,
 		TargetMatches: &targetMatches, ConnectivityPassed: &connectivity, PressurePassed: &pressure,
 		Metrics:    supply.ResourceReportMetrics{ConnectionMS: reportTestStringPtr("0"), RPS: reportTestStringPtr("12.50")},
 		CacheStats: supply.ResourceCacheStats{ReportID: "21", Status: "NOT_PROVIDED"},
@@ -103,6 +104,9 @@ func TestResourceReportHTTPListsAndReadsSafeProjectionForCurrentStaff(t *testing
 	item := data["list"].([]any)[0].(map[string]any)
 	if item["id"] != "21" || item["resource_id"] != "11" || item["target_matches"] != true || item["report_file"] != nil {
 		t.Fatalf("unsafe or incorrect report projection: %+v", item)
+	}
+	if item["test_item"] != "stress" || item["operator_name"] != "测评人员甲" || item["scene"] != "压力组合场景" || item["source"] != "" {
+		t.Fatalf("report projection invented provenance or omitted tested facts: %+v", item)
 	}
 	detail := supplyHTTPCall(r, http.MethodGet, "/api/internal/resources/11/test-reports/21", "", "", "report-detail")
 	if detail.Code != http.StatusOK || fake.getActor != "7" {

@@ -9,17 +9,16 @@ import (
 )
 
 type FormalConfigService struct {
-	work   FormalConfigUnitOfWork
-	sealer SecretSealer
-	urls   FormalURLPolicy
-	now    func() time.Time
+	work FormalConfigUnitOfWork
+	urls FormalURLPolicy
+	now  func() time.Time
 }
 
-func NewFormalConfigService(work FormalConfigUnitOfWork, sealer SecretSealer, urls FormalURLPolicy, clock func() time.Time) *FormalConfigService {
+func NewFormalConfigService(work FormalConfigUnitOfWork, urls FormalURLPolicy, clock func() time.Time) *FormalConfigService {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &FormalConfigService{work: work, sealer: sealer, urls: urls, now: clock}
+	return &FormalConfigService{work: work, urls: urls, now: clock}
 }
 func (s *FormalConfigService) checkWrite(meta WriteMeta, supplierID string) error {
 	if s == nil || s.work == nil {
@@ -78,6 +77,9 @@ func (s *FormalConfigService) validateInput(ctx context.Context, input FormalCon
 	if (create && input.APIKey == nil) || (input.APIKey != nil && strings.TrimSpace(*input.APIKey) == "") {
 		return input, invalid("api_key", "a nonempty key is required; omission on update preserves it")
 	}
+	if input.APIKey != nil && (!utf8.ValidString(*input.APIKey) || strings.ContainsRune(*input.APIKey, 0) || utf8.RuneCountInString(*input.APIKey) > 512) {
+		return input, invalid("api_key", "invalid text or native storage character limit exceeded")
+	}
 	if s.urls == nil {
 		return input, ErrDependencyUnavailable
 	}
@@ -85,18 +87,6 @@ func (s *FormalConfigService) validateInput(ctx context.Context, input FormalCon
 		return input, invalid("base_url", "URL is not permitted by environment policy")
 	}
 	return input, nil
-}
-func (s *FormalConfigService) seal(ctx context.Context, supplierID, configID, key string) (SecretEnvelope, error) {
-	if s.sealer == nil {
-		return SecretEnvelope{}, ErrDependencyUnavailable
-	}
-	envelope, err := s.sealer.Seal(ctx, key, SecretBinding{Purpose: "SUPPLIER_FORMAL_API_KEY", SupplierID: supplierID, ConfigID: configID})
-	// Adapter errors may contain request data. Never expose them or return a
-	// malformed envelope as though encryption succeeded.
-	if err != nil || len(envelope.Ciphertext) == 0 || strings.TrimSpace(envelope.KeyVersion) == "" {
-		return SecretEnvelope{}, ErrDependencyUnavailable
-	}
-	return envelope.Clone(), nil
 }
 func appendConfigOperation(ctx context.Context, tx FormalConfigTransaction, before, after *FormalConfig, meta WriteMeta, action string, now time.Time) error {
 	return tx.AppendConfigOperation(ctx, FormalConfigOperation{EntityType: "supplier_formal_config", EntityID: after.ID, SupplierID: after.SupplierID,
@@ -123,12 +113,8 @@ func (s *FormalConfigService) Create(ctx context.Context, meta WriteMeta, suppli
 		if !validID(id) {
 			return ErrReadContract
 		}
-		envelope, err := s.seal(ctx, supplierID, id, *input.APIKey)
-		if err != nil {
-			return err
-		}
 		now := s.now().UTC().Truncate(time.Microsecond)
-		config := &FormalConfig{ID: id, SupplierID: supplierID, Region: supplier.Region, Scope: input.Scope, BaseURL: input.BaseURL, Secret: envelope, Status: "ACTIVE", Revision: 1,
+		config := &FormalConfig{ID: id, SupplierID: supplierID, Region: supplier.Region, Scope: input.Scope, BaseURL: input.BaseURL, APIKey: *input.APIKey, Status: "ACTIVE", Revision: 1,
 			CreatedBy: meta.ActorID, UpdatedBy: meta.ActorID, CreatedAt: now, UpdatedAt: now, ConfirmedBy: meta.ActorID, ConfirmedAt: now, ConfirmedRevision: 1}
 		if err := tx.CreateConfig(ctx, config.Clone()); err != nil {
 			return err
@@ -155,7 +141,7 @@ func lockFormalConfig(ctx context.Context, tx FormalConfigTransaction, supplier 
 	if config == nil || config.ID != id || config.SupplierID != supplier.ID {
 		return nil, ErrNotFound
 	}
-	if config.Region != supplier.Region || config.Revision == 0 || config.Revision > math.MaxInt64 || (config.Status != "ACTIVE" && config.Status != "INACTIVE") || len(config.Secret.Ciphertext) == 0 || config.Secret.KeyVersion == "" {
+	if config.Region != supplier.Region || config.Revision == 0 || config.Revision > math.MaxInt64 || (config.Status != "ACTIVE" && config.Status != "INACTIVE") || config.APIKey == "" {
 		return nil, ErrReadContract
 	}
 	if expected == 0 || config.Revision != expected {
@@ -184,6 +170,9 @@ func (s *FormalConfigService) Update(ctx context.Context, meta WriteMeta, suppli
 		if err != nil {
 			return err
 		}
+		if current.LegacyEncrypted && input.APIKey == nil {
+			return invalid("api_key", "replace the previously encrypted key before saving this configuration")
+		}
 		next := current.Clone()
 		now := s.now().UTC().Truncate(time.Microsecond)
 		action := "UPDATE_NOOP"
@@ -192,10 +181,8 @@ func (s *FormalConfigService) Update(ctx context.Context, meta WriteMeta, suppli
 				return ErrRevisionConflict
 			}
 			if input.APIKey != nil {
-				next.Secret, err = s.seal(ctx, supplierID, configID, *input.APIKey)
-				if err != nil {
-					return err
-				}
+				next.APIKey = *input.APIKey
+				next.LegacyEncrypted = false
 			}
 			next.Scope = input.Scope
 			next.BaseURL = input.BaseURL

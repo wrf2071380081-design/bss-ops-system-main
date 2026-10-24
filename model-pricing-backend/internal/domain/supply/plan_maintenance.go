@@ -3,6 +3,7 @@ package supply
 import (
 	"context"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -34,6 +35,14 @@ type PlanMaintenanceTransaction interface {
 }
 type PlanMaintenanceUnitOfWork interface {
 	WithinPlanMaintenance(context.Context, func(PlanMaintenanceTransaction) error) error
+}
+
+// PriceChangePlanTransaction contains the extra directory and uniqueness facts
+// required by internal coefficient plans. It remains optional for assemblers
+// that have not yet enabled this capability.
+type PriceChangePlanTransaction interface {
+	HasPendingPriceChangePlan(context.Context, string) (bool, error)
+	IsActiveInternalStaff(context.Context, string) (bool, error)
 }
 type PlanMaintenanceService struct {
 	work PlanMaintenanceUnitOfWork
@@ -119,6 +128,123 @@ func (s *PlanMaintenanceService) Create(ctx context.Context, meta WriteMeta, res
 			return err
 		}
 		result = plan.ResourcePlan.Clone()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *PlanMaintenanceService) CreatePriceChange(ctx context.Context, meta WriteMeta, resourceID string, expected uint64, supplierModelID, amount, assignee string, due time.Time) (*ResourcePlan, error) {
+	if err := s.validate(meta, resourceID, expected); err != nil {
+		return nil, err
+	}
+	if due.IsZero() || strings.TrimSpace(supplierModelID) == "" || !validID(assignee) {
+		return nil, invalid("price_change", "assignee and due date required")
+	}
+	var result *ResourcePlan
+	err := s.work.WithinPlanMaintenance(ctx, func(tx PlanMaintenanceTransaction) error {
+		if tx == nil {
+			return ErrDependencyUnavailable
+		}
+		directory, ok := tx.(PriceChangePlanTransaction)
+		if !ok {
+			return ErrDependencyUnavailable
+		}
+		resource, err := tx.ResourceForPlanCreation(ctx, resourceID)
+		if err != nil {
+			return err
+		}
+		if resource == nil || resource.ID != resourceID {
+			return ErrReadContract
+		}
+		if resource.BuyerID != meta.ActorID {
+			return ErrForbidden
+		}
+		if resource.Revision != expected {
+			return ErrRevisionConflict
+		}
+		pending, err := directory.HasPendingPriceChangePlan(ctx, resourceID)
+		if err != nil {
+			return err
+		}
+		if pending {
+			return ErrRevisionConflict
+		}
+		active, err := directory.IsActiveInternalStaff(ctx, assignee)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return ErrNotFound
+		}
+		id, err := tx.NextPlanID(ctx)
+		if err != nil {
+			return err
+		}
+		now := s.now().UTC().Truncate(time.Microsecond)
+		plan, err := NewPriceChangePlan(id, meta.ActorID, assignee, supplierModelID, resource, amount, due.UTC().Truncate(time.Microsecond), meta.Reason, now)
+		if err != nil {
+			return err
+		}
+		if err := tx.CreateStatePlan(ctx, plan.copy()); err != nil {
+			return err
+		}
+		if err := tx.AppendPlanMaintenanceEffect(ctx, PlanMaintenanceEffect{Action: "CREATE", ActorID: meta.ActorID, Reason: meta.Reason, RequestID: meta.RequestID, After: plan.copy(), ScheduleReminder: true, OccurredAt: now}); err != nil {
+			return err
+		}
+		result = plan.ResourcePlan.Clone()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *PlanMaintenanceService) RevisePriceChange(ctx context.Context, meta WriteMeta, id string, expected uint64, supplierModelID, amount, assignee string, due time.Time) (*ResourcePlan, error) {
+	if err := s.validate(meta, id, expected); err != nil {
+		return nil, err
+	}
+	if due.IsZero() || strings.TrimSpace(supplierModelID) == "" || !validID(assignee) {
+		return nil, invalid("price_change", "assignee and due date required")
+	}
+	var result *ResourcePlan
+	err := s.work.WithinPlanMaintenance(ctx, func(tx PlanMaintenanceTransaction) error {
+		if tx == nil {
+			return ErrDependencyUnavailable
+		}
+		directory, ok := tx.(PriceChangePlanTransaction)
+		if !ok {
+			return ErrDependencyUnavailable
+		}
+		active, err := directory.IsActiveInternalStaff(ctx, assignee)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return ErrNotFound
+		}
+		before, err := tx.LockPlanMaintenance(ctx, id)
+		if err != nil {
+			return err
+		}
+		if before == nil || before.ID != id {
+			return ErrNotFound
+		}
+		after, err := before.RevisedPriceChangePlan(meta.ActorID, expected, supplierModelID, amount, assignee, due.UTC().Truncate(time.Microsecond), meta.Reason)
+		if err != nil {
+			return err
+		}
+		if err := tx.UpdateStatePlan(ctx, after.copy(), expected); err != nil {
+			return err
+		}
+		occurredAt := s.now().UTC().Truncate(time.Microsecond)
+		if err := tx.AppendPlanMaintenanceEffect(ctx, PlanMaintenanceEffect{Action: "REVISE", ActorID: meta.ActorID, Reason: meta.Reason, RequestID: meta.RequestID, Before: before.copy(), After: after.copy(), ScheduleReminder: true, OccurredAt: occurredAt}); err != nil {
+			return err
+		}
+		result = after.ResourcePlan.Clone()
 		return nil
 	})
 	if err != nil {

@@ -2,6 +2,8 @@ import { apiRequest } from "./http";
 import { buildPlanExecution, validatePlanExecutionReceipt } from "./planExecution.contract";
 import { buildPlanCancellation, buildPlanRevision, validateMaintainedPlan } from "./planMaintenance.contract";
 import { buildPlanCreate, validateCreatedPlan, type PlanResource } from "./planCreate.contract";
+import { buildPriceChangePlanCreate, buildPriceChangePlanRevision, validateCreatedPriceChangePlan, validateRevisedPriceChangePlan } from "./priceChangePlan.contract";
+import type { ResourceRow } from "./resources.types";
 import { validatePlanPage, validatePlanQuery, type PlanQuery } from "./planList.contract";
 import { standardModelVersion } from "./standardModels.contract";
 import { validateNoticePage, validateNoticeView, validatePlanSummary, validateReadReceipt } from "./supplyWorkbench.contract";
@@ -24,6 +26,16 @@ export const supplyWorkbenchApi = {
   async createPlan(resource: PlanResource, reason: string, dueAt: string, lifecycle: string) {
     const body = buildPlanCreate(resource, reason, dueAt);
     return validateCreatedPlan(await apiRequest<unknown>({ method: "POST", url: "/internal/plans", data: body, idempotency: { scope: "supply-state-plan-create", payload: body, lifecycle } }), resource, body);
+  },
+  async createPriceChangePlan(resource: ResourceRow, supplierModelID: string, afterCoefficient: string, assigneeID: string, reason: string, dueAt: string, lifecycle: string) {
+    const body = buildPriceChangePlanCreate(resource, supplierModelID, afterCoefficient, assigneeID, reason, dueAt);
+    return validateCreatedPriceChangePlan(await apiRequest<unknown>({ method: "POST", url: "/internal/plans/price-change", data: body,
+      idempotency: { scope: `supply-price-plan-create:${resource.id}`, payload: body, lifecycle } }), resource, body);
+  },
+  async revisePriceChangePlan(plan: PlanSummary, supplierModelID: string, afterCoefficient: string, assigneeID: string, reason: string, dueAt: string, lifecycle: string) {
+    const body = buildPriceChangePlanRevision(plan, supplierModelID, afterCoefficient, assigneeID, reason, dueAt);
+    return validateRevisedPriceChangePlan(await apiRequest<unknown>({ method: "PUT", url: `/internal/plans/${plan.id}/price-change`, data: body,
+      idempotency: { scope: `supply-price-plan-revise:${plan.id}`, payload: body, lifecycle } }), plan, body);
   },
   async plans(query: PlanQuery, signal?: AbortSignal) {
     const params = validatePlanQuery(query);

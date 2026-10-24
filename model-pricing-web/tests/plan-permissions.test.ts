@@ -14,3 +14,15 @@ test("plan permissions default closed and execute is limited to the initiator's 
   assert.throws(() => validatePlanSummary({ ...fixture, permissions: { can_revise: false, can_cancel: false, can_execute: true } }, "81"));
   assert.throws(() => validatePlanSummary({ ...own, status: "BLOCKED", permissions: { can_revise: false, can_cancel: true, can_execute: true } }, "81"));
 });
+
+test("price plan summary accepts an interface-model-ID-only change and rejects a no-op", () => {
+  const fixture = {
+    ...planFixture(), kind: "PRICE_CHANGE", is_initiator: true,
+    assignee_id: "8", supplier_model_id: "vendor-model-v2",
+    before_supplier_model_id: "vendor-model-v1", after_supplier_model_id: "vendor-model-v2",
+    before_coefficient: "0.6800", after_coefficient: "0.6800",
+    permissions: { can_revise: true, can_cancel: true, can_execute: false },
+  };
+  assert.equal(validatePlanSummary(fixture, "81").after_supplier_model_id, "vendor-model-v2");
+  assert.throws(() => validatePlanSummary({ ...fixture, before_supplier_model_id: "vendor-model-v2" }, "81"));
+});

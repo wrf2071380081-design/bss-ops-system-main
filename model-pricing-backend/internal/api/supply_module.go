@@ -27,11 +27,10 @@ type StandardModelSupplyOptions struct {
 
 // SupplyRouteModuleOptions contains A-owned route adapters and transaction-local
 // providers owned by the public/B integration boundary. It intentionally has
-// no defaults for identity, logging, encryption, B proof, report, row completion,
+// no defaults for identity, logging, B proof, report, row completion,
 // outbox, or pending-configuration checks.
 type SupplyRouteModuleOptions struct {
 	StandardModelSupplyOptions
-	SecretSealer          supply.SecretSealer
 	FormalURLPolicy       supply.FormalURLPolicy
 	ResourceLog           supplypg.ResourceStateLogAppender
 	FormalConfigLog       supplypg.FormalConfigLogAppender
@@ -64,7 +63,7 @@ type SupplyRouteModule struct {
 // NewSupplyRouteModule composes the handlers registered by RegisterSupplyRoutes
 // plus the resource-creation and report-association services called by trusted B
 // adapters. All writes borrow the public idempotency transaction. Public main,
-// authentication, shared logs, encryption, B facts, and outbox implementations
+// authentication, shared logs, B facts, and outbox implementations
 // remain injected dependencies.
 func NewSupplyRouteModule(options SupplyRouteModuleOptions) (*SupplyRouteModule, error) {
 	missing := make([]string, 0, 18)
@@ -79,9 +78,6 @@ func NewSupplyRouteModule(options SupplyRouteModuleOptions) (*SupplyRouteModule,
 	}
 	if options.SourcePolicy == nil {
 		missing = append(missing, "official_source_policy")
-	}
-	if options.SecretSealer == nil {
-		missing = append(missing, "secret_sealer")
 	}
 	if options.FormalURLPolicy == nil {
 		missing = append(missing, "formal_url_policy")
@@ -165,7 +161,7 @@ func NewSupplyRouteModule(options SupplyRouteModuleOptions) (*SupplyRouteModule,
 	deps.ResourceReports = options.ResourceReports
 
 	configWork := supplypg.NewFormalConfigWork(configs, supplypg.GORMModelTxFromContext)
-	deps.FormalConfigs = supply.NewFormalConfigService(configWork, options.SecretSealer, options.FormalURLPolicy, options.Clock)
+	deps.FormalConfigs = supply.NewFormalConfigService(configWork, options.FormalURLPolicy, options.Clock)
 	configReadStore, err := supplypg.NewFormalConfigReadStore(options.Schema, read, configs)
 	if err != nil {
 		return nil, err
@@ -186,7 +182,9 @@ func NewSupplyRouteModule(options SupplyRouteModuleOptions) (*SupplyRouteModule,
 		return nil, err
 	}
 	deps.Plans = supply.NewPlanReader(planStore)
-	deps.PlanWriter = supply.NewPlanMaintenanceService(planStore, options.Clock)
+	planWriter := supply.NewPlanMaintenanceService(planStore, options.Clock)
+	deps.PlanWriter = planWriter
+	deps.PricePlanWriter = planWriter
 	planExecution := supplypg.NewPlanExecutionWork(planStore, configs, options.Admission.Report)
 	deps.PlanExecutor = supply.NewPlanExecutionService(planExecution, options.Clock)
 

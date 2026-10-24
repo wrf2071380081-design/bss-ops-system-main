@@ -41,7 +41,11 @@ let draftRequest: AbortController | undefined;
 const testBusy = ref<Record<string, boolean>>({});
 
 function blankRow(): EditableRow {
-  return { id: "", interface_model_id: "", standard_model_id: "", standard_model_name: "", official_id: "", coefficient: "1", test_base_url: "", test_api_key: "", row_status: "DRAFT", connectivity_tested: false, connectivity_passed: false, stress_tested: false, stress_passed: false };
+  return { id: "", interface_model_id: "", standard_model_id: "", standard_model_name: "", official_id: "", coefficient: "1", test_base_url: "", test_api_key_configured: false, test_api_key: "", row_status: "DRAFT", connectivity_tested: false, connectivity_passed: false, stress_tested: false, stress_passed: false };
+}
+function hasSavedTestKey(row: EditableRow) {
+  // Older drafts had a required key and no presence flag in their response.
+  return row.test_api_key_configured ?? Boolean(row.id);
 }
 function snapshot() {
   return JSON.stringify({ reason: reason.value, rows: rows.value.map(row => ({ id: row.id, interface_model_id: row.interface_model_id, standard_model_id: row.standard_model_id, coefficient: row.coefficient, test_base_url: row.test_base_url, test_api_key: row.test_api_key })) });
@@ -52,7 +56,15 @@ function normalizeSaved(dto: SupplierSubmissionDTO, previousRows = rows.value) {
   revision.value = dto.revision;
   canEdit.value = dto.permissions.can_edit;
   reason.value = dto.reason || reason.value;
-  rows.value = dto.rows.map((item, index) => ({ ...item, test_api_key: previousRows[index]?.test_api_key || "" }));
+  rows.value = dto.rows.map((item, index) => {
+    const previouslyConfigured = previousRows[index]?.test_api_key_configured;
+    const newlyEnteredKey = Boolean(previousRows[index]?.test_api_key.trim());
+    return {
+      ...item,
+      test_api_key_configured: item.test_api_key_configured ?? (previouslyConfigured || newlyEnteredKey || Boolean(item.id)),
+      test_api_key: "",
+    };
+  });
   rememberSaved();
 }
 function showError(value: unknown, fallback: string) { error.value = value instanceof Error ? value.message : fallback; }
@@ -71,7 +83,7 @@ function validateRows(): string {
       const url = new URL(row.test_base_url.trim());
       if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("scheme");
     } catch { return `${line}请填写有效的测试服务 URL。`; }
-    if (!row.id && !row.test_api_key.trim()) return `${line}请填写用于自测的 Key。`;
+    if (!hasSavedTestKey(row) && !row.test_api_key.trim()) return `${line}请填写用于自测的 Key。`;
   }
   return "";
 }
@@ -253,7 +265,7 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
         <el-form-item label="对应标准模型 *"><el-select v-model="row.standard_model_id" filterable clearable :loading="modelLoading" placeholder="选择标准模型" :disabled="locked" @change="selectStandardModel(row, $event)"><el-option v-for="item in modelOptions" :key="item.id" :label="`${item.name} · ${item.official_id}`" :value="item.id" /></el-select><small v-if="row.standard_model_name" class="muted">{{ row.standard_model_name }} · {{ row.official_id }}</small></el-form-item>
         <el-form-item label="采购系数 *"><el-input v-model="row.coefficient" inputmode="decimal" placeholder="0.6800" :disabled="locked" /></el-form-item>
         <el-form-item label="测试服务 URL *"><el-input v-model="row.test_base_url" placeholder="https://api.example.com" :disabled="locked" /></el-form-item>
-        <el-form-item label="测试 Key *"><el-input v-model="row.test_api_key" type="password" show-password autocomplete="new-password" placeholder="仅用于申报自测" :disabled="locked" /></el-form-item>
+        <el-form-item :label="hasSavedTestKey(row) ? '测试 Key（留空沿用）' : '测试 Key *'"><el-input v-model="row.test_api_key" type="password" show-password autocomplete="new-password" :placeholder="hasSavedTestKey(row) ? '已保存；填写新 Key 可替换' : '供应商自测使用的 Key'" :disabled="locked" /></el-form-item>
       </div>
       <div class="test-area">
         <div><strong>连通性：</strong>{{ testState(row.connectivity_tested, row.connectivity_passed) }}<span v-if="row.connectivity_job"> · {{ row.connectivity_job.status }}</span></div>
@@ -274,7 +286,7 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
       <el-button type="primary" :loading="saving" :disabled="locked || !dirty" @click="saveDraft">保存草稿</el-button>
       <el-button type="success" :loading="submitting" :disabled="locked || !canSubmitBatch" @click="submitDraft">提交申报</el-button>
     </div>
-    <p class="muted security-note">测试 Key 仅用于申报自测，不会显示在详情或测试结果中；正式配置需在内部流程单独维护。</p>
+    <p class="muted security-note">供应商自测使用本行测试 URL / Key 和供应商额度；保存后发起测试可复用配置，Key 不回显。内部人员发起测试使用平台自己的 URL / Key 和平台额度，与供应商凭据分开。正式运行配置仍单独维护。</p>
   </section>
 </template>
 

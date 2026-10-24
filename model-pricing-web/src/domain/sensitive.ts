@@ -1,4 +1,4 @@
-const sensitiveField = /^(?:authorization|proxyAuthorization|cookie|setCookie|password|passwd|secret|clientSecret|apiKey|accessKey|secretKey|credential|credentials|token|accessToken|refreshToken|idToken|privateKey)$/i;
+const sensitiveField = /^(?:authorization|proxyAuthorization|cookie|setCookie|password|passwd|secret|clientSecret|apiKey|testApiKey|supplierApiKey|platformApiKey|accessKey|secretKey|credential|credentials|token|accessToken|refreshToken|idToken|privateKey)$/i;
 
 export function maskCredential(value: unknown): string {
   return typeof value === "string" && value.startsWith("sk-") ? "sk-************" : "************";

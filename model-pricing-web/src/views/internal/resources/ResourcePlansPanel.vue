@@ -31,6 +31,9 @@ onBeforeUnmount(() => { active = false; controller?.abort(); window.clearInterva
     <el-table v-else :data="rows" empty-text="暂无符合条件的计划" aria-label="资源计划列表">
       <el-table-column label="计划" min-width="90"><template #default="{row}">{{ planKindLabels[row.kind] }}</template></el-table-column>
       <el-table-column label="发起人" min-width="100"><template #default="{row}">{{ row.creator_name || `人员 ${row.created_by}` }}{{ row.is_initiator ? '（本人）' : '' }}</template></el-table-column>
+      <el-table-column v-if="rows.some(row => row.kind === 'PRICE_CHANGE')" label="接口模型 ID" min-width="190"><template #default="{row}">{{ row.kind === 'PRICE_CHANGE' ? `${row.before_supplier_model_id || row.supplier_model_id} → ${row.after_supplier_model_id || row.supplier_model_id}` : '—' }}</template></el-table-column>
+      <el-table-column v-if="rows.some(row => row.kind === 'PRICE_CHANGE')" label="系数调整" min-width="125"><template #default="{row}">{{ row.kind === 'PRICE_CHANGE' ? `${row.before_coefficient} → ${row.after_coefficient}` : '—' }}</template></el-table-column>
+      <el-table-column v-if="rows.some(row => row.kind === 'PRICE_CHANGE')" label="办理人" min-width="90"><template #default="{row}">{{ row.kind === 'PRICE_CHANGE' ? `人员 ${row.assignee_id}` : '—' }}</template></el-table-column>
       <el-table-column label="预计时间" min-width="160"><template #default="{row}">{{ formatDateTime(row.due_at) }}<div v-if="isDue(row)"><el-tag type="warning" size="small">预计时间已到，待登记</el-tag></div></template></el-table-column>
       <el-table-column label="状态" min-width="95"><template #default="{row}"><el-tag :type="row.status === 'BLOCKED' ? 'warning' : 'info'">{{ planStatusLabels[row.status] }}</el-tag></template></el-table-column>
       <el-table-column label="前提" min-width="100"><template #default="{row}">{{ row.precondition_matches ? '版本匹配' : '资源已变更' }}</template></el-table-column>

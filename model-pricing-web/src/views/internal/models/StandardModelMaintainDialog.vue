@@ -22,11 +22,13 @@ const records = ref<Awaited<ReturnType<typeof standardModelsApi.records>>>([]), 
 const readonly = computed(() => current.value ? !current.value.permissions.can_edit : !!props.id);
 const dirty = computed(() => JSON.stringify(draft.value) !== baseline.value);
 const issues = computed(() => validateStandardModel(draft.value));
+const operationLabels: Record<string, string> = { CREATE: "创建", UPDATE: "更新", UPDATE_NOOP: "保存（无变化）", VERIFY: "人工核验", VERIFY_NOOP: "核验（无变化）", MANUAL_SAVE: "保存并留痕", MANUAL_SAVE_NOOP: "保存并留痕（无变化）" };
 const blocked = computed(() => saving.value || loading.value || readonly.value || conflict.value);
 let active = true;
 let detailRequest: AbortController | undefined, historyRequest: AbortController | undefined, recordsRequest: AbortController | undefined;
 let intent = crypto.randomUUID();
 const message = (value: unknown) => value instanceof Error ? value.message : "请求未完成，请重试。";
+function operationLabel(action: string) { return operationLabels[action] ?? action; }
 function apply(model: StandardModelDTO) { current.value = model; draft.value = copyStandardModel(model); baseline.value = JSON.stringify(draft.value); reason.value = ""; intent = crypto.randomUUID(); }
 async function load() {
   const id = current.value?.id ?? props.id;
@@ -50,16 +52,9 @@ async function save() {
   if (issues.value.length) { error.value = `${standardFieldLabel(issues.value[0]!.path)}：${issues.value[0]!.message}`; return; }
   saving.value = true; error.value = "";
   try {
-    const saved = await standardModelsApi.save(draft.value, reason.value, intent, current.value);
-    if (active) { apply(saved); ElMessage.success(saved.missing_fields.length ? "已保存，仍有资料待补齐" : "已保存资料"); emit("saved"); }
+    const saved = await standardModelsApi.manualSave(draft.value, reason.value, intent, current.value);
+    if (active) { apply(saved); ElMessage.success(saved.missing_fields.length ? "已保存，仍有资料待补齐" : "已保存并记录人工核验"); emit("saved"); }
   } catch (value) { if (active) failed(value); }
-  finally { if (active) saving.value = false; }
-}
-async function verify() {
-  if (blocked.value || !current.value?.permissions.can_verify || dirty.value) return;
-  saving.value = true; error.value = "";
-  try { const saved = await standardModelsApi.verify(current.value, reason.value, intent); if (active) { apply(saved); ElMessage.success("人工核验已记录"); emit("saved"); } }
-  catch (value) { if (active) failed(value); }
   finally { if (active) saving.value = false; }
 }
 async function history(page = 1) {
@@ -87,16 +82,16 @@ onBeforeUnmount(() => { active = false; detailRequest?.abort(); historyRequest?.
 </script>
 
 <template>
-  <el-dialog class="standard-model-dialog" :model-value="true" :title="current || id ? '标准模型资料维护' : '新增标准模型'" width="min(1100px, 96vw)" top="6vh" :before-close="close" :close-on-click-modal="false" :close-on-press-escape="!saving" destroy-on-close append-to-body>
+  <el-dialog class="standard-model-dialog" :model-value="true" :title="current || id ? '手动补全' : '新增标准模型'" width="min(1100px, 96vw)" top="6vh" :before-close="close" :close-on-click-modal="false" :close-on-press-escape="!saving" destroy-on-close append-to-body>
     <div v-loading="loading" class="model-maintenance">
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
       <el-alert v-if="conflict" title="记录已更新。你的输入已保留，请核对最新资料后重新编辑。" type="warning" :closable="false"><el-button text @click="reload">重新读取当前资料</el-button></el-alert>
-      <el-alert v-if="readonly && !loading" title="当前为只读查看；仅绑定维护人可以修改和核验。" type="info" :closable="false" />
+      <el-alert v-if="readonly && !loading" title="当前为只读查看；仅绑定维护人可以补全资料并保存核验记录。" type="info" :closable="false" />
       <div v-if="current" class="model-state"><span>{{ current.name || '待补充名称' }} · 版本 {{ current.version_no }}</span><el-tag :type="current.verify_status === 'VERIFIED' ? 'success' : 'warning'">{{ current.verify_status === 'VERIFIED' ? '已人工核验' : current.missing_fields.length ? '资料待补齐' : '待人工核验' }}</el-tag><span>{{ current.quote_readiness.ready ? '可用于报价' : '暂不可用于报价' }}</span></div>
       <el-tabs v-model="tab" @tab-change="changedTab">
         <el-tab-pane label="官方资料" name="profile">
-          <p class="hint">官方未披露的参数请明确选择“未披露”。价格及计费条件须可核验；允许先保存待补齐资料，补齐并人工核验后才能报价。</p>
-          <el-alert v-if="current?.missing_fields.length" type="warning" :closable="false" title="可继续保存资料；补齐以下项目并人工核验后才能报价。"><p>{{ current.missing_fields.map(standardFieldLabel).join('、') }}</p></el-alert>
+          <p class="hint">官方未披露的参数请明确选择“未披露”。价格及计费条件须可核验；资料不完整时可先保存，补齐并由当前维护人核对后才能报价。</p>
+          <el-alert v-if="current?.missing_fields.length" type="warning" :closable="false" title="可继续保存资料；补齐以下项目并由维护人核对后才能报价。"><p>{{ current.missing_fields.map(standardFieldLabel).join('、') }}</p></el-alert>
           <el-form label-position="top" :disabled="blocked" class="model-form">
             <section class="identity-grid">
               <el-form-item label="厂商"><el-input v-model="draft.company" placeholder="原厂公司名称" /></el-form-item><el-form-item label="模型类型"><el-select v-model="draft.model_type" clearable><el-option v-for="(text, key) in modelTypeLabels" :key="key" :label="text" :value="key" /></el-select></el-form-item>
@@ -110,7 +105,7 @@ onBeforeUnmount(() => { active = false; detailRequest?.abort(); historyRequest?.
             <StandardPriceEditor v-model="draft.price_items" :disabled="blocked" />
             <section><header class="section-heading"><h3>官方来源 / 核对日期</h3><el-button v-if="!readonly" size="small" @click="draft.sources.push({ label: '', url: '', source_kind: 'OFFICIAL_DOCS' })">添加来源</el-button></header><div v-for="(source, index) in draft.sources" :key="index" class="source-row"><el-input v-model="source.label" :aria-label="`第${index + 1}项来源名称`" placeholder="来源名称" /><el-select v-model="source.source_kind" :aria-label="`第${index + 1}项来源类别`"><el-option v-for="(text, key) in sourceLabels" :key="key" :label="text" :value="key" /></el-select><el-input v-model="source.url" :aria-label="`第${index + 1}项来源网址`" placeholder="https://…" /><el-button v-if="!readonly" @click="draft.sources.splice(index, 1)">移除</el-button></div><el-form-item label="核对日期"><el-date-picker v-model="draft.checked_at" type="date" value-format="YYYY-MM-DD" :disabled-date="isFuture" placeholder="请选择实际核对日期" /></el-form-item></section>
           </el-form>
-          <div v-if="!readonly" class="save-area"><label for="standard-model-reason">操作说明</label><el-input id="standard-model-reason" v-model="reason" type="textarea" :rows="2" placeholder="说明补录、变更或人工核验的依据" :disabled="saving || loading" /><p v-if="dirty" class="hint">有未保存的资料；请先保存，再进行人工核验。</p><p v-if="issues.length" class="validation-hint">{{ issues.length }} 处已填写内容需修正：{{ standardFieldLabel(issues[0]!.path) }}，{{ issues[0]!.message }}</p></div>
+          <div v-if="!readonly" class="save-area"><label for="standard-model-reason">操作说明</label><el-input id="standard-model-reason" v-model="reason" type="textarea" :rows="2" placeholder="说明资料补录或变更依据" :disabled="saving || loading" /><p v-if="dirty" class="hint">点击“保存并留痕”后，系统按资料完整性保存待补齐状态或记录本次人工核验。</p><p v-if="issues.length" class="validation-hint">{{ issues.length }} 处已填写内容需修正：{{ standardFieldLabel(issues[0]!.path) }}，{{ issues[0]!.message }}</p></div>
         </el-tab-pane>
         <el-tab-pane label="历史版本" name="history" :disabled="!current">
           <el-alert v-if="historyError" :title="historyError" type="error" :closable="false"><el-button text @click="history()">重试</el-button></el-alert>
@@ -118,10 +113,10 @@ onBeforeUnmount(() => { active = false; detailRequest?.abort(); historyRequest?.
           <el-pagination v-if="versions" :current-page="versions.page" :page-size="versions.size" :total="versions.total" layout="prev, pager, next" @current-change="history" />
           <section v-if="selectedHistory" class="history-snapshot"><h3>版本 {{ selectedHistory.version_no }} · 只读快照</h3><p>历史资料仅用于追溯，不能作为新报价依据。</p><dl><dt>名称 / ID / 公司</dt><dd>{{ selectedHistory.name }} / {{ selectedHistory.official_id }} / {{ selectedHistory.company }}</dd><dt>模型类型 / 输入输出</dt><dd>{{ modelTypeLabels[selectedHistory.model_type] }} / {{ selectedHistory.input_modalities.map(value => modelTypeLabels[value]).join('、') }} → {{ selectedHistory.output_modalities.map(value => modelTypeLabels[value]).join('、') }}</dd><dt>容量规格</dt><dd v-for="fact in selectedHistory.capacity" :key="fact.key">{{ fact.key }}：{{ fact.value || factLabels[fact.disclosure] }}</dd><dt>核心能力</dt><dd v-for="ability in selectedHistory.abilities" :key="ability.key">{{ ability.key }}：{{ abilityLabels[ability.state] }} {{ ability.description }}</dd><dt>官方价格</dt><dd v-for="price in selectedHistory.price_items" :key="price.item_key">{{ formatStandardPrice(price) }} · {{ price.condition }}</dd><dt>API / 访问条件</dt><dd v-for="fact in selectedHistory.api_access" :key="fact.key">{{ fact.key }}：{{ fact.value || factLabels[fact.disclosure] }}</dd><dt>发布 / 生命周期</dt><dd v-for="fact in selectedHistory.lifecycle" :key="fact.key">{{ fact.key }}：{{ fact.value || factLabels[fact.disclosure] }}</dd><dt>来源 / 核对日期</dt><dd v-for="source in selectedHistory.sources" :key="source.url">{{ source.label }}：{{ source.url }}</dd><dd>{{ selectedHistory.checked_at || '未核对' }}</dd></dl></section>
         </el-tab-pane>
-        <el-tab-pane label="操作记录" name="records" :disabled="!current"><el-alert v-if="recordsError" :title="recordsError" type="error" :closable="false"><el-button text @click="logs">重试</el-button></el-alert><el-table v-loading="recordsLoading" :data="records" empty-text="暂无操作记录"><el-table-column prop="action" label="操作" /><el-table-column prop="operator_name" label="操作人" /><el-table-column prop="reason" label="说明" /><el-table-column prop="created_at" label="时间" /></el-table><p class="hint">显示最近100条记录。</p></el-tab-pane>
+        <el-tab-pane label="操作记录" name="records" :disabled="!current"><el-alert v-if="recordsError" :title="recordsError" type="error" :closable="false"><el-button text @click="logs">重试</el-button></el-alert><el-table v-loading="recordsLoading" :data="records" empty-text="暂无操作记录"><el-table-column label="操作"><template #default="{ row }">{{ operationLabel(row.action) }}</template></el-table-column><el-table-column prop="operator_name" label="操作人" /><el-table-column prop="reason" label="说明" /><el-table-column prop="created_at" label="时间" /></el-table><p class="hint">显示最近100条记录。</p></el-tab-pane>
       </el-tabs>
     </div>
-    <template #footer><div class="dialog-actions"><el-button :disabled="saving" @click="close">{{ readonly ? '关闭' : '取消' }}</el-button><template v-if="tab === 'profile' && !readonly"><el-tooltip :disabled="Boolean(current?.permissions.can_verify) && !dirty" :content="dirty ? '请先保存修改后的资料，再进行人工核验' : current ? '请补齐缺失资料；只有当前维护人可以核验' : '请先保存模型资料'"><span><el-button :disabled="blocked || dirty || !current?.permissions.can_verify" :loading="saving" @click="verify">人工核验</el-button></span></el-tooltip><el-button type="primary" :disabled="blocked" :loading="saving" @click="save">保存并留痕</el-button></template></div></template>
+    <template #footer><div class="dialog-actions"><el-button :disabled="saving" @click="close">{{ readonly ? '关闭' : '取消' }}</el-button><el-button v-if="tab === 'profile' && !readonly" type="primary" :disabled="blocked" :loading="saving" @click="save">保存并留痕</el-button></div></template>
   </el-dialog>
 </template>
 

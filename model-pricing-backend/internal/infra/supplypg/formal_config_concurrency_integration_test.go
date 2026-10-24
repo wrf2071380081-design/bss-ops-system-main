@@ -2,9 +2,6 @@ package supplypg
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -97,14 +94,8 @@ func testResourceBindingDisableContention(t *testing.T, bindFirst bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := sha256.Sum256([]byte("concurrency-config-test-not-production"))
-	block, _ := aes.NewCipher(key[:])
-	aead, err := cipher.NewGCMWithRandomNonce(block)
-	if err != nil {
-		t.Fatal(err)
-	}
 	configService := func(tx *sql.Tx) *supply.FormalConfigService {
-		return supply.NewFormalConfigService(NewFormalConfigWork(configs, func(context.Context) (*sql.Tx, error) { return tx, nil }), configPGSealer{aead}, configPGURL{}, func() time.Time { return now.Add(time.Second) })
+		return supply.NewFormalConfigService(NewFormalConfigWork(configs, func(context.Context) (*sql.Tx, error) { return tx, nil }), configPGURL{}, func() time.Time { return now.Add(time.Second) })
 	}
 	secret := "concurrency-test-only-provider-key"
 	config, err := configService(fixture).Create(ctx, meta, supplier, supply.FormalConfigInput{Scope: "测试范围", BaseURL: "https://formal.example/v1", APIKey: &secret, ExternalConfirmed: true})

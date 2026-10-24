@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/shopspring/decimal"
 )
 
 // PlanHooks are transaction-local public/B providers, never network calls.
@@ -48,6 +50,14 @@ func (s *PlanStore) table(name string) string { return `"` + s.schema + `"."` + 
 
 const planRevisionAction = "PLAN_REVISION"
 
+func supplyCoefficient(value string) (decimal.Decimal, error) {
+	n, err := decimal.NewFromString(value)
+	if err != nil || !n.IsPositive() || n.GreaterThan(decimal.NewFromInt(1)) {
+		return decimal.Zero, supply.ErrReadContract
+	}
+	return n, nil
+}
+
 type planEnvelope struct {
 	Contract      string              `json:"contract"`
 	SchemaVersion int                 `json:"schema_version"`
@@ -59,6 +69,7 @@ type planEnvelope struct {
 }
 
 type planExecutionData struct {
+	ActorID        string    `json:"actor_id,omitempty"`
 	CompletionNote string    `json:"completion_note"`
 	FailureReason  string    `json:"failure_reason,omitempty"`
 	SourceEventID  string    `json:"source_event_id,omitempty"`
@@ -70,13 +81,26 @@ func canonicalStatePlan(input *supply.StatePlan) (*supply.StatePlan, error) {
 		return nil, supply.ErrReadContract
 	}
 	p := *input
+	legacyPricePlanSnapshot := p.Kind == "PRICE_CHANGE" && p.BeforeSupplierModelID == "" && p.AfterSupplierModelID == "" && p.BeforeSnapshot == p.AfterSnapshot
 	p.ResourcePlan = *input.ResourcePlan.Clone()
 	for _, id := range []string{p.ID, p.ResourceID, p.CreatedBy} {
 		if !modelIdentity(id) {
 			return nil, supply.ErrReadContract
 		}
 	}
-	if p.Revision == 0 || p.Revision > math.MaxInt64 || p.ExpectedResourceRevision == 0 || p.ExpectedResourceRevision > math.MaxInt64 || (p.Kind != "ONLINE" && p.Kind != "OFFLINE") || !slices.Contains([]string{"PENDING", "CANCELED", "BLOCKED", "EXECUTED"}, p.Status) || p.CreatedAt.IsZero() || p.DueAt.IsZero() || strings.TrimSpace(p.Reason) == "" || !utf8.ValidString(p.Reason) || strings.ContainsRune(p.Reason, 0) || utf8.RuneCountInString(p.Reason) > 500 || p.CreatorName != "" {
+	if p.Revision == 0 || p.Revision > math.MaxInt64 || p.ExpectedResourceRevision == 0 || p.ExpectedResourceRevision > math.MaxInt64 || (p.Kind != "ONLINE" && p.Kind != "OFFLINE" && p.Kind != "PRICE_CHANGE") || !slices.Contains([]string{"PENDING", "CANCELED", "BLOCKED", "EXECUTED"}, p.Status) || p.CreatedAt.IsZero() || p.DueAt.IsZero() || strings.TrimSpace(p.Reason) == "" || !utf8.ValidString(p.Reason) || strings.ContainsRune(p.Reason, 0) || utf8.RuneCountInString(p.Reason) > 500 || p.CreatorName != "" {
+		return nil, supply.ErrReadContract
+	}
+	if p.Kind == "PRICE_CHANGE" {
+		_, beforeErr := supplyCoefficient(p.BeforeCoefficient)
+		_, afterErr := supplyCoefficient(p.AfterCoefficient)
+		if !modelIdentity(p.AssigneeID) || (p.SupplierModelID != "" && (strings.TrimSpace(p.SupplierModelID) != p.SupplierModelID || !utf8.ValidString(p.SupplierModelID) || strings.ContainsRune(p.SupplierModelID, 0) || utf8.RuneCountInString(p.SupplierModelID) > 128)) || beforeErr != nil || afterErr != nil || (p.BeforeCoefficient != "" && p.BeforeCoefficient != strings.TrimSpace(p.BeforeCoefficient)) || (p.AfterCoefficient != "" && p.AfterCoefficient != strings.TrimSpace(p.AfterCoefficient)) {
+			return nil, supply.ErrReadContract
+		}
+		if (p.Status == "EXECUTED" && (p.ExecutedBy != p.AssigneeID || strings.TrimSpace(p.CompletionNote) == "")) || (p.Status != "EXECUTED" && (p.ExecutedBy != "" || p.CompletionNote != "")) {
+			return nil, supply.ErrReadContract
+		}
+	} else if p.AssigneeID != "" || p.SupplierModelID != "" || p.BeforeSupplierModelID != "" || p.AfterSupplierModelID != "" || p.BeforeCoefficient != "" || p.AfterCoefficient != "" {
 		return nil, supply.ErrReadContract
 	}
 	p.CreatedAt = p.CreatedAt.UTC().Truncate(time.Microsecond)
@@ -99,11 +123,41 @@ func canonicalStatePlan(input *supply.StatePlan) (*supply.StatePlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if b.ID != p.ResourceID || b.Region != p.Region || b.BuyerID != p.CreatedBy || b.Revision != p.ExpectedResourceRevision || !b.EverAdmitted || b.UpdatedAt.After(p.CreatedAt) {
+	if b.ID != p.ResourceID || b.Region != p.Region || (p.Kind != "PRICE_CHANGE" && b.BuyerID != p.CreatedBy) || b.Revision != p.ExpectedResourceRevision || !b.EverAdmitted || b.UpdatedAt.After(p.CreatedAt) {
 		return nil, supply.ErrReadContract
 	}
 	forecast := *b
-	if p.Kind == "OFFLINE" {
+	if p.Kind == "PRICE_CHANGE" {
+		// Older v36 plans only stored one supplier model ID and kept both
+		// resource snapshots unchanged. Derive the before/after values from those
+		// immutable snapshots when reading them.
+		if p.BeforeSupplierModelID == "" {
+			p.BeforeSupplierModelID = b.SupplierModelID
+		}
+		if p.AfterSupplierModelID == "" {
+			p.AfterSupplierModelID = p.SupplierModelID
+			if p.AfterSupplierModelID == "" {
+				p.AfterSupplierModelID = a.SupplierModelID
+			}
+		}
+		if p.SupplierModelID == "" {
+			p.SupplierModelID = p.AfterSupplierModelID
+		}
+		before, beforeErr := supplyCoefficient(p.BeforeCoefficient)
+		after, afterErr := supplyCoefficient(p.AfterCoefficient)
+		if p.BeforeSupplierModelID != b.SupplierModelID || (!legacyPricePlanSnapshot && p.AfterSupplierModelID != a.SupplierModelID) || p.SupplierModelID != p.AfterSupplierModelID || strings.TrimSpace(p.BeforeSupplierModelID) != p.BeforeSupplierModelID || strings.TrimSpace(p.AfterSupplierModelID) != p.AfterSupplierModelID || !utf8.ValidString(p.BeforeSupplierModelID) || !utf8.ValidString(p.AfterSupplierModelID) || strings.ContainsRune(p.BeforeSupplierModelID, 0) || strings.ContainsRune(p.AfterSupplierModelID, 0) || utf8.RuneCountInString(p.BeforeSupplierModelID) > 128 || utf8.RuneCountInString(p.AfterSupplierModelID) > 128 || beforeErr != nil || afterErr != nil || p.BeforeCoefficient != b.Coefficient || (before.Cmp(after) == 0 && p.BeforeSupplierModelID == p.AfterSupplierModelID) || b.State != "ADMITTED" && b.State != "OFFLINE" {
+			return nil, supply.ErrReadContract
+		}
+		forecast.SupplierModelID = p.AfterSupplierModelID
+		forecast.Coefficient = p.AfterCoefficient
+		forecast.TargetVersion = b.TargetVersion
+		if p.AfterSupplierModelID != p.BeforeSupplierModelID {
+			if b.TargetVersion >= math.MaxInt64 {
+				return nil, supply.ErrReadContract
+			}
+			forecast.TargetVersion++
+		}
+	} else if p.Kind == "OFFLINE" {
 		if b.State != "ADMITTED" {
 			return nil, supply.ErrReadContract
 		}
@@ -113,6 +167,9 @@ func canonicalStatePlan(input *supply.StatePlan) (*supply.StatePlan, error) {
 			return nil, supply.ErrReadContract
 		}
 		forecast.State = "ADMITTED"
+	}
+	if legacyPricePlanSnapshot {
+		a = &forecast
 	}
 	if forecast != *a {
 		return nil, supply.ErrReadContract
@@ -168,7 +225,18 @@ func decodeStatePlan(raw []byte) (*supply.StatePlan, string, error) {
 		if p.Status == "EXECUTED" && (!modelIdentity(x.SourceEventID) || x.FailureReason != "" || !x.OccurredAt.Equal(*p.ExecutedAt)) {
 			return nil, "", supply.ErrReadContract
 		}
-		if p.Status == "BLOCKED" && (x.SourceEventID != "" || !slices.Contains([]string{"RESOURCE_CHANGED", "RESOURCE_NOT_READY"}, x.FailureReason)) {
+		if p.Status == "EXECUTED" {
+			if x.ActorID != "" && !modelIdentity(x.ActorID) {
+				return nil, "", supply.ErrReadContract
+			}
+			if p.Kind == "PRICE_CHANGE" && (x.ActorID != p.AssigneeID || p.ExecutedBy != x.ActorID || p.CompletionNote != x.CompletionNote) {
+				return nil, "", supply.ErrReadContract
+			}
+			if p.Kind != "PRICE_CHANGE" && p.ExecutedBy != "" && p.ExecutedBy != x.ActorID {
+				return nil, "", supply.ErrReadContract
+			}
+		}
+		if p.Status == "BLOCKED" && (x.SourceEventID != "" || !slices.Contains([]string{"RESOURCE_CHANGED", "RESOURCE_NOT_READY", "COEFFICIENT_CHANGED"}, x.FailureReason) || (p.Kind == "PRICE_CHANGE" && x.ActorID != p.AssigneeID)) {
 			return nil, "", supply.ErrReadContract
 		}
 	} else if e.Execution != nil {
@@ -183,7 +251,10 @@ func nativePlanStatus(status string) string {
 	return status
 }
 func samePlanBasis(a, b *supply.StatePlan) bool {
-	return a.ID == b.ID && a.ResourceID == b.ResourceID && a.CreatedBy == b.CreatedBy && a.Kind == b.Kind && a.Region == b.Region && a.CreatedAt.Equal(b.CreatedAt) && a.ExpectedResourceRevision == b.ExpectedResourceRevision && a.BeforeSnapshot == b.BeforeSnapshot && a.AfterSnapshot == b.AfterSnapshot
+	if a.ID != b.ID || a.ResourceID != b.ResourceID || a.CreatedBy != b.CreatedBy || a.Kind != b.Kind || a.Region != b.Region || !a.CreatedAt.Equal(b.CreatedAt) || a.ExpectedResourceRevision != b.ExpectedResourceRevision || a.BeforeSnapshot != b.BeforeSnapshot {
+		return false
+	}
+	return a.Kind == "PRICE_CHANGE" || a.AfterSnapshot == b.AfterSnapshot
 }
 func (s *PlanStore) current(ctx context.Context, tx *sql.Tx, id string) (*supply.StatePlan, error) {
 	var resource, kind, status string
@@ -221,7 +292,17 @@ func (s *PlanStore) current(ctx context.Context, tx *sql.Tx, id string) (*supply
 		return nil, err
 	}
 	_, rowOp, _ := decodeStatePlan(after)
-	if !reflect.DeepEqual(p, logPlan) || logOp != rowOp || by.String != p.CreatedBy || !why.Valid || strings.TrimSpace(why.String) == "" || !request.Valid || strings.TrimSpace(request.String) == "" || at.Before(p.CreatedAt) {
+	expectedActor := p.CreatedBy
+	if p.Status == "EXECUTED" || p.Status == "BLOCKED" {
+		var envelope planEnvelope
+		if json.Unmarshal(after, &envelope) != nil || envelope.Execution == nil {
+			return nil, supply.ErrReadContract
+		}
+		if envelope.Execution.ActorID != "" {
+			expectedActor = envelope.Execution.ActorID
+		}
+	}
+	if !reflect.DeepEqual(p, logPlan) || logOp != rowOp || by.String != expectedActor || !why.Valid || strings.TrimSpace(why.String) == "" || !request.Valid || strings.TrimSpace(request.String) == "" || at.Before(p.CreatedAt) {
 		return nil, supply.ErrReadContract
 	}
 	var rowEnvelope, logEnvelope planEnvelope
@@ -274,8 +355,7 @@ func (s *PlanStore) ListPlanSummaries(ctx context.Context, q supply.PlanListQuer
 	result := []supply.PlanReadRecord{}
 	var total int64
 	err := s.withinRead(ctx, func(tx *sql.Tx) error {
-		// PRICE_CHANGE is owned by B; this repository only projects A state plans.
-		filter := ` FROM ` + s.table("plan") + ` p JOIN ` + s.table("resource") + ` r ON r.id=p.resource_id WHERE p.kind IN ('ONLINE','OFFLINE') AND ($1='' OR p.resource_id=NULLIF($1,'')::bigint) AND ($2='' OR r.region=$2) AND ($3='' OR p.kind=$3) AND ($4='' OR p.status=$4)`
+		filter := ` FROM ` + s.table("plan") + ` p JOIN ` + s.table("resource") + ` r ON r.id=p.resource_id WHERE p.kind IN ('ONLINE','OFFLINE','PRICE_CHANGE') AND ($1='' OR p.resource_id=NULLIF($1,'')::bigint) AND ($2='' OR r.region=$2) AND ($3='' OR p.kind=$3) AND ($4='' OR p.status=$4)`
 		args := []any{q.ResourceID, q.Region, q.Kind, nativePlanStatus(q.Status)}
 		if err := tx.QueryRowContext(ctx, `SELECT count(*)`+filter, args...).Scan(&total); err != nil {
 			return err
@@ -362,6 +442,22 @@ func (t *planMaintenanceTransaction) HasPendingStatePlan(ctx context.Context, id
 	err := t.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+t.store.table("plan")+` WHERE resource_id=$1 AND kind IN ('ONLINE','OFFLINE') AND status='PENDING')`, id).Scan(&exists)
 	return exists, err
 }
+func (t *planMaintenanceTransaction) HasPendingPriceChangePlan(ctx context.Context, id string) (bool, error) {
+	if t.resource == nil || t.resource.ID != id {
+		return false, supply.ErrReadContract
+	}
+	var exists bool
+	err := t.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+t.store.table("plan")+` WHERE resource_id=$1 AND kind='PRICE_CHANGE' AND status IN ('PENDING','EXECUTING'))`, id).Scan(&exists)
+	return exists, err
+}
+func (t *planMaintenanceTransaction) IsActiveInternalStaff(ctx context.Context, id string) (bool, error) {
+	if !modelIdentity(id) {
+		return false, supply.ErrReadContract
+	}
+	var exists bool
+	err := t.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+t.store.table("internal_staff")+` WHERE id=$1 AND status='ACTIVE')`, id).Scan(&exists)
+	return exists, err
+}
 func (t *planMaintenanceTransaction) HasPendingConfigurationChange(ctx context.Context, id string) (bool, error) {
 	if t.resource == nil || t.resource.ID != id {
 		return false, supply.ErrReadContract
@@ -384,7 +480,12 @@ func (t *planMaintenanceTransaction) CreateStatePlan(ctx context.Context, p *sup
 	if t.before != nil || t.staged != nil || t.resource == nil || !reflect.DeepEqual(&c.BeforeSnapshot, t.resource) || c.Revision != 1 || c.Status != "PENDING" {
 		return supply.ErrReadContract
 	}
-	pending, err := t.HasPendingStatePlan(ctx, c.ResourceID)
+	var pending bool
+	if c.Kind == "PRICE_CHANGE" {
+		pending, err = t.HasPendingPriceChangePlan(ctx, c.ResourceID)
+	} else {
+		pending, err = t.HasPendingStatePlan(ctx, c.ResourceID)
+	}
 	if err != nil {
 		return err
 	}
@@ -467,12 +568,20 @@ func (t *planMaintenanceTransaction) AppendPlanMaintenanceEffect(ctx context.Con
 		if t.before != nil {
 			return supply.ErrReadContract
 		}
-		expected, err = supply.NewStatePlan(c.ID, e.ActorID, t.resource, c.Kind, c.DueAt, e.Reason, c.CreatedAt)
+		if c.Kind == "PRICE_CHANGE" {
+			expected, err = supply.NewPriceChangePlan(c.ID, e.ActorID, c.AssigneeID, c.SupplierModelID, t.resource, c.AfterCoefficient, c.DueAt, e.Reason, c.CreatedAt)
+		} else {
+			expected, err = supply.NewStatePlan(c.ID, e.ActorID, t.resource, c.Kind, c.DueAt, e.Reason, c.CreatedAt)
+		}
 	case "REVISE":
 		if t.before == nil {
 			return supply.ErrReadContract
 		}
-		expected, err = t.before.RevisedStatePlan(e.ActorID, t.before.Revision, c.DueAt, e.Reason)
+		if t.before.Kind == "PRICE_CHANGE" {
+			expected, err = t.before.RevisedPriceChangePlan(e.ActorID, t.before.Revision, c.SupplierModelID, c.AfterCoefficient, c.AssigneeID, c.DueAt, e.Reason)
+		} else {
+			expected, err = t.before.RevisedStatePlan(e.ActorID, t.before.Revision, c.DueAt, e.Reason)
+		}
 	case "CANCEL":
 		if t.before == nil {
 			return supply.ErrReadContract
@@ -516,7 +625,12 @@ func (t *planMaintenanceTransaction) AppendPlanMaintenanceEffect(ctx context.Con
 			return supply.ErrRevisionConflict
 		}
 	} else {
-		pending, err := t.HasPendingStatePlan(ctx, c.ResourceID)
+		var pending bool
+		if c.Kind == "PRICE_CHANGE" {
+			pending, err = t.HasPendingPriceChangePlan(ctx, c.ResourceID)
+		} else {
+			pending, err = t.HasPendingStatePlan(ctx, c.ResourceID)
+		}
 		if err != nil {
 			return err
 		}
