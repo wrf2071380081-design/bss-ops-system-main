@@ -1,6 +1,7 @@
 package supplypg
 
 import (
+	"fmt"
 	"context"
 	"database/sql"
 	"errors"
@@ -503,6 +504,8 @@ type TestRow struct {
 	StandardModelID   int64
 	OfficialID        string
 	SupplierModelName string
+	// ParticipateTest 表示该行勾选了压力测试。
+	ParticipateTest bool
 	TestBaseURL       string
 	SealedAPIKey      string
 	Coefficient       string
@@ -528,7 +531,7 @@ func (s *SubmissionStore) TestRow(ctx context.Context, supplierID, submissionID,
 	var item TestRow
 	var resourceID, jobID, stressJobID sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
-SELECT r.id, r.submission_id, r.standard_model_id, COALESCE(m.official_id,''), r.supplier_model_name, COALESCE(r.test_base_url,''),
+SELECT r.id, r.submission_id, r.standard_model_id, COALESCE(m.official_id,''), r.supplier_model_name, r.participate_test, COALESCE(r.test_base_url,''),
        COALESCE(r.test_api_key_enc,''), r.coefficient::text, sub.region, sub.supplier_id, sp.name,
        COALESCE(r.test_fingerprint,''), r.resource_id, r.test_job_id, r.stress_job_id, sub.status,
        COALESCE(cj.status,''), COALESCE(cj.target_fingerprint,''),
@@ -542,7 +545,7 @@ JOIN `+s.table("supplier")+` sp ON sp.id = sub.supplier_id
 LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
 LEFT JOIN `+s.table("test_job")+` sj ON sj.id = r.stress_job_id
 WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionID, supplierID).
-		Scan(&item.RowID, &item.SubmissionID, &item.StandardModelID, &item.OfficialID, &item.SupplierModelName, &item.TestBaseURL,
+		Scan(&item.RowID, &item.SubmissionID, &item.StandardModelID, &item.OfficialID, &item.SupplierModelName, &item.ParticipateTest, &item.TestBaseURL,
 			&item.SealedAPIKey, &item.Coefficient, &item.Region, &item.SupplierID, &item.SupplierName,
 			&item.TestFingerprint, &resourceID, &jobID, &stressJobID, &item.SubmissionStatus,
 			&item.TestJobStatus, &item.TestJobFingerprint, &item.TestJobVerdict,
@@ -656,4 +659,75 @@ FROM `+s.table("supplier")+` sp WHERE sp.id = $1`, supplierID).Scan(&name)
 		return "", nil
 	}
 	return name, err
+}
+
+// ActiveModelCatalog 取启用中的标准模型，供导入模板与匹配使用。
+func (s *SubmissionStore) ActiveModelCatalog(ctx context.Context) ([]supply.ImportModel, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, name, COALESCE(official_id,''), COALESCE(company,''), COALESCE(model_type,'')
+FROM `+s.table("standard_model")+`
+WHERE status = 'ACTIVE'
+ORDER BY company, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	list := make([]supply.ImportModel, 0, 64)
+	for rows.Next() {
+		var item supply.ImportModel
+		if err := rows.Scan(&item.ID, &item.Name, &item.OfficialID, &item.Company, &item.ModelType); err != nil {
+			return nil, err
+		}
+		list = append(list, item)
+	}
+	return list, rows.Err()
+}
+
+// SubmissionFilterOption 是列表筛选项（按该供应商已有数据收窄，避免给空选项）。
+type SubmissionFilterOption struct {
+	Companies  []string
+	ModelTypes []string
+	Regions    []string
+	Submitters []string
+}
+
+// FilterOptions 汇总当前供应商可用的筛选值。
+func (s *SubmissionStore) FilterOptions(ctx context.Context, supplierID int64) (*SubmissionFilterOption, error) {
+	option := &SubmissionFilterOption{}
+	collect := func(query string, args []any, target *[]string) error {
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var value string
+			if err := rows.Scan(&value); err != nil {
+				return err
+			}
+			if strings.TrimSpace(value) != "" {
+				*target = append(*target, value)
+			}
+		}
+		return rows.Err()
+	}
+	base := `SELECT DISTINCT %s FROM ` + s.table("submission") + ` sub
+JOIN ` + s.table("submission_row") + ` r ON r.submission_id = sub.id
+JOIN ` + s.table("standard_model") + ` m ON m.id = r.standard_model_id
+WHERE sub.supplier_id = $1 AND %s <> '' ORDER BY 1`
+	if err := collect(fmt.Sprintf(base, "m.company", "m.company"), []any{supplierID}, &option.Companies); err != nil {
+		return nil, err
+	}
+	if err := collect(fmt.Sprintf(base, "m.model_type", "m.model_type"), []any{supplierID}, &option.ModelTypes); err != nil {
+		return nil, err
+	}
+	if err := collect(`SELECT DISTINCT region FROM `+s.table("submission")+`
+WHERE supplier_id = $1 AND COALESCE(region,'') <> '' ORDER BY 1`, []any{supplierID}, &option.Regions); err != nil {
+		return nil, err
+	}
+	if err := collect(`SELECT DISTINCT submitter_name FROM `+s.table("submission")+`
+WHERE supplier_id = $1 AND COALESCE(submitter_name,'') <> '' ORDER BY 1`, []any{supplierID}, &option.Submitters); err != nil {
+		return nil, err
+	}
+	return option, nil
 }

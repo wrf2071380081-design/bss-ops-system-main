@@ -47,6 +47,14 @@ func NewSupplierSubmissionService(store *supplypg.SubmissionStore, starter TestJ
 	return &SupplierSubmissionService{store: store, starter: starter, clock: clock}
 }
 
+// now 取当前时间（测试可注入）。
+func (s *SupplierSubmissionService) now() time.Time {
+	if s == nil || s.clock == nil {
+		return time.Now()
+	}
+	return s.clock()
+}
+
 // ---- DTO（字段名与前端 supplierSubmissions.types.ts 严格一致）----
 
 type submissionTestDTO struct {
@@ -226,6 +234,26 @@ func (h *supplierSubmissionHandler) modelOptions(c *gin.Context) {
 	response.Success(c, gin.H{"list": list, "total": total, "page": page, "size": size})
 }
 
+// filterOptions 返回列表筛选项（按该供应商已有数据收窄）。
+func (h *supplierSubmissionHandler) filterOptions(c *gin.Context) {
+	supplierID, ok := h.supplierID(c)
+	if !ok {
+		return
+	}
+	option, err := h.svc.store.FilterOptions(c.Request.Context(), supplierID)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	response.Success(c, gin.H{
+		"companies": option.Companies, "model_types": option.ModelTypes,
+		"regions": option.Regions, "submitters": option.Submitters,
+		"statuses": []string{submissionDraft, submissionPendingTest, submissionPending,
+			submissionApproved, submissionRejected, submissionWithdrawn},
+		"kinds": []string{"MODEL_NEW", "PRICE_CHANGE"},
+	})
+}
+
 func (h *supplierSubmissionHandler) create(c *gin.Context) {
 	supplierID, ok := h.supplierID(c)
 	if !ok {
@@ -368,28 +396,42 @@ func (h *supplierSubmissionHandler) transition(c *gin.Context, from []string, to
 // 发起测试时的两类凭据错误，供 handler 翻译成明确文案。
 var errCredentialMissing = errors.New("test credential missing")
 
+// 单行测试的结果动作。
+const (
+	actionStarted     = "STARTED"
+	actionSkipped     = "SKIPPED"
+	actionRetried     = "RETRIED"
+	actionNotSelected = "NOT_SELECTED"
+	actionFailed      = "FAILED"
+)
+
 // startRowTest 对单行发起一次测试并回写任务号（T-03）。
-// 返回 skipped=true 表示该行这一类已经测过，未重复建任务。
+// 返回 action 描述本次动作：发起 / 跳过（已有有效结果或正在跑）/ 重测 / 未勾选。
 func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID, submissionID, rowID int64,
-	platformCategory, idempotencyKey string) (string, bool, error) {
+	platformCategory, idempotencyKey string) (string, string, error) {
 	row, err := h.svc.store.TestRow(ctx, supplierID, submissionID, rowID)
 	if err != nil {
-		return "", false, err
+		return "", actionFailed, err
+	}
+	// 压力测试只测勾选行（原型「压力测试」列）。
+	if platformCategory == "stress" && !row.ParticipateTest {
+		return "", actionNotSelected, nil
 	}
 	if jobID, skip := shouldSkipRetest(row, platformCategory); skip {
-		return jobID, true, nil
+		return jobID, actionSkipped, nil
 	}
+	hadJob := (platformCategory == "stress" && row.StressJobID != nil) || (platformCategory != "stress" && row.TestJobID != nil)
 	apiKey := "demo-key"
 	if row.TestBaseURL != "demo" {
 		// 路线 A：库里存的就是原样 Key，直接取用。
 		if strings.TrimSpace(row.SealedAPIKey) == "" {
-			return "", false, errCredentialMissing
+			return "", actionFailed, errCredentialMissing
 		}
 		apiKey = row.SealedAPIKey
 	}
 	resourceID, err := h.svc.store.EnsureTestResource(ctx, row)
 	if err != nil {
-		return "", false, err
+		return "", actionFailed, err
 	}
 	params := map[string]any(nil)
 	if platformCategory == "stress" {
@@ -419,16 +461,19 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
-		return "", false, err
+		return "", actionFailed, err
 	}
 	localJobID, convErr := strconv.ParseInt(result.LocalJobID, 10, 64)
 	if convErr != nil {
-		return "", false, convErr
+		return "", actionFailed, convErr
 	}
 	if err := h.svc.store.AttachTestJob(ctx, rowID, localJobID, platformCategory); err != nil {
-		return "", false, err
+		return "", actionFailed, err
 	}
-	return result.LocalJobID, false, nil
+	if hadJob {
+		return result.LocalJobID, actionRetried, nil
+	}
+	return result.LocalJobID, actionStarted, nil
 }
 
 // shouldSkipRetest 判断该行这一类测试能否跳过。
@@ -540,7 +585,7 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
 		return
 	}
-	jobID, skipped, err := h.startRowTest(c.Request.Context(), supplierID, submissionID, rowID,
+	jobID, action, err := h.startRowTest(c.Request.Context(), supplierID, submissionID, rowID,
 		platformCategory, strings.TrimSpace(c.GetHeader("Idempotency-Key")))
 	if err != nil {
 		writeRowTestError(c, err)
@@ -548,12 +593,18 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 	}
 	response.Success(c, gin.H{
 		"job_id": jobID, "category": category, "status": "QUEUED",
-		"tested": false, "passed": false, "skipped": skipped,
+		"tested": false, "passed": false, "skipped": action == actionSkipped, "action": action,
 	})
 }
 
-// batchTests 一键测全部行（某一门类）。
-// 已完成的行跳过，返回发起/跳过/失败三项计数，便于前端提示"还有几行没测"。
+// batchTests 是「发起测试／异常重试」的唯一入口。
+//
+// 入参两种写法都支持：
+//   {"categories":["CONNECTIVITY","STRESS"]}  自动模式（前端单按钮用这个）
+//   {"category":"CONNECTIVITY"}               兼容旧调用
+//
+// 自动模式的语义：所有行做连通；压力只做勾选了 participate_test 的行。
+// 已有有效结果或正在跑的行跳过；配置变了或上次工具异常的行重测。
 func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 	supplierID, ok := h.supplierID(c)
 	if !ok {
@@ -565,13 +616,26 @@ func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Category string `json:"category"`
+		Category   string   `json:"category"`
+		Categories []string `json:"categories"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	category, platformCategory, ok := resolveTestCategory(body.Category)
-	if !ok {
-		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 CONNECTIVITY / STRESS", 400))
-		return
+	raw := body.Categories
+	if len(raw) == 0 && strings.TrimSpace(body.Category) != "" {
+		raw = []string{body.Category}
+	}
+	if len(raw) == 0 {
+		raw = []string{"CONNECTIVITY", "STRESS"}
+	}
+	type target struct{ label, platform string }
+	targets := make([]target, 0, len(raw))
+	for _, item := range raw {
+		label, platformCategory, valid := resolveTestCategory(item)
+		if !valid {
+			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 CONNECTIVITY / STRESS", 400))
+			return
+		}
+		targets = append(targets, target{label: label, platform: platformCategory})
 	}
 	if h.svc.starter == nil {
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
@@ -583,8 +647,11 @@ func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 		writeSubmissionError(c, err)
 		return
 	}
-	if header.Status != submissionDraft {
-		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "只有草稿可以发起测试", 409))
+	// 待补状态也允许继续测试；只有已接入/已通过的单子不再发起。
+	switch header.Status {
+	case submissionDraft, submissionRejected, submissionWithdrawn, submissionPendingTest:
+	default:
+		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "当前状态不能发起测试", 409))
 		return
 	}
 	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
@@ -592,32 +659,62 @@ func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 		writeSubmissionError(c, err)
 		return
 	}
-	started, skipped, failed := 0, 0, 0
+	type item struct {
+		RowID    string `json:"row_id"`
+		Category string `json:"category"`
+		Action   string `json:"action"`
+		JobID    string `json:"job_id,omitempty"`
+		Reason   string `json:"reason,omitempty"`
+	}
+	items := make([]item, 0, len(rows[submissionID])*len(targets))
+	counts := map[string]int{}
 	firstErr := error(nil)
 	baseKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-	for _, row := range rows[submissionID] {
-		jobID, wasSkipped, err := h.startRowTest(ctx, supplierID, submissionID, row.ID, platformCategory,
-			baseKey+"-"+strconv.FormatInt(row.ID, 10))
-		_ = jobID
-		switch {
-		case err != nil:
-			failed++
-			if firstErr == nil {
-				firstErr = err
+	for _, t := range targets {
+		for _, row := range rows[submissionID] {
+			// 幂等键带纳秒后缀：重测必须新建平台任务，不能被上次响应回放。
+			key := baseKey + "-" + strconv.FormatInt(row.ID, 10) + "-" + t.platform + "-" + strconv.FormatInt(h.svc.now().UnixNano(), 10)
+			jobID, action, err := h.startRowTest(ctx, supplierID, submissionID, row.ID, t.platform, key)
+			entry := item{RowID: strconv.FormatInt(row.ID, 10), Category: t.label, Action: action, JobID: jobID}
+			if err != nil {
+				entry.Action = actionFailed
+				entry.Reason = testFailureReason(err)
+				if firstErr == nil {
+					firstErr = err
+				}
 			}
-		case wasSkipped:
-			skipped++
-		default:
-			started++
+			counts[entry.Action]++
+			items = append(items, entry)
 		}
 	}
-	result := gin.H{"category": category, "started": started, "skipped": skipped, "failed": failed}
-	if failed > 0 && started == 0 && skipped == 0 {
-		// 一发都没成功时把错误原因带回，避免前端只看到 0/0/0。
+	result := gin.H{
+		"categories": raw, "items": items,
+		"started": counts[actionStarted], "skipped": counts[actionSkipped],
+		"retried": counts[actionRetried], "not_selected": counts[actionNotSelected],
+		"failed": counts[actionFailed],
+	}
+	if counts[actionFailed] > 0 && len(items) == counts[actionFailed] {
+		// 全部失败时把原因带回，避免前端只看到 0。
 		writeRowTestError(c, firstErr)
 		return
 	}
 	response.Success(c, result)
+}
+
+// testFailureReason 给逐项明细用的简短原因（前端直接展示）。
+func testFailureReason(err error) string {
+	switch {
+	case errors.Is(err, errCredentialMissing):
+		return "未填写测试 Key"
+	case errors.Is(err, tpdomain.ErrNotConfigured):
+		return "测试平台未接入"
+	default:
+		var apiErr *tpinfra.APIError
+		if errors.As(err, &apiErr) {
+			return apiErr.Error()
+		}
+		return "发起失败"
+	}
 }
 
 // evaluateSubmitGate 判断「是否允许提交」以及「提交后是全通过还是待补」。
@@ -860,6 +957,10 @@ func registerSupplierSubmissionRoutes(protected *gin.RouterGroup, deps Deps, ide
 	group.GET("", handler.list)
 	// 静态段先于参数段注册，避免 /model-options 被 /:id 吞掉。
 	group.GET("/model-options", handler.modelOptions)
+	// 导入相关是静态段，必须排在 /:id 之前，否则会被当成 id。
+	group.GET("/filter-options", handler.filterOptions)
+	group.GET("/import/template", handler.importTemplate)
+	group.POST("/import/parse", handler.importParse)
 	group.GET("/:id", handler.detail)
 	group.GET("/:id/rows/:rowId/test", handler.rowTest)
 	group.POST("/:id/rows/:rowId/test", idempotent, handler.rowTest)
