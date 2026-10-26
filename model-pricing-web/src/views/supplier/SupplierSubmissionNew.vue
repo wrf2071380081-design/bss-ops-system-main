@@ -103,6 +103,11 @@ function validateRows(): string {
   }
   return "";
 }
+// 打开下拉时才加载：避免页面初次加载遇到后端未就绪就永久空白。
+function ensureModelOptions(visible: boolean) {
+  if (visible && !modelOptions.value.length && !modelLoading.value) void loadModelOptions();
+}
+function searchModelOptions(keyword: string) { modelKeyword.value = keyword; void loadModelOptions(); }
 async function loadModelOptions() {
   optionRequest?.abort();
   const request = optionRequest = new AbortController();
@@ -112,7 +117,10 @@ async function loadModelOptions() {
     const result = await supplierSubmissionsApi.modelOptions(modelKeyword.value, request.signal);
     if (active && !request.signal.aborted) modelOptions.value = result;
   } catch (value) {
-    if (active && !request.signal.aborted) { modelOptions.value = []; modelError.value = value instanceof Error ? value.message : "标准模型目录暂时无法加载。"; }
+    if (active && !request.signal.aborted) {
+      modelOptions.value = [];
+      modelError.value = `${value instanceof Error ? value.message : "标准模型目录加载失败"}（请确认后端已启动，展开下拉可重试）`;
+    }
   } finally { if (active && !request.signal.aborted) modelLoading.value = false; }
 }
 async function loadDraft(id: string) {
@@ -368,11 +376,7 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
   <section v-else class="panel submission-panel" v-loading="loadingDraft">
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
     <el-alert title="一份申报可包含多个模型。草稿阶段只保存申报行和测试记录；提交后由办理流程创建正式资源。" type="info" :closable="false" />
-    <div class="options-search">
-      <el-input v-model="modelKeyword" clearable placeholder="搜索标准模型名称 / 官方 ID" @keyup.enter="loadModelOptions" />
-      <el-button :loading="modelLoading" @click="loadModelOptions">查询标准模型</el-button>
-      <span v-if="modelError" class="inline-error">{{ modelError }}</span>
-    </div>
+    <el-alert v-if="modelError" :title="modelError" type="error" :closable="false" show-icon />
 
     <div class="batch-actions">
       <el-button size="small" type="primary" :loading="batchBusy === 'ALL'" :disabled="locked || !rows.length" @click="runBatch">发起测试／异常重试</el-button>
@@ -391,7 +395,7 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
       </header>
       <div class="row-grid">
         <el-form-item label="接口模型 ID *"><el-input v-model="row.interface_model_id" placeholder="供应商侧接口模型 ID" :disabled="locked" /></el-form-item>
-        <el-form-item label="对应标准模型 *"><el-select v-model="row.standard_model_id" filterable clearable :loading="modelLoading" placeholder="选择标准模型" :disabled="locked" @change="selectStandardModel(row, $event)"><el-option v-for="item in modelOptions" :key="item.id" :label="`${item.name} · ${item.official_id}`" :value="item.id" /></el-select><small v-if="row.standard_model_name" class="muted">{{ row.standard_model_name }} · {{ row.official_id }}</small></el-form-item>
+        <el-form-item label="对应标准模型 *"><el-select v-model="row.standard_model_id" filterable clearable remote :remote-method="searchModelOptions" :loading="modelLoading" placeholder="选择标准模型" :disabled="locked" @change="selectStandardModel(row, $event)" @visible-change="ensureModelOptions"><el-option v-for="item in modelOptions" :key="item.id" :label="`${item.name} · ${item.official_id}`" :value="item.id" /></el-select><small v-if="row.standard_model_name" class="muted">{{ row.standard_model_name }} · {{ row.official_id }}</small></el-form-item>
         <el-form-item label="采购系数 *"><el-input v-model="row.coefficient" inputmode="decimal" placeholder="0.6800" :disabled="locked" /></el-form-item>
         <el-form-item label="压力测试"><el-checkbox v-model="row.participate_test" :disabled="locked">该模型参与压力测试</el-checkbox></el-form-item>
         <el-form-item label="测试服务 URL *"><el-input v-model="row.test_base_url" placeholder="https://api.example.com" :disabled="locked" /></el-form-item>
