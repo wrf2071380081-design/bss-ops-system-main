@@ -18,7 +18,9 @@ import (
 
 // 申报单状态（Q-B 最小集）。前端按这些值推导 permissions 与列表筛选。
 const (
-	submissionDraft       = "DRAFT"
+	submissionDraft        = "DRAFT"
+	// submissionPendingTest 表示已提交但仍有模型未通过连通测试（原型「等待测试补齐」）。
+	submissionPendingTest  = "PENDING_TEST"
 	submissionPending     = "PENDING_APPROVAL"
 	submissionApproved    = "APPROVED"
 	submissionRejected    = "REJECTED"
@@ -68,6 +70,10 @@ type submissionRowDTO struct {
 	OfficialID         string              `json:"official_id"`
 	Coefficient        string              `json:"coefficient"`
 	TestBaseURL        string              `json:"test_base_url"`
+	// ParticipateTest 是压力测试勾选（原型「压力测试」列）。
+	ParticipateTest    bool                `json:"participate_test"`
+	// SupplementRequired 表示该行已提交但仍未通过（原型「待补」）。
+	SupplementRequired bool                `json:"supplement_required"`
 	RowStatus          string              `json:"row_status"`
 	ConnectivityTested bool                `json:"connectivity_tested"`
 	ConnectivityPassed bool                `json:"connectivity_passed"`
@@ -84,7 +90,14 @@ type submissionPermissionsDTO struct {
 }
 
 type submissionDTO struct {
-	ID          string                   `json:"id"`
+	ID            string `json:"id"`
+	SubmissionNo  string `json:"submission_no"`
+	SubmitterName string `json:"submitter_name"`
+	Region        string `json:"region"`
+	RowCount      int    `json:"row_count"`
+	ModelNames    []string `json:"model_names"`
+	// PendingRowCount 是「提交后仍未通过」的行数，前端用于显示"待补 N 个"。
+	PendingRowCount int `json:"pending_row_count"`
 	Kind        string                   `json:"kind"`
 	Status      string                   `json:"status"`
 	Revision    string                   `json:"revision"`
@@ -98,6 +111,7 @@ type submissionDTO struct {
 
 type submissionWriteRow struct {
 	ID              string `json:"id"`
+	ParticipateTest bool   `json:"participate_test"`
 	InterfaceModelID string `json:"interface_model_id"`
 	StandardModelID  string `json:"standard_model_id"`
 	Coefficient      string `json:"coefficient"`
@@ -140,7 +154,12 @@ func (h *supplierSubmissionHandler) list(c *gin.Context) {
 		response.Error(c, apperr.ErrInvalidParams)
 		return
 	}
-	headers, total, err := h.svc.store.Page(c.Request.Context(), supplierID, c.Query("status"), c.Query("kind"), page, size)
+	filter := supplypg.SubmissionFilter{
+		Status: c.Query("status"), Kind: c.Query("kind"),
+		Company: c.Query("company"), ModelType: c.Query("model_type"),
+		Region: c.Query("region"), Submitter: c.Query("submitter"),
+	}
+	headers, total, err := h.svc.store.Page(c.Request.Context(), supplierID, filter, page, size)
 	if err != nil {
 		writeSubmissionError(c, err)
 		return
@@ -235,7 +254,10 @@ func (h *supplierSubmissionHandler) create(c *gin.Context) {
 		writeSubmissionError(c, err)
 		return
 	}
-	response.Success(c, gin.H{"id": strconv.FormatInt(id, 10), "revision": "1", "status": submissionDraft})
+	// 返回完整 DTO：前端保存后的 normalizeSaved 直接读 dto.rows，只回 id 会让页面崩。
+	if !h.respondWithDTO(c, supplierID, id) {
+		return
+	}
 }
 
 func (h *supplierSubmissionHandler) update(c *gin.Context) {
@@ -262,12 +284,13 @@ func (h *supplierSubmissionHandler) update(c *gin.Context) {
 	if !ok {
 		return
 	}
-	revision, err := h.svc.store.UpdateDraft(c.Request.Context(), supplierID, id, expected, strings.TrimSpace(body.Reason), rows)
-	if err != nil {
+	if _, err := h.svc.store.UpdateDraft(c.Request.Context(), supplierID, id, expected, strings.TrimSpace(body.Reason), rows); err != nil {
 		writeSubmissionError(c, err)
 		return
 	}
-	response.Success(c, gin.H{"id": strconv.FormatInt(id, 10), "revision": strconv.FormatInt(revision, 10), "status": submissionDraft})
+	if !h.respondWithDTO(c, supplierID, id) {
+		return
+	}
 }
 
 func (h *supplierSubmissionHandler) submit(c *gin.Context) {
@@ -280,33 +303,34 @@ func (h *supplierSubmissionHandler) submit(c *gin.Context) {
 		response.Error(c, apperr.ErrInvalidParams)
 		return
 	}
-	// 后端门禁（T-06）：不信任前端禁用态，直接调接口也必须被拦。
-	switch err := h.checkSubmitGate(c.Request.Context(), submissionID); {
+	ctx := c.Request.Context()
+	// 折中口径：至少一行「连通通过」即可提交；未通过的行保留为待补。
+	allPassed, err := h.evaluateSubmitGate(ctx, submissionID)
+	switch {
 	case errors.Is(err, errGateNoRows):
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "至少需要一行模型", 400))
 		return
-	case errors.Is(err, errGateConnectivityMissing):
-		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "还有模型未完成连通测试，不能提交", 409))
-		return
-	case errors.Is(err, errGateStressMissing):
-		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "至少需要一行完成压力测试，不能提交", 409))
-		return
-	case errors.Is(err, errGateReportStale):
-		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "测试目标已变化（地址/Key/模型），请重新测试后再提交", 409))
+	case errors.Is(err, errGateNoPassedRow):
+		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "至少需要一行连通测试通过（结果达标且未失效）", 409))
 		return
 	case err != nil:
 		writeSubmissionError(c, err)
 		return
 	}
-	_ = supplierID
-	h.transition(c, []string{submissionDraft, submissionRejected}, submissionPending, true)
+	target := submissionPendingTest
+	if allPassed {
+		target = submissionPending
+	}
+	submitter, _ := h.svc.store.SubmitterName(ctx, supplierID)
+	h.transition(c, []string{submissionDraft, submissionRejected, submissionWithdrawn, submissionPendingTest},
+		target, true, submitter)
 }
 
 func (h *supplierSubmissionHandler) withdraw(c *gin.Context) {
-	h.transition(c, []string{submissionPending}, submissionWithdrawn, false)
+	h.transition(c, []string{submissionPending, submissionPendingTest}, submissionWithdrawn, false, "")
 }
 
-func (h *supplierSubmissionHandler) transition(c *gin.Context, from []string, to string, markSubmitted bool) {
+func (h *supplierSubmissionHandler) transition(c *gin.Context, from []string, to string, markSubmitted bool, submitterName string) {
 	supplierID, ok := h.supplierID(c)
 	if !ok {
 		return
@@ -325,7 +349,11 @@ func (h *supplierSubmissionHandler) transition(c *gin.Context, from []string, to
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "expected_revision 必填", 400))
 		return
 	}
-	revision, err := h.svc.store.Transition(c.Request.Context(), supplierID, id, expected, from, to, markSubmitted)
+	accountID := int64(0)
+	if op := middleware.OperatorFrom(c); op != nil {
+		accountID = op.AccountID
+	}
+	revision, err := h.svc.store.Transition(c.Request.Context(), supplierID, id, expected, from, to, markSubmitted, submitterName, accountID)
 	if err != nil {
 		writeSubmissionError(c, err)
 		return
@@ -532,37 +560,38 @@ func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 	response.Success(c, result)
 }
 
-// checkSubmitGate 是提交门禁的后端校验（T-06）：
-// 每一行都要测过连通，且至少一行测过压力。前端已拦，这里防直接调接口绕过。
-func (h *supplierSubmissionHandler) checkSubmitGate(ctx context.Context, submissionID int64) error {
+// evaluateSubmitGate 判断「是否允许提交」以及「提交后是全通过还是待补」。
+//
+// 折中口径（2026-10-26 与原型对齐）：
+//   - 至少一行连通 verdict=pass 且未失效 → 允许提交
+//   - 全部行都满足 → PENDING_APPROVAL；否则 → PENDING_TEST（等待测试补齐）
+//
+// 不再要求任何压力测试结果；压力是勾选项，只影响测试范围。
+func (h *supplierSubmissionHandler) evaluateSubmitGate(ctx context.Context, submissionID int64) (bool, error) {
 	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
 	if err != nil {
-		return err
+		return false, err
 	}
 	list := rows[submissionID]
 	if len(list) == 0 {
-		return errGateNoRows
+		return false, errGateNoRows
 	}
-	anyStress := false
+	passedRows := 0
 	for _, row := range list {
-		if row.ConnectivityStatus == nil || !isTerminalStatus(*row.ConnectivityStatus) {
-			return errGateConnectivityMissing
-		}
-		if row.ConnectivityStale {
-			return errGateReportStale
-		}
-		if row.StressStatus != nil && isTerminalStatus(*row.StressStatus) && !row.StressStale {
-			anyStress = true
+		if row.ConnectivityStatus != nil && isTerminalStatus(*row.ConnectivityStatus) &&
+			verdictOK(row.ConnectivityVerdict) && !row.ConnectivityStale {
+			passedRows++
 		}
 	}
-	if !anyStress {
-		return errGateStressMissing
+	if passedRows == 0 {
+		return false, errGateNoPassedRow
 	}
-	return nil
+	return passedRows == len(list), nil
 }
 
 var (
 	errGateNoRows               = errors.New("submission has no rows")
+	errGateNoPassedRow          = errors.New("no row has a passed connectivity test")
 	errGateConnectivityMissing  = errors.New("some rows have no connectivity test")
 	errGateStressMissing        = errors.New("no row has stress test")
 	errGateReportStale          = errors.New("test report is stale after target change")
@@ -602,27 +631,50 @@ func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, 
 		rows = append(rows, supplypg.SubmissionRowInput{
 			ID: rowID, StandardModelID: modelID, SupplierModelName: strings.TrimSpace(row.InterfaceModelID),
 			Coefficient: strings.TrimSpace(row.Coefficient), TestBaseURL: strings.TrimSpace(row.TestBaseURL),
-			SealedAPIKey: storedKey,
+			SealedAPIKey: storedKey, ParticipateTest: row.ParticipateTest,
 		})
 	}
 	return rows, true
 }
 
+// respondWithDTO 读出完整申报并回包（创建/保存草稿后前端需要 rows 才能继续渲染）。
+func (h *supplierSubmissionHandler) respondWithDTO(c *gin.Context, supplierID, id int64) bool {
+	ctx := c.Request.Context()
+	header, err := h.svc.store.Get(ctx, supplierID, id)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return false
+	}
+	rows, err := h.svc.store.Rows(ctx, []int64{id})
+	if err != nil {
+		writeSubmissionError(c, err)
+		return false
+	}
+	response.Success(c, buildSubmissionDTO(*header, rows[id]))
+	return true
+}
+
 // buildSubmissionDTO 组装前端契约；顺带推导测试状态与权限。
 func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.SubmissionRowRecord) submissionDTO {
+	submitted := header.Status == submissionPendingTest || header.Status == submissionPending || header.Status == submissionApproved
 	dto := submissionDTO{
-		ID: strconv.FormatInt(header.ID, 10), Kind: header.Kind, Status: header.Status,
+		ID: strconv.FormatInt(header.ID, 10), SubmissionNo: header.SubmissionNo,
+		SubmitterName: header.SubmitterName, Region: header.Region,
+		Kind: header.Kind, Status: header.Status,
 		Revision: strconv.FormatInt(header.Revision, 10), Reason: header.Reason,
 		Rows: make([]submissionRowDTO, 0, len(rows)), Permissions: permissionsFor(header.Status),
 		CreatedAt: header.CreatedAt, UpdatedAt: header.UpdatedAt, SubmittedAt: header.SubmittedAt,
+		ModelNames: make([]string, 0, len(rows)),
 	}
+	dto.RowCount = len(rows)
 	for _, row := range rows {
 		item := submissionRowDTO{
 			ID: strconv.FormatInt(row.ID, 10), InterfaceModelID: row.SupplierModelName,
 			StandardModelID: strconv.FormatInt(row.StandardModelID, 10), StandardModelName: row.StandardModelName,
 			OfficialID: row.OfficialID, Coefficient: row.Coefficient, TestBaseURL: row.TestBaseURL,
-			RowStatus: row.RowStatus,
+			ParticipateTest: row.ParticipateTest,
 		}
+		dto.ModelNames = append(dto.ModelNames, row.StandardModelName)
 		if row.ConnectivityStatus != nil {
 			tested := isTerminalStatus(*row.ConnectivityStatus)
 			passed := verdictOK(row.ConnectivityVerdict)
@@ -641,9 +693,45 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			}
 			item.StressTested, item.StressPassed = tested && !row.StressStale, passed && !row.StressStale
 		}
+		item.RowStatus = deriveRowStatus(row, submitted)
+		item.SupplementRequired = submitted && item.RowStatus != rowPassed
+		if item.SupplementRequired {
+			dto.PendingRowCount++
+		}
 		dto.Rows = append(dto.Rows, item)
 	}
 	return dto
+}
+
+// 行状态（派生，不落库）：异步回调会改变测试结果，落库会过期。
+const (
+	rowUntested   = "UNTESTED"
+	rowRunning    = "RUNNING"
+	rowStale      = "STALE"
+	rowPassed     = "PASSED"
+	rowFailed     = "FAILED"
+	rowSupplement = "SUPPLEMENT"
+)
+
+func deriveRowStatus(row supplypg.SubmissionRowRecord, submitted bool) string {
+	switch {
+	case row.ConnectivityStale:
+		return rowStale
+	case row.ConnectivityStatus == nil:
+		if submitted {
+			return rowSupplement
+		}
+		return rowUntested
+	case !isTerminalStatus(*row.ConnectivityStatus):
+		return rowRunning
+	case verdictOK(row.ConnectivityVerdict):
+		return rowPassed
+	default:
+		if submitted {
+			return rowSupplement
+		}
+		return rowFailed
+	}
 }
 
 // permissionsFor 是申报单是否可编辑/提交/撤回的唯一判定点。
@@ -653,8 +741,11 @@ func permissionsFor(status string) submissionPermissionsDTO {
 		return submissionPermissionsDTO{CanEdit: true, CanSubmit: true, CanWithdraw: true}
 	case submissionPending:
 		return submissionPermissionsDTO{CanWithdraw: true}
-	case submissionRejected:
+	case submissionRejected, submissionWithdrawn:
 		return submissionPermissionsDTO{CanEdit: true, CanSubmit: true}
+	case submissionPendingTest:
+		// 等待测试补齐：可以继续测、可以再提交、也可以撤回。
+		return submissionPermissionsDTO{CanEdit: true, CanSubmit: true, CanWithdraw: true}
 	default:
 		return submissionPermissionsDTO{}
 	}

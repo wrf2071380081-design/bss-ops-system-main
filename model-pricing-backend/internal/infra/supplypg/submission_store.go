@@ -22,7 +22,9 @@ type SubmissionStore struct {
 
 // SubmissionHeader 是申报单头。
 type SubmissionHeader struct {
-	ID          int64
+	ID           int64
+	SubmissionNo string
+	SubmitterName string
 	SupplierID  int64
 	Kind        string
 	Region      string
@@ -44,6 +46,10 @@ type SubmissionRowRecord struct {
 	Coefficient       string
 	TestBaseURL       string
 	RowStatus         string
+	// ParticipateTest 是压力测试勾选（原型「压力测试」列）。
+	ParticipateTest bool
+	Company         string
+	ModelType       string
 	// 连通（baseline）与压力（stress）分开存放，互不覆盖。
 	TestFingerprint     string
 	ConnectivityStatus  *string
@@ -67,6 +73,8 @@ type SubmissionRowInput struct {
 	Coefficient       string
 	TestBaseURL       string
 	SealedAPIKey      string
+	// ParticipateTest 表示该行参与压力测试。
+	ParticipateTest bool
 }
 
 // SubmissionModelOption 是申报可选标准模型。
@@ -87,17 +95,39 @@ func NewSubmissionStore(db *sql.DB, schema string) (*SubmissionStore, error) {
 
 func (s *SubmissionStore) table(name string) string { return s.schema + "." + name }
 
+// SubmissionFilter 是申报列表的筛选条件（对应原型 6 维筛选）。
+type SubmissionFilter struct {
+	Status    string
+	Kind      string
+	Company   string
+	ModelType string
+	Region    string
+	Submitter string
+}
+
 // Page 按供应商分页列出申报单（新的在前）。
-func (s *SubmissionStore) Page(ctx context.Context, supplierID int64, status, kind string, page, size int) ([]SubmissionHeader, int64, error) {
+func (s *SubmissionStore) Page(ctx context.Context, supplierID int64, f SubmissionFilter, page, size int) ([]SubmissionHeader, int64, error) {
 	where := []string{"supplier_id = $1"}
 	args := []any{supplierID}
-	if strings.TrimSpace(status) != "" {
-		args = append(args, strings.TrimSpace(status))
-		where = append(where, "status = $"+itoa(len(args)))
+	add := func(column, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		args = append(args, strings.TrimSpace(value))
+		where = append(where, column+" = $"+itoa(len(args)))
 	}
-	if strings.TrimSpace(kind) != "" {
-		args = append(args, strings.TrimSpace(kind))
-		where = append(where, "kind = $"+itoa(len(args)))
+	add("status", f.Status)
+	add("kind", f.Kind)
+	add("region", f.Region)
+	add("submitter_name", f.Submitter)
+	// 模型公司/类型挂在行上，用 EXISTS 过滤，避免 JOIN 造成重复行。
+	if v := strings.TrimSpace(f.Company); v != "" {
+		args = append(args, v)
+		where = append(where, `EXISTS (SELECT 1 FROM `+s.table("submission_row")+` r JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id WHERE r.submission_id = `+s.table("submission")+`.id AND m.company = $`+itoa(len(args))+`)`)
+	}
+	if v := strings.TrimSpace(f.ModelType); v != "" {
+		args = append(args, v)
+		where = append(where, `EXISTS (SELECT 1 FROM `+s.table("submission_row")+` r JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id WHERE r.submission_id = `+s.table("submission")+`.id AND m.model_type = $`+itoa(len(args))+`)`)
 	}
 	clause := strings.Join(where, " AND ")
 
@@ -105,7 +135,7 @@ func (s *SubmissionStore) Page(ctx context.Context, supplierID int64, status, ki
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM `+s.table("submission")+` WHERE `+clause, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	query := `SELECT id, supplier_id, kind, region, status, COALESCE(reason,''), revision, created_at, updated_at, submitted_at
+	query := `SELECT id, COALESCE(submission_no,''), COALESCE(submitter_name,''), supplier_id, kind, region, status, COALESCE(reason,''), revision, created_at, updated_at, submitted_at
 FROM ` + s.table("submission") + ` WHERE ` + clause + `
 ORDER BY created_at DESC, id DESC LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 	args = append(args, size, (page-1)*size)
@@ -118,7 +148,7 @@ ORDER BY created_at DESC, id DESC LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + i
 	for rows.Next() {
 		var item SubmissionHeader
 		var submitted sql.NullTime
-		if err := rows.Scan(&item.ID, &item.SupplierID, &item.Kind, &item.Region, &item.Status, &item.Reason,
+		if err := rows.Scan(&item.ID, &item.SubmissionNo, &item.SubmitterName, &item.SupplierID, &item.Kind, &item.Region, &item.Status, &item.Reason,
 			&item.Revision, &item.CreatedAt, &item.UpdatedAt, &submitted); err != nil {
 			return nil, 0, err
 		}
@@ -134,9 +164,9 @@ ORDER BY created_at DESC, id DESC LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + i
 func (s *SubmissionStore) Get(ctx context.Context, supplierID, id int64) (*SubmissionHeader, error) {
 	var item SubmissionHeader
 	var submitted sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT id, supplier_id, kind, region, status, COALESCE(reason,''), revision,
+	err := s.db.QueryRowContext(ctx, `SELECT id, COALESCE(submission_no,''), COALESCE(submitter_name,''), supplier_id, kind, region, status, COALESCE(reason,''), revision,
 created_at, updated_at, submitted_at FROM `+s.table("submission")+` WHERE id=$1 AND supplier_id=$2`, id, supplierID).
-		Scan(&item.ID, &item.SupplierID, &item.Kind, &item.Region, &item.Status, &item.Reason,
+		Scan(&item.ID, &item.SubmissionNo, &item.SubmitterName, &item.SupplierID, &item.Kind, &item.Region, &item.Status, &item.Reason,
 			&item.Revision, &item.CreatedAt, &item.UpdatedAt, &submitted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
@@ -164,7 +194,8 @@ func (s *SubmissionStore) Rows(ctx context.Context, submissionIDs []int64) (map[
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT r.submission_id, r.id, r.standard_model_id, m.name, COALESCE(m.official_id,''), r.supplier_model_name,
-       r.coefficient::text, COALESCE(r.test_base_url,''), r.row_status,
+       r.coefficient::text, COALESCE(r.test_base_url,''), r.row_status, r.participate_test,
+       COALESCE(m.company,''), COALESCE(m.model_type,''),
        r.test_fingerprint, cj.status, crep.verdict, crep.connection_ms::text, cj.target_fingerprint,
        sj.status, srep.verdict, srep.rps::text, srep.tps::text, sj.target_fingerprint
 FROM `+s.table("submission_row")+` r
@@ -192,6 +223,7 @@ ORDER BY r.submission_id, r.id`, args...)
 		var rowFP, connFP, stressFP sql.NullString
 		if err := rows.Scan(&submissionID, &item.ID, &item.StandardModelID, &item.StandardModelName, &item.OfficialID,
 			&item.SupplierModelName, &item.Coefficient, &item.TestBaseURL, &item.RowStatus,
+			&item.ParticipateTest, &item.Company, &item.ModelType,
 			&rowFP, &connStatus, &connVerdict, &conn, &connFP,
 			&stressStatus, &stressVerdict, &rps, &tps, &stressFP); err != nil {
 			return nil, err
@@ -237,6 +269,10 @@ VALUES ($1,$2,$3,'DRAFT',$4,1,now(),now()) RETURNING id`, supplierID, kind, regi
 	return id, nil
 }
 
+// editableStatuses 是允许直接编辑的申报状态。
+// 含 REJECTED / WITHDRAWN / PENDING_TEST：原型「修改重提」就是原地编辑再提交，不另开接口。
+var editableStatuses = []string{"DRAFT", "REJECTED", "WITHDRAWN", "PENDING_TEST"}
+
 // UpdateDraft 保存草稿（乐观锁）。返回新 revision；冲突返回 supply.ErrRevisionConflict。
 func (s *SubmissionStore) UpdateDraft(ctx context.Context, supplierID, id, expectedRevision int64, reason string, rows []SubmissionRowInput) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -247,8 +283,8 @@ func (s *SubmissionStore) UpdateDraft(ctx context.Context, supplierID, id, expec
 	var revision int64
 	err = tx.QueryRowContext(ctx, `UPDATE `+s.table("submission")+`
 SET reason=$1, revision=revision+1, updated_at=now()
-WHERE id=$2 AND supplier_id=$3 AND status='DRAFT' AND revision=$4 RETURNING revision`,
-		reason, id, supplierID, expectedRevision).Scan(&revision)
+WHERE id=$2 AND supplier_id=$3 AND status = ANY($5) AND revision=$4 RETURNING revision`,
+		reason, id, supplierID, expectedRevision, editableStatuses).Scan(&revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, supply.ErrRevisionConflict
 	}
@@ -286,7 +322,7 @@ WHERE r.submission_id = $1 AND j.status IN ('QUEUED','RUNNING')`, submissionID).
 }
 
 // Transition 做状态流转（乐观锁）。fromStatuses 为空表示不限来源状态。
-func (s *SubmissionStore) Transition(ctx context.Context, supplierID, id, expectedRevision int64, fromStatuses []string, to string, markSubmitted bool) (int64, error) {
+func (s *SubmissionStore) Transition(ctx context.Context, supplierID, id, expectedRevision int64, fromStatuses []string, to string, markSubmitted bool, submitterName string, submitterAccountID int64) (int64, error) {
 	args := []any{to, id, supplierID, expectedRevision}
 	clause := "id=$2 AND supplier_id=$3 AND revision=$4"
 	if to == "WITHDRAWN" {
@@ -309,7 +345,8 @@ func (s *SubmissionStore) Transition(ctx context.Context, supplierID, id, expect
 	var revision int64
 	query := `UPDATE ` + s.table("submission") + ` SET status=$1, revision=revision+1, updated_at=now()`
 	if markSubmitted {
-		query += `, submitted_at=now()`
+		query += `, submitted_at=now(), submitter_name=NULLIF($` + itoa(len(args)+1) + `,''), submitter_account_id=NULLIF($` + itoa(len(args)+2) + `,0)`
+		args = append(args, strings.TrimSpace(submitterName), submitterAccountID)
 	}
 	query += ` WHERE ` + clause + ` RETURNING revision`
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(&revision)
@@ -385,10 +422,10 @@ WHERE id=$1 AND submission_id=$2`, row.ID, submissionID).Scan(&existingKey); err
 			result, err := tx.ExecContext(ctx, `UPDATE `+table+`
 SET standard_model_id=$3, supplier_model_name=$4, coefficient=$5::numeric,
     test_base_url=NULLIF($6,''), test_api_key_enc=COALESCE(NULLIF($7,''), test_api_key_enc),
-    test_fingerprint=NULLIF($8,'')
+    test_fingerprint=NULLIF($8,''), participate_test=$9
 WHERE id=$1 AND submission_id=$2`,
 				row.ID, submissionID, row.StandardModelID, row.SupplierModelName,
-				row.Coefficient, row.TestBaseURL, row.SealedAPIKey, fingerprint)
+				row.Coefficient, row.TestBaseURL, row.SealedAPIKey, fingerprint, row.ParticipateTest)
 			if err != nil {
 				return err
 			}
@@ -403,9 +440,10 @@ WHERE id=$1 AND submission_id=$2`,
 		var newID int64
 		if err := tx.QueryRowContext(ctx, `INSERT INTO `+table+`
 (submission_id, standard_model_id, supplier_model_name, coefficient, test_base_url, test_api_key_enc, participate_test, row_status, test_fingerprint)
-VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),false,'PENDING',$7) RETURNING id`,
+VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),$8,'PENDING',$7) RETURNING id`,
 			submissionID, row.StandardModelID, row.SupplierModelName, row.Coefficient, row.TestBaseURL, row.SealedAPIKey,
-			tpdomain.TargetFingerprint(row.StandardModelID, row.SupplierModelName, row.TestBaseURL, row.SealedAPIKey)).Scan(&newID); err != nil {
+			tpdomain.TargetFingerprint(row.StandardModelID, row.SupplierModelName, row.TestBaseURL, row.SealedAPIKey),
+			row.ParticipateTest).Scan(&newID); err != nil {
 			return err
 		}
 		kept = append(kept, newID)
@@ -428,8 +466,9 @@ func insertRows(ctx context.Context, tx *sql.Tx, table string, submissionID int6
 	for _, row := range rows {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO `+table+`
 (submission_id, standard_model_id, supplier_model_name, coefficient, test_base_url, test_api_key_enc, participate_test, row_status)
-VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),false,'PENDING')`,
-			submissionID, row.StandardModelID, row.SupplierModelName, row.Coefficient, row.TestBaseURL, row.SealedAPIKey); err != nil {
+VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),$7,'PENDING')`,
+			submissionID, row.StandardModelID, row.SupplierModelName, row.Coefficient, row.TestBaseURL, row.SealedAPIKey,
+			row.ParticipateTest); err != nil {
 			return err
 		}
 	}
@@ -550,11 +589,14 @@ VALUES ($1,$2,$3,$4,$5,$6::numeric,'PENDING_TEST') RETURNING id`,
 // category 为 baseline 写 test_job_id，stress 写 stress_job_id——两个槽位互不覆盖。
 func (s *SubmissionStore) AttachTestJob(ctx context.Context, rowID, jobID int64, category string) error {
 	column := "test_job_id"
+	// 只有压力测试才把 participate_test 置 true：它表示「压力测试勾选」，
+	// 由连通测试顺手打开会让勾选语义失效（旧实现即如此）。
 	if category == "stress" {
 		column = "stress_job_id"
 	}
+	flag := column == "stress_job_id"
 	_, err := s.db.ExecContext(ctx, `UPDATE `+s.table("submission_row")+`
-SET `+column+`=$2, participate_test=true WHERE id=$1`, rowID, jobID)
+SET `+column+`=$2, participate_test=CASE WHEN $3 THEN true ELSE participate_test END WHERE id=$1`, rowID, jobID, flag)
 	return err
 }
 
@@ -575,4 +617,17 @@ func itoa64(n int64) string {
 		return "-" + string(digits)
 	}
 	return string(digits)
+}
+
+// SubmitterName 解析提交人显示名：优先联系人，退到供应商名称。
+// 账户体系与主体未打通（本地 supplier.contact 为空），这里只做尽力而为的回退。
+func (s *SubmissionStore) SubmitterName(ctx context.Context, supplierID int64) (string, error) {
+	var name string
+	err := s.db.QueryRowContext(ctx, `
+SELECT COALESCE(NULLIF(sp.contact,''), NULLIF(sp.name,''), '')
+FROM `+s.table("supplier")+` sp WHERE sp.id = $1`, supplierID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return name, err
 }
