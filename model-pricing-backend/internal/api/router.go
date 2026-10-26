@@ -548,6 +548,11 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 		protected.GET("/approvals/submissions", sch.ListApprovals)
 		protected.GET("/approvals/history", sch.ListApprovalHistory)
 		protected.GET("/supply/suppliers", sch.ListSuppliers)
+		// 驳回：唯一保留的内部写状态入口（approve/simulate 已下线）。
+		protected.POST("/approvals/submissions/:id/reject",
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			sch.Reject,
+		)
 	}
 
 	// 客户管理合并页：客户列表 / 客户报价 / 特价审批记录（只读）。

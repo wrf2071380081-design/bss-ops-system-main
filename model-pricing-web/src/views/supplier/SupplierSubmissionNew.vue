@@ -4,7 +4,7 @@ import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { supplierModelsApi } from "../../api/supplierModels";
 import { supplierSubmissionsApi } from "../../api/supplierSubmissions";
-import type { SupplierModelOptionDTO, SupplierSubmissionDTO, SupplierSubmissionRowDTO, SupplierSubmissionTestDTO, SupplierSubmissionWriteRow, SupplierTestCategory, SupplierTestJobDTO } from "../../api/supplierSubmissions.types";
+import type { SupplierImportPreviewDTO, SupplierModelOptionDTO, SupplierSubmissionDTO, SupplierSubmissionRowDTO, SupplierSubmissionTestDTO, SupplierSubmissionWriteRow, SupplierTestCategory, SupplierTestJobDTO } from "../../api/supplierSubmissions.types";
 
 type EditableRow = SupplierSubmissionRowDTO & { test_api_key: string };
 const route = useRoute();
@@ -32,27 +32,30 @@ const modelError = ref("");
 const loadingDraft = ref(false);
 const savedBaseline = ref("");
 const dirty = computed(() => !!savedBaseline.value && savedBaseline.value !== snapshot());
-const canSubmitBatch = computed(() => rows.value.length > 0 && rows.value.every(row => row.connectivity_tested) && rows.value.some(row => row.stress_tested));
+// 折中口径：至少一行连通「通过」即可提交；其余行提交后标为待补。
+const canSubmitBatch = computed(() => rows.value.some(row => row.connectivity_tested && row.connectivity_passed && !row.connectivity_job?.stale));
 const locked = computed(() => !canEdit.value || saving.value || submitting.value || loadingDraft.value);
 const testCategories: SupplierTestCategory[] = ["CONNECTIVITY", "STRESS"];
 let active = true;
 let optionRequest: AbortController | undefined;
 let draftRequest: AbortController | undefined;
 const testBusy = ref<Record<string, boolean>>({});
-const batchBusy = ref<SupplierTestCategory | "">("");
+const batchBusy = ref<"" | "ALL">("");
 // 门禁提示：把"哪一行还差什么"说清楚，而不是只让按钮变灰。
 const missingConnectivity = computed(() => rows.value.map((row, index) => ({ row, index })).filter(item => !item.row.connectivity_tested).map(item => item.index + 1));
-const hasStressTested = computed(() => rows.value.some(row => row.stress_tested));
-const pendingConnectivity = computed(() => rows.value.filter(row => !row.connectivity_job).length);
-const pendingStress = computed(() => rows.value.filter(row => !row.stress_job).length);
+const passedRowCount = computed(() => rows.value.filter(row => row.connectivity_tested && row.connectivity_passed && !row.connectivity_job?.stale).length);
+const pendingConnectivity = computed(() => rows.value.filter(row => !row.connectivity_job || row.connectivity_job.stale).length);
+const selectedStressCount = computed(() => rows.value.filter(row => row.participate_test).length);
+const pendingStress = computed(() => rows.value.filter(row => row.participate_test && !row.stress_job).length);
 const gateHint = computed(() => {
+  if (!rows.value.length) return "请至少添加一条模型。";
+  if (passedRowCount.value === 0) return "至少需要一行连通测试通过（结果达标且未失效）。";
   const issues: string[] = [];
-  if (!rows.value.length) issues.push("请至少添加一条模型。");
-  if (missingConnectivity.value.length) issues.push(`第 ${missingConnectivity.value.join("、")} 行尚未完成连通性测试。`);
-  if (rows.value.length && !hasStressTested.value) issues.push("至少需要一行完成压力测试。");
-  return issues.join(" ");
+  if (selectedStressCount.value === 0) issues.push("建议至少勾选一个模型做压力测试。");
+  const pending = rows.value.length - passedRowCount.value;
+  if (pending > 0) issues.push(`其余 ${pending} 个模型提交后会标为「待补」。`);
+  return issues.join("");
 });
-
 function blankRow(): EditableRow {
   return { id: "", interface_model_id: "", standard_model_id: "", standard_model_name: "", official_id: "", coefficient: "1", test_base_url: "", test_api_key_configured: false, test_api_key: "", row_status: "DRAFT", connectivity_tested: false, connectivity_passed: false, stress_tested: false, stress_passed: false };
 }
@@ -61,7 +64,7 @@ function hasSavedTestKey(row: EditableRow) {
   return row.test_api_key_configured ?? Boolean(row.id);
 }
 function snapshot() {
-  return JSON.stringify({ reason: reason.value, rows: rows.value.map(row => ({ id: row.id, interface_model_id: row.interface_model_id, standard_model_id: row.standard_model_id, coefficient: row.coefficient, test_base_url: row.test_base_url, test_api_key: row.test_api_key })) });
+  return JSON.stringify({ reason: reason.value, rows: rows.value.map(row => ({ id: row.id, interface_model_id: row.interface_model_id, standard_model_id: row.standard_model_id, coefficient: row.coefficient, test_base_url: row.test_base_url, test_api_key: row.test_api_key, participate_test: !!row.participate_test })) });
 }
 function rememberSaved() { savedBaseline.value = snapshot(); lifecycle.value = crypto.randomUUID(); }
 function normalizeSaved(dto: SupplierSubmissionDTO, previousRows = rows.value) {
@@ -141,6 +144,7 @@ function writePayload() {
     standard_model_id: row.standard_model_id,
     coefficient: row.coefficient.trim(),
     test_base_url: row.test_base_url.trim(),
+    participate_test: !!row.participate_test,
     ...(row.test_api_key.trim() ? { test_api_key: row.test_api_key.trim() } : {}),
   }));
   return { kind: "MODEL_NEW" as const, ...(submissionID.value ? { expected_revision: revision.value } : {}), reason: reason.value.trim(), rows: payloadRows };
@@ -188,6 +192,21 @@ async function refreshTest(row: EditableRow, category: SupplierTestCategory) {
   catch (value) { showError(value, "测试进度暂时无法读取。可以稍后重试。"); }
   finally { const next = { ...testBusy.value }; delete next[row.id + category]; testBusy.value = next; }
 }
+// 行状态中文文案（后端派生值 → 原型文案）
+const ROW_STATUS_LABELS: Record<string, string> = {
+  UNTESTED: "未测试", RUNNING: "测试中", STALE: "已失效",
+  PASSED: "已通过", FAILED: "未通过", SUPPLEMENT: "待补", PENDING: "待测试", DRAFT: "草稿",
+};
+function rowStatusLabel(value: string) { return ROW_STATUS_LABELS[value] || value; }
+function rowStatusType(value: string): "success" | "warning" | "info" | "danger" {
+  switch (value) {
+    case "PASSED": return "success";
+    case "FAILED": return "danger";
+    case "STALE": return "warning";
+    case "RUNNING": return "warning";
+    default: return "info";
+  }
+}
 function testState(tested: boolean, passed: boolean) { return !tested ? "未测试" : passed ? "通过" : "已测试，未通过"; }
 function testFor(row: EditableRow, category: SupplierTestCategory) { return category === "CONNECTIVITY" ? row.connectivity_job : row.stress_job; }
 async function reloadKeepingKeys() {
@@ -195,27 +214,85 @@ async function reloadKeepingKeys() {
   const result = await supplierSubmissionsApi.get(submissionID.value);
   if (active) normalizeSaved(result, rows.value);
 }
-async function runBatch(category: SupplierTestCategory) {
+// 单一入口「发起测试／异常重试」：连通测全部行，压力只测勾选行。
+async function runBatch() {
   if (batchBusy.value || !rows.value.length) return;
   if (!submissionID.value || dirty.value) {
     if (!(await saveDraft())) return;
   }
   if (!submissionID.value) { error.value = "草稿尚未保存，请先保存后再测试。"; return; }
-  batchBusy.value = category;
+  batchBusy.value = "ALL";
   error.value = "";
-  const label = category === "CONNECTIVITY" ? "连通性" : "压力";
   try {
-    const result = await supplierSubmissionsApi.batchTest(submissionID.value, category, lifecycle.value);
+    const result = await supplierSubmissionsApi.batchTest(submissionID.value, ["CONNECTIVITY", "STRESS"], lifecycle.value);
     if (!active) return;
+    // 每次发起后轮换 lifecycle：否则幂等中间件会把上次响应原样回放，按钮像没反应。
+    lifecycle.value = crypto.randomUUID();
     await reloadKeepingKeys();
-    const parts = [`已发起 ${result.started} 个${label}测试`];
-    if (result.skipped) parts.push(`${result.skipped} 个已完成跳过`);
-    if (result.failed) parts.push(`${result.failed} 个发起失败`);
+    const parts = [`已发起 ${result.started} 个`];
+    if (result.retried) parts.push(`重测 ${result.retried} 个`);
+    if (result.skipped) parts.push(`跳过 ${result.skipped} 个（已有结果或正在跑）`);
+    if (result.not_selected) parts.push(`${result.not_selected} 个未勾选压力测试`);
+    if (result.failed) parts.push(`${result.failed} 个失败`);
     ElMessage.success(parts.join("，"));
   } catch (value) {
-    if (active) showError(value, `批量${label}测试未能启动，请重试。`);
+    if (active) showError(value, "测试未能启动，请重试。");
   } finally { if (active) batchBusy.value = ""; }
 }
+
+// ---- Excel 导入 ----
+const importBusy = ref(false);
+const importInput = ref<HTMLInputElement | null>(null);
+const importPreview = ref<SupplierImportPreviewDTO | null>(null);
+const importDialog = ref(false);
+
+function triggerImport() { importInput.value?.click(); }
+async function downloadTemplate() {
+  try {
+    const blob = await supplierSubmissionsApi.importTemplate();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "申报导入模板.xlsx";
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (value) { showError(value, "模板下载失败。"); }
+}
+async function onImportFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  importBusy.value = true;
+  error.value = "";
+  try {
+    const preview = await supplierSubmissionsApi.parseImport(file);
+    importPreview.value = preview;
+    importDialog.value = true;
+  } catch (value) {
+    showError(value, "文件解析失败，请确认是模板格式的 xlsx。");
+  } finally { importBusy.value = false; }
+}
+function applyImport() {
+  const preview = importPreview.value;
+  if (!preview) return;
+  const accepted = preview.rows.filter(row => row.ok && row.standard_model_id);
+  for (const item of accepted) {
+    rows.value.push({
+      ...blankRow(),
+      interface_model_id: item.interface_model_id,
+      standard_model_id: String(item.standard_model_id),
+      standard_model_name: item.standard_model_name || "",
+      official_id: item.official_id || "",
+      coefficient: item.coefficient,
+      participate_test: item.participate_test,
+    });
+  }
+  importDialog.value = false;
+  importPreview.value = null;
+  ElMessage.success(`已导入 ${accepted.length} 行，请核对后再保存草稿。`);
+}
+
 async function submitDraft() {
   if (submitting.value || !canEdit.value) return;
   if (dirty.value || !submissionID.value) {
@@ -298,26 +375,32 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
     </div>
 
     <div class="batch-actions">
-      <span class="batch-hint">一键测试会跳过已测过的行，只发起还没测的。</span>
-      <el-button size="small" type="primary" plain :loading="batchBusy === 'CONNECTIVITY'" :disabled="locked || !rows.length || (!!submissionID && !dirty && !pendingConnectivity)" @click="runBatch('CONNECTIVITY')">一键测连通（待测 {{ pendingConnectivity }}）</el-button>
-      <el-button size="small" :loading="batchBusy === 'STRESS'" :disabled="locked || !rows.length || (!!submissionID && !dirty && !pendingStress)" @click="runBatch('STRESS')">一键测压力（待测 {{ pendingStress }}）</el-button>
+      <el-button size="small" type="primary" :loading="batchBusy === 'ALL'" :disabled="locked || !rows.length" @click="runBatch">发起测试／异常重试</el-button>
+      <el-button size="small" :loading="importBusy" :disabled="locked" @click="downloadTemplate">下载导入模板</el-button>
+      <el-button size="small" :disabled="locked" @click="triggerImport">导入 Excel</el-button>
+      <input ref="importInput" type="file" accept=".xlsx" hidden @change="onImportFile" />
+      <span class="batch-hint">所有模型都会做连通测试；压力测试只做勾选的模型（已勾 {{ selectedStressCount }} 个，待测 {{ pendingStress }} 个）。</span>
     </div>
 
     <article v-for="(row, index) in rows" :key="row.id || `new-${index}`" class="submission-row">
-      <header class="row-heading"><h2>模型 {{ index + 1 }}</h2><el-tag v-if="row.id">{{ row.row_status }}</el-tag><el-button text type="danger" :disabled="locked || rows.length === 1" @click="removeRow(index)">移除</el-button></header>
+      <header class="row-heading">
+        <h2>模型 {{ index + 1 }}</h2>
+        <el-tag v-if="row.id" :type="rowStatusType(row.row_status)">{{ rowStatusLabel(row.row_status) }}</el-tag>
+        <el-tag v-if="row.supplement_required" type="warning" effect="plain">待补</el-tag>
+        <el-button text type="danger" :disabled="locked || rows.length === 1" @click="removeRow(index)">移除</el-button>
+      </header>
       <div class="row-grid">
         <el-form-item label="接口模型 ID *"><el-input v-model="row.interface_model_id" placeholder="供应商侧接口模型 ID" :disabled="locked" /></el-form-item>
         <el-form-item label="对应标准模型 *"><el-select v-model="row.standard_model_id" filterable clearable :loading="modelLoading" placeholder="选择标准模型" :disabled="locked" @change="selectStandardModel(row, $event)"><el-option v-for="item in modelOptions" :key="item.id" :label="`${item.name} · ${item.official_id}`" :value="item.id" /></el-select><small v-if="row.standard_model_name" class="muted">{{ row.standard_model_name }} · {{ row.official_id }}</small></el-form-item>
         <el-form-item label="采购系数 *"><el-input v-model="row.coefficient" inputmode="decimal" placeholder="0.6800" :disabled="locked" /></el-form-item>
+        <el-form-item label="压力测试"><el-checkbox v-model="row.participate_test" :disabled="locked">该模型参与压力测试</el-checkbox></el-form-item>
         <el-form-item label="测试服务 URL *"><el-input v-model="row.test_base_url" placeholder="https://api.example.com" :disabled="locked" /></el-form-item>
         <el-form-item :label="hasSavedTestKey(row) ? '测试 Key（留空沿用）' : '测试 Key *'"><el-input v-model="row.test_api_key" type="password" show-password autocomplete="new-password" :placeholder="hasSavedTestKey(row) ? '已保存；填写新 Key 可替换' : '供应商自测使用的 Key'" :disabled="locked" /></el-form-item>
       </div>
       <div class="test-area">
         <div><strong>连通性：</strong>{{ testState(row.connectivity_tested, row.connectivity_passed) }}<span v-if="row.connectivity_job"> · {{ row.connectivity_job.status }}</span></div>
-        <el-button size="small" :loading="testBusy[row.id + 'CONNECTIVITY']" :disabled="locked || dirty || !row.id" @click="runTest(row, 'CONNECTIVITY')">发起测试</el-button>
         <el-button v-if="row.connectivity_job" size="small" :loading="testBusy[row.id + 'CONNECTIVITY']" :disabled="locked || dirty" @click="refreshTest(row, 'CONNECTIVITY')">刷新结果</el-button>
         <div><strong>压力测试：</strong>{{ testState(row.stress_tested, row.stress_passed) }}<span v-if="row.stress_job"> · {{ row.stress_job.status }}</span></div>
-        <el-button size="small" :loading="testBusy[row.id + 'STRESS']" :disabled="locked || dirty || !row.id" @click="runTest(row, 'STRESS')">发起测试</el-button>
         <el-button v-if="row.stress_job" size="small" :loading="testBusy[row.id + 'STRESS']" :disabled="locked || dirty" @click="refreshTest(row, 'STRESS')">刷新结果</el-button>
         <p v-for="category in testCategories" :key="category" v-show="testFor(row, category)" class="test-metrics">{{ category === 'CONNECTIVITY' ? '连通性' : '压力测试' }}：{{ testFor(row, category)?.connection_ms ? `${testFor(row, category)?.connection_ms} ms` : '' }} {{ testFor(row, category)?.rps ? `RPS ${testFor(row, category)?.rps}` : '' }} {{ testFor(row, category)?.tps ? `TPS ${testFor(row, category)?.tps}` : '' }}</p>
       </div>
@@ -325,8 +408,32 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
     <el-button :disabled="locked" @click="addRow">添加模型</el-button>
 
     <el-form-item label="申报说明 *"><el-input v-model="reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="locked" /></el-form-item>
-    <el-alert v-if="gateHint" :title="`尚不能提交：${gateHint}`" type="warning" :closable="false" show-icon />
-    <el-alert v-else title="提交条件已满足：每个模型都测过连通性，且至少一行测过压力。提交条件表示已测试，不代表测试通过；每个资源仍须两项测试均通过后才能接入和报价。" type="success" :closable="false" show-icon />
+    <el-alert v-if="!canSubmitBatch" :title="`尚不能提交：${gateHint}`" type="warning" :closable="false" show-icon />
+    <el-alert v-else :title="`可以提交。${gateHint}`" type="success" :closable="false" show-icon />
+    <p class="muted">规则：所有模型均执行连通性测试；同一受测配置一次有效测试，配置变化后可重测；仅改报价不增加测试机会；工具异常的未完成部分可重试；结果不达标也属于有效结果。</p>
+
+    <el-dialog v-model="importDialog" title="导入预览" width="760px">
+      <template v-if="importPreview">
+        <p class="muted">共 {{ importPreview.total }} 行，可导入 {{ importPreview.ok_count }} 行，错误 {{ importPreview.error_count }} 行。</p>
+        <el-table :data="importPreview.rows" size="small" max-height="380" style="width: 100%">
+          <el-table-column prop="line" label="行" width="60" />
+          <el-table-column prop="standard_model_name" label="标准模型" min-width="140" />
+          <el-table-column prop="interface_model_id" label="接口模型 ID" min-width="140" />
+          <el-table-column prop="coefficient" label="系数" width="80" />
+          <el-table-column label="压力" width="70"><template #default="{ row }">{{ row.participate_test ? "是" : "否" }}</template></el-table-column>
+          <el-table-column label="校验" min-width="220">
+            <template #default="{ row }">
+              <span v-if="row.ok" class="muted">通过</span>
+              <span v-else class="inline-error">{{ row.errors.join("；") }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="importDialog = false">取消</el-button>
+        <el-button type="primary" :disabled="!importPreview?.ok_count" @click="applyImport">导入 {{ importPreview?.ok_count || 0 }} 行</el-button>
+      </template>
+    </el-dialog>
     <div class="form-actions">
       <el-button @click="router.push('/supplier/home')">返回</el-button>
       <el-button type="primary" :loading="saving" :disabled="locked || !dirty" @click="saveDraft">保存草稿</el-button>

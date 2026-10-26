@@ -19,6 +19,8 @@ export interface ApprovalRow {
   submitted_at: string;
   submitter: string;
   kind: string;
+  /** 驳回时的乐观锁版本 */
+  revision: number;
 }
 
 export interface SupplierWorkspaceRow {
@@ -98,6 +100,16 @@ export const supplyChainApi = {
       method: "POST",
       data: payload,
       idempotency: { scope: `approval:approve:${id}`, payload },
+    });
+  },
+
+  reject: async (id: number, expectedRevision: number, reason: string): Promise<void> => {
+    const data = { expected_revision: expectedRevision, reason: reason.trim() };
+    await apiRequest({
+      url: `/internal/approvals/submissions/${id}/reject`,
+      method: "POST",
+      data,
+      idempotency: { scope: `approval:reject:${id}`, payload: data },
     });
   },
 

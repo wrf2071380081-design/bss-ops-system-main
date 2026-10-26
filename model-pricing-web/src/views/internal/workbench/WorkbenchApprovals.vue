@@ -20,7 +20,16 @@ const busy = ref(false);
 const simulatingId = ref(0);
 
 const regionLabel = (region: string) => region === "OVERSEAS" ? "海外" : "国内";
-const statusLabel = (status: string) => status === "PENDING_APPROVAL" ? "待审批" : status === "PROCESSING" ? "办理中" : status;
+const statusLabel = (status: string) => {
+  const labels: Record<string, string> = {
+    PENDING_TEST: "等待测试补齐",
+    PENDING_APPROVAL: "待接入",
+    PROCESSING: "办理中",
+    APPROVED: "已通过",
+    REJECTED: "不通过",
+  };
+  return labels[status] || status;
+};
 const formatTime = (value?: string | null) => formatDateTime(value, "—", false);
 
 async function load() {
@@ -37,30 +46,23 @@ async function load() {
   }
 }
 
-function openApprove(row: ApprovalRow) {
+function openReject(row: ApprovalRow) {
   current.value = row;
-  const self = session.user?.staffId || people.value[0]?.id || 0;
-  testAssignee.value = self;
-  contractAssignee.value = self;
-  reason.value = "同意接入";
+  reason.value = "";
   dialogVisible.value = true;
 }
 
-async function approve() {
+async function rejectCurrent() {
   if (!current.value || busy.value) return;
-  if (!testAssignee.value) { ElMessage.error("请选择测试与资源配置办理人。"); return; }
+  if (!reason.value.trim()) { ElMessage.error("请填写驳回原因。"); return; }
   busy.value = true;
   try {
-    await supplyChainApi.approve(current.value.id, {
-      test_assignee_id: testAssignee.value,
-      contract_assignee_id: contractAssignee.value || undefined,
-      reason: reason.value.trim() || "同意接入",
-    });
-    ElMessage.success("已通过，办理人可在待审批列表执行模拟测试与接入");
+    await supplyChainApi.reject(current.value.id, Number(current.value.revision || 0), reason.value);
+    ElMessage.success("已驳回，供应商可修改后重提");
     dialogVisible.value = false;
     await load();
   } catch (value) {
-    ElMessage.error(value instanceof Error ? value.message : "审批失败，请重试。");
+    ElMessage.error(value instanceof Error ? value.message : "驳回失败，请重试。");
   } finally {
     busy.value = false;
   }
@@ -112,38 +114,26 @@ onMounted(load);
       </el-table-column>
       <el-table-column label="操作" width="170">
         <template #default="{ row }">
-          <el-button v-if="row.status === 'PENDING_APPROVAL'" type="primary" size="small" @click="openApprove(row)">审批</el-button>
-          <el-button v-else-if="row.status === 'PROCESSING'" size="small" :loading="simulatingId === row.id" @click="simulate(row)">模拟测试并接入</el-button>
-          <span v-else class="muted">—</span>
+          <el-button v-if="row.status !== 'REJECTED'" type="danger" plain size="small" @click="openReject(row)">驳回</el-button>
+          <span v-else class="muted">已驳回</span>
         </template>
       </el-table-column>
       <template #empty><el-empty description="暂无待审批/办理中的申报" :image-size="64" /></template>
     </el-table>
 
-    <el-dialog v-model="dialogVisible" title="通过申报并分配办理人" width="520px">
+    <el-dialog v-model="dialogVisible" title="驳回申报" width="520px">
       <template v-if="current">
         <p class="dialog-summary">{{ current.supplier_name }} · {{ regionLabel(current.region) }} · {{ current.row_count }} 个模型</p>
         <el-form label-position="top">
-          <el-form-item label="测试与资源配置办理人 *">
-            <el-select v-model="testAssignee" filterable style="width: 100%">
-              <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.name" />
-            </el-select>
-          </el-form-item>
-          <el-form-item v-if="current.first_model" label="合同与授信办理人">
-            <el-select v-model="contractAssignee" filterable style="width: 100%">
-              <el-option :value="0" label="暂不分配" />
-              <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.name" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="审批意见">
-            <el-input v-model="reason" type="textarea" :rows="3" maxlength="200" show-word-limit />
+          <el-form-item label="驳回原因 *">
+            <el-input v-model="reason" type="textarea" :rows="3" maxlength="200" show-word-limit placeholder="例如：连通测试未通过，请检查测试地址后重试" />
           </el-form-item>
         </el-form>
-        <p class="dialog-hint">通过后由办理人在本列表点"模拟测试并接入"；测试为 mock。</p>
+        <p class="dialog-hint">驳回后申报状态为「不通过」，供应商可修改后重提。</p>
       </template>
       <template #footer>
         <el-button :disabled="busy" @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="busy" @click="approve">通过并分配</el-button>
+        <el-button type="danger" :loading="busy" @click="rejectCurrent">确认驳回</el-button>
       </template>
     </el-dialog>
   </div>
