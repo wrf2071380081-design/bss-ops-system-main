@@ -12,7 +12,6 @@ import (
 	"model_bss/internal/domain/testplatform"
 	"model_bss/internal/infra/config"
 	"model_bss/internal/infra/supplypg"
-	"model_bss/internal/infra/supplysecurity"
 	tpinfra "model_bss/internal/infra/testplatform"
 )
 
@@ -29,8 +28,6 @@ type testPlatformRuntime struct {
 	Receiver *tpinfra.Receiver
 	// Store 供内部复测读取资源测试目标（T-10）。
 	Store *supplypg.TestPlatformStore
-	// Decode 解密测试凭据；为 nil 表示禁止解密。
-	Decode func(ctx context.Context, stored, supplierID string) (string, error)
 }
 
 // resourceTestTargets 把存储层的资源测试目标适配成 api 侧端口。
@@ -114,12 +111,6 @@ func newTestPlatformRuntime(cfg *config.Config, db *gorm.DB, log *zap.Logger) (*
 	}
 	runtime.Service = service
 	log.Info("test platform outbound enabled", zap.String("base_url", cfg.TestPlatform.BaseURL))
-	// 解密端口（T-10 内部复测要还原真实目标凭据）。
-	if sealer, sealErr := supplysecurity.AESGCMSealerFromEnv(); sealErr == nil && sealer != nil && cfg.TestPlatform.AllowCredentialOpen {
-		runtime.Decode = func(ctx context.Context, stored, supplierID string) (string, error) {
-			return supplysecurity.DecodeTestCredential(ctx, sealer, stored, supplierID)
-		}
-	}
 	receiver, err := tpinfra.NewReceiver(cfg.TestPlatform.WebhookSecret, service, time.Now)
 	if err != nil {
 		log.Warn("test platform callback disabled: webhook secret not configured")
@@ -136,12 +127,4 @@ func testTargets(runtime *testPlatformRuntime) api.ResourceTestTargetLoader {
 		return nil
 	}
 	return runtime.Targets()
-}
-
-// testCredentialDecoder 返回解密端口；未启用时返回 nil。
-func testCredentialDecoder(runtime *testPlatformRuntime) func(ctx context.Context, stored, supplierID string) (string, error) {
-	if runtime == nil {
-		return nil
-	}
-	return runtime.Decode
 }

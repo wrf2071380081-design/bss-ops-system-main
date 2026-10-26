@@ -69,43 +69,48 @@ func (w *FormalConfigWork) Within(ctx context.Context, run func(supply.FormalCon
 const formalConfigRevisionAction = "FORMAL_CONFIG_REVISION"
 
 type formalConfigEnvelope struct {
-	Contract          string                   `json:"contract"`
-	SchemaVersion     int                      `json:"schema_version"`
-	Operation         string                   `json:"operation"`
-	View              *supply.FormalConfigView `json:"view"`
-	SealedFingerprint string                   `json:"sealed_fingerprint"`
+	Contract                string                   `json:"contract"`
+	SchemaVersion           int                      `json:"schema_version"`
+	Operation               string                   `json:"operation"`
+	View                    *supply.FormalConfigView `json:"view"`
+	APIKeyFingerprint       string                   `json:"api_key_fingerprint,omitempty"`
+	LegacySealedFingerprint string                   `json:"sealed_fingerprint,omitempty"`
 }
 
-func encodeFormalSecret(secret supply.SecretEnvelope) (string, error) {
-	if len(secret.Ciphertext) == 0 || strings.TrimSpace(secret.KeyVersion) == "" || !utf8.ValidString(secret.KeyVersion) || strings.ContainsRune(secret.KeyVersion, 0) || len(secret.KeyVersion) > 64 {
-		return "", supply.ErrReadContract
+func (e formalConfigEnvelope) keyFingerprint() string {
+	if e.APIKeyFingerprint != "" && e.LegacySealedFingerprint == "" {
+		return e.APIKeyFingerprint
 	}
-	wire := "se1." + base64.RawURLEncoding.EncodeToString([]byte(secret.KeyVersion)) + "." + base64.RawURLEncoding.EncodeToString(secret.Ciphertext)
-	if len(wire) > 512 {
-		return "", &supply.FieldError{Path: "api_key", Reason: "sealed credential exceeds native storage capacity"}
+	if e.LegacySealedFingerprint != "" && e.APIKeyFingerprint == "" {
+		return e.LegacySealedFingerprint
 	}
-	return wire, nil
+	return ""
 }
-func decodeFormalSecret(wire string) (supply.SecretEnvelope, error) {
-	var secret supply.SecretEnvelope
-	p := strings.Split(wire, ".")
-	if len(p) != 3 || p[0] != "se1" {
-		return secret, supply.ErrReadContract
+
+func validateFormalAPIKey(value string) error {
+	if !utf8.ValidString(value) || strings.ContainsRune(value, 0) || strings.TrimSpace(value) == "" || utf8.RuneCountInString(value) > 512 {
+		return supply.ErrReadContract
 	}
-	version, err := base64.RawURLEncoding.DecodeString(p[1])
-	if err != nil {
-		return secret, supply.ErrReadContract
+	return nil
+}
+
+// isLegacySealedFormalAPIKey identifies values written by the removed AES-GCM
+// envelope. Those rows stay readable for metadata and can be replaced, but are
+// deliberately not presented as usable API keys.
+func isLegacySealedFormalAPIKey(value string) bool {
+	parts := strings.Split(value, ".")
+	if len(parts) != 3 || parts[0] != "se1" {
+		return false
 	}
-	sealed, err := base64.RawURLEncoding.DecodeString(p[2])
-	if err != nil {
-		return secret, supply.ErrReadContract
+	version, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || len(version) == 0 || len(version) > 64 || !utf8.Valid(version) || strings.ContainsRune(string(version), 0) {
+		return false
 	}
-	secret = supply.SecretEnvelope{KeyVersion: string(version), Ciphertext: sealed}
-	canonical, err := encodeFormalSecret(secret)
-	if err != nil || canonical != wire {
-		return supply.SecretEnvelope{}, supply.ErrReadContract
+	ciphertext, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(ciphertext) < 28 {
+		return false
 	}
-	return secret, nil
+	return base64.RawURLEncoding.EncodeToString(version) == parts[1] && base64.RawURLEncoding.EncodeToString(ciphertext) == parts[2]
 }
 func formalFingerprint(wire string) string {
 	sum := sha256.Sum256([]byte(wire))
@@ -152,7 +157,11 @@ func canonicalFormalConfig(input *supply.FormalConfig) (*supply.FormalConfig, er
 	if c.Status == "ACTIVE" && c.ConfirmedRevision != c.Revision {
 		return nil, supply.ErrReadContract
 	}
-	if _, err := encodeFormalSecret(c.Secret); err != nil {
+	if c.LegacyEncrypted {
+		if !isLegacySealedFormalAPIKey(c.APIKey) {
+			return nil, supply.ErrReadContract
+		}
+	} else if err := validateFormalAPIKey(c.APIKey); err != nil {
 		return nil, err
 	}
 	c.CreatedAt = c.CreatedAt.UTC().Truncate(time.Microsecond)
@@ -174,6 +183,8 @@ func (s *FormalConfigStore) Current(ctx context.Context, tx *sql.Tx, supplier, i
 	var c supply.FormalConfig
 	var scope, createdBy, updatedBy, region sql.NullString
 	var wire string
+	// The shared schema still names this column api_key_enc; current writes store
+	// the supplied key as entered under the latest formal-config decision.
 	err := tx.QueryRowContext(ctx, `SELECT c.id::text,c.supplier_id::text,c.scope,c.base_url,c.api_key_enc,c.created_by::text,c.updated_by::text,c.created_at,c.updated_at,s.region FROM `+s.table("supplier_formal_config")+` c LEFT JOIN `+s.table("supplier")+` s ON s.id=c.supplier_id WHERE c.id=$1 AND c.supplier_id=$2`, id, supplier).Scan(&c.ID, &c.SupplierID, &scope, &c.BaseURL, &wire, &createdBy, &updatedBy, &c.CreatedAt, &c.UpdatedAt, &region)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
@@ -188,9 +199,13 @@ func (s *FormalConfigStore) Current(ctx context.Context, tx *sql.Tx, supplier, i
 	c.CreatedBy = createdBy.String
 	c.UpdatedBy = updatedBy.String
 	c.Region = region.String
-	c.Secret, err = decodeFormalSecret(wire)
-	if err != nil {
+	if isLegacySealedFormalAPIKey(wire) {
+		c.APIKey = wire
+		c.LegacyEncrypted = true
+	} else if err := validateFormalAPIKey(wire); err != nil {
 		return nil, err
+	} else {
+		c.APIKey = wire
 	}
 	var raw []byte
 	var actor, reason, request sql.NullString
@@ -212,7 +227,7 @@ func (s *FormalConfigStore) Current(ctx context.Context, tx *sql.Tx, supplier, i
 	if err := d.Decode(&extra); err != io.EOF {
 		return nil, supply.ErrReadContract
 	}
-	if e.Contract != "supply.formal_config" || e.SchemaVersion != 1 || !slices.Contains([]string{"CREATE", "UPDATE", "DISABLE"}, e.Operation) || e.View == nil || e.SealedFingerprint != formalFingerprint(wire) {
+	if e.Contract != "supply.formal_config" || e.SchemaVersion != 1 || !slices.Contains([]string{"CREATE", "UPDATE", "DISABLE"}, e.Operation) || e.View == nil || e.keyFingerprint() != formalFingerprint(wire) {
 		return nil, supply.ErrReadContract
 	}
 	v := e.View
@@ -225,7 +240,15 @@ func (s *FormalConfigStore) Current(ctx context.Context, tx *sql.Tx, supplier, i
 	if err != nil {
 		return nil, supply.ErrReadContract
 	}
-	if !reflect.DeepEqual(stored.View(), v) || !at.Equal(stored.UpdatedAt) || actor.String != stored.UpdatedBy || validateResourceControlMeta(supply.WriteMeta{ActorID: actor.String, Reason: reason.String, RequestID: request.String}, e.Operation) != nil {
+	loggedView := stored.View()
+	if stored.LegacyEncrypted {
+		// Earlier audit rows reported encrypted credentials as configured. Keep
+		// validating those old rows while current reads ask the operator to enter
+		// a usable plaintext key again.
+		loggedView.HasAPIKey = true
+		loggedView.APIKeyMask = "********"
+	}
+	if !reflect.DeepEqual(loggedView, v) || !at.Equal(stored.UpdatedAt) || actor.String != stored.UpdatedBy || validateResourceControlMeta(supply.WriteMeta{ActorID: actor.String, Reason: reason.String, RequestID: request.String}, e.Operation) != nil {
 		return nil, supply.ErrReadContract
 	}
 	return stored, nil
@@ -341,10 +364,7 @@ func (t *formalConfigTransaction) CreateConfig(ctx context.Context, input *suppl
 	if c.ID != t.allocated || c.Revision != 1 || c.Status != "ACTIVE" || c.CreatedBy != c.UpdatedBy {
 		return supply.ErrReadContract
 	}
-	wire, err := encodeFormalSecret(c.Secret)
-	if err != nil {
-		return err
-	}
+	wire := c.APIKey
 	_, err = t.tx.ExecContext(ctx, `INSERT INTO `+t.store.table("supplier_formal_config")+` (id,supplier_id,scope,base_url,api_key_enc,created_by,updated_by,created_at,updated_at) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, c.ID, c.SupplierID, c.Scope, c.BaseURL, wire, c.CreatedBy, c.UpdatedBy, c.CreatedAt, c.UpdatedAt)
 	if err != nil {
 		return modelUniqueError(err, supply.ErrIdentityConflict)
@@ -367,10 +387,7 @@ func (t *formalConfigTransaction) UpdateConfig(ctx context.Context, input *suppl
 	if c.CreatedBy != b.CreatedBy || !c.CreatedAt.Equal(b.CreatedAt) || c.UpdatedAt.Before(b.UpdatedAt) {
 		return supply.ErrReadContract
 	}
-	wire, err := encodeFormalSecret(c.Secret)
-	if err != nil {
-		return err
-	}
+	wire := c.APIKey
 	result, err := t.tx.ExecContext(ctx, `UPDATE `+t.store.table("supplier_formal_config")+` SET scope=$1,base_url=$2,api_key_enc=$3,updated_by=$4,updated_at=$5 WHERE id=$6 AND supplier_id=$7 AND created_at=$8 AND updated_at=$9`, c.Scope, c.BaseURL, wire, c.UpdatedBy, c.UpdatedAt, c.ID, c.SupplierID, c.CreatedAt, b.UpdatedAt)
 	if err != nil {
 		return err
@@ -455,21 +472,14 @@ func (t *formalConfigTransaction) AppendConfigOperation(ctx context.Context, op 
 	if !changed && !slices.Contains([]string{"UPDATE_NOOP", "DISABLE_NOOP"}, op.Action) {
 		return supply.ErrReadContract
 	}
-	wire, err := encodeFormalSecret(after.Secret)
-	if err != nil {
-		return err
-	}
-	raw, err := json.Marshal(formalConfigEnvelope{"supply.formal_config", 1, op.Action, after.View(), formalFingerprint(wire)})
+	wire := after.APIKey
+	raw, err := json.Marshal(formalConfigEnvelope{Contract: "supply.formal_config", SchemaVersion: 1, Operation: op.Action, View: after.View(), APIKeyFingerprint: formalFingerprint(wire)})
 	if err != nil {
 		return supply.ErrReadContract
 	}
 	var before []byte
 	if t.before != nil {
-		oldWire, err := encodeFormalSecret(t.before.Secret)
-		if err != nil {
-			return err
-		}
-		before, err = json.Marshal(formalConfigEnvelope{"supply.formal_config", 1, op.Action, t.before.View(), formalFingerprint(oldWire)})
+		before, err = json.Marshal(formalConfigEnvelope{Contract: "supply.formal_config", SchemaVersion: 1, Operation: op.Action, View: t.before.View(), APIKeyFingerprint: formalFingerprint(t.before.APIKey)})
 		if err != nil {
 			return err
 		}

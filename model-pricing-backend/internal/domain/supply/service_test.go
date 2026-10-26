@@ -361,3 +361,71 @@ func TestModelServiceRejectsEmptyTargetID(t *testing.T) {
 		t.Fatalf("empty target was not field validation: %v", err)
 	}
 }
+
+func TestModelServiceManualSaveAttestsCompleteVersionAtomically(t *testing.T) {
+	db := newMemoryDB()
+	svc := newService(db)
+	ctx := context.Background()
+	created, err := svc.SaveManual(ctx, writeMeta("7"), "", 0, completeModelData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.VerifyStatus != "VERIFIED" || created.CheckedBy != "7" || created.VersionNo != 1 || created.Revision != 1 || !created.Readiness().Ready {
+		t.Fatalf("complete manual creation should be attested as its initial version: %+v", created)
+	}
+	if len(db.state.versions[created.ID]) != 1 || len(db.state.operations) != 1 || db.state.operations[0].Action != "MANUAL_SAVE" || db.state.operations[0].After.VerifyStatus != "VERIFIED" {
+		t.Fatal("model, attested version and manual-save audit were not persisted together")
+	}
+
+	changed := cloneData(created.Data)
+	changed.PriceItems[0].Amount = "3.00000000"
+	updated, err := svc.SaveManual(ctx, writeMeta("7"), created.ID, created.Revision, changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.VerifyStatus != "VERIFIED" || updated.CheckedBy != "7" || updated.VersionNo != 2 || updated.Revision != 2 || !updated.Readiness().Ready {
+		t.Fatalf("complete edit should produce one verified version: %+v", updated)
+	}
+	if len(db.state.versions[created.ID]) != 2 || db.state.versions[created.ID][0].Data.PriceItems[0].Amount != "2.00000000" || db.state.versions[created.ID][1].Data.PriceItems[0].Amount != "3.00000000" {
+		t.Fatal("manual completion did not preserve the prior immutable version")
+	}
+}
+
+func TestModelServiceManualSaveKeepsIncompleteDraftUnverifiedAndSourceFailureAtomic(t *testing.T) {
+	db := newMemoryDB()
+	ctx := context.Background()
+	incomplete := NewModelService(db, nil, func() time.Time { return modelNow })
+	draft, err := incomplete.SaveManual(ctx, writeMeta("7"), "", 0, ModelData{Name: "待补齐"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.VerifyStatus != "INCOMPLETE" || draft.CheckedBy != "" || draft.Readiness().Ready || len(db.state.versions[draft.ID]) != 1 {
+		t.Fatalf("incomplete save should remain blocked from quotation: %+v", draft)
+	}
+
+	rejected := NewModelService(db, sourcePolicyFunc(func(context.Context, string, []Source) error { return ErrSourceRejected }), func() time.Time { return modelNow })
+	if result, err := rejected.SaveManual(ctx, writeMeta("8"), "", 0, completeModelData()); result != nil || !errors.Is(err, ErrSourceRejected) {
+		t.Fatalf("complete save without approved official sources should fail: result=%+v error=%v", result, err)
+	}
+	if len(db.state.models) != 1 || len(db.state.operations) != 1 || db.state.models[draft.ID].VerifyStatus != "INCOMPLETE" {
+		t.Fatal("rejected source policy partially persisted a complete manual save")
+	}
+}
+
+func TestModelServiceManualSaveEditInvalidatesVerificationWhenIncomplete(t *testing.T) {
+	db := newMemoryDB()
+	svc := newService(db)
+	created, err := svc.SaveManual(context.Background(), writeMeta("7"), "", 0, completeModelData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	incomplete := cloneData(created.Data)
+	incomplete.PriceItems = nil
+	updated, err := svc.SaveManual(context.Background(), writeMeta("7"), created.ID, created.Revision, incomplete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.VerifyStatus != "INCOMPLETE" || updated.CheckedBy != "" || updated.Readiness().Ready || updated.VersionNo != 2 || updated.Revision != 2 {
+		t.Fatalf("incomplete edit must invalidate quotation readiness: %+v", updated)
+	}
+}

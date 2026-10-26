@@ -8,11 +8,7 @@ package main
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -37,16 +33,6 @@ func (l seedLog) append(ctx context.Context, tx *sql.Tx, e supplypg.ResourceStat
 VALUES($1,$2,$3,$4,(SELECT name FROM public.internal_staff WHERE id=$4),$5::jsonb,$6::jsonb,$7,$8,$9)`,
 		e.EntityType, e.EntityID, e.Action, e.ActorID, before, string(e.After), e.Reason, e.RequestID, e.OccurredAt.UTC())
 	return err
-}
-
-type seedSealer struct{ aead cipher.AEAD }
-
-func (s seedSealer) Seal(ctx context.Context, text string, binding supply.SecretBinding) (supply.SecretEnvelope, error) {
-	if err := ctx.Err(); err != nil {
-		return supply.SecretEnvelope{}, err
-	}
-	aad, _ := json.Marshal(binding)
-	return supply.SecretEnvelope{Ciphertext: s.aead.Seal(nil, nil, []byte(text), aad), KeyVersion: "seedchain-key-v1"}, nil
 }
 
 type seedURLPolicy struct{}
@@ -223,16 +209,7 @@ RETURNING id::text`, job, r.ID, connection, pressure, actorID).Scan(&report); er
 	}
 	log.Printf("after evidence state=%s revision=%d report=%s", selected.Resource.State, selected.Resource.Revision, selected.Resource.LatestReportID)
 
-	key := sha256.Sum256([]byte("seedchain-local-key-not-production"))
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		log.Fatal(err)
-	}
-	aead, err := cipher.NewGCMWithRandomNonce(block)
-	if err != nil {
-		log.Fatal(err)
-	}
-	configService := supply.NewFormalConfigService(supplypg.NewFormalConfigWork(configs, resolve), seedSealer{aead: aead}, seedURLPolicy{}, func() time.Time { return time.Now().UTC() })
+	configService := supply.NewFormalConfigService(supplypg.NewFormalConfigWork(configs, resolve), seedURLPolicy{}, func() time.Time { return time.Now().UTC() })
 	secret := "seedchain-formal-secret"
 	formal, err := configService.Create(ctx, supply.WriteMeta{ActorID: actorStr, Reason: "seedchain 正式配置", RequestID: "seedchain-config"}, supplierStr, supply.FormalConfigInput{
 		Scope: "全部模型", BaseURL: "https://formal.example/v1", APIKey: &secret, ExternalConfirmed: true,

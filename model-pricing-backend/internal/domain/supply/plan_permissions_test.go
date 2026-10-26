@@ -20,7 +20,7 @@ func TestPlanReadPermissionsUseOriginalInitiatorAndStatus(t *testing.T) {
 					t.Fatal(err)
 				}
 				own := actor == "7"
-				if summary.Permissions.CanRevise != (own && status == "PENDING") || summary.Permissions.CanCancel != (own && (status == "PENDING" || status == "BLOCKED")) || summary.Permissions.CanExecute {
+				if summary.Permissions.CanRevise != (own && status == "PENDING") || summary.Permissions.CanCancel != (own && (status == "PENDING" || status == "BLOCKED")) || summary.Permissions.CanExecute != (own && status == "PENDING") {
 					t.Fatalf("bad permissions %+v", summary.Permissions)
 				}
 			})

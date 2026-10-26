@@ -10,8 +10,7 @@ import (
 	"time"
 )
 
-// Persistence, encryption and environment policy are the unavailable boundaries.
-// This envelope is deliberately not a production cipher.
+// Persistence and environment policy are the unavailable boundaries.
 type formalConfigMemory struct {
 	configs    map[string]*FormalConfig
 	suppliers  map[string]FormalConfigSupplier
@@ -85,21 +84,13 @@ func (db *formalConfigMemory) AppendConfigOperation(_ context.Context, op Formal
 	return nil
 }
 
-type testSecretSealer func(context.Context, string, SecretBinding) (SecretEnvelope, error)
-
-func (f testSecretSealer) Seal(ctx context.Context, text string, binding SecretBinding) (SecretEnvelope, error) {
-	return f(ctx, text, binding)
-}
-
 type testFormalURLPolicy func(context.Context, string) error
 
 func (f testFormalURLPolicy) ValidateFormalURL(ctx context.Context, value string) error {
 	return f(ctx, value)
 }
 func formalService(db *formalConfigMemory) *FormalConfigService {
-	return NewFormalConfigService(db, testSecretSealer(func(_ context.Context, _ string, binding SecretBinding) (SecretEnvelope, error) {
-		return SecretEnvelope{Ciphertext: []byte("test-envelope:" + binding.ConfigID), KeyVersion: "test-v1"}, nil
-	}), testFormalURLPolicy(func(context.Context, string) error { return nil }), func() time.Time { return modelNow })
+	return NewFormalConfigService(db, testFormalURLPolicy(func(context.Context, string) error { return nil }), func() time.Time { return modelNow })
 }
 func TestFormalConfigWriteClockUsesDatabasePrecision(t *testing.T) {
 	db := newFormalMemory()
@@ -142,6 +133,8 @@ func TestFormalConfigInputStorageLimitsReturnFieldErrors(t *testing.T) {
 		{"scope", func(c *FormalConfigInput) { c.Scope = "a\x00b" }},
 		{"scope", func(c *FormalConfigInput) { c.Scope = string([]byte{0xff}) }},
 		{"base_url", func(c *FormalConfigInput) { c.BaseURL = "https://api.vendor.example/" + strings.Repeat("x", 500) }},
+		{"api_key", func(c *FormalConfigInput) { value := strings.Repeat("x", 513); c.APIKey = &value }},
+		{"api_key", func(c *FormalConfigInput) { value := "bad\x00key"; c.APIKey = &value }},
 	} {
 		db := newFormalMemory()
 		service := formalService(db)
@@ -165,23 +158,29 @@ func formalCommand() FormalConfigInput {
 	return FormalConfigInput{Scope: "文本服务", BaseURL: "https://api.vendor.example/v1", APIKey: &key, ExternalConfirmed: true}
 }
 
-func TestFormalConfigEncryptsWithEntityBindingAndReturnsSafeViews(t *testing.T) {
+func TestFormalConfigCreateDoesNotRequireEncryptionKey(t *testing.T) {
+	db := newFormalMemory()
+	service := NewFormalConfigService(db, testFormalURLPolicy(func(context.Context, string) error { return nil }), func() time.Time { return modelNow })
+	view, err := service.Create(context.Background(), writeMeta("7"), "11", formalCommand())
+	if err != nil {
+		t.Fatalf("formal config should not require an encryption dependency: %v", err)
+	}
+	if view == nil || !view.HasAPIKey || view.APIKeyMask != "********" || len(db.configs) != 1 {
+		t.Fatalf("formal key was not saved behind a masked view: view=%+v configs=%d", view, len(db.configs))
+	}
+}
+
+func TestFormalConfigStoresPlainKeyAndReturnsSafeViews(t *testing.T) {
 	db := newFormalMemory()
 	svc := formalService(db)
 	command := formalCommand()
 	secret := *command.APIKey
-	svc.sealer = testSecretSealer(func(_ context.Context, value string, binding SecretBinding) (SecretEnvelope, error) {
-		if value != secret || binding.SupplierID != "11" || binding.ConfigID != "101" || binding.Purpose != "SUPPLIER_FORMAL_API_KEY" {
-			t.Fatalf("wrong encryption context: %+v", binding)
-		}
-		return SecretEnvelope{Ciphertext: []byte("opaque-authenticated-envelope"), KeyVersion: "test-v2"}, nil
-	})
 	view, err := svc.Create(context.Background(), writeMeta("7"), "11", command)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stored := db.configs[view.ID]
-	if stored.Secret.KeyVersion != "test-v2" || string(stored.Secret.Ciphertext) != "opaque-authenticated-envelope" || view.Region != "CN" || !view.HasAPIKey || view.APIKeyMask != "********" || view.Revision != 1 || view.ConfirmedRevision != 1 || view.ConfirmedBy != "7" {
+	if stored.APIKey != secret || stored.LegacyEncrypted || view.Region != "CN" || !view.HasAPIKey || view.APIKeyMask != "********" || view.Revision != 1 || view.ConfirmedRevision != 1 || view.ConfirmedBy != "7" {
 		t.Fatalf("lost config facts: %+v", view)
 	}
 	for _, value := range []any{view, db.operations, stored} {
@@ -189,7 +188,7 @@ func TestFormalConfigEncryptsWithEntityBindingAndReturnsSafeViews(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(encoded), secret) || strings.Contains(string(encoded), "opaque-authenticated-envelope") || strings.Contains(string(encoded), "test-v2") {
+		if strings.Contains(string(encoded), secret) {
 			t.Fatalf("secret material leaked: %s", encoded)
 		}
 	}
@@ -244,25 +243,19 @@ func TestFormalConfigPreservesOmittedKeyAndRotatesProvidedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := db.configs[first.ID].Secret.Clone()
+	original := db.configs[first.ID].APIKey
 	command := formalCommand()
 	command.APIKey = nil
 	command.Scope = "图片服务"
 	svc.now = func() time.Time { return modelNow.Add(time.Hour) }
 	updated, err := svc.Update(ctx, writeMeta("7"), "11", first.ID, 1, command)
-	if err != nil || updated.Revision != 2 || updated.ConfirmedRevision != 2 || !updated.ConfirmedAt.Equal(modelNow.Add(time.Hour)) || string(db.configs[first.ID].Secret.Ciphertext) != string(original.Ciphertext) {
+	if err != nil || updated.Revision != 2 || updated.ConfirmedRevision != 2 || !updated.ConfirmedAt.Equal(modelNow.Add(time.Hour)) || db.configs[first.ID].APIKey != original {
 		t.Fatalf("omitted key not preserved: %+v %v", updated, err)
 	}
 	newKey := "rotated-secret"
 	command.APIKey = &newKey
-	svc.sealer = testSecretSealer(func(_ context.Context, value string, _ SecretBinding) (SecretEnvelope, error) {
-		if value != "rotated-secret" {
-			t.Fatal("wrong rotated key")
-		}
-		return SecretEnvelope{Ciphertext: []byte("new-envelope"), KeyVersion: "test-v3"}, nil
-	})
 	rotated, err := svc.Update(ctx, writeMeta("7"), "11", first.ID, 2, command)
-	if err != nil || rotated.Revision != 3 || rotated.ConfirmedRevision != 3 || db.configs[first.ID].Secret.KeyVersion != "test-v3" {
+	if err != nil || rotated.Revision != 3 || rotated.ConfirmedRevision != 3 || db.configs[first.ID].APIKey != "rotated-secret" {
 		t.Fatalf("rotation reused old confirmation: %+v %v", rotated, err)
 	}
 	empty := ""
@@ -272,6 +265,31 @@ func TestFormalConfigPreservesOmittedKeyAndRotatesProvidedKey(t *testing.T) {
 	}
 	if len(db.operations) != 3 {
 		t.Fatal("failed update logged success")
+	}
+}
+
+func TestFormalConfigLegacyEncryptedKeyMustBeReentered(t *testing.T) {
+	db := newFormalMemory()
+	db.configs["101"] = &FormalConfig{
+		ID: "101", SupplierID: "11", Region: "CN", Scope: "文本服务", BaseURL: "https://api.vendor.example/v1",
+		APIKey: "se1.b2xkLWtleS12MQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", LegacyEncrypted: true,
+		Status: "ACTIVE", Revision: 1, CreatedBy: "7", UpdatedBy: "7", CreatedAt: modelNow, UpdatedAt: modelNow,
+		ConfirmedBy: "7", ConfirmedAt: modelNow, ConfirmedRevision: 1,
+	}
+	if view := db.configs["101"].View(); view.HasAPIKey || view.APIKeyMask != "" {
+		t.Fatalf("legacy ciphertext was presented as a usable key: %+v", view)
+	}
+	svc := formalService(db)
+	command := formalCommand()
+	command.APIKey = nil
+	if _, err := svc.Update(context.Background(), writeMeta("7"), "11", "101", 1, command); err == nil {
+		t.Fatal("legacy encrypted key was silently preserved as a usable credential")
+	}
+	newKey := "replacement-provider-key"
+	command.APIKey = &newKey
+	updated, err := svc.Update(context.Background(), writeMeta("7"), "11", "101", 1, command)
+	if err != nil || updated == nil || !updated.HasAPIKey || db.configs["101"].APIKey != newKey || db.configs["101"].LegacyEncrypted {
+		t.Fatalf("legacy key replacement failed: %+v %v", updated, err)
 	}
 }
 
@@ -342,25 +360,15 @@ func TestFormalConfigReferencedCannotDisable(t *testing.T) {
 }
 
 func TestFormalConfigDependenciesFailClosedAndHideSecretErrors(t *testing.T) {
-	for _, mode := range []string{"no work", "no cipher", "no policy", "cipher error", "bad envelope", "policy reject", "inactive supplier", "bad supplier identity"} {
+	for _, mode := range []string{"no work", "no policy", "policy reject", "inactive supplier", "bad supplier identity"} {
 		t.Run(mode, func(t *testing.T) {
 			db := newFormalMemory()
 			svc := formalService(db)
 			switch mode {
 			case "no work":
 				svc.work = nil
-			case "no cipher":
-				svc.sealer = nil
 			case "no policy":
 				svc.urls = nil
-			case "cipher error":
-				svc.sealer = testSecretSealer(func(context.Context, string, SecretBinding) (SecretEnvelope, error) {
-					return SecretEnvelope{}, errors.New("failed with formal-secret-not-test-credential")
-				})
-			case "bad envelope":
-				svc.sealer = testSecretSealer(func(context.Context, string, SecretBinding) (SecretEnvelope, error) {
-					return SecretEnvelope{Ciphertext: []byte("opaque")}, nil
-				})
 			case "policy reject":
 				svc.urls = testFormalURLPolicy(func(context.Context, string) error { return errors.New("environment rejects URL") })
 			case "inactive supplier":

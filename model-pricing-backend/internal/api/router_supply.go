@@ -15,6 +15,9 @@ type SupplyModelWriter interface {
 	Update(context.Context, supply.WriteMeta, string, uint64, supply.ModelData) (*supply.StandardModel, error)
 	Verify(context.Context, supply.WriteMeta, string, uint64, string) (*supply.StandardModel, error)
 }
+type SupplyManualModelWriter interface {
+	SaveManual(context.Context, supply.WriteMeta, string, uint64, supply.ModelData) (*supply.StandardModel, error)
+}
 type SupplyNoticeWriter interface {
 	MarkRead(context.Context, supply.WriteMeta, string) (*supply.NoticeReadReceipt, error)
 }
@@ -50,6 +53,7 @@ type SupplySupplierWriter interface {
 }
 type SupplyDeps struct {
 	PlanWriter           SupplyPlanWriter
+	PricePlanWriter      SupplyPricePlanWriter
 	PlanExecutor         SupplyPlanExecutor
 	ResourceAdmitter     SupplyResourceAdmitter
 	ResourceConfigBinder SupplyResourceConfigBinder
@@ -73,6 +77,10 @@ type SupplyPlanWriter interface {
 	Revise(context.Context, supply.WriteMeta, string, uint64, time.Time) (*supply.ResourcePlan, error)
 	Cancel(context.Context, supply.WriteMeta, string, uint64) (*supply.ResourcePlan, error)
 }
+type SupplyPricePlanWriter interface {
+	CreatePriceChange(context.Context, supply.WriteMeta, string, uint64, string, string, string, time.Time) (*supply.ResourcePlan, error)
+	RevisePriceChange(context.Context, supply.WriteMeta, string, uint64, string, string, string, time.Time) (*supply.ResourcePlan, error)
+}
 
 // RegisterSupplyRoutes is A's integration entry point. The public assembler passes an
 // /api/internal group with AuthN and RequestID; this function also enforces internal staff identity.
@@ -80,7 +88,8 @@ type SupplyPlanWriter interface {
 func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	group := internal.Group("/standard-models")
 	group.Use(requireSupplyInternalStaff)
-	h := &supplyModelHandler{reader: deps.Reader, writer: deps.Writer, operations: deps.SourceOperations}
+	manualWriter, _ := deps.Writer.(SupplyManualModelWriter)
+	h := &supplyModelHandler{reader: deps.Reader, writer: deps.Writer, manualWriter: manualWriter, operations: deps.SourceOperations}
 	group.GET("", h.list)
 	group.GET("/filter-options", h.options)
 	group.GET("/:id/versions", h.versions)
@@ -94,6 +103,8 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	}
 	group.POST("", idem, h.create)
 	group.PUT("/:id", idem, h.update)
+	group.POST("/manual-completion", idem, h.manualCreate)
+	group.PUT("/:id/manual-completion", idem, h.manualUpdate)
 	group.POST("/:id/verify", idem, h.verify)
 	resources := internal.Group("/resources")
 	resources.Use(requireSupplyInternalStaff)
@@ -110,6 +121,7 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	resources.PUT("/:id/formal-config", idem, rwh.bindFormalConfig)
 	suppliers := internal.Group("/suppliers")
 	suppliers.Use(requireSupplyInternalStaff)
+	suppliers.GET("/:id/operations", h.supplierOperations)
 	fch := &supplyFormalConfigHandler{writer: deps.FormalConfigs, reader: deps.FormalConfigReader}
 	suppliers.GET("/:id/formal-configs", fch.list)
 	suppliers.POST("/:id/formal-configs", idem, fch.create)
@@ -145,6 +157,9 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	plans.POST("", idem, pw.create)
 	plans.PUT("/:id", idem, pw.revise)
 	plans.POST("/:id/cancel", idem, pw.cancel)
+	pricePlans := &supplyPricePlanWriteHandler{writer: deps.PricePlanWriter}
+	plans.POST("/price-change", idem, pricePlans.create)
+	plans.PUT("/:id/price-change", idem, pricePlans.revise)
 	pe := &supplyPlanExecutionHandler{executor: deps.PlanExecutor}
 	plans.POST("/:id/execute", idem, pe.execute)
 }

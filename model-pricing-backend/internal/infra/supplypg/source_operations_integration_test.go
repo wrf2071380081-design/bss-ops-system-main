@@ -66,4 +66,11 @@ func TestSourceOperationsTemporaryPostgres(t *testing.T) {
 	if _, err := reader.List(ctx, supply.SourceOperationQuery{ModelID: "1", ResourceID: "13", Page: 1, Size: 20}); err != supply.ErrNotFound {
 		t.Fatalf("cross-model resource accepted: %v", err)
 	}
+	page, err = reader.List(ctx, supply.SourceOperationQuery{SupplierID: "3", Page: 1, Size: 20})
+	if err != nil || page.Total != 2 || len(page.List) != 2 || page.List[0].ID != "103" || page.List[1].ID != "101" {
+		t.Fatalf("wrong supplier aggregation: %+v %v", page, err)
+	}
+	if _, err := reader.List(ctx, supply.SourceOperationQuery{SupplierID: "3 OR 1=1", Page: 1, Size: 20}); err == nil {
+		t.Fatal("invalid supplier scope accepted")
+	}
 }

@@ -12,7 +12,6 @@ import (
 	"model_bss/internal/domain/supply"
 	tpdomain "model_bss/internal/domain/testplatform"
 	"model_bss/internal/infra/supplypg"
-	"model_bss/internal/infra/supplysecurity"
 	"model_bss/pkg/apperr"
 	"model_bss/pkg/response"
 )
@@ -26,24 +25,23 @@ const (
 	submissionWithdrawn   = "WITHDRAWN"
 )
 
-// SupplierSubmissionService 组合申报的读写与凭据加密。
+// SupplierSubmissionService 组合申报的读写与测试发起。
+//
+// 凭据策略（路线 A，2026-10-26 与 A 侧对齐）：测试 Key 按原样入库，
+// 列名仍为 test_api_key_enc（历史命名）。加密层已随 A 侧重构移除，
+// 因此这里不再做封装/解密；安全改进见交接文档的待办项。
 type SupplierSubmissionService struct {
 	store   *supplypg.SubmissionStore
-	sealer  supply.SecretSealer
-	// decodeCredential 为 nil 表示「禁止解密」（配置可一键关闭）。
-	decodeCredential func(ctx context.Context, stored, supplierID string) (string, error)
-	starter          TestJobStarter
-	clock            func() time.Time
+	starter TestJobStarter
+	clock   func() time.Time
 }
 
-// NewSupplierSubmissionService 构造服务；sealer 可为空（此时不接受携带 Key 的写入）。
-func NewSupplierSubmissionService(store *supplypg.SubmissionStore, sealer supply.SecretSealer,
-	decodeCredential func(ctx context.Context, stored, supplierID string) (string, error),
-	starter TestJobStarter, clock func() time.Time) *SupplierSubmissionService {
+// NewSupplierSubmissionService 构造服务。
+func NewSupplierSubmissionService(store *supplypg.SubmissionStore, starter TestJobStarter, clock func() time.Time) *SupplierSubmissionService {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &SupplierSubmissionService{store: store, sealer: sealer, decodeCredential: decodeCredential, starter: starter, clock: clock}
+	return &SupplierSubmissionService{store: store, starter: starter, clock: clock}
 }
 
 // ---- DTO（字段名与前端 supplierSubmissions.types.ts 严格一致）----
@@ -339,10 +337,7 @@ func (h *supplierSubmissionHandler) transition(c *gin.Context, from []string, to
 // 一期依赖尚未合入的测试平台分支，这里明确回 503——
 // 不能回 404：前端会把 404 翻译成"数据不存在或当前账号不可见"，更难排查。
 // 发起测试时的两类凭据错误，供 handler 翻译成明确文案。
-var (
-	errCredentialMissing      = errors.New("test credential missing")
-	errCredentialUndecryptable = errors.New("test credential undecryptable")
-)
+var errCredentialMissing = errors.New("test credential missing")
 
 // startRowTest 对单行发起一次测试并回写任务号（T-03）。
 // 返回 skipped=true 表示该行这一类已经测过，未重复建任务。
@@ -360,20 +355,11 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 	}
 	apiKey := "demo-key"
 	if row.TestBaseURL != "demo" {
-		if h.svc.decodeCredential == nil {
-			return "", false, errCredentialUndecryptable
-		}
+		// 路线 A：库里存的就是原样 Key，直接取用。
 		if strings.TrimSpace(row.SealedAPIKey) == "" {
 			return "", false, errCredentialMissing
 		}
-		plain, err := h.svc.decodeCredential(ctx, row.SealedAPIKey, strconv.FormatInt(supplierID, 10))
-		if err != nil {
-			return "", false, errCredentialUndecryptable
-		}
-		apiKey = plain
-		if err := h.svc.store.LogCredentialOpen(ctx, supplierID, rowID); err != nil {
-			return "", false, err
-		}
+		apiKey = row.SealedAPIKey
 	}
 	resourceID, err := h.svc.store.EnsureTestResource(ctx, row)
 	if err != nil {
@@ -423,8 +409,6 @@ func writeRowTestError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, errCredentialMissing):
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "该申报行未填写测试 API Key", 400))
-	case errors.Is(err, errCredentialUndecryptable):
-		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试凭据无法解密（密钥版本或主体不匹配）", 503))
 	case errors.Is(err, tpdomain.ErrNotConfigured):
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
 	case errors.Is(err, tpdomain.ErrInvalidCommand):
@@ -608,25 +592,17 @@ func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, 
 			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "interface_model_id 必填", 400))
 			return nil, false
 		}
-		sealed := ""
-		if key := strings.TrimSpace(row.TestAPIKey); key != "" {
-			if h.svc.sealer == nil {
-				response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试凭据加密未配置，无法保存 API Key", 503))
-				return nil, false
-			}
-			envelope, err := h.svc.sealer.Seal(c.Request.Context(), key,
-				supplysecurity.TestCredentialBinding(strconv.FormatInt(supplierID, 10)))
-			if err != nil {
-				writeSubmissionError(c, err)
-				return nil, false
-			}
-			sealed = supplysecurity.EncodeTestCredential(envelope)
+		// 路线 A：按原样保存（与 A 侧正式配置口径一致）。
+		storedKey := strings.TrimSpace(row.TestAPIKey)
+		if len(storedKey) > 512 {
+			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "测试 Key 超出长度上限", 400))
+			return nil, false
 		}
 		rowID, _ := strconv.ParseInt(strings.TrimSpace(row.ID), 10, 64)
 		rows = append(rows, supplypg.SubmissionRowInput{
 			ID: rowID, StandardModelID: modelID, SupplierModelName: strings.TrimSpace(row.InterfaceModelID),
 			Coefficient: strings.TrimSpace(row.Coefficient), TestBaseURL: strings.TrimSpace(row.TestBaseURL),
-			SealedAPIKey: sealed,
+			SealedAPIKey: storedKey,
 		})
 	}
 	return rows, true

@@ -14,7 +14,7 @@ const entry = `import {createApp,h} from 'vue';import {createPinia} from 'pinia'
 const plugin = { name: "standard-model-page-test", resolveId(id) { if (id === "/@standard-model-test-entry") return "\0standard-model-test-entry"; }, load(id) { if (id === "\0standard-model-test-entry") return entry; }, configureServer(server) { server.middlewares.use(async (req, res, next) => { if (req.url !== "/__standard-model-test") return next(); res.setHeader("Content-Type", "text/html"); res.end(await server.transformIndexHtml(req.url, '<html lang="zh-CN"><head><meta charset="utf-8"><style>body{margin:0;padding:24px;background:#f5f7f8;font-family:"Microsoft YaHei",sans-serif}*{box-sizing:border-box}</style></head><body><div id="app"></div><script type="module" src="/@standard-model-test-entry"></script></body></html>')); }); } };
 let server, browser;
 const errors = [];
-let puts = 0, creates = 0, verifies = 0;
+let puts = 0, creates = 0, manualSaves = 0;
 let failOptions = true;
 const listQueries = [];
 const operationQueries = [];
@@ -42,8 +42,9 @@ try {
       return send({ list: [{ id: 1, action: "VERIFY", entity_type: "standard_model", entity_id: 1, operator_name: "操作员甲", reason: "人工核验", created_at: "2026-10-20T01:00:00Z" }], total: 1, page: 1, size: 100 });
     }
     if (url.pathname.endsWith("/versions")) return send({ list: [{ ...original, permissions: { can_edit: false, can_verify: false } }], page: 1, size: 20, total: 1 });
-    if (request.method() === "PUT") {
+    if (request.method() === "PUT" && url.pathname.endsWith("/manual-completion")) {
       puts++;
+      manualSaves++;
       const body = request.postDataJSON();
       assert.equal(body.expected_revision, "1");
       assert.equal("maintainer_id" in body, false);
@@ -51,16 +52,10 @@ try {
       assert.ok(request.headers()["idempotency-key"]);
       if (puts === 1) return send(null, 409);
       const { expected_revision, reason, ...fields } = body;
-      current = { ...current, ...fields, revision: "2", version_no: "2", current_version_no: "2" };
+      current = { ...current, ...fields, checked_by: "7", revision: "2", version_no: "2", current_version_no: "2", verify_status: "VERIFIED", permissions: { can_edit: true, can_verify: false }, quote_readiness: { ready: true, reasons: [], standard_model_version_no: "2" } };
       return send(current);
     }
-    if (request.method() === "POST" && url.pathname.endsWith("/verify")) {
-      verifies++;
-      assert.deepEqual(request.postDataJSON(), { expected_revision: "2", checked_at: "2026-10-20", reason: "逐项对照官方资料" });
-      current = { ...current, revision: "3", version_no: "3", verify_status: "VERIFIED", permissions: { can_edit: true, can_verify: false }, quote_readiness: { ready: true, reasons: [], standard_model_version_no: "3" } };
-      return send(current);
-    }
-    if (request.method() === "POST") {
+    if (request.method() === "POST" && url.pathname.endsWith("/manual-completion")) {
       creates++;
       const { reason, ...fields } = request.postDataJSON();
       assert.equal(Object.keys(fields).length, 13);
@@ -78,16 +73,21 @@ try {
   await page.getByRole("button", { name: "重新加载筛选选项", exact: true }).click();
   await page.getByText("还有更多选项，请输入名称缩小搜索范围。", { exact: true }).waitFor();
   const select = async (label, option) => {
-    await page.locator(".el-select").filter({ has: page.getByRole("combobox", { name: label, exact: true }) }).click();
-    await page.getByRole("option", { name: option, exact: true }).click();
+    const combo = page.getByRole("combobox", { name: label, exact: true });
+    await page.locator(".el-select").filter({ has: combo }).click();
+    const dropdown = page.locator(".el-select-dropdown:visible").last();
+    const item = dropdown.getByRole("option", { name: option, exact: true });
+    await item.waitFor({ state: "visible" });
+    await item.click();
     await page.getByRole("heading", { name: "标准模型库", exact: true }).click();
   };
-  await select("模型公司", "Company, LLC"); await select("模型公司", "OpenAI");
+  await select("模型公司", "Company, LLC");
   await select("模型类型", "文本");
   await select("部署节点", "国内");
+  await page.getByRole("button", { name: "更多筛选", exact: true }).click();
   await select("供应商", "供应商甲 · 国内");
   await Promise.all([page.waitForResponse(response => response.url().includes("companies=") && !response.url().includes("filter-options")), page.getByRole("button", { name: "查询", exact: true }).click()]);
-  assert.deepEqual(JSON.parse(listQueries.at(-1).companies), ["Company, LLC", "OpenAI"]);
+  assert.deepEqual(JSON.parse(listQueries.at(-1).companies), ["Company, LLC"]);
   assert.deepEqual(JSON.parse(listQueries.at(-1).supplier_ids), ["9007199254740993"]);
   assert.deepEqual(JSON.parse(listQueries.at(-1).regions), ["CN"]);
   await page.screenshot({ path: ".qa/standard-model-multi-filters.png", fullPage: true, animations: "disabled" });
@@ -98,45 +98,45 @@ try {
   await page.getByText("文本输入：0.00000000 USD / 1000000 Token", { exact: true }).waitFor();
   await page.getByRole("button", { name: "维护", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("官方模型名称", { exact: true }).fill("修改后模型");
+  await dialog.getByLabel("官方标准名称", { exact: true }).fill("修改后模型");
   await dialog.getByLabel("操作说明", { exact: true }).fill("核对新名称");
-  await dialog.getByRole("button", { name: "保存资料", exact: true }).click();
+  await dialog.getByRole("button", { name: "保存并留痕", exact: true }).click();
   await dialog.getByText("记录已更新。你的输入已保留，请核对最新资料后重新编辑。", { exact: true }).waitFor();
-  assert.equal(await dialog.getByLabel("官方模型名称", { exact: true }).inputValue(), "修改后模型");
-  assert.ok(await dialog.getByRole("button", { name: "保存资料", exact: true }).isDisabled());
+  assert.equal(await dialog.getByLabel("官方标准名称", { exact: true }).inputValue(), "修改后模型");
+  assert.ok(await dialog.getByRole("button", { name: "保存并留痕", exact: true }).isDisabled());
   await dialog.getByRole("button", { name: "重新读取当前资料", exact: true }).click();
   await page.getByRole("button", { name: "放弃修改", exact: true }).click();
-  await page.waitForFunction(input => input.value === "示例标准模型", await dialog.getByLabel("官方模型名称", { exact: true }).elementHandle());
-  await dialog.getByLabel("官方模型名称", { exact: true }).fill("已保存模型");
+  await page.waitForFunction(input => input.value === "示例标准模型", await dialog.getByLabel("官方标准名称", { exact: true }).elementHandle());
+  await dialog.getByLabel("官方标准名称", { exact: true }).fill("已保存模型");
   await dialog.getByLabel("操作说明", { exact: true }).fill("更正名称");
-  await dialog.getByRole("button", { name: "保存资料", exact: true }).click();
-  await page.getByText("已保存资料", { exact: true }).waitFor();
-  await dialog.getByLabel("操作说明", { exact: true }).fill("逐项对照官方资料");
-  await dialog.getByRole("button", { name: "人工核验", exact: true }).click();
-  await page.getByText("人工核验已记录", { exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "保存并留痕", exact: true }).click();
+  await page.getByText("已保存并记录人工核验", { exact: true }).waitFor();
+  assert.equal(current.verify_status, "VERIFIED");
+  assert.equal(current.revision, "2");
+  assert.equal(manualSaves, 2);
   await page.waitForFunction(() => document.querySelectorAll(".el-message").length === 0);
   await dialog.locator(".el-dialog__body").evaluate(element => { element.scrollTop = 0; });
   await page.screenshot({ path: ".qa/standard-model-maintenance.png", fullPage: true });
   await dialog.getByRole("tab", { name: "历史版本", exact: true }).click();
   await dialog.getByRole("button", { name: "查看", exact: true }).click();
   await dialog.getByRole("heading", { name: "版本 1 · 只读快照", exact: true }).waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "保存资料", exact: true }).count(), 0);
+  assert.equal(await dialog.getByRole("button", { name: "保存并留痕", exact: true }).count(), 0);
   await dialog.getByRole("tab", { name: "操作记录", exact: true }).click();
   await dialog.getByText("操作员甲", { exact: true }).waitFor();
   assert.deepEqual(operationQueries.at(-1), { entity_type: "standard_model", entity_id: "9007199254740993", page: "1", size: "100" });
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
   current.permissions = { can_edit: false, can_verify: false };
   await page.getByRole("button", { name: "维护", exact: true }).click();
-  await dialog.getByText("当前为只读查看；仅绑定维护人可以修改和核验。", { exact: true }).waitFor();
-  assert.ok(await dialog.getByLabel("官方模型名称", { exact: true }).isDisabled());
-  assert.equal(await dialog.getByRole("button", { name: "保存资料", exact: true }).count(), 0);
+  await dialog.getByText("当前为只读查看；仅绑定维护人可以补全资料并保存核验记录。", { exact: true }).waitFor();
+  assert.ok(await dialog.getByLabel("官方标准名称", { exact: true }).isDisabled());
+  assert.equal(await dialog.getByRole("button", { name: "保存并留痕", exact: true }).count(), 0);
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("button", { name: "＋ 新增模型", exact: true }).click();
-  await dialog.getByLabel("官方模型名称", { exact: true }).fill("资料待补模型");
+  await dialog.getByLabel("官方标准名称", { exact: true }).fill("资料待补模型");
   await dialog.getByLabel("操作说明", { exact: true }).fill("先录入待补资料");
-  await dialog.getByRole("button", { name: "保存资料", exact: true }).click();
+  await dialog.getByRole("button", { name: "保存并留痕", exact: true }).click();
   await page.getByText("已保存，仍有资料待补齐", { exact: true }).waitFor();
-  assert.ok(await dialog.getByRole("button", { name: "人工核验", exact: true }).isDisabled());
+  assert.equal(await dialog.getByRole("button", { name: "人工核验", exact: true }).count(), 0);
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
   await page.waitForFunction(() => document.querySelectorAll(".el-message").length === 0);
   await page.screenshot({ path: ".qa/standard-model-desktop.png", fullPage: true });
@@ -144,6 +144,6 @@ try {
   assert.ok(await page.locator(".official-scroll").evaluate(element => element.scrollWidth > element.clientWidth));
   await page.screenshot({ path: ".qa/standard-model-mobile.png", fullPage: true });
   assert.deepEqual(errors, []);
-  assert.equal(puts, 2); assert.equal(verifies, 1); assert.equal(creates, 1);
-  console.log("PASS: single maintenance entry; exact zero price; conflict/input preservation; save; verify; historical read-only; operation logs; nonowner read-only; incomplete draft; narrow-screen scrolling.");
+  assert.equal(puts, 2); assert.equal(creates, 1); assert.equal(manualSaves, 2);
+  console.log("PASS: single maintenance entry; exact zero price; conflict/input preservation; atomic save and attestation; historical read-only; operation logs; nonowner read-only; incomplete draft; narrow-screen scrolling.");
 } finally { await browser?.close(); await server?.close(); }

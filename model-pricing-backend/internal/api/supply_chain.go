@@ -2,11 +2,7 @@ package api
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -26,35 +22,14 @@ import (
 // 并在同一事务里补齐 B 侧 hook（submission_row / onboarding / test_report / outbox）。
 type SupplyChainRuntime struct {
 	raw       *sql.DB
-	sealer    supply.SecretSealer
 	urlPolicy supply.FormalURLPolicy
 }
 
-func NewSupplyChainRuntime(raw *sql.DB, sealer supply.SecretSealer, policy supply.FormalURLPolicy) *SupplyChainRuntime {
-	if sealer == nil {
-		sealer = newDevSealer()
-	}
+func NewSupplyChainRuntime(raw *sql.DB, policy supply.FormalURLPolicy) *SupplyChainRuntime {
 	if policy == nil {
 		policy = devURLPolicy{}
 	}
-	return &SupplyChainRuntime{raw: raw, sealer: sealer, urlPolicy: policy}
-}
-
-type devSealer struct{ aead cipher.AEAD }
-
-func newDevSealer() supply.SecretSealer {
-	key := sha256.Sum256([]byte("stage2-local-only-key"))
-	block, _ := aes.NewCipher(key[:])
-	aead, _ := cipher.NewGCMWithRandomNonce(block)
-	return devSealer{aead: aead}
-}
-
-func (s devSealer) Seal(ctx context.Context, text string, binding supply.SecretBinding) (supply.SecretEnvelope, error) {
-	if err := ctx.Err(); err != nil {
-		return supply.SecretEnvelope{}, err
-	}
-	aad, _ := json.Marshal(binding)
-	return supply.SecretEnvelope{Ciphertext: s.aead.Seal(nil, nil, []byte(text), aad), KeyVersion: "stage2-dev-v1"}, nil
+	return &SupplyChainRuntime{raw: raw, urlPolicy: policy}
 }
 
 type devURLPolicy struct{}
@@ -523,7 +498,7 @@ WHERE entity_type='supplier' AND entity_id=$1 AND field='buyer_id' ORDER BY id D
 			buyerID = n
 		}
 	}
-	svc := supply.NewFormalConfigService(supplypg.NewFormalConfigWork(configs, func(context.Context) (*sql.Tx, error) { return tx, nil }), r.sealer, r.urlPolicy, time.Now)
+	svc := supply.NewFormalConfigService(supplypg.NewFormalConfigWork(configs, func(context.Context) (*sql.Tx, error) { return tx, nil }), r.urlPolicy, time.Now)
 	secret := "stage2-local-secret"
 	view, err := svc.Create(ctx, supply.WriteMeta{ActorID: fmt.Sprint(buyerID), Reason: "Stage2 正式配置", RequestID: fmt.Sprintf("stage2-config-%d", supplierID)}, fmt.Sprint(supplierID), supply.FormalConfigInput{
 		Scope: "全部模型", BaseURL: "https://formal.example/v1", APIKey: &secret, ExternalConfirmed: true,

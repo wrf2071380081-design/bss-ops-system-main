@@ -2,9 +2,6 @@ package supplypg
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -87,13 +84,7 @@ func TestResourceConfigBindingPostgres34(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := sha256.Sum256([]byte("binding-test-key-not-production"))
-	block, _ := aes.NewCipher(key[:])
-	aead, err := cipher.NewGCMWithRandomNonce(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	configService := supply.NewFormalConfigService(NewFormalConfigWork(configs, resolve), configPGSealer{aead}, configPGURL{}, func() time.Time { return now })
+	configService := supply.NewFormalConfigService(NewFormalConfigWork(configs, resolve), configPGURL{}, func() time.Time { return now })
 	secret := "formal-key-not-from-submission"
 	input := supply.FormalConfigInput{Scope: "全部模型", BaseURL: "https://formal.example/v1", APIKey: &secret, ExternalConfirmed: true}
 	config, err := configService.Create(ctx, buyer, "21", input)

@@ -8,7 +8,7 @@ export interface SourceOperation {
 }
 export interface SourceOperationPage { list: SourceOperation[]; total: number; page: number; size: number }
 function invalid(): never { throw new Error("供应来源操作记录响应不符合约定，请重新加载。"); }
-export function validateSourceOperations(value: unknown, page: number, size: number): SourceOperationPage {
+export function validateSourceOperations(value: unknown, page: number, size: number, expectedSupplierID?: string): SourceOperationPage {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const data = value as SourceOperationPage;
   if (!Array.isArray(data.list) || data.page !== page || data.size !== size || !Number.isSafeInteger(data.total) || data.total < data.list.length || data.list.length > size || ((page - 1) * size >= data.total && data.list.length)) invalid();
@@ -16,7 +16,7 @@ export function validateSourceOperations(value: unknown, page: number, size: num
   const list = data.list.map(row => {
     if (!row || typeof row !== "object") invalid();
     for (const key of ["id", "entity_id", "resource_id", "supplier_id"] as const) standardModelVersion(row[key]);
-    if (seen.has(row.id) || !["resource", "plan"].includes(row.entity_type) || (row.entity_type === "resource" && row.entity_id !== row.resource_id) || !["CN", "OVERSEAS"].includes(row.region)) invalid();
+    if (seen.has(row.id) || !["resource", "plan"].includes(row.entity_type) || (row.entity_type === "resource" && row.entity_id !== row.resource_id) || !["CN", "OVERSEAS"].includes(row.region) || (expectedSupplierID && row.supplier_id !== expectedSupplierID)) invalid();
     for (const key of ["supplier_name", "supplier_model_id", "action", "operator_name", "reason", "created_at"] as const) if (typeof row[key] !== "string") invalid();
     if (!row.action || !Number.isFinite(Date.parse(row.created_at))) invalid();
     seen.add(row.id);

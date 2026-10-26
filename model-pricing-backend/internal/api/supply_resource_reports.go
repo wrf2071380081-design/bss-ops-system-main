@@ -202,13 +202,10 @@ func validResourceReport(report *supply.ResourceReportView, resourceID string) b
 	if report.Status != "RUNNING" && report.Status != "COMPLETED" && report.Status != "FAILED" {
 		return false
 	}
-	if report.CreatedAt.IsZero() || report.TargetMatches == nil || (report.Status != "RUNNING" && report.FinishedAt == nil) {
+	if report.CreatedAt.IsZero() || report.TestedAt.IsZero() || strings.TrimSpace(report.TestItem) == "" || (report.Source != "" && report.Source != "SUPPLIER" && report.Source != "INTERNAL") || report.TargetMatches == nil || (report.Status != "RUNNING" && report.FinishedAt == nil) {
 		return false
 	}
 	if report.FinishedAt != nil && report.FinishedAt.Before(report.CreatedAt) {
-		return false
-	}
-	if report.Status == "COMPLETED" && (report.ConnectivityPassed == nil || report.PressurePassed == nil) {
 		return false
 	}
 	for _, metric := range []*string{report.Metrics.ConnectionMS, report.Metrics.RPS, report.Metrics.TPS} {
@@ -254,6 +251,9 @@ func validResourceReportDetail(detail *supply.ResourceReportDetail, resourceID, 
 	seen := make(map[string]struct{}, len(detail.Files))
 	for _, file := range detail.Files {
 		if _, err := planPositiveID(file.ID); err != nil || strings.TrimSpace(file.Name) == "" || strings.ContainsAny(file.Name, `/\\`) {
+			return false
+		}
+		if file.CanDownload && file.UnavailableReason != "" {
 			return false
 		}
 		if _, ok := seen[file.ID]; ok {

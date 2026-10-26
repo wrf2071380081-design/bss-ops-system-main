@@ -13,6 +13,7 @@ import CurrentCostBaselineList from "../views/internal/cost/CurrentCostBaselineL
 import PriceBookList from "../views/internal/pricing/PriceBookList.vue";
 import PricingPolicyList from "../views/internal/pricing/PricingPolicyList.vue";
 import SupplierWorkspace from "../views/internal/suppliers/SupplierWorkspace.vue";
+import SupplierAccessModels from "../views/internal/suppliers/SupplierAccessModels.vue";
 import SupplierEntityList from "../views/internal/suppliers/SupplierEntityList.vue";
 import CustomerWorkspace from "../views/internal/customers/CustomerWorkspace.vue";
 import FinanceCenter from "../views/internal/finance/FinanceCenter.vue";
@@ -124,6 +125,19 @@ export const internalRoutes: RouteRecordRaw = {
         title: "供应商主体档案",
         menu: false,
         order: 51,
+      },
+    },
+    {
+      path: "suppliers/:supplierId/models",
+      component: SupplierAccessModels,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.suppliers",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.suppliers"],
+        title: "供应商接入模型",
+        menu: false,
+        order: 52,
       },
     },
     {

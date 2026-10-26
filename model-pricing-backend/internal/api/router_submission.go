@@ -96,7 +96,7 @@ func registerSubmissionRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, po
 	}
 	// 一期只开放内部触发：供应商侧自助发起要等申报多行（M3）。
 	if portal == "internal" && deps.TestJobs != nil && deps.IdemStore != nil {
-		handler := &submissionTestHandler{starter: deps.TestJobs, targets: deps.ResourceTestTargets, decode: deps.TestCredentialDecoder}
+		handler := &submissionTestHandler{starter: deps.TestJobs, targets: deps.ResourceTestTargets}
 		protected.POST("/resources/:id/tests",
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			handler.start,
@@ -121,7 +121,6 @@ type startTestRequest struct {
 type submissionTestHandler struct {
 	starter TestJobStarter
 	targets ResourceTestTargetLoader
-	decode  func(ctx context.Context, stored, supplierID string) (string, error)
 }
 
 func (h *submissionTestHandler) start(c *gin.Context) {
@@ -169,16 +168,12 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 			if baseURL == "demo" {
 				apiKey = "demo-key"
 			} else {
-				if h.decode == nil {
-					response.Error(c, apperr.New(apperr.ErrSystem.Code, "凭据解密不可用，无法复测真实目标", 503))
+				// 路线 A：资源上存的就是原样 Key。
+				if strings.TrimSpace(target.SealedAPIKey) == "" {
+					response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "该资源未保存测试 Key", 400))
 					return
 				}
-				plain, err := h.decode(c.Request.Context(), target.SealedAPIKey, target.SupplierID)
-				if err != nil {
-					response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试凭据无法解密（密钥版本或主体不匹配）", 503))
-					return
-				}
-				apiKey = plain
+				apiKey = target.SealedAPIKey
 			}
 		}
 	}

@@ -65,11 +65,12 @@ type ResourceReportSummary struct {
 	Metrics                                                          ResourceReportMetrics
 }
 type ResourceRecord struct {
-	Resource *Resource
-	Model    *StandardModel
-	Supplier ResourceSupplier
-	Config   *FormalConfigView
-	Report   *ResourceReportSummary
+	Resource   *Resource
+	Model      *StandardModel
+	Supplier   ResourceSupplier
+	Config     *FormalConfigView
+	Report     *ResourceReportSummary
+	AdmittedAt *time.Time
 }
 type ResourceTestView struct {
 	ReportID           string                `json:"report_id,omitempty"`
@@ -111,6 +112,7 @@ type ResourceSnapshot struct {
 	QuoteReadiness       ResourceQuoteReadiness `json:"quote_readiness"`
 	CreatedAt            time.Time              `json:"created_at"`
 	UpdatedAt            time.Time              `json:"updated_at"`
+	AdmittedAt           *time.Time             `json:"admitted_at"`
 }
 
 func resourceStateKnown(state string) bool {
@@ -148,7 +150,15 @@ func BuildResourceSnapshot(record *ResourceRecord) (*ResourceSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	view := &ResourceSnapshot{ID: r.ID, SupplierID: r.SupplierID, SupplierName: supplier.Name, StandardModelID: m.ID, ModelName: m.Data.Name, OfficialID: m.Data.OfficialID, Company: m.Data.Company, ModelType: m.Data.ModelType, Region: r.Region, SupplierModelID: r.SupplierModelID, Coefficient: coefficient.StringFixed(4), BuyerID: r.BuyerID, State: r.State, EverAdmitted: r.EverAdmitted, Revision: r.Revision, FormalConfigID: r.FormalConfigID, FormalConfigRevision: r.FormalConfigRevision, OfficialPriceItems: m.Clone().Data.PriceItems, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
+	var admittedAt *time.Time
+	if record.AdmittedAt != nil {
+		if !r.EverAdmitted || record.AdmittedAt.IsZero() {
+			return nil, ErrReadContract
+		}
+		value := record.AdmittedAt.UTC().Truncate(time.Microsecond)
+		admittedAt = &value
+	}
+	view := &ResourceSnapshot{ID: r.ID, SupplierID: r.SupplierID, SupplierName: supplier.Name, StandardModelID: m.ID, ModelName: m.Data.Name, OfficialID: m.Data.OfficialID, Company: m.Data.Company, ModelType: m.Data.ModelType, Region: r.Region, SupplierModelID: r.SupplierModelID, Coefficient: coefficient.StringFixed(4), BuyerID: r.BuyerID, State: r.State, EverAdmitted: r.EverAdmitted, Revision: r.Revision, FormalConfigID: r.FormalConfigID, FormalConfigRevision: r.FormalConfigRevision, OfficialPriceItems: m.Clone().Data.PriceItems, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, AdmittedAt: admittedAt}
 	if view.OfficialPriceItems == nil {
 		view.OfficialPriceItems = []PriceItem{}
 	}

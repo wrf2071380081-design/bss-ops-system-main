@@ -1,9 +1,10 @@
 package supplypg
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"model_bss/internal/domain/supply"
 	"strings"
@@ -37,27 +38,47 @@ func TestFormalConfigStoreRejectsUnsafeSchemaAndMissingDependencies(t *testing.T
 	}
 }
 
-func TestFormalCredentialWireKeepsNativeCapacityAndOpaqueBytes(t *testing.T) {
-	secret := supply.SecretEnvelope{KeyVersion: "v1", Ciphertext: bytes.Repeat([]byte{0xfa}, 378)}
-	wire, err := encodeFormalSecret(secret)
-	if err != nil || len(wire) != 512 {
-		t.Fatalf("native capacity boundary %d %v", len(wire), err)
+func TestFormalAPIKeyUsesPlaintextAndHonorsNativeCapacity(t *testing.T) {
+	key := strings.Repeat("k", 512)
+	if err := validateFormalAPIKey(key); err != nil {
+		t.Fatalf("native varchar capacity rejected: %v", err)
 	}
-	decoded, err := decodeFormalSecret(wire)
-	if err != nil || decoded.KeyVersion != secret.KeyVersion || !bytes.Equal(decoded.Ciphertext, secret.Ciphertext) {
-		t.Fatal("opaque credential round trip", err)
+	if err := validateFormalAPIKey(key + "k"); !errors.Is(err, supply.ErrReadContract) {
+		t.Fatal("over-capacity key accepted")
 	}
-	decoded.Ciphertext[0] = 0
-	if secret.Ciphertext[0] != 0xfa {
-		t.Fatal("decoded envelope aliases original")
-	}
-	secret.Ciphertext = append(secret.Ciphertext, 0xfa)
-	if got, err := encodeFormalSecret(secret); err == nil || got != "" {
-		t.Fatal("credential was truncated to fit")
-	}
-	for _, bad := range []string{"legacy-secret", wire + "=", "se1..AA", "se1.djE.", "se1.djE.%%%", strings.Replace(wire, "se1.", "se2.", 1)} {
-		if _, err := decodeFormalSecret(bad); !errors.Is(err, supply.ErrReadContract) {
-			t.Fatal("unknown or malformed envelope accepted")
+	for _, bad := range []string{"", "  ", "bad\x00key", string([]byte{0xff})} {
+		if err := validateFormalAPIKey(bad); !errors.Is(err, supply.ErrReadContract) {
+			t.Fatalf("invalid key accepted: %q", bad)
 		}
+	}
+}
+
+func TestFormalStoreDetectsLegacySealedKeyWithoutTreatingItAsPlaintext(t *testing.T) {
+	legacy := "se1." + base64.RawURLEncoding.EncodeToString([]byte("old-key-v1")) + "." + base64.RawURLEncoding.EncodeToString(make([]byte, 28))
+	if !isLegacySealedFormalAPIKey(legacy) {
+		t.Fatal("valid legacy envelope was not recognized")
+	}
+	if isLegacySealedFormalAPIKey("se1.not-an-envelope") || isLegacySealedFormalAPIKey("se1."+base64.RawURLEncoding.EncodeToString([]byte("v1"))+"."+base64.RawURLEncoding.EncodeToString([]byte("too-short"))) {
+		t.Fatal("plain or malformed key was incorrectly classified as legacy encryption")
+	}
+}
+
+func TestFormalConfigLogWritesKeyFingerprintAndReadsLegacyField(t *testing.T) {
+	key := "provider-secret-for-fingerprint-test"
+	entry := formalConfigEnvelope{Contract: "supply.formal_config", SchemaVersion: 1, Operation: "CREATE", APIKeyFingerprint: formalFingerprint(key)}
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), key) || !strings.Contains(string(encoded), `"api_key_fingerprint"`) || strings.Contains(string(encoded), `"sealed_fingerprint"`) {
+		t.Fatalf("new audit snapshot has an unsafe or stale fingerprint field: %s", encoded)
+	}
+	var legacy formalConfigEnvelope
+	if err := json.Unmarshal([]byte(`{"contract":"supply.formal_config","schema_version":1,"operation":"CREATE","sealed_fingerprint":"`+formalFingerprint(key)+`"}`), &legacy); err != nil || legacy.keyFingerprint() != formalFingerprint(key) {
+		t.Fatalf("legacy audit snapshot can no longer be read: %v", err)
+	}
+	entry.LegacySealedFingerprint = entry.APIKeyFingerprint
+	if entry.keyFingerprint() != "" {
+		t.Fatal("ambiguous fingerprint field combination was accepted")
 	}
 }

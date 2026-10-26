@@ -69,7 +69,14 @@ func (h *supplyPlanExecutionHandler) execute(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	if result == nil || result.Plan == nil || result.Plan.ID != c.Param("id") || result.Plan.CreatedBy != meta.ActorID || result.Plan.Revision != expected+1 {
+	executor := ""
+	if result != nil && result.Plan != nil {
+		executor = result.Plan.CreatedBy
+		if result.Plan.Kind == "PRICE_CHANGE" {
+			executor = result.Plan.AssigneeID
+		}
+	}
+	if result == nil || result.Plan == nil || result.Plan.ID != c.Param("id") || executor != meta.ActorID || result.Plan.Revision != expected+1 {
 		supplyHTTPError(c, supply.ErrReadContract)
 		return
 	}

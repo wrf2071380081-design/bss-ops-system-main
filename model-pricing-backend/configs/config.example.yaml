@@ -81,6 +81,4 @@ test_platform:
   poll_interval: 15s      # 轮询间隔（Q11：轮询为主、回调为辅）
   poll_limit: 50          # 单轮最多处理多少个未终态任务
   report_dir: "bin/test-reports"   # 报告本地副本目录（Q12）
-  # 是否允许把供应商测试凭据还原成明文（调外部平台必需）。false = 真实目标测试退回 503。
-  # 需要同时配置 MODEL_BSS_FORMAL_CONFIG_KEY / _KEY_VERSION，否则无解密能力。
-  allow_credential_open: true
+  # 凭据策略（2026-10-26 与 A 侧对齐）：测试 Key 原样入库，不再加密/解密。

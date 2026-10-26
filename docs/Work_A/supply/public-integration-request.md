@@ -1,18 +1,22 @@
 # A 公共及跨模块接入需求
 
-## 当前交接状态（2026-10-22）
+## 2026-10-23 当前决策覆盖
 
-**接手优先读[三模块交接清单](./2026-10-22-handoff.md)和[TDD验收清单](../TDD/2026-10-22-handoff-acceptance.md)。** 本文保留各阶段的接口细节，历史状态不代表当前进度；最新真实页面/API/隔离PG证据为SUMMARY Stage54、56、57，Go编译及当前API部署见Stage59–60。
+DEC-018 已按用户要求移除 F4 正式配置 Key 的 AES-GCM 加密、`SecretSealer` 依赖及运行密钥环境变量。当前新建/轮换把 Key 原样保存到现有 `api_key_enc` 物理列；API、页面和操作日志仍只使用安全投影，不回显原文。旧 `se1` 值需要采购人重新录入，不自动解密或迁移。URL策略、采购人权限、版本和事务规则继续有效。本文以下较早阶段关于加密器/密钥的描述是当时的历史接线要求，均由本节及 [DEC-018](./decisions.md#dec-018正式供应商配置-key-不做-aes-gcm-加密) 和 [TDD Stage 78](../TDD/SUMMARY.md#stage-78正式配置key移除aes-gcm加密) 覆盖。
 
-- 已接入：F1正式页面/读写、F3资源读取、配置读取、公告个人已阅、计划读取/维护及模型级日志/具体计划导航。主运行库36/dirty=false，不再等待“32升级”或首次挂载基础路由。
-- A继续完成：正式配置密文真实写入验收；绑定/准入的B事实接入与真实验收，报告/文件、批准改价适配；F13执行/提醒待Docker业务数据联合验收；F12已交付v36兼容只读投影，完整合同授信写入与附件还需按第19节推进。共享main/config/幂等/调度/工作台框架按统一维护规则协作，不另设公共负责人。
-- 待B：来源行/流程节点/办理人/选定报告/已批准未应用变更的可信事实，报告历史/文件接口及批准改价来源。A需继续适配和补齐实际改价办理入口。
-- 待C：F14日志/绑定helper、报价前重查A资格与资源变化事件幂等消费。供应商门户为A前端/B后端，F12业务归A，结构/附件协作另见H-X01。
-- 当前源码运行组合已注入 `PlanExecutor`；只向原发起人的PENDING上下架计划开放执行。BLOCKED以提交后的409终态快照保存并同键重放；到期提醒worker按当前revision/status去重写公告；工作台仓储已投影具体plan_id。Go定向测试与当前API部署见SUMMARY Stage59；Stage60已设置本机正式配置密钥。密文创建、计划执行/重放和提醒投递仍需真实业务数据验收。
+## 当前交接状态（2026-10-23）
+
+**接手优先读[三模块交接清单](./2026-10-22-handoff.md)和[TDD验收清单](../TDD/handoff-acceptance.md)。** 本文保留各阶段的接口细节，历史状态不代表当前进度；当前证据索引见SUMMARY Stage54、56–57、70–79，其中Stage73新增报告读取适配、Stage78–79验证DEC-018后的正式配置策略。Stage79只在临时API/隔离v36库验证当前工作区源码，没有更新主API容器。
+
+- 已接入：F1正式页面/读写、F3资源读取、配置读写、公告个人已阅、计划读取/维护、模型级日志/具体计划导航及F13部分执行能力。Stage79已通过正式配置页面/API/v36隔离库的Key新建、轮换和脱敏回读，主运行库仍36/dirty=false。
+- A继续完成：不同采购人403及被引用配置停用保护；绑定/准入的B事实接入与真实验收、受控报告附件下载及批准改价来源适配；F13跨人员/ONLINE场景。报告列表/详情已有源码读取器，Stage79后端构建覆盖该读取器，但尚无非空报告数据的专项API/数据库验收。Stage70/71/75已验证下架执行、提醒、计划导航及改价计划成功/BLOCKED同键409重放。Stage79验证的当前工作区源码未部署到 `model_bss_api_latest`。本机跨端口PUT受CORS限制，同源Vite代理已通过。F12已交付v36兼容只读投影，完整合同授信写入与附件还需按第19节推进。共享main/config/幂等/调度/工作台框架按统一维护规则协作，不另设公共负责人。
+- 待B/附件提供方：来源行/流程节点/办理人/选定报告/已批准未应用变更的可信事实；受控报告文件的元数据、存储和授权下载能力；批准改价来源。A需继续适配并补齐实际改价办理入口。
+- 待C：F14日志/绑定helper、报价前重查A资格与资源变化事件幂等消费。供应商门户按业务模块及A任务书分配范围推进；B/F5–F7提供申报、办理、测试等跨模块事实。F12业务归A，结构/附件协作另见H-X01。
+- 当前源码运行组合已注入 `PlanExecutor`；只向原发起人的PENDING上下架计划开放执行。Stage75已通过改价计划的真实HTTP/PG成功和BLOCKED同键409重放；Stage70/71已验证下架成功、提醒投递及修订/取消后的提醒失效。工作台仓储已投影具体plan_id。Stage78移除正式配置运行密钥依赖，Stage79通过当前策略的真实页面/API/v36隔离库联调。其他人员权限、异body同键冲突、技术失败回滚及B驱动的ONLINE前置仍需验收。
 
 > 当前以[33–36结构映射](./2026-10-21-schema34-baseline.md)实施。F1无需先新增独立维护人/revision/核验列，原“缺字段”清单不再作为主装配前提；仍需真实认证、公共日志及幂等提交接入。本文下面的早期结构建议以当前基线修订。
 
-初稿日期：2026-10-20；当前交接更新：2026-10-22。
+初稿日期：2026-10-20；当前交接更新：2026-10-23。
 范围：开发者A的标准模型、资源、正式配置、计划与公告及跨模块接入。依据总览/A任务书/共享契约，只有A/B/C三条线：A完成供应侧与F13业务，B提供办理/测试，C提供F14日志/绑定工具并消费报价资格和资源事件。共享文件要求统一维护但未点名独立负责人，不能由此转移A实现责任。本文不是迁移脚本，也不代表未验收依赖已经交付。
 
 2026-10-21接入补充：当前跨模块规则见[需求结论与规划](./2026-10-21-requirements-and-plan.md)。优先接通标准模型库和模型广场，之后集成工作台。公共工作台默认本人；普通待办单人绑定，供应商报价共享审批候选事项单独聚合。报价模块需在一次审批与分派完成后提供后续任务，防重复决策/分派；A消费服务端可信办理事实。人员筛选、审批资格和业务记录操作权不得互相替代。
@@ -21,15 +25,15 @@
 
 ## 1. 当前可接入的 A 代码
 
-F1 基础构造为 `api.NewStandardModelSupplyDeps(StandardModelSupplyOptions{DB, Schema, IdemStore, SourcePolicy, Clock})`。现已提供覆盖 F1/F3/F4/F13 的 `api.NewSupplyRouteModule(SupplyRouteModuleOptions{...})`：它构造全部A路由依赖，并向可信B接入方返回 `ResourceCreation` 与 `TestEvidence` 服务。两种构造都要求A SQL写入与 `IdemStore` 共用同一连接池；完整入口对身份、日志、密钥封装、URL策略、B proof/report/申报行/outbox及计划待办配置查询均无成功默认值，缺少提供方时返回明确依赖错误。公共主装配应调用完整入口，将 `module.Deps` 传给 `RegisterSupplyRoutes`，并把两个B调用服务接入真实流程。完整入口的构造测试及API包回归通过，见[TDD Stage 38](../TDD/SUMMARY.md#stage-38v36结构下的a模块组合入口)。此代码尚未接入公共 `main/Deps` 或运行容器；不能以替身参数代替真实身份、加密或B业务事实。
+F1 基础构造为 `api.NewStandardModelSupplyDeps(StandardModelSupplyOptions{DB, Schema, IdemStore, SourcePolicy, Clock})`。现已提供覆盖 F1/F3/F4/F13 的 `api.NewSupplyRouteModule(SupplyRouteModuleOptions{...})`：它构造全部A路由依赖，并向可信B接入方返回 `ResourceCreation` 与 `TestEvidence` 服务。两种构造都要求A SQL写入与 `IdemStore` 共用同一连接池；完整入口对身份、日志、URL策略、B proof/report/申报行/outbox及计划待办配置查询均无成功默认值，缺少提供方时返回明确依赖错误。完整入口已接入当前公共main/Deps与内部主路由；Stage65验证其页面认证读取，Stage75更新过Docker API。Stage79仅在临时API验证当前工作区Key变更，未替换主容器。Stage38描述的是构造器首次实现时期的接入状态；真实B业务事实仍不能由替身参数代替。
 
 Stage39在隔离库model_bss_a_schema34_334c39验证完整构造器的模型/资源/公告/计划GET及F1业务/日志/幂等同事务与重放，临时数据已清理。该阶段证据不代替真实B提供方联调；当前基础运行装配已完成，完整剩余依赖由A交构造与业务适配、B交事实、共享main按约定维护，见当前交接状态。
 
-2026-10-21最新补充：`supplypg.NewResourceRepository(schema, readRunner, factsLoader)` 组合完整资源读取与选项，注入 `SupplyDeps.Resources = supply.NewResourceReader(repository)`。readRunner可复用 `supplypg.ModelReadTransactions(db)`，事实提供方必须使用传入的同一sql.Tx。A控制快照已提供真实 `NewResourceStateStore(schema, logAppender).FactsLoader(reportLoader, configLoader)`；configLoader可注入 `NewFormalConfigStore(schema, configLogAppender).ResourceView`，B提供可信报告来源与目标版本。不能在装配中用当前原生行临时拼造已保存revision投影。见[F3读取契约](./f3-postgres-read.draft.md)及[控制存储与创建适配](./resource-control-storage.draft.md)。本地真实SQL/HTTP验证不代表主路由已启用。
+2026-10-21补充：`supplypg.NewResourceRepository(schema, readRunner, factsLoader)` 组合完整资源读取与选项，注入 `SupplyDeps.Resources = supply.NewResourceReader(repository)`。readRunner可复用 `supplypg.ModelReadTransactions(db)`，事实提供方必须使用传入的同一sql.Tx。A控制快照已提供真实 `NewResourceStateStore(schema, logAppender).FactsLoader(reportLoader, configLoader)`；configLoader可注入 `NewFormalConfigStore(schema, configLogAppender).ResourceView`，B提供可信报告来源与目标版本。不能在装配中用当前原生行临时拼造已保存revision投影。见[F3读取契约](./f3-postgres-read.draft.md)及[控制存储与创建适配](./resource-control-storage.draft.md)。本段记录本地SQL/HTTP证据边界；公共主路由后续已装配，见Stage65。
 
 公共日志适配需原样保存A的RESOURCE_REVISION安全快照，保持追加/保留，业务动作在JSON operation字段。操作记录展示应按业务动作显示中文文案，不能向用户展示存储保留标记。A创建工作单元加入外层事务并注入B LockSource/AttachRow/PrepareReport，锁序、来源版本、真实审批分派和草稿报告转存须由B真实实现后联合验收；A未实现另一套审批系统。
 
-正式配置接入使用 `NewFormalConfigWork(configStore, resolveTx)` 注入既有FormalConfigService，同时提供真实SecretSealer与FormalURLPolicy；缺失不得默认成功。新内部供应商创建须按DEC-008在同事务保存明确初始归属记录，公共转交继续该记录链并共用supplier锁，不能让配置命令补猜归属。configLogAppender保留FORMAL_CONFIG_REVISION的安全View/指纹，不能写入密文或密钥版本。资源初次绑定可注入 `NewResourceBindingWork(state, configs, resolveTx, proofLoader)`；B提供当前节点可信资格，绑定与配置维护必须使用同一supplier锁。详见[配置存储及锁序](./formal-config-storage.draft.md)。
+正式配置接入使用 `NewFormalConfigWork(configStore, resolveTx)` 注入既有FormalConfigService，同时提供真实FormalURLPolicy；缺少URL策略不得默认成功。新内部供应商创建须按DEC-008在同事务保存明确初始归属记录，公共转交继续该记录链并共用supplier锁，不能让配置命令补猜归属。configLogAppender保留FORMAL_CONFIG_REVISION的安全View/Key指纹，不能写入Key原文。资源初次绑定可注入 `NewResourceBindingWork(state, configs, resolveTx, proofLoader)`；B提供当前节点可信资格，绑定与配置维护必须使用同一supplier锁。详见[配置存储及锁序](./formal-config-storage.draft.md)。
 
 证据关联使用 `NewTestEvidenceWork(state, resolveTx, authority)`，authority同事务确认可信B调用及报告引用；A仍重读真实报告/任务。登记接入使用 `NewResourceAdmissionWork(state, configs, resolveTx, ResourceAdmissionHooks)`，必须注入B当前proof、选定报告来源、逐行完成CAS及公共outbox写入。outbox writer返回真实主键，A核对PENDING事件的类型/安全payload/请求号/人员，不能用空回调占位。事件采用supply.resource_admitted/v1，schema与字段见[事务/事件契约](./resource-admission-storage.draft.md)。以上服务仍无新浏览器写入口；外层提交后响应、真实幂等与B后端仍须装配。
 
@@ -105,11 +109,11 @@ F4/F3 及后续阶段所需 schema/接口在对应切片继续补充，不因 F1
 独立服务 `NewFormalConfigService(work, sealer, urls, clock)` 已提供 Create/Update/Disable；具体 Go 端口位于 `internal/domain/supply/formal_config.go`，业务依据见[F4 契约](./supply-suppliers.draft.md)。
 
 - `FormalConfigUnitOfWork.Within` 加入调用方事务；端口包括 SupplierForUpdate、ConfigForUpdate、ID分配、创建/CAS更新、资源引用查询及安全日志追加。
-- `SecretSealer.Seal(ctx, plaintext, SecretBinding)` 必须采用版本化认证加密，并以 purpose/supplier/config 绑定认证附加数据。主密钥由环境/密钥管理能力提供，不能从普通数据库配置读取或硬编码。测试替身不可部署。
-- 密文及密钥版本仅用于持久化，安全投影 `FormalConfigView` 用于返回和操作日志；普通查询不得直接序列化持久化对象。加密器及基础设施也不得自行记录明文输入。
+- 按DEC-018，正式配置 Key 原样存入当前共享物理列，不再定义 `SecretSealer`、密钥版本或AES-GCM运行依赖。部署源码前应按组织要求限制数据库备份、日志和运维访问。
+- 安全投影 `FormalConfigView` 用于返回和操作日志；普通查询不得直接序列化持久化对象。基础设施也不得记录明文输入。
 - `FormalURLPolicy` 负责本地环境策略，可要求HTTPS；不在事务锁内执行网络探测。
-- schema需核对区域来源、状态、revision、确认人员/时间/对应版本及密文版本字段。绑定配置、修改供应商区域和停用配置必须采用一致锁顺序与资源引用约束；单靠先查引用数量不足以证明并发正确性。
-- Stage 35 已在 A 注册器实现正式配置 POST 新建、PUT 更新、DELETE 逻辑停用写端点，并有严格 HTTP 契约测试。GET 配置列表、供应商主体/网站账户/资质附件页面、公共主路由及公共密钥/URL策略接线仍未完成；HTTP接口替身测试不证明生产供应商归属、密钥或真实事务已经接入。
+- schema需核对区域来源、状态、revision、确认人员/时间及对应版本。`api_key_enc` 目前只是历史列名，若要重命名按共享迁移流程处理。绑定配置、修改供应商区域和停用配置必须采用一致锁顺序与资源引用约束；单靠先查引用数量不足以证明并发正确性。
+- Stage 35 已在 A 注册器实现正式配置 POST 新建、PUT 更新、DELETE 逻辑停用写端点，并有严格 HTTP 契约测试。GET 配置列表、供应商主体/网站账户/资质附件页面、公共主路由及 URL 策略接线仍未完成；HTTP接口替身测试不证明生产供应商归属、Key或真实事务已经接入。
 
 ## 8. v0.22 F1 前端装配
 
@@ -166,7 +170,7 @@ A模型与资源普通阅读不使用该审批字段缩小范围；普通办理�
 
 `model-pricing-web/src/views/internal/resources/NoticeDetailDialog.vue` 接收 id、可选 selectedStaffID、可选 readOnly；监听 close 关闭、read 刷新公共工作台计数。公共人员选择必须传真实StaffID，查看他人时同时传 readOnly=true。组件仅显式点击写入，GET不自动标已读，服务端仍承担身份与权限判断。
 
-`PlanSummaryDialog.vue` 接收id、可选resourceID/region及close/changed事件，展示已知计划详情，按服务端能力提供修改/取消/实际完成；指定上下文不匹配时拒绝展示。Stage58已在源码开放符合权限的执行能力，工作台plan_id投影亦已接入；Docker实际验收尚未完成。
+`PlanSummaryDialog.vue` 接收id、可选resourceID/region及close/changed事件，展示已知计划详情，按服务端能力提供修改/取消/实际完成；指定上下文不匹配时拒绝展示。Stage70已在隔离v36完成非空工作台计划深链和下架执行验收；Stage75补充改价计划BLOCKED提交及真实幂等重放。多条并列计划和跨人员工作台范围仍待验。
 
 资源详情已内部挂载 `ResourceNoticesPanel.vue`，按 resourceID/region 查询当前人员公告，不需新增公共菜单。组件、截图和实际验证边界见[前端记录](../TDD/SUMMARY.md#stage-30)。
 
@@ -178,7 +182,7 @@ ModelReadStore实现可选ModelFilterOptionsStore后可使用标准模型filter-
 
 ## 14. 上下架计划装配与历史直接入口
 
-当前计划列表/维护及页面已接入并真实验证（Stage54/57）；执行器、409终态重放和提醒worker已接入运行组合，Go 1.26编译并部署到本地8080 API（TDD Stage59/65）。真实计划执行、BLOCKED HTTP/数据库重放和到期提醒投递仍缺非空业务计划的联合验收。以下保留方案演进说明，直接state接口和ResourceStateDialog不得重新挂载；当前交接以第15节及H-P02–04为准。
+当前计划列表/维护及页面已接入并真实验证（Stage54/57）；执行器、409终态重放和提醒worker已接入运行组合，Go 1.26编译并部署到本地API（TDD Stage59/65/75）。Stage70/71/75已完成下架执行、提醒和改价计划真实HTTP/PG验收；剩余场景见交接清单H-P02–04。以下保留方案演进说明，直接state接口和ResourceStateDialog不得重新挂载；当前交接以第15节为准。
 
 PlanMaintenanceTransaction必须实现HasPendingConfigurationChange：B在同事务提供该资源“已通过尚未应用”的变更事实，true阻断创建，依赖失败关闭。与B审批/应用统一资源锁或等价约束，不在锁内远程调用，不从前端列表推断。此项补齐原型539行此前遗漏的门槛，见[修正记录](../TDD/SUMMARY.md#stage-15)。
 
@@ -188,13 +192,13 @@ PlanReadStore增加可选PlanListStore能力后，现有SupplyDeps.Plans即可�
 
 计划维护HTTP通过SupplyDeps.PlanWriter注入NewPlanMaintenanceService(work,clock)，提供创建/修改/取消三个入口；执行HTTP通过SupplyDeps.PlanExecutor接入，详见第15节。必须保留requireSupplyInternalStaff、认证StaffID、公共幂等和RequestID；真实work加入外层事务。早期[维护HTTP记录](../TDD/SUMMARY.md#stage-18)仅记录当时切片状态。
 
-当前计划创建/维护服务为PlanMaintenanceService，A已提供[原生PlanStore](./plan-storage.draft.md)，实现读取/列表及PlanMaintenanceUnitOfWork。构造NewPlanStore(schema, readRunner, resourceStateStore, hooks)，只读runner建议ModelReadTransactions(db)；写hooks提供Resolve（借用当前外层事务）、Log、Outbox以及B PendingConfiguration。同资源锁保护状态维度唯一、CAS、PLAN_REVISION不可变日志及提醒outbox。A提醒worker已接入源码，按revision防陈旧，due_at不触发实际状态变化；Go编译并部署到本地API已完成，真实到期计划投递仍待验收。维护/读取及真实并发证据见[TDD汇总](../TDD/SUMMARY.md)。
+当前计划创建/维护服务为PlanMaintenanceService，A已提供[原生PlanStore](./plan-storage.draft.md)，实现读取/列表及PlanMaintenanceUnitOfWork。构造NewPlanStore(schema, readRunner, resourceStateStore, hooks)，只读runner建议ModelReadTransactions(db)；写hooks提供Resolve（借用当前外层事务）、Log、Outbox以及B PendingConfiguration。同资源锁保护状态维度唯一、CAS、PLAN_REVISION不可变日志及提醒outbox。A提醒worker已接入源码，按revision防陈旧，due_at不触发实际状态变化；Stage70/71已验证提醒投递、修订/取消失效和防重，见[TDD汇总](../TDD/SUMMARY.md)。
 
 > 本节原装配方案已被DEC-010取代，当前不得按此装配直接HTTP入口。上下架必须先创建计划，再由原发起人登记完成，见[纠正记录](../TDD/2026-10-20-plan-only-correction.md)。以下保留历史接口说明。
 
-当前执行方案为PlanExecutionService及PlanExecutionUnitOfWork，不注册直接state HTTP。执行结果Conflict=true在外层幂等事务提交后返回409，并由终态快照保存/重放；日志或提交失败则返回技术错误且没有部分写入。计划/资源加锁及同维度唯一规则见[计划执行记录](../TDD/SUMMARY.md#stage-17)。该协议已编译并部署，真实业务执行与PG幂等重放仍待有计划数据时联合验收。
+当前执行方案为PlanExecutionService及PlanExecutionUnitOfWork，不注册直接state HTTP。执行结果Conflict=true在外层幂等事务提交后返回409，并由终态快照保存/重放；日志或提交失败则返回技术错误且没有部分写入。计划/资源加锁及同维度唯一规则见[计划执行记录](../TDD/SUMMARY.md#stage-17)。Stage70已验证下架成功路径；Stage75已通过内部改价计划真实HTTP/PG成功、BLOCKED提交及同键同请求409重放。跨人员、异body同键冲突、技术失败回滚和依赖B事实的ONLINE路径仍待验收。
 
-A现已提供NewPlanExecutionWork(plans, configs, reportRefLoader)的[原生执行适配](./plan-storage.draft.md)，复用PlanStore的Resolve/Log/Outbox；执行成功写资源、DONE计划、不可变日志、真实事件与公告，失败提案BLOCKED带原因。执行HTTP与原发起人 `can_execute` 已装入运行组合；Go/服务构建、领域PostgreSQL执行事务和HTTP替身重放用例通过。请保留“结果→提交→409/200及幂等响应”的顺序；Outbox必须持久化传入OccurredAt/actor/request_id。ONLINE提供真实FormalConfigStore与B当前报告引用；OFFLINE不要求可报价资料前置。真实资源上的HTTP成功/BLOCKED数据库提交及同键重放仍待联调。
+A现已提供NewPlanExecutionWork(plans, configs, reportRefLoader)的[原生执行适配](./plan-storage.draft.md)，复用PlanStore的Resolve/Log/Outbox；执行成功写资源、DONE计划、不可变日志、真实事件与公告，失败提案BLOCKED带原因。执行HTTP与原发起人 `can_execute` 已装入运行组合。请保留“结果→提交→409/200及幂等响应”的顺序；Outbox必须持久化传入OccurredAt/actor/request_id。ONLINE提供真实FormalConfigStore与B当前报告引用；OFFLINE不要求可报价资料前置。Stage70/75已用隔离v36库和真实HTTP/PG验证下架及改价计划的成功/阻断核心链路；跨人员、异body同键冲突、技术失败回滚和依赖B的ONLINE仍待联调。
 
 SupplyDeps.ResourceStates注入NewResourceStateService(work,clock)，A注册器提供POST resources/:id/state。work实现ResourceStateUnitOfWork，加入现有幂等事务；资源锁定和当前模型/配置/B证据同快照读取，CAS更新与日志、公告、outbox同事务写入。公共方提供工具，A提供真实资源映射，B提供当前报告事实。
 
@@ -206,7 +210,7 @@ SupplyDeps.ResourceStates注入NewResourceStateService(work,clock)，A注册器�
 
 A 的 `RegisterSupplyRoutes` 已提供 `POST /api/internal/plans/:id/execute`，依赖为 `SupplyDeps.PlanExecutor`（`supply.PlanExecutionService`）。请求仅接受 `expected_revision`（规范正整数字符串）、`confirmed`、`completion_note` 和 `reason`；认证 StaffID 是执行人，不能从请求选择或替换计划发起人。成功返回 `EXECUTED` 计划，领域服务以 `Conflict=true, nil` 表示已在同一事务保存的 `BLOCKED`，HTTP 映射为409并携带计划结果。
 
-Stage58已在当前源码运行组合注入 `PlanExecutor`，并扩展共享幂等快照协议：BLOCKED的409终态在外层事务内落库，提交后返回；相同键/相同请求重放原HTTP状态、业务码、消息和计划结果，不再执行；普通验证及授权4xx仍标记FAILED。Go 1.26编译、定向用例及本地API部署见TDD Stage59/65。还需使用真实计划执行成功与BLOCKED，并通过持久化幂等记录验证原409重放和无重复事件/日志。
+Stage58已在当前源码运行组合注入 `PlanExecutor`，并扩展共享幂等快照协议：BLOCKED的409终态在外层事务内落库，提交后返回；相同键/相同请求重放原HTTP状态、业务码、消息和计划结果，不再执行；普通验证及授权4xx仍标记FAILED。Go 1.26编译、定向用例及早期本地API部署见TDD Stage59/65。真实HTTP/PG成功与BLOCKED同键重放已在Stage70/75通过；跨人员、异body同键冲突和技术失败回滚仍待验。
 
 `PlanSummary.permissions.can_execute` 仅对原发起人的PENDING上下架计划开放；执行表单要求确认实际外部操作、完成依据、操作原因及预期版本。BLOCKED结果在事务提交后以409终态快照保存并可同键重放。源码已Go编译且部署到本地API；真实HTTP/PG业务链仍需验证原发起人、成功/阻断、事务提交及同键重放不重复写入。当前主库资源和计划均为空，不能据空列表宣称这些业务路径通过。
 
@@ -216,11 +220,11 @@ Stage 46 已用 Go 1.26 容器构建当前工作区 API，并更新本地 `model
 
 真实 v36 表包含 `submission`、`submission_row`、`onboarding_flow`、`onboarding_node`、`onboarding_batch`、`test_job` 和 `test_report`。但申报与办理之间没有明确的行级流程关联字段：申报行可关联资源/测试任务，办理节点只关联 flow，flow 只暴露供应商 owner；不能仅按供应商猜测当前资源对应的办理节点。B/公共接入需提供同事务可信解析器，返回当前资源对应的 flow、node、origin row/revision、target version、assignee 及前置状态，再接通资源创建、报告绑定与逐资源准入。
 
-当前 `model_bss_api_latest` 已由TDD Stage65更新为工作区源码构建的API，监听8080并健康连接v36主库；Stage60配置的本机正式配置密钥保持有效。标准模型、模型广场、供应商主体和工作台的认证读取入口已在本地前端验证。运行库业务数据为空；绑定/准入仍缺B的真实办理和报告事实，不能据空数据读取宣称资源报价链路通过。
+Stage79结束时的运行状态快照：主数据库为36/dirty=false，原 `model_bss_pg` 与 `model_bss_api_latest` 保持运行，API健康；Stage79使用临时数据库/API验收当前工作区源码，未更新主API容器，也未迁移或写入主库。DEC-018后的源码不再读取旧的Stage60密钥文件。标准模型、模型广场、供应商主体和工作台认证读取入口另有历史验证。后续部署前应重新核对容器与健康状态。
 
-## 17. 供应商门户前端 API 接入
+## 17. 供应商门户跨模块接口契约
 
-A 已把供应商“模型管理”“模型新增/价格变更”和“草稿/申报记录”页面接入调用层。后端 `internal/api/router_submission.go` 当前仍是空注册函数，旧 `/supplier/model-applications` 是单模型遗留流程，不能承载多模型批次及逐行测试。B 接入前端时需要提供：
+A 已把任务范围内的供应商“模型管理”“模型新增/价格变更”和“草稿/申报记录”页面接入调用层。当前 `internal/api/router_submission.go` 仍是空注册函数，旧 `/supplier/model-applications` 是单模型遗留流程，不能承载多模型批次及逐行测试。对应申报、办理和测试业务模块提供接口后，门户按以下契约衔接：
 
 - `GET /api/supplier/models`：只返回认证主体自己的模型安全投影，字段与 `model-pricing-web/src/api/supplierModels.types.ts` 一致；系数为比例字符串，连通/压力测试分别返回 `tested` 与 `passed`，报价资格返回原因数组。不得返回测试或正式 Key。
 - `POST /api/supplier/models/:id/price-change`：按认证主体和资源版本校验，使用 `expected_revision`、新系数及原因创建独立价格变更申报；不直接修改资源系数。
@@ -234,7 +238,7 @@ A 已把供应商“模型管理”“模型新增/价格变更”和“草稿/�
 
 模型广场资源详情的“接入与配置”页现已提供正式配置新建、修改、停用和资源绑定入口，调用现有 A 接口 `GET/POST/PUT/DELETE /api/internal/suppliers/:id/formal-configs`。前端只显示是否已设置 Key，不回显密钥；新建/修改要求确认已完成外部平台操作，停用要求填写原因。
 
-F4属于A。当前源码已在 `cmd/server/supply_runtime.go` 接入版本化AES-GCM与URL策略，并按密钥配置启用FormalConfigs；环境变量缺失时写入503，缺一项或密钥格式错误时启动失败。部署密钥未配置，源码未部署至Docker，尚未真实联调。
+F4属于A。按DEC-018，当前源码已移除正式配置AES-GCM、密钥读取和密钥环境变量，FormalConfigs不再因缺少密钥而关闭；URL策略仍由运行环境提供。Stage78通过定向Go验证，Stage79通过临时API、真实配置Vue组件和隔离v36数据库完成新建/轮换/安全回读联调。数据库物理列保存原Key，API和操作日志不回显Key原文。Stage79未部署当前工作区源码到主Docker API。通过Vite `/api`同源代理的PUT成功；跨端口直连因公共CORS未返回允许方法而被浏览器拦截，修复公共CORS或使用代理仍是本地联调的后续项。该问题未改公共中间件。
 
 ## 19. F12 合同与授信存储边界
 
@@ -244,26 +248,26 @@ A不把JSON塞入note或把file_ref猜成附件ID，也不自行执行DDL。总�
 
 Stage66 已补齐当前 v36 可安全支持的供应商只读投影：内部合同列表与授信历史/当前值查询、供应商主体页展示。兼容字段与异常版本处理见[只读契约](./f12-v36-read-projection.draft.md)。该投影不暴露 `file_ref`/`note`，不声称合同版本历史或附件可下载；当前没有供应商数据，尚未做非空真实行的页面/API联调。A仍需继续完成完整 F12 的写入/不可变版本服务、共享附件调用和首次接入授权/readiness；数据库迁移按共享文件维护规则推进，不能把只读切片当作完整业务交付。
 
-## 20. A 资源报告读取 API 与 B 提供方契约（2026-10-22）
+## 20. A 资源报告读取适配与 B/附件提供方契约（2026-10-23）
 
-A已实现历史列表/详情/文件下载页面调用，并新增正式 API 适配路由。`SupplyRouteModuleOptions.ResourceReports` 接收可信报告/附件读取提供方，方法收到当前员工ID、资源ID及报告/文件ID；运行组合暂未注入B提供方，所以认证请求返回503，不能视为真实数据已接入。当前资源摘要仍来自ResourceReader，不用摘要拼造历史。
+A已实现报告历史/详情页面调用、正式 API 路由及当前源码中的 `ResourceReportReader`。读取器从原生 `test_report`/`test_job` 表按资源投影列表、详情与所选报告目标版本匹配，并在 `cmd/server/supply_runtime.go` 装配；不会从资源摘要拼造历史，也不返回原始报告路径或外部URL。Stage79后端构建覆盖该读取器，但尚未用非空报告数据完成专项API/数据库联调，因此不能称报告链路已真实验收。`report_file`/`report_url` 目前仅用于显示附件存在，`can_download=false`；`OpenFile` 明确返回依赖不可用，等待受控存储与授权提供方。
 
 - 历史 GET `/api/internal/resources/:id/test-reports?page=1&size=10`（已有详细设计补充路径）：返回 `{list,total,page,size}`。
 - 详情 GET `/api/internal/resources/:id/test-reports/:reportId`：返回摘要字段及 `files:[{id,name,can_download}]`。
-- 文件 GET `/api/internal/resources/:id/test-reports/:reportId/files/:fileId`：使用认证的二进制下载，不返回任意外部URL。A先核对同一报告详情中的文件ID和`can_download`，B/附件提供方在`OpenFile`中必须再次校验操作者、资源、报告、文件归属与权限；前端 can_download 只控制按钮，不能替代服务端授权。下载文件名必须是文件名而非路径；响应强制attachment、nosniff、private/no-store，并限制安全Content-Type。
+- 文件 GET `/api/internal/resources/:id/test-reports/:reportId/files/:fileId`：路由契约支持认证二进制下载，但当前读取器不打开本地路径或抓取任意外部URL，暂时返回依赖不可用。后续受控附件提供方必须再次校验操作者、资源、报告、文件归属与权限；前端 `can_download` 只控制按钮，不能替代服务端授权。实现下载时文件名必须是文件名而非路径；响应强制attachment、nosniff、private/no-store，并限制安全Content-Type。
 
 列表/详情摘要字段：`id/resource_id` 为bigint字符串；`status=RUNNING|COMPLETED|FAILED`；`created_at` 与可空 `finished_at`；`target_matches` 标记当前目标是否匹配，不单独表示准入有效；可空布尔 `connectivity_passed/pressure_passed`（COMPLETED时均有结论）；`metrics:{connection_ms,rps,tps}` 为可空非负十进制字符串；`cache_stats:{status,report_id,hit_tokens?,input_tokens?,scene?}` 沿用已有缓存口径，真实零与缺失分开。详情 files 只包含文件标识/名称/下载能力，不带凭据、存储路径、平台原始响应。前端显式投影这些字段，不保存未知字段。
 
-响应类型位于`internal/domain/supply/resource_report_read.go`，路由和安全投影位于`internal/api/supply_resource_reports.go`。未接入时返回503；异常资源归属或响应字段映射拒绝返回，不泄露`report_file`路径、凭据或平台原始响应。B若已有不同DTO，由A适配真实契约，不要求B另造报告存储。按当前设计，内部补测只展示办理指引和刷新入口，没有新增直接启动平台测试权限。真实报告事实、附件下载、目标版本判定与授权联调仍待B/附件提供方。
+响应类型位于`internal/domain/supply/resource_report_read.go`，路由和安全投影位于`internal/api/supply_resource_reports.go`，PostgreSQL读取适配位于`internal/infra/supplypg/resource_report_reader.go`。异常资源归属或响应字段映射拒绝返回，不泄露`report_file`路径、凭据或平台原始响应。B若已有不同报告DTO，由A适配，不要求B另造报告存储。内部补测只展示办理指引和刷新入口，没有新增直接启动平台测试权限。待验内容为非空真实报告读取/API联调、目标版本事实对照，以及附件元数据/受控下载和授权。
 
 供应来源区间筛选当前通过已有 flat API 完整读取所选模型/外层筛选范围，再做前端筛选和分页；不向现有API发送不支持的区间参数，也不只筛当前页。页间总数变化、重复ID或范围错配会要求刷新。后续数据量较大时可由公共/B/A约定服务端区间筛选契约后替换，不能静默截取前几页。
 ## 21. A运行联调修正与剩余计划前置（2026-10-22）
 
 Stage54已在v36隔离库用真实认证/页面/SQL跑通标准模型主写流程、公告本人阅读和计划创建/修改/取消；随后将A修复更新到当前API。日志新增真实姓名快照，资源读取兼容省略价格维度；计划配置检查改从资源控制快照读取，消除查询不存在列的500。
 
-计划维护的运行回调仅校验绑定配置的状态/引用版本，不代表B“已批准但未应用变更”已接入。B需交该事实，A在同资源锁/事务组合检查。F13执行器、受限执行资格、409终态重放、提醒worker和工作台plan_id投影已完成Go编译并部署到本地API；真实计划执行/提醒事件仍待非空业务数据联合验收。
+计划维护的运行回调仅校验绑定配置的状态/引用版本，不代表B“已批准但未应用变更”已接入。B需交该事实，A在同资源锁/事务组合检查。F13执行器、受限执行资格、409终态重放、提醒worker和工作台plan_id投影已接入；Stage70/71/75已分别通过下架执行与提醒、修订/取消失效、内部改价计划成功和BLOCKED同键重放的定向真实验收。跨人员和B驱动ONLINE前置仍需联调。
 
-本轮没有实现公共加密服务、B报告/文件/办理接口，也未新增迁移。临时服务和数据库均已移除，运行库继续v36。
+本轮没有实现附件受控下载或B侧办理接口，也未新增迁移。Stage79临时API与数据库均已移除，主运行库继续v36；当前源码未部署到主API。正式配置Key加密已按DEC-018移除，不属于待办。
 ## 22. A 模型级资源日志与具体计划导航已提供
 
 A 已提供 GET `/api/internal/standard-models/:id/resource-operations`，汇总当前模型资源及关联计划留痕，安全投影与分页见 supply-resources.draft.md 第13节。供应来源页已使用该接口，不修改公共 workbench/operations 的通用查询。

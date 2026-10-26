@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
 import { resourcesApi } from "../../../api/resources";
 import { buildResourceQuery, resourceRegionLabels } from "../../../api/resources.contract";
 import { standardModelsApi } from "../../../api/standardModels";
@@ -9,6 +8,8 @@ import { modelTypeLabels } from "../../../api/standardModels.contract";
 import type { ResourceRow } from "../../../api/resources.types";
 import type { StandardModelDTO } from "../../../api/standardModels.types";
 import { formatDateTime } from "../../../domain/date";
+import ResourceDetailDrawer from "./ResourceDetailDrawer.vue";
+import ModelSourceOperationRecords from "./ModelSourceOperationRecords.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -20,9 +21,29 @@ const error = ref("");
 const activeTab = ref("sources");
 const detailVisible = ref(false);
 const selected = ref<ResourceRow>();
+const selectedTab = ref<"profile" | "reports" | "operations" | "plans" | "records">("profile");
 const filters = reactive({ keyword: "", state: "", coefficientMin: "", coefficientMax: "", connectionMax: "", rpsMin: "", tpsMin: "" });
 const sortKey = ref("supplier_name");
 const sortOrder = ref<"asc" | "desc">("asc");
+const sourceSortKeys = ["supplier_name", "region", "coefficient", "connection", "rps", "tps", "admitted_at", "state"];
+const plazaReturnKeys = ["keyword", "company", "model_type", "supplier_id", "supplier_name", "supplier_region", "region", "state", "page", "size", "sort_by", "order"];
+const sourceFilterKeys = ["keyword", "state", "coefficient_min", "coefficient_max", "connection_max", "rps_min", "tps_min", "sort_by", "order"];
+function routeText(value: unknown) { return typeof value === "string" ? value : ""; }
+function returnContext() {
+  return Object.fromEntries(plazaReturnKeys.flatMap(key => {
+    const value = routeText(route.query[`return_${key}`]);
+    return value ? [[`return_${key}`, value]] : [];
+  }));
+}
+function sourceContext() {
+  const values: Record<string, string> = {
+    source_keyword: filters.keyword, source_state: filters.state, source_coefficient_min: filters.coefficientMin,
+    source_coefficient_max: filters.coefficientMax, source_connection_max: filters.connectionMax,
+    source_rps_min: filters.rpsMin, source_tps_min: filters.tpsMin, source_sort_by: sortKey.value,
+    source_order: sortOrder.value,
+  };
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== ""));
+}
 
 const regionLabel = (region: string) => resourceRegionLabels[region] || region;
 const stateLabel = (state: string) => state === "ADMITTED" ? "已接入" : state === "PENDING_ACCESS" ? "待接入" : state === "OFFLINE" ? "已下架" : state === "PENDING_TEST" ? "待测试" : state;
@@ -60,7 +81,7 @@ const sortValue = (row: ResourceRow, key: string): string | number => {
     case "connection": return numberOr(row.test.metrics.connection_ms) ?? Number.POSITIVE_INFINITY;
     case "rps": return numberOr(row.test.metrics.rps) ?? Number.POSITIVE_INFINITY;
     case "tps": return numberOr(row.test.metrics.tps) ?? Number.POSITIVE_INFINITY;
-    case "created_at": return row.created_at ? Date.parse(row.created_at) : 0;
+    case "admitted_at": return row.admitted_at ? Date.parse(row.admitted_at) : Number.POSITIVE_INFINITY;
     case "state": return row.state;
     default: return row.supplier_name;
   }
@@ -106,12 +127,29 @@ async function load() {
 function resetFilters() {
   Object.assign(filters, { keyword: "", state: "", coefficientMin: "", coefficientMax: "", connectionMax: "", rpsMin: "", tpsMin: "" });
 }
-function openDetail(row: ResourceRow) { selected.value = row; detailVisible.value = true; }
-function report() { ElMessage.info("测试报告列表接口待接入，当前展示最新指标。"); }
-function operation() { ElMessage.info("下架/登记接入由资源状态接口接入后开放。"); }
-function back() { void router.push("/internal/model-plaza"); }
+function openDetail(row: ResourceRow, tab: typeof selectedTab.value = "profile") { selected.value = row; selectedTab.value = tab; detailVisible.value = true; }
+function openSupplierModel(row: ResourceRow) {
+  void router.push({ path: `/internal/suppliers/${row.supplier_id}/models`, query: { ...returnContext(), ...sourceContext(), resource_id: row.id, model_id: row.standard_model_id, region: row.region, from_model_id: modelID.value } });
+}
+function closeResourceDetail() { detailVisible.value = false; selected.value = undefined; }
+function back() {
+  const query = Object.fromEntries(plazaReturnKeys.flatMap(key => {
+    const value = routeText(route.query[`return_${key}`]);
+    return value ? [[key, value]] : [];
+  }));
+  void router.push({ path: "/internal/model-plaza", query });
+}
 
-onMounted(load);
+onMounted(() => {
+  Object.assign(filters, {
+    keyword: routeText(route.query.source_keyword), state: routeText(route.query.source_state),
+    coefficientMin: routeText(route.query.source_coefficient_min), coefficientMax: routeText(route.query.source_coefficient_max),
+    connectionMax: routeText(route.query.source_connection_max), rpsMin: routeText(route.query.source_rps_min), tpsMin: routeText(route.query.source_tps_min),
+  });
+  sortKey.value = sourceSortKeys.includes(routeText(route.query.source_sort_by)) ? routeText(route.query.source_sort_by) : "supplier_name";
+  sortOrder.value = route.query.source_order === "desc" ? "desc" : "asc";
+  void load();
+});
 </script>
 
 <template>
@@ -176,49 +214,35 @@ onMounted(load);
               <template #default="{ row }">{{ cacheText(row) }}</template>
             </el-table-column>
             <el-table-column label="上架时间" width="170">
-              <template #header><button type="button" class="sort-head" @click="sortBy('created_at')">上架时间 {{ arrow('created_at') }}</button></template>
-              <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+              <template #header><button type="button" class="sort-head" @click="sortBy('admitted_at')">上架时间 {{ arrow('admitted_at') }}</button></template>
+              <template #default="{ row }">{{ formatTime(row.admitted_at) }}</template>
             </el-table-column>
             <el-table-column label="状态" width="90">
               <template #header><button type="button" class="sort-head" @click="sortBy('state')">状态 {{ arrow('state') }}</button></template>
               <template #default="{ row }"><el-tag :type="stateType(row.state)" size="small">{{ stateLabel(row.state) }}</el-tag></template>
             </el-table-column>
             <el-table-column label="测试报告" width="100">
-              <template #default><el-button size="small" text type="primary" @click="report">查看报告</el-button></template>
+              <template #default="{ row }"><el-button size="small" text type="primary" @click="openDetail(row, 'reports')">查看报告</el-button></template>
             </el-table-column>
             <el-table-column label="资源操作" width="110">
               <template #default="{ row }">
-                <el-button size="small" text type="primary" @click="operation">{{ row.state === "PENDING_ACCESS" ? "登记接入" : "下架" }}</el-button>
+                <el-button size="small" text type="primary" @click="openDetail(row, row.ever_admitted ? 'plans' : 'operations')">{{ row.state === "PENDING_ACCESS" ? "登记接入" : "上下架计划" }}</el-button>
               </template>
             </el-table-column>
             <el-table-column label="详情" width="80">
-              <template #default="{ row }"><el-button size="small" @click="openDetail(row)">详情</el-button></template>
+              <template #default="{ row }"><el-button size="small" @click="openSupplierModel(row)">详情</el-button></template>
             </el-table-column>
             <template #empty><el-empty description="暂无供应来源" :image-size="64" /></template>
           </el-table>
         </el-tab-pane>
 
         <el-tab-pane label="操作记录" name="records">
-          <el-empty description="操作记录将在资源操作接口接入后展示" :image-size="72" />
+          <ModelSourceOperationRecords :model-i-d="modelID" />
         </el-tab-pane>
       </el-tabs>
     </section>
 
-    <el-dialog v-model="detailVisible" title="供应来源详情" width="560px">
-      <el-descriptions v-if="selected" :column="1" border>
-        <el-descriptions-item label="供应商">{{ selected.supplier_name }} · {{ regionLabel(selected.region) }}</el-descriptions-item>
-        <el-descriptions-item label="接口模型 ID">{{ selected.supplier_model_id }}</el-descriptions-item>
-        <el-descriptions-item label="采购系数">{{ selected.coefficient }}</el-descriptions-item>
-        <el-descriptions-item label="状态">{{ stateLabel(selected.state) }}</el-descriptions-item>
-        <el-descriptions-item label="连通 / RPS / TPS">{{ metric(selected.test.metrics.connection_ms) }} ms / {{ metric(selected.test.metrics.rps) }} / {{ metric(selected.test.metrics.tps) }}</el-descriptions-item>
-        <el-descriptions-item label="缓存命中率">{{ cacheText(selected) }}</el-descriptions-item>
-        <el-descriptions-item label="测试报告">{{
-          selected.test.report_id || "—"
-        }}</el-descriptions-item>
-        <el-descriptions-item label="创建 / 更新">{{ formatTime(selected.created_at) }} / {{ formatTime(selected.updated_at) }}</el-descriptions-item>
-      </el-descriptions>
-      <template #footer><el-button @click="detailVisible = false">关闭</el-button></template>
-    </el-dialog>
+    <ResourceDetailDrawer v-if="detailVisible && selected" :key="`${selected.id}:${selectedTab}`" :id="selected.id" :region="selected.region" :expected-supplier-i-d="selected.supplier_id" :expected-model-i-d="selected.standard_model_id" :initial-tab="selectedTab" @close="closeResourceDetail" @changed="load()" />
   </section>
 </template>
 

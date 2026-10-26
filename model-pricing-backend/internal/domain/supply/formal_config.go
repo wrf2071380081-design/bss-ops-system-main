@@ -3,7 +3,6 @@ package supply
 import (
 	"context"
 	"errors"
-	"slices"
 	"time"
 )
 
@@ -11,26 +10,6 @@ var (
 	ErrConfigInUse    = errors.New("formal configuration is referenced by resources")
 	ErrConfigInactive = errors.New("formal configuration is inactive")
 )
-
-// SecretSealer must use versioned authenticated encryption and authenticate Binding
-// as additional data. It must never return plaintext or log the supplied secret.
-type SecretSealer interface {
-	Seal(context.Context, string, SecretBinding) (SecretEnvelope, error)
-}
-type SecretBinding struct {
-	Purpose    string
-	SupplierID string
-	ConfigID   string
-}
-type SecretEnvelope struct {
-	Ciphertext []byte `json:"-"`
-	KeyVersion string `json:"-"`
-}
-
-func (s SecretEnvelope) Clone() SecretEnvelope {
-	s.Ciphertext = slices.Clone(s.Ciphertext)
-	return s
-}
 
 // FormalURLPolicy is a local environment policy, not an HTTP connectivity test.
 type FormalURLPolicy interface {
@@ -45,14 +24,16 @@ type FormalConfigInput struct {
 }
 
 // FormalConfig is a persistence aggregate. Transport and audit use View, never
-// the aggregate or encryption envelope. A website password is a separate secret.
+// the aggregate. APIKey is stored as entered for internal use and must never be
+// included in a response or audit log.
 type FormalConfig struct {
 	ID                string
 	SupplierID        string
 	Region            string
 	Scope             string
 	BaseURL           string
-	Secret            SecretEnvelope `json:"-"`
+	APIKey            string `json:"-"`
+	LegacyEncrypted   bool   `json:"-"`
 	Status            string
 	Revision          uint64
 	CreatedBy         string
@@ -69,7 +50,6 @@ func (c *FormalConfig) Clone() *FormalConfig {
 		return nil
 	}
 	copy := *c
-	copy.Secret = c.Secret.Clone()
 	return &copy
 }
 
@@ -96,7 +76,7 @@ func (c *FormalConfig) View() *FormalConfigView {
 	if c == nil {
 		return nil
 	}
-	hasKey := len(c.Secret.Ciphertext) > 0 && c.Secret.KeyVersion != ""
+	hasKey := c.APIKey != "" && !c.LegacyEncrypted
 	mask := ""
 	if hasKey {
 		mask = "********"

@@ -19,6 +19,7 @@ type ResourceProjection struct {
 	ID, SupplierID, StandardModelID, Region, SupplierModelID, Coefficient, BuyerID, State, LatestReportID string
 	EverAdmitted                                                                                          bool
 	CreatedAt, UpdatedAt                                                                                  time.Time
+	AdmittedAt                                                                                            *time.Time
 	Supplier                                                                                              supply.ResourceSupplier
 }
 
@@ -122,7 +123,7 @@ type resourceReadEntry struct {
 }
 
 func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, args []any) ([]resourceReadEntry, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT r.id::text,r.supplier_id::text,r.standard_model_id::text,r.region,r.supplier_model_name,r.coefficient::text,r.buyer_id::text,r.state,r.ever_admitted,r.latest_test_report_id::text,r.created_at,r.updated_at,s.id::text,s.name,s.region,s.status FROM `+s.table("resource")+` r LEFT JOIN `+s.table("supplier")+` s ON s.id=r.supplier_id LEFT JOIN `+s.table("standard_model")+` m ON m.id=r.standard_model_id WHERE `+where+` ORDER BY r.id ASC`, args...)
+	rows, err := tx.QueryContext(ctx, `SELECT r.id::text,r.supplier_id::text,r.standard_model_id::text,r.region,r.supplier_model_name,r.coefficient::text,r.buyer_id::text,r.state,r.ever_admitted,r.latest_test_report_id::text,r.created_at,r.updated_at,admission.admitted_at,s.id::text,s.name,s.region,s.status FROM `+s.table("resource")+` r LEFT JOIN LATERAL (SELECT min(l.created_at) AS admitted_at FROM `+s.table("operation_log")+` l WHERE l.entity_type='resource' AND l.entity_id=r.id AND l.action='RESOURCE_REVISION' AND l."after"->>'operation'='ADMIT') admission ON TRUE LEFT JOIN `+s.table("supplier")+` s ON s.id=r.supplier_id LEFT JOIN `+s.table("standard_model")+` m ON m.id=r.standard_model_id WHERE `+where+` ORDER BY r.id ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +131,8 @@ func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, 
 	for rows.Next() {
 		var p ResourceProjection
 		var buyer, report, supplier, name, region, status sql.NullString
-		err = rows.Scan(&p.ID, &p.SupplierID, &p.StandardModelID, &p.Region, &p.SupplierModelID, &p.Coefficient, &buyer, &p.State, &p.EverAdmitted, &report, &p.CreatedAt, &p.UpdatedAt, &supplier, &name, &region, &status)
+		var admittedAt sql.NullTime
+		err = rows.Scan(&p.ID, &p.SupplierID, &p.StandardModelID, &p.Region, &p.SupplierModelID, &p.Coefficient, &buyer, &p.State, &p.EverAdmitted, &report, &p.CreatedAt, &p.UpdatedAt, &admittedAt, &supplier, &name, &region, &status)
 		if err != nil {
 			rows.Close()
 			return nil, err
@@ -141,6 +143,10 @@ func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, 
 		}
 		p.BuyerID = buyer.String
 		p.LatestReportID = report.String
+		if admittedAt.Valid {
+			value := admittedAt.Time.UTC()
+			p.AdmittedAt = &value
+		}
 		p.Supplier = supply.ResourceSupplier{ID: supplier.String, Name: name.String, Region: region.String, Status: status.String}
 		if p.State == "PENDING_ADMIT" {
 			p.State = "PENDING_ACCESS"
@@ -177,7 +183,7 @@ func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, 
 			}
 			models[p.StandardModelID] = model
 		}
-		record := &supply.ResourceRecord{Resource: r, Model: model, Supplier: p.Supplier, Config: f.Config}
+		record := &supply.ResourceRecord{Resource: r, Model: model, Supplier: p.Supplier, Config: f.Config, AdmittedAt: p.AdmittedAt}
 		if p.LatestReportID == "" {
 			if f.Report != nil || f.LatestReportSequence != 0 {
 				return nil, supply.ErrReadContract
@@ -206,6 +212,10 @@ func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, 
 func resourceProjectionEqual(a, b ResourceProjection) bool {
 	a.Supplier = supply.ResourceSupplier{}
 	b.Supplier = supply.ResourceSupplier{}
+	// AdmittedAt is a read-side projection of the immutable admission operation
+	// log; it is not part of the resource's mutable control snapshot.
+	a.AdmittedAt = nil
+	b.AdmittedAt = nil
 	a.CreatedAt = a.CreatedAt.UTC()
 	b.CreatedAt = b.CreatedAt.UTC()
 	a.UpdatedAt = a.UpdatedAt.UTC()

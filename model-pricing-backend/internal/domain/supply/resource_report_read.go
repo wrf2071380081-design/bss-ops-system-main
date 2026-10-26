@@ -12,6 +12,11 @@ type ResourceReportView struct {
 	ResourceID         string                `json:"resource_id"`
 	Status             string                `json:"status"`
 	CreatedAt          time.Time             `json:"created_at"`
+	TestedAt           time.Time             `json:"tested_at"`
+	TestItem           string                `json:"test_item"`
+	OperatorName       string                `json:"operator_name"`
+	Source             string                `json:"source"`
+	Scene              string                `json:"scene"`
 	FinishedAt         *time.Time            `json:"finished_at"`
 	TargetMatches      *bool                 `json:"target_matches"`
 	ConnectivityPassed *bool                 `json:"connectivity_passed"`
@@ -28,9 +33,10 @@ type ResourceReportPage struct {
 }
 
 type ResourceReportFile struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	CanDownload bool   `json:"can_download"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	CanDownload       bool   `json:"can_download"`
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
 type ResourceReportDetail struct {

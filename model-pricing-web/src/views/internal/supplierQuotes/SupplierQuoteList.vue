@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
+import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { supplierQuotesApi } from "../../../api/supplierQuotes";
 import { modelsApi } from "../../../api/models";
@@ -14,6 +15,7 @@ import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
 
 const permissions = usePermissionStore();
+const route = useRoute();
 const tab = ref("pending"), loading = ref(false), error = ref("");
 const pending = ref<QuotePendingDTO[]>([]), expiring = ref<ExpiringQuoteDTO[]>([]), anomalies = ref<QuoteAnomalyDTO[]>([]);
 const page = reactive({ current: 1, size: 10, total: 0 });
@@ -78,6 +80,23 @@ async function load() {
 }
 function switchTab() { page.current = 1; load(); }
 async function openDetail(row: QuotePendingDTO) { selected.value = row; detailOpen.value = true; detailLoading.value = true; detail.value = undefined; try { detail.value = await supplierQuotesApi.get(String(row.id)); } catch (e) { ElMessage.error(msg(e)); } finally { detailLoading.value = false; } }
+async function openInboxQuote(rawID: unknown) {
+  if (typeof rawID !== "string" || !/^[1-9]\d*$/.test(rawID)) return;
+  try {
+    const diff = await supplierQuotesApi.get(rawID);
+    const queue = await supplierQuotesApi.list({ page: 1, size: 100, supplier_id: diff.supplier_id });
+    const row = queue.list.find(item => String(item.id) === rawID);
+    if (!row) {
+      ElMessage.info("该报价已处理，或不在当前账号可见的待审批队列中。");
+      return;
+    }
+    selected.value = row;
+    detail.value = diff;
+    detailOpen.value = true;
+  } catch (e) {
+    ElMessage.error(msg(e));
+  }
+}
 function openApprove() { if (!selected.value || busy.value) return; approveComment.value = ""; approveOpen.value = true; }
 async function approve() {
   if (!selected.value || busy.value) return;
@@ -103,7 +122,10 @@ function payload(): RetroEffectiveRequestDTO {
   return { supplier_id: retro.supplier_id, effective_time: new Date(retro.effective_time).toISOString(), valid_to: new Date(retro.valid_to).toISOString(), audit_reason: retro.audit_reason.trim(), items: retro.items };
 }
 async function submitRetro() { if (busy.value) return; try { const body = payload(); busy.value = true; const r = await supplierQuotesApi.retroEffective(body); retroOpen.value = false; await ElMessageBox.alert(`报价 ${r.id} 已生效；成本重算${r.cost_recalc_queued ? "已入队" : "未入队"}；本月补录 ${r.retro_count_this_month} 次${r.alert_created ? "，已生成告警" : ""}。`, "特权补录结果"); await load(); } catch (e) { if (e !== "close") ElMessage.error(msg(e)); } finally { busy.value = false; } }
-onMounted(load);
+onMounted(async () => {
+  await load();
+  await openInboxQuote(route.query.quote_id);
+});
 </script>
 
 <template>

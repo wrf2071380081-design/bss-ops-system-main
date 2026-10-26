@@ -94,11 +94,12 @@ PUT 为可编辑资料整体替换；省略请求结构要求的字段返回 400
 1. 用户已确认允许保存不完整资料，返回缺失路径；核验和报价仍被阻断（见[业务决策记录](./decisions.md) DEC-004）。已提供但非法的字段仍拒绝。
 2. 更新锁定当前对象，校验身份和 revision；无实际资料变化返回 changed=false，不增加业务版本。
 3. 实际资料变化产生完整不可变快照，再更新当前投影和 revision。历史报价引用的模型版本不随当前资料变化。
-4. 人工核验校验八类资料和来源，记录核验人及日期；价格/关键身份/来源变化后重新核验。
-5. quote_readiness 至少返回 ready、reasons、standard_model_version_no；ACTIVE、VERIFIED 且所需场景价格资料满足时才可用。
-6. C 在实际报价写入时重新读取并校验当前版本；页面缓存的 ready 只用于展示。
-7. 业务变更、模型快照、operation_log 同事务提交。日志失败整体回滚；HTTP、抓取和 LLM 调用不进入事务。
-8. 所有内部读取遵循本轮内部全员可见口径，写入按绑定维护人。用户已确认新建自动绑定认证上下文中的当前创建者；新增请求不接受自报 maintainer_id，常规 PUT 不承担转交。后续更换维护人走公共转交能力（DEC-005）。
+4. 页面使用一个“保存并留痕”入口。资料不完整时只保存待补齐/未核验状态；资料完整时，当前维护人明确执行该保存即为人工核对声明，后端仍须校验八类资料、官方来源、核对日期和 revision。
+5. 完整资料的保存、核验人/日期、不可变快照和操作记录在同一事务内提交；资料变化生成一个新版本，新版本只有本次校验成功后可报价。仅字段齐全、填写日期或普通创建/更新请求不能将模型置为已核验。
+6. quote_readiness 至少返回 ready、reasons、standard_model_version_no；ACTIVE、VERIFIED 且所需场景价格资料满足时才可用。
+7. C 在实际报价写入时重新读取并校验当前版本；页面缓存的 ready 只用于展示。
+8. 业务变更、模型快照、operation_log 同事务提交。日志失败整体回滚；HTTP、抓取和 LLM 调用不进入事务。
+9. 所有内部读取遵循本轮内部全员可见口径，写入按绑定维护人。用户已确认新建自动绑定认证上下文中的当前创建者；新增请求不接受自报 maintainer_id，常规 PUT 不承担转交。后续更换维护人走公共转交能力（DEC-005）。
 
 ## 7. 验收锚点
 
@@ -142,7 +143,7 @@ PUT 为可编辑资料整体替换；省略请求结构要求的字段返回 400
 
 注册入口：`api.RegisterSupplyRoutes(internalGroup, api.SupplyDeps{Reader, Writer, IdemStore})`。调用方提供前缀为 `/api/internal`、带 AuthN/RequestID 的组；当前主应用还没有调用此入口。不能据测试中的路由存在认定运行服务已上线。
 
-已注册方法：GET 列表、GET `/:id`、GET `/:id/versions`、POST 新建、PUT `/:id`、POST `/:id/verify`。仅接受已认证 INTERNAL/STAFF，使用 StaffID 而非 AccountID/OperatorID 作为模型维护人。读取不检查旧角色权限点。
+已注册方法：GET 列表、GET `/:id`、GET `/:id/versions`、POST 新建、PUT `/:id`、POST `/:id/verify`，以及与原型单一保存入口对应的 POST `/manual-completion`、PUT `/:id/manual-completion`。页面使用 manual-completion 路由；旧创建/更新/核验路由保留兼容，但不用于页面的一次性补全流程。仅接受已认证 INTERNAL/STAFF，使用 StaffID 而非 AccountID/OperatorID 作为模型维护人。读取不检查旧角色权限点。
 
 ### 10.1 请求结构
 
@@ -151,6 +152,7 @@ PUT 为可编辑资料整体替换；省略请求结构要求的字段返回 400
 - POST 允许只传待补齐资料及 reason；不能传 id、maintainer_id、status、verify_status 等服务端元数据。
 - PUT 需显式包含全部13个资料字段（空资料可以用空字符串、空数组/null表达），再带字符串 expected_revision 和 reason，不能用部分 PUT 静默清空其余字段。
 - verify 请求只含字符串 expected_revision、checked_at 和 reason。
+- manual-completion 新增请求允许显式空字段并携带 reason；更新请求还须携带字符串 expected_revision。后端根据八类资料完整性决定保存为待补齐还是执行人工核验，不接受客户端自报状态或核验人。
 - revision 必须在正 bigint 范围内；金额字段按 string 解码。
 - 未知字段、非规范大小写、重复键（含嵌套对象）、尾随 JSON、根 null/数组拒绝；body 上限1MiB，嵌套深度上限64。
 
@@ -160,10 +162,10 @@ PUT 为可编辑资料整体替换；省略请求结构要求的字段返回 400
 {"name":"待补齐模型","reason":"登记待完善的官方模型资料"}
 ```
 
-人工核验示例：
+原型单一保存入口的补全示例：
 
 ```json
-{"expected_revision":"1","checked_at":"2026-10-20","reason":"人工对照官方资料完成核验"}
+{"expected_revision":"1","company":"Example","name":"Example Model","official_id":"example-v1","model_type":"TEXT","input_modalities":["TEXT"],"output_modalities":["TEXT"],"capacity":[{"key":"context_window","disclosure":"DISCLOSED","value":"128000 tokens"}],"abilities":[{"key":"tool_call","state":"UNDISCLOSED","description":""}],"price_items":[{"item_key":"text_input_standard","label":"输入","task_type":"TEXT_INPUT","amount":"2.00000000","currency":"USD","unit_code":"TOKEN","unit_quantity":"1000000","condition":"标准请求","dimensions":{},"source_url":"https://vendor.example/pricing"},{"item_key":"text_output_standard","label":"输出","task_type":"TEXT_OUTPUT","amount":"8.00000000","currency":"USD","unit_code":"TOKEN","unit_quantity":"1000000","condition":"标准请求","dimensions":{},"source_url":"https://vendor.example/pricing"}],"api_access":[{"key":"protocol","disclosure":"DISCLOSED","value":"HTTPS API"}],"lifecycle":[{"key":"release","disclosure":"UNDISCLOSED","value":""}],"sources":[{"label":"官方价格","url":"https://vendor.example/pricing","source_kind":"OFFICIAL_PRICING"}],"checked_at":"2026-10-20","reason":"对照官方资料完成手动补全"}
 ```
 
 ### 10.2 查询、DTO 与历史版本

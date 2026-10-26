@@ -84,3 +84,10 @@ func resourceCacheStats(reportID string, raw *ReportCacheCounters) (ResourceCach
 	view.HitPercent = new(big.Rat).Mul(ratio, big.NewRat(100, 1)).FloatString(2)
 	return view, nil
 }
+
+// ProjectResourceCacheStats applies the domain's nullable-counter policy to a
+// single immutable report row. Infrastructure readers use this instead of
+// reimplementing cache validation or treating missing counters as zero.
+func ProjectResourceCacheStats(reportID string, raw *ReportCacheCounters) (ResourceCacheStats, error) {
+	return resourceCacheStats(reportID, raw)
+}

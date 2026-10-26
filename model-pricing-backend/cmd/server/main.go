@@ -205,7 +205,7 @@ func main() {
 	if err != nil {
 		log.Fatal("get sql db", zap.Error(err))
 	}
-	supplyChain := api.NewSupplyChainRuntime(rawDB, nil, nil)
+	supplyChain := api.NewSupplyChainRuntime(rawDB, nil)
 	customerWorkspace := api.NewCustomerWorkspaceRuntime(rawDB)
 	supplyRoutes, err := newSupplyRuntimeDeps(dbClient.DB, idemStore)
 	if err != nil {
@@ -242,7 +242,6 @@ func main() {
 		TestJobs:           testJobStarter(testPlatform),
 		TestCallbacks:      testCallbackReceiver(testPlatform),
 		ResourceTestTargets: testTargets(testPlatform),
-		TestCredentialDecoder: testCredentialDecoder(testPlatform),
 		SupplyRoutes:       &supplyRoutes,
 		SupplierSubmissions: submissionSvc,
 		SupplyChain:        supplyChain,

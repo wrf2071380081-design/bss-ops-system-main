@@ -64,6 +64,8 @@ export function validateResourceRow(value: unknown, expectedID?: string): Resour
   if (row.formal_config_id) standardModelVersion(row.formal_config_id);
   for (const key of ["supplier_name", "model_name", "official_id", "company", "model_type", "supplier_model_id", "created_at", "updated_at"]) if (typeof row[key] !== "string") invalid();
   if (!resourceRegionLabels[String(row.region)] || !resourceStateLabels[String(row.state)] || typeof row.ever_admitted !== "boolean") invalid();
+  if (row.admitted_at !== undefined && row.admitted_at !== null && (typeof row.admitted_at !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(row.admitted_at) || !/(?:Z|[+-]\d{2}:\d{2})$/.test(row.admitted_at) || !Number.isFinite(Date.parse(row.admitted_at)))) invalid();
+  if (!row.ever_admitted && row.admitted_at != null) invalid();
   coefficient(row.coefficient);
   const test = object(row.test), cache = object(test.cache_stats), metrics = object(test.metrics), readiness = object(row.quote_readiness), permissions = object(row.permissions);
   if (!["NOT_TESTED", "STALE", "COMPLETED"].includes(String(test.status)) || ["connectivity_passed", "pressure_passed", "valid"].some(key => typeof test[key] !== "boolean") || typeof permissions.can_edit !== "boolean" || typeof readiness.eligible !== "boolean" || !Array.isArray(readiness.blocked_reasons) || readiness.blocked_reasons.some(reason => typeof reason !== "string")) invalid();
