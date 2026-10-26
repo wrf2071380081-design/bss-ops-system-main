@@ -537,20 +537,17 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 		protected.GET("/standard-models", sch.ListStandardModels)
 	}
 
-	// Stage 2：领导审批 + 办理人模拟测试/接入。
+	// 内部办理台账（只读）。
+	//
+	// 2026-10-26 起：申报状态以 B 线 /supplier/submissions 的状态机为准，
+	// 这里只保留查询入口；原 /approve 与 /simulate 两个"写状态"的入口已下线——
+	// 它们与 B 线的申报状态机口径不同，且 simulate 会绕过测试门禁直接登记接入。
+	// 办理节点推进改走 B 线的 /internal/flows/*（待实现）。
 	if portal == "internal" && deps.SupplyChain != nil {
 		sch := NewSupplyChainHandler(deps.SupplyChain)
 		protected.GET("/approvals/submissions", sch.ListApprovals)
 		protected.GET("/approvals/history", sch.ListApprovalHistory)
 		protected.GET("/supply/suppliers", sch.ListSuppliers)
-		protected.POST("/approvals/submissions/:id/approve",
-			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
-			sch.Approve,
-		)
-		protected.POST("/approvals/submissions/:id/simulate",
-			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
-			sch.Simulate,
-		)
 	}
 
 	// 客户管理合并页：客户列表 / 客户报价 / 特价审批记录（只读）。
