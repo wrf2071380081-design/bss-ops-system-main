@@ -501,6 +501,7 @@ type TestRow struct {
 	RowID             int64
 	SubmissionID      int64
 	StandardModelID   int64
+	OfficialID        string
 	SupplierModelName string
 	TestBaseURL       string
 	SealedAPIKey      string
@@ -512,6 +513,13 @@ type TestRow struct {
 	ResourceID        *int64
 	TestJobID         *int64
 	StressJobID       *int64
+	// 下面四组用于判断「能否跳过重测」：状态 + 发单时指纹 + 是否已有报告结论。
+	TestJobStatus      string
+	TestJobFingerprint string
+	TestJobVerdict     string
+	StressJobStatus      string
+	StressJobFingerprint string
+	StressJobVerdict     string
 	SubmissionStatus  string
 }
 
@@ -520,16 +528,25 @@ func (s *SubmissionStore) TestRow(ctx context.Context, supplierID, submissionID,
 	var item TestRow
 	var resourceID, jobID, stressJobID sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
-SELECT r.id, r.submission_id, r.standard_model_id, r.supplier_model_name, COALESCE(r.test_base_url,''),
+SELECT r.id, r.submission_id, r.standard_model_id, COALESCE(m.official_id,''), r.supplier_model_name, COALESCE(r.test_base_url,''),
        COALESCE(r.test_api_key_enc,''), r.coefficient::text, sub.region, sub.supplier_id, sp.name,
-       COALESCE(r.test_fingerprint,''), r.resource_id, r.test_job_id, r.stress_job_id, sub.status
+       COALESCE(r.test_fingerprint,''), r.resource_id, r.test_job_id, r.stress_job_id, sub.status,
+       COALESCE(cj.status,''), COALESCE(cj.target_fingerprint,''),
+       COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = cj.id ORDER BY tr.id DESC LIMIT 1),''),
+       COALESCE(sj.status,''), COALESCE(sj.target_fingerprint,''),
+       COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id ORDER BY tr.id DESC LIMIT 1),'')
 FROM `+s.table("submission_row")+` r
+JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
 JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
 JOIN `+s.table("supplier")+` sp ON sp.id = sub.supplier_id
+LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
+LEFT JOIN `+s.table("test_job")+` sj ON sj.id = r.stress_job_id
 WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionID, supplierID).
-		Scan(&item.RowID, &item.SubmissionID, &item.StandardModelID, &item.SupplierModelName, &item.TestBaseURL,
+		Scan(&item.RowID, &item.SubmissionID, &item.StandardModelID, &item.OfficialID, &item.SupplierModelName, &item.TestBaseURL,
 			&item.SealedAPIKey, &item.Coefficient, &item.Region, &item.SupplierID, &item.SupplierName,
-			&item.TestFingerprint, &resourceID, &jobID, &stressJobID, &item.SubmissionStatus)
+			&item.TestFingerprint, &resourceID, &jobID, &stressJobID, &item.SubmissionStatus,
+			&item.TestJobStatus, &item.TestJobFingerprint, &item.TestJobVerdict,
+			&item.StressJobStatus, &item.StressJobFingerprint, &item.StressJobVerdict)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
@@ -569,11 +586,20 @@ func (s *SubmissionStore) EnsureTestResource(ctx context.Context, row *TestRow) 
 		}
 		return 0, err
 	}
-	var resourceID int64
-	if err := tx.QueryRowContext(ctx, `INSERT INTO `+s.table("resource")+`
+	// resource 上有唯一约束 (supplier_id, standard_model_id, region)：
+	// 同一主体对同一模型只允许一个资源，重复发起测试或同一模型多行申报都会撞上。
+	// 因此先 ON CONFLICT DO NOTHING，再回查取 id——已存在则复用，不再报 500。
+	if _, err := tx.ExecContext(ctx, `INSERT INTO `+s.table("resource")+`
 (standard_model_id, supplier_id, supplier_model_name, standard_model_name_snapshot, region, coefficient, state)
-VALUES ($1,$2,$3,$4,$5,$6::numeric,'PENDING_TEST') RETURNING id`,
-		row.StandardModelID, row.SupplierID, row.SupplierModelName, modelName, row.Region, row.Coefficient).Scan(&resourceID); err != nil {
+VALUES ($1,$2,$3,$4,$5,$6::numeric,'PENDING_TEST')
+ON CONFLICT (supplier_id, standard_model_id, region) DO NOTHING`,
+		row.StandardModelID, row.SupplierID, row.SupplierModelName, modelName, row.Region, row.Coefficient); err != nil {
+		return 0, err
+	}
+	var resourceID int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM `+s.table("resource")+`
+WHERE supplier_id=$1 AND standard_model_id=$2 AND region=$3`,
+		row.SupplierID, row.StandardModelID, row.Region).Scan(&resourceID); err != nil {
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("submission_row")+` SET resource_id=$2 WHERE id=$1`, row.RowID, resourceID); err != nil {

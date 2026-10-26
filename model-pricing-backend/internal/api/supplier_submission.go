@@ -12,6 +12,7 @@ import (
 	"model_bss/internal/domain/supply"
 	tpdomain "model_bss/internal/domain/testplatform"
 	"model_bss/internal/infra/supplypg"
+	tpinfra "model_bss/internal/infra/testplatform"
 	"model_bss/pkg/apperr"
 	"model_bss/pkg/response"
 )
@@ -375,11 +376,8 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 	if err != nil {
 		return "", false, err
 	}
-	if platformCategory == "baseline" && row.TestJobID != nil {
-		return strconv.FormatInt(*row.TestJobID, 10), true, nil
-	}
-	if platformCategory == "stress" && row.StressJobID != nil {
-		return strconv.FormatInt(*row.StressJobID, 10), true, nil
+	if jobID, skip := shouldSkipRetest(row, platformCategory); skip {
+		return jobID, true, nil
 	}
 	apiKey := "demo-key"
 	if row.TestBaseURL != "demo" {
@@ -413,8 +411,9 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		Category:   tpdomain.Category(platformCategory),
 		Owner:      row.SupplierName,
 		Target: tpdomain.Target{
-			Model: row.SupplierModelName, BaseURL: row.TestBaseURL,
-			Protocol: "openai", APIKey: apiKey,
+			// 平台按官方 ID 识别模型；供应商自定义名只用于展示。
+			Model: modelForTest(row.TestBaseURL, row.OfficialID, row.SupplierModelName),
+			BaseURL: row.TestBaseURL, Protocol: "openai", APIKey: apiKey,
 		},
 		Params:         params,
 		IdempotencyKey: idempotencyKey,
@@ -432,6 +431,59 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 	return result.LocalJobID, false, nil
 }
 
+// shouldSkipRetest 判断该行这一类测试能否跳过。
+//
+// 规则（对齐任务书「同一受测配置一次有效测试；配置变化后可重测」）：
+//   - 无任务 → 不跳过
+//   - 有任务且指纹与当前行一致：
+//       排队/运行中 → 跳过（避免重复建任务）
+//       已终态且已有报告结论 → 跳过（结果有效，含不达标）
+//       已终态但没有报告结论（工具异常）→ 重测
+//   - 指纹不一致（改了地址/Key/模型）→ 重测
+//
+// 旧实现是"有任务就跳过"，导致改了配置也永远不能重测。
+func shouldSkipRetest(row *supplypg.TestRow, platformCategory string) (string, bool) {
+	var jobID *int64
+	var status, jobFingerprint, verdict string
+	if platformCategory == "stress" {
+		jobID, status, jobFingerprint, verdict = row.StressJobID, row.StressJobStatus, row.StressJobFingerprint, row.StressJobVerdict
+	} else {
+		jobID, status, jobFingerprint, verdict = row.TestJobID, row.TestJobStatus, row.TestJobFingerprint, row.TestJobVerdict
+	}
+	if jobID == nil {
+		return "", false
+	}
+	id := strconv.FormatInt(*jobID, 10)
+	if row.TestFingerprint != "" && jobFingerprint != "" && row.TestFingerprint != jobFingerprint {
+		return id, false // 配置变了：允许重测
+	}
+	if !isTerminalStatus(status) {
+		return id, true // 排队/运行中
+	}
+	if strings.TrimSpace(verdict) != "" {
+		return id, true // 已有结论（无论通过与否都算有效测试）
+	}
+	return id, false // 终态但无报告：工具异常，重试
+}
+
+// demoTestModel 是测试平台 demo 模式内置的模型名。
+//
+// 实测结论（2026-10-26）：demo 目标只接受平台内置的 demo 模型名——
+// 传官方 ID（如 deepseek-chat）直接 400；传自定义名（demo/rowA）虽受理但 L1 门控失败。
+// 真实目标仍按约定传官方 ID，因此这里按 base_url 分支，不做全局替换。
+const demoTestModel = "demo/deepseek-v4"
+
+// modelForTest 取发给平台的模型标识。
+func modelForTest(baseURL, officialID, supplierModelName string) string {
+	if strings.EqualFold(strings.TrimSpace(baseURL), "demo") {
+		return demoTestModel
+	}
+	if strings.TrimSpace(officialID) != "" {
+		return strings.TrimSpace(officialID)
+	}
+	return strings.TrimSpace(supplierModelName)
+}
+
 // writeRowTestError 统一翻译单行/批量测试的错误。
 func writeRowTestError(c *gin.Context, err error) {
 	switch {
@@ -441,6 +493,14 @@ func writeRowTestError(c *gin.Context, err error) {
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
 	case errors.Is(err, tpdomain.ErrInvalidCommand):
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "发起测试的参数不完整", 400))
+	case err != nil:
+		var apiErr *tpinfra.APIError
+		if errors.As(err, &apiErr) {
+			// 平台明确拒绝时把原因带出去，不再笼统报"系统错误"。
+			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "测试平台拒绝： "+apiErr.Error(), 400))
+			return
+		}
+		writeSubmissionError(c, err)
 	default:
 		writeSubmissionError(c, err)
 	}

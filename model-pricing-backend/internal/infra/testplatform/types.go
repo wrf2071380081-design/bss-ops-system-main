@@ -90,7 +90,9 @@ type Job struct {
 	CreatedBy    string          `json:"created_by"`
 	CreatedAt    time.Time       `json:"created_at"`
 	FinishedAt   *time.Time      `json:"finished_at"`
-	ErrorMessage string          `json:"error,omitempty"`
+	// ErrorMessage 兼容平台三种形态：null、字符串、对象 {"type","message"}。
+	// 早期按 string 解析，遇到对象会让整条 GetJob 解析失败 → 轮询永远拿不到终态。
+	ErrorMessage json.RawMessage `json:"error,omitempty"`
 }
 
 // jobIDPattern 限制任务号形态，避免把用户输入直接拼进 URL 路径。
