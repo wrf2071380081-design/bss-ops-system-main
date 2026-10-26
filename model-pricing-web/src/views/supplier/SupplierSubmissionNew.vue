@@ -193,6 +193,13 @@ async function runTest(row: EditableRow, category: SupplierTestCategory) {
   } catch (value) { showError(value, "测试任务未能启动。请保存草稿后重试。"); }
   finally { const next = { ...testBusy.value }; delete next[row.id + category]; testBusy.value = next; }
 }
+async function refreshRow(row: EditableRow) {
+  if (!submissionID.value || !row.id) return;
+  const tasks: Promise<void>[] = [];
+  if (row.connectivity_job) tasks.push(refreshTest(row, "CONNECTIVITY"));
+  if (row.stress_job) tasks.push(refreshTest(row, "STRESS"));
+  await Promise.all(tasks);
+}
 async function refreshTest(row: EditableRow, category: SupplierTestCategory) {
   if (!submissionID.value || !row.id || testBusy.value[row.id + category]) return;
   testBusy.value = { ...testBusy.value, [row.id + category]: true };
@@ -215,7 +222,13 @@ function rowStatusType(value: string): "success" | "warning" | "info" | "danger"
     default: return "info";
   }
 }
-function testState(tested: boolean, passed: boolean) { return !tested ? "未测试" : passed ? "通过" : "已测试，未通过"; }
+// 压测没有 verdict：测完只能算「已完成」，不能显示成「未通过」。
+function testState(tested: boolean, passed: boolean, verdict?: string) {
+  if (!tested) return "未测试";
+  if (passed) return "通过";
+  if (!verdict) return "已完成";
+  return "未通过";
+}
 function testFor(row: EditableRow, category: SupplierTestCategory) { return category === "CONNECTIVITY" ? row.connectivity_job : row.stress_job; }
 async function reloadKeepingKeys() {
   if (!submissionID.value) return;
@@ -402,11 +415,17 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
         <el-form-item :label="hasSavedTestKey(row) ? '测试 Key（留空沿用）' : '测试 Key *'"><el-input v-model="row.test_api_key" type="password" show-password autocomplete="new-password" :placeholder="hasSavedTestKey(row) ? '已保存；填写新 Key 可替换' : '供应商自测使用的 Key'" :disabled="locked" /></el-form-item>
       </div>
       <div class="test-area">
-        <div><strong>连通性：</strong>{{ testState(row.connectivity_tested, row.connectivity_passed) }}<span v-if="row.connectivity_job"> · {{ row.connectivity_job.status }}</span></div>
-        <el-button v-if="row.connectivity_job" size="small" :loading="testBusy[row.id + 'CONNECTIVITY']" :disabled="locked || dirty" @click="refreshTest(row, 'CONNECTIVITY')">刷新结果</el-button>
-        <div><strong>压力测试：</strong>{{ testState(row.stress_tested, row.stress_passed) }}<span v-if="row.stress_job"> · {{ row.stress_job.status }}</span></div>
-        <el-button v-if="row.stress_job" size="small" :loading="testBusy[row.id + 'STRESS']" :disabled="locked || dirty" @click="refreshTest(row, 'STRESS')">刷新结果</el-button>
-        <p v-for="category in testCategories" :key="category" v-show="testFor(row, category)" class="test-metrics">{{ category === 'CONNECTIVITY' ? '连通性' : '压力测试' }}：{{ testFor(row, category)?.connection_ms ? `${testFor(row, category)?.connection_ms} ms` : '' }} {{ testFor(row, category)?.rps ? `RPS ${testFor(row, category)?.rps}` : '' }} {{ testFor(row, category)?.tps ? `TPS ${testFor(row, category)?.tps}` : '' }}</p>
+        <div class="test-line">
+          <el-button size="small" :disabled="locked || dirty || (!row.connectivity_job && !row.stress_job)" @click="refreshRow(row)">刷新结果</el-button>
+          <span><strong>连通性：</strong>{{ testState(row.connectivity_tested, row.connectivity_passed, row.connectivity_job?.verdict) }}<em v-if="row.connectivity_job" class="muted">（{{ row.connectivity_job.status }}）</em></span>
+          <span v-if="row.stress_job || row.participate_test"><strong>压力测试：</strong>{{ testState(row.stress_tested, row.stress_passed, row.stress_job?.verdict) }}<em v-if="row.stress_job" class="muted">（{{ row.stress_job.status }}）</em></span>
+        </div>
+        <p v-if="row.connectivity_job?.connection_ms || row.stress_job?.rps" class="test-metrics">
+          <span v-if="row.connectivity_job?.connection_ms">连通耗时 {{ row.connectivity_job.connection_ms }} ms</span>
+          <span v-if="row.stress_job?.rps"> · 压力 RPS {{ row.stress_job.rps }}</span>
+          <span v-if="row.stress_job?.tps"> · TPS {{ row.stress_job.tps }}</span>
+          <span v-if="row.stress_job && !row.stress_job.verdict" class="muted">（压测只出指标，不判定通过/不通过）</span>
+        </p>
       </div>
     </article>
     <el-button :disabled="locked" @click="addRow">添加模型</el-button>
@@ -461,7 +480,8 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
 .row-heading h2 { margin: 0; font-size: 17px; flex: 1; }
 .row-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 18px; }
 .row-grid .el-select { width: 100%; }
-.test-area { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; border-top: 1px solid var(--app-border); padding-top: 14px; }
+.test-area { border-top: 1px solid var(--app-border); padding-top: 14px; display: grid; gap: 8px; }
+.test-line { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
 .test-metrics { grid-column: 1/-1; margin: 0; color: var(--app-text-muted); font-size: 12px; }
 .muted,.inline-error { color: var(--app-text-muted); font-size: 12px; }
 .inline-error { color: #b42318; }

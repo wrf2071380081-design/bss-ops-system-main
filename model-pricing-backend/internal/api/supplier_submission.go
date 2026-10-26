@@ -62,6 +62,9 @@ type submissionTestDTO struct {
 	Status       string  `json:"status"`
 	Tested       bool    `json:"tested"`
 	Passed       bool    `json:"passed"`
+	// Verdict 是平台给出的判定（pass / pass_with_warnings / fail）。
+	// 压力测试没有判定，留空——前端据此区分"未通过"和"已完成但无判定"。
+	Verdict      string  `json:"verdict,omitempty"`
 	// Stale=true 表示测试目标已变化（改了地址/Key/模型），该结果不再有效。
 	Stale        bool    `json:"stale,omitempty"`
 	JobID        string  `json:"job_id,omitempty"`
@@ -837,7 +840,7 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			passed := verdictOK(row.ConnectivityVerdict)
 			item.ConnectivityJob = &submissionTestDTO{
 				Category: "CONNECTIVITY", Status: *row.ConnectivityStatus, Tested: tested && !row.ConnectivityStale,
-				Passed: passed, Stale: row.ConnectivityStale, ConnectionMS: row.ConnectionMS,
+				Passed: passed, Verdict: deref(row.ConnectivityVerdict), Stale: row.ConnectivityStale, ConnectionMS: row.ConnectionMS,
 			}
 			item.ConnectivityTested, item.ConnectivityPassed = tested && !row.ConnectivityStale, passed && !row.ConnectivityStale
 		}
@@ -846,7 +849,7 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			passed := verdictOK(row.StressVerdict)
 			item.StressJob = &submissionTestDTO{
 				Category: "STRESS", Status: *row.StressStatus, Tested: tested && !row.StressStale,
-				Passed: passed, Stale: row.StressStale, RPS: row.RPS, TPS: row.TPS,
+				Passed: passed, Verdict: deref(row.StressVerdict), Stale: row.StressStale, RPS: row.RPS, TPS: row.TPS,
 			}
 			item.StressTested, item.StressPassed = tested && !row.StressStale, passed && !row.StressStale
 		}

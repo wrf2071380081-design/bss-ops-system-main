@@ -13,6 +13,8 @@ export interface SupplierSubmissionTestDTO {
   status: string;
   tested: boolean;
   passed: boolean;
+  /** 平台判定：pass / pass_with_warnings / fail；压力测试无判定时为空 */
+  verdict?: string;
   /** 测试目标变化后旧结果失效 */
   stale?: boolean;
   job_id?: string;
