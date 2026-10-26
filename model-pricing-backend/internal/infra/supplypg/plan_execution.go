@@ -9,6 +9,7 @@ import (
 	"model_bss/internal/domain/supply"
 	"reflect"
 	"strconv"
+	"strings"
 )
 
 type PlanExecutionWork struct {
@@ -170,11 +171,19 @@ func (t *planExecutionTransaction) AppendPlanExecutionEffect(ctx context.Context
 		eventType := "RESOURCE_OFFLINED"
 		if t.before.Kind == "ONLINE" {
 			eventType = "RESOURCE_ONLINED"
+		} else if t.before.Kind == "PRICE_CHANGE" {
+			eventType = "RESOURCE_COEFFICIENT_CHANGED"
 		}
 		if e.EventType != eventType || e.AffectedStatus != "PENDING" {
 			return supply.ErrReadContract
 		}
-		payload, _ := json.Marshal(map[string]any{"contract": "supply.resource_state_changed", "schema_version": 1, "plan_id": t.staged.ID, "plan_revision": strconv.FormatUint(t.staged.Revision, 10), "resource_id": t.resource.ID, "resource_revision": strconv.FormatUint(t.resource.Revision, 10), "region": t.resource.Region, "state": t.resource.State, "previous_state": t.record.Resource.State, "actor_id": e.ActorID, "reason": e.Reason, "completion_note": e.CompletionNote, "request_id": e.RequestID, "affected_status": "PENDING", "occurred_at": e.OccurredAt})
+		contract := "supply.resource_state_changed"
+		payloadValues := map[string]any{"contract": contract, "schema_version": 1, "plan_id": t.staged.ID, "plan_revision": strconv.FormatUint(t.before.Revision, 10), "resource_id": t.resource.ID, "resource_revision": strconv.FormatUint(t.resource.Revision, 10), "region": t.resource.Region, "state": t.resource.State, "previous_state": t.record.Resource.State, "actor_id": e.ActorID, "reason": e.Reason, "completion_note": e.CompletionNote, "request_id": e.RequestID, "affected_status": "PENDING", "occurred_at": e.OccurredAt}
+		if t.before.Kind == "PRICE_CHANGE" {
+			contract = "supply.resource_coefficient_changed"
+			payloadValues = map[string]any{"contract": contract, "schema_version": 1, "resource_id": t.resource.ID, "region": t.resource.Region, "resource_revision": strconv.FormatUint(t.resource.Revision, 10), "before_supplier_model_id": t.record.Resource.SupplierModelID, "after_supplier_model_id": t.resource.SupplierModelID, "before_target_version": strconv.FormatUint(t.record.Resource.TargetVersion, 10), "target_version": strconv.FormatUint(t.resource.TargetVersion, 10), "before_coefficient": t.record.Resource.Coefficient, "after_coefficient": t.resource.Coefficient, "actor_id": e.ActorID, "reason": e.Reason, "request_id": e.RequestID, "source": map[string]string{"kind": "PLAN", "id": t.before.ID, "revision": strconv.FormatUint(t.staged.Revision, 10)}, "occurred_at": e.OccurredAt}
+		}
+		payload, _ := json.Marshal(payloadValues)
 		var err error
 		sourceEventID, err = t.work.plans.hooks.Outbox(ctx, t.tx, AdmissionOutboxEntry{EventType: eventType, Payload: bytes.Clone(payload), ActorID: e.ActorID, RequestID: e.RequestID, OccurredAt: e.OccurredAt})
 		if err != nil {
@@ -207,7 +216,7 @@ func (t *planExecutionTransaction) AppendPlanExecutionEffect(ctx context.Context
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return err
 	}
-	envelope.Execution = &planExecutionData{CompletionNote: e.CompletionNote, FailureReason: e.FailureReason, SourceEventID: sourceEventID, OccurredAt: e.OccurredAt}
+	envelope.Execution = &planExecutionData{ActorID: e.ActorID, CompletionNote: e.CompletionNote, FailureReason: e.FailureReason, SourceEventID: sourceEventID, OccurredAt: e.OccurredAt}
 	raw, err = json.Marshal(envelope)
 	if err != nil {
 		return err
@@ -244,16 +253,34 @@ func (t *planExecutionTransaction) AppendPlanExecutionEffect(ctx context.Context
 		return supply.ErrReadContract
 	}
 	if !blocked {
-		title := "资源下架完成"
+		title, kind, content := "资源下架完成", "RESOURCE_CHANGE", e.CompletionNote
 		if t.before.Kind == "ONLINE" {
 			title = "资源上架完成"
+		} else if t.before.Kind == "PRICE_CHANGE" {
+			title, kind = "采购系数已调整", "COST_CHANGE"
+			changes := make([]string, 0, 2)
+			if t.record.Resource.SupplierModelID != t.resource.SupplierModelID {
+				changes = append(changes, "接口模型ID "+t.record.Resource.SupplierModelID+" → "+t.resource.SupplierModelID)
+			}
+			if t.record.Resource.Coefficient != t.resource.Coefficient {
+				changes = append(changes, "采购系数 "+t.record.Resource.Coefficient+" → "+t.resource.Coefficient)
+			}
+			if len(changes) == 0 {
+				return supply.ErrReadContract
+			}
+			content = strings.Join(changes, "；") + "；" + e.CompletionNote
+			if t.record.Resource.Coefficient == t.resource.Coefficient {
+				title = "供应商接口模型ID已调整"
+			} else if t.record.Resource.SupplierModelID != t.resource.SupplierModelID {
+				title = "供应商模型配置已调整"
+			}
 		}
-		notice := &supply.Notice{ResourceID: t.resource.ID, ResourceName: t.resource.SupplierModelID, Region: t.resource.Region, Kind: "RESOURCE_CHANGE", Title: title, Content: e.CompletionNote, Reason: e.Reason, SourceEventID: sourceEventID, AffectedStatus: "PENDING"}
+		notice := &supply.Notice{ResourceID: t.resource.ID, ResourceName: t.resource.SupplierModelID, Region: t.resource.Region, Kind: kind, Title: title, Content: content, Reason: e.Reason, SourceEventID: sourceEventID, AffectedStatus: "PENDING"}
 		payload, err := EncodeNoticePayload(notice)
 		if err != nil {
 			return err
 		}
-		if _, err := t.tx.ExecContext(ctx, `INSERT INTO `+t.work.plans.table("notice")+` (type,target_type,target_id,payload,created_at) VALUES('RESOURCE_CHANGE','RESOURCE',$1,$2::jsonb,$3)`, t.resource.ID, string(payload), e.OccurredAt); err != nil {
+		if _, err := t.tx.ExecContext(ctx, `INSERT INTO `+t.work.plans.table("notice")+` (type,target_type,target_id,payload,created_at) VALUES($1,'RESOURCE',$2,$3::jsonb,$4)`, kind, t.resource.ID, string(payload), e.OccurredAt); err != nil {
 			return err
 		}
 	}

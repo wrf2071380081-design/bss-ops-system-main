@@ -51,8 +51,33 @@ SELECT assignee_id, item_type, state, biz_type, biz_id, title, biz_object, regio
        NULL::bigint AS plan_id
 FROM v_work_item
 WHERE biz_type <> 'PLAN'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM todo_task t
+      JOIN quote_sheet qs ON qs.id = t.biz_id
+      WHERE t.id = v_work_item.biz_id
+        AND t.biz_type = 'QUOTE'
+        AND qs.status = 'APPROVING'
+  )
 UNION ALL
-SELECT p.created_by AS assignee_id,
+SELECT st.id AS assignee_id,
+       'TODO'::varchar(8) AS item_type,
+       'TODO'::varchar(16) AS state,
+       'QUOTE_APPROVAL'::varchar(32) AS biz_type,
+       qs.id AS biz_id,
+       '供应商报价审批'::varchar(256) AS title,
+       ls.legal_name || ' · V' || qs.version_no::text AS biz_object,
+       NULL::varchar(16) AS region,
+       'MID'::varchar(8) AS priority,
+       COALESCE(qs.submitted_at, qs.created_at) AS occurred_at,
+       NULL::bigint AS plan_id
+FROM quote_sheet qs
+JOIN supplier_profile sp ON sp.id = qs.supplier_id
+JOIN legal_subject ls ON ls.id = sp.subject_id
+JOIN internal_staff st ON st.status = 'ACTIVE' AND st.can_approve_supplier = true
+WHERE qs.status = 'APPROVING'
+UNION ALL
+SELECT CASE WHEN p.kind='PRICE_CHANGE' THEN NULLIF(p."after"->'plan'->>'assignee_id','')::bigint ELSE p.created_by END AS assignee_id,
        'TODO'::varchar(8) AS item_type,
        CASE WHEN p.status IN ('DONE', 'CANCELED') THEN 'DONE' ELSE 'TODO' END::varchar(16) AS state,
        'PLAN'::varchar(32) AS biz_type,

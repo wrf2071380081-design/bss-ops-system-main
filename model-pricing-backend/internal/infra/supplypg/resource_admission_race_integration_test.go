@@ -2,9 +2,6 @@ package supplypg
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -168,14 +165,8 @@ func testAdmissionFailedEvidenceContention(t *testing.T, admitFirst bool) {
 	if _, err := evidence(fixture).AttachTestEvidence(ctx, actor, supply.TestEvidenceCommand{ResourceID: resourceID, ReportID: passed}); err != nil {
 		t.Fatal(err)
 	}
-	key := sha256.Sum256([]byte("public-race-test-only-key"))
-	block, _ := aes.NewCipher(key[:])
-	aead, err := cipher.NewGCMWithRandomNonce(block)
-	if err != nil {
-		t.Fatal(err)
-	}
 	secret := "public-race-test-only-credential"
-	config, err := supply.NewFormalConfigService(NewFormalConfigWork(configs, resolve), configPGSealer{aead}, configPGURL{}, func() time.Time { return now }).Create(ctx, buyer, supplier, supply.FormalConfigInput{Scope: "并发测试范围", BaseURL: "https://formal.example/v1", APIKey: &secret, ExternalConfirmed: true})
+	config, err := supply.NewFormalConfigService(NewFormalConfigWork(configs, resolve), configPGURL{}, func() time.Time { return now }).Create(ctx, buyer, supplier, supply.FormalConfigInput{Scope: "并发测试范围", BaseURL: "https://formal.example/v1", APIKey: &secret, ExternalConfirmed: true})
 	if err != nil {
 		t.Fatal(err)
 	}

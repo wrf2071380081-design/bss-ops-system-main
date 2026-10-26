@@ -43,12 +43,14 @@ func (s supplyHTTPReadStore) GetModelVersion(context.Context, string, uint64) (*
 }
 
 type supplyHTTPWriter struct {
-	calls    int
-	meta     supply.WriteMeta
-	data     supply.ModelData
-	revision uint64
-	date     string
-	err      error
+	calls       int
+	manualCalls int
+	meta        supply.WriteMeta
+	data        supply.ModelData
+	id          string
+	revision    uint64
+	date        string
+	err         error
 }
 
 func (w *supplyHTTPWriter) Create(_ context.Context, meta supply.WriteMeta, data supply.ModelData) (*supply.StandardModel, error) {
@@ -82,6 +84,25 @@ func (w *supplyHTTPWriter) Verify(_ context.Context, meta supply.WriteMeta, _ st
 		return nil, w.err
 	}
 	return supplyHTTPModel(), nil
+}
+func (w *supplyHTTPWriter) SaveManual(_ context.Context, meta supply.WriteMeta, id string, revision uint64, data supply.ModelData) (*supply.StandardModel, error) {
+	w.manualCalls++
+	w.meta = meta
+	w.data = data
+	w.id = id
+	w.revision = revision
+	if w.err != nil {
+		return nil, w.err
+	}
+	m, err := supply.NewStandardModel("9007199254740993", meta.ActorID, data, supplyHTTPNow)
+	if err != nil {
+		return nil, err
+	}
+	if id != "" {
+		m.Revision = revision + 1
+		m.VersionNo = 2
+	}
+	return m, nil
 }
 
 // Persistence-only double for the real shared idempotency middleware.
@@ -244,6 +265,43 @@ func TestSupplyHTTPPutRequiresFullReplacementAndStringRevision(t *testing.T) {
 	}
 	if writer.calls != 1 {
 		t.Fatal("invalid replacement reached domain service")
+	}
+}
+
+func TestSupplyHTTPManualCompletionUsesOneAtomicSaveContract(t *testing.T) {
+	writer := &supplyHTTPWriter{}
+	r := supplyHTTPRouter(supplyHTTPStaff(), writer, newSupplyHTTPIdemStore())
+	createBody := `{"name":"待补齐模型","reason":"先补基础信息"}`
+	rec := supplyHTTPCall(r, "POST", "/api/internal/standard-models/manual-completion", createBody, "manual-create-1", "trace-manual-create")
+	if rec.Code != 200 || writer.manualCalls != 1 || writer.calls != 0 || writer.id != "" || writer.revision != 0 || writer.meta.ActorID != "7" || writer.meta.RequestID != "trace-manual-create" {
+		t.Fatalf("manual creation did not use the atomic save writer: %d %+v %s", rec.Code, writer, rec.Body.String())
+	}
+	created := supplyHTTPEnvelope(t, rec)["data"].(map[string]any)
+	if created["verify_status"] != "INCOMPLETE" || created["checked_by"] != "" {
+		t.Fatalf("incomplete manual save was treated as verified: %+v", created)
+	}
+
+	payload := struct {
+		supply.ModelData
+		ExpectedRevision uint64 `json:"expected_revision,string"`
+		Reason           string `json:"reason"`
+	}{supplyHTTPModel().Data, 4, "继续补录"}
+	raw, _ := json.Marshal(payload)
+	rec = supplyHTTPCall(r, "PUT", "/api/internal/standard-models/9007199254740993/manual-completion", string(raw), "manual-update-1", "trace-manual-update")
+	if rec.Code != 200 || writer.manualCalls != 2 || writer.id != "9007199254740993" || writer.revision != 4 || writer.data.Name != "待补齐模型" {
+		t.Fatalf("manual update did not forward the full versioned save: %d %+v %s", rec.Code, writer, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"changed":true`) {
+		t.Fatalf("manual update omitted revision change result: %s", rec.Body.String())
+	}
+	for i, body := range []string{`{"name":"partial","expected_revision":"1","reason":"r"}`, strings.Replace(string(raw), `"expected_revision":"4"`, `"expected_revision":4`, 1), strings.Replace(string(raw), `"expected_revision":"4"`, `"expected_revision":"0"`, 1)} {
+		rec = supplyHTTPCall(r, "PUT", "/api/internal/standard-models/9007199254740993/manual-completion", body, fmt.Sprintf("bad-manual-%d", i), "trace-manual-update")
+		if rec.Code != 400 {
+			t.Fatalf("invalid manual replacement accepted: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	if writer.manualCalls != 2 {
+		t.Fatal("invalid manual requests reached domain service")
 	}
 }
 

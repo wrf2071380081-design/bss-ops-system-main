@@ -15,9 +15,10 @@ import (
 )
 
 type supplyModelHandler struct {
-	reader     *supply.ModelReader
-	writer     SupplyModelWriter
-	operations *supply.SourceOperationReader
+	reader       *supply.ModelReader
+	writer       SupplyModelWriter
+	manualWriter SupplyManualModelWriter
+	operations   *supply.SourceOperationReader
 }
 type supplyModelPermissions struct {
 	CanEdit   bool `json:"can_edit"`
@@ -259,6 +260,35 @@ func (h *supplyModelHandler) create(c *gin.Context) {
 	h.writeResult(c, model, err, 0)
 }
 
+// @Summary 手动补全并留痕标准模型（可待补齐）
+// @Tags supply-standard-models
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param Idempotency-Key header string true "写操作幂等键"
+// @Param body body supplyCreateModelRequest true "资料及操作说明；完整资料由当前维护人核验"
+// @Success 200 {object} response.Body{data=supplyModelDTO}
+// @Failure 400,401,403,409,503 {object} response.Body
+// @Router /api/internal/standard-models/manual-completion [post]
+func (h *supplyModelHandler) manualCreate(c *gin.Context) {
+	if h.manualWriter == nil {
+		supplyHTTPError(c, supply.ErrDependencyUnavailable)
+		return
+	}
+	var req supplyCreateModelRequest
+	if err := decodeSupplyRequest(c, &req, nil); err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	meta, err := supplyWriteMeta(c, req.Reason)
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	model, err := h.manualWriter.SaveManual(c.Request.Context(), meta, "", 0, req.ModelData)
+	h.writeResult(c, model, err, 0)
+}
+
 // @Summary 整体替换标准模型可编辑资料
 // @Tags supply-standard-models
 // @Security BearerAuth
@@ -290,6 +320,40 @@ func (h *supplyModelHandler) update(c *gin.Context) {
 		return
 	}
 	model, err := h.writer.Update(c.Request.Context(), meta, c.Param("id"), req.ExpectedRevision, req.ModelData)
+	h.writeResult(c, model, err, req.ExpectedRevision)
+}
+
+// @Summary 手动补全并留痕标准模型
+// @Tags supply-standard-models
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path string true "标准模型ID"
+// @Param Idempotency-Key header string true "写操作幂等键"
+// @Param body body supplyUpdateModelRequest true "全部资料、字符串expected_revision及操作说明"
+// @Success 200 {object} response.Body{data=supplyModelDTO}
+// @Failure 400,401,403,404,409,503 {object} response.Body
+// @Router /api/internal/standard-models/{id}/manual-completion [put]
+func (h *supplyModelHandler) manualUpdate(c *gin.Context) {
+	if h.manualWriter == nil {
+		supplyHTTPError(c, supply.ErrDependencyUnavailable)
+		return
+	}
+	var req supplyUpdateModelRequest
+	if err := decodeSupplyRequest(c, &req, supplyReplacementFields); err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	if req.ExpectedRevision == 0 || req.ExpectedRevision > math.MaxInt64 {
+		supplyHTTPError(c, supplyRequestError("expected_revision", "a positive bigint revision string is required"))
+		return
+	}
+	meta, err := supplyWriteMeta(c, req.Reason)
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	model, err := h.manualWriter.SaveManual(c.Request.Context(), meta, c.Param("id"), req.ExpectedRevision, req.ModelData)
 	h.writeResult(c, model, err, req.ExpectedRevision)
 }
 

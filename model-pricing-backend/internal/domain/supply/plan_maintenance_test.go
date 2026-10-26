@@ -8,13 +8,13 @@ import (
 )
 
 type planMaintenanceFixture struct {
-	resource                        Resource
-	plan                            *StatePlan
-	effects                         []PlanMaintenanceEffect
-	pending, failEffect, failCommit bool
-	pendingConfiguration            bool
-	configurationError              error
-	configurationResourceID         string
+	resource                                      Resource
+	plan                                          *StatePlan
+	effects                                       []PlanMaintenanceEffect
+	pending, pendingPrice, failEffect, failCommit bool
+	pendingConfiguration                          bool
+	configurationError                            error
+	configurationResourceID                       string
 }
 
 func (f *planMaintenanceFixture) WithinPlanMaintenance(ctx context.Context, fn func(PlanMaintenanceTransaction) error) error {
@@ -36,6 +36,12 @@ func (f *planMaintenanceFixture) ResourceForPlanCreation(context.Context, string
 }
 func (f *planMaintenanceFixture) HasPendingStatePlan(context.Context, string) (bool, error) {
 	return f.pending, nil
+}
+func (f *planMaintenanceFixture) HasPendingPriceChangePlan(context.Context, string) (bool, error) {
+	return f.pendingPrice, nil
+}
+func (f *planMaintenanceFixture) IsActiveInternalStaff(_ context.Context, id string) (bool, error) {
+	return id == "7" || id == "8", nil
 }
 func (f *planMaintenanceFixture) HasPendingConfigurationChange(_ context.Context, id string) (bool, error) {
 	f.configurationResourceID = id
@@ -71,6 +77,7 @@ func (f *planMaintenanceFixture) CreateStatePlan(_ context.Context, p *StatePlan
 	}
 	f.plan = p.copy()
 	f.pending = true
+	f.pendingPrice = p.Kind == "PRICE_CHANGE"
 	return nil
 }
 func (f *planMaintenanceFixture) LockPlanMaintenance(context.Context, string) (*StatePlan, error) {
@@ -82,6 +89,7 @@ func (f *planMaintenanceFixture) UpdateStatePlan(_ context.Context, p *StatePlan
 	}
 	f.plan = p.copy()
 	f.pending = p.Status == "PENDING"
+	f.pendingPrice = p.Kind == "PRICE_CHANGE" && p.Status == "PENDING"
 	return nil
 }
 func (f *planMaintenanceFixture) AppendPlanMaintenanceEffect(_ context.Context, e PlanMaintenanceEffect) error {
@@ -188,5 +196,37 @@ func TestPlanMaintenanceRejectsStaleResourceOrWrongCreator(t *testing.T) {
 		if err == nil || f.plan != nil || len(f.effects) != 0 {
 			t.Fatalf("invalid creation %v", err)
 		}
+	}
+}
+
+func TestPriceChangePlanMaintenanceCreatesAndRevisesWithoutApplyingCoefficient(t *testing.T) {
+	f := maintenanceStore()
+	f.resource.Coefficient = "0.6800"
+	f.resource.SupplierModelID = "vendor-model-v1"
+	f.resource.TargetVersion = 1
+	s := NewPlanMaintenanceService(f, func() time.Time { return modelNow })
+	resourceBefore := f.resource
+	created, err := s.CreatePriceChange(context.Background(), maintenanceMeta("7"), "11", 2, "vendor-model-v2", "0.6800", "8", modelNow.Add(time.Hour))
+	if err != nil || created == nil || created.Kind != "PRICE_CHANGE" || created.CreatedBy != "7" || created.AssigneeID != "8" || created.BeforeSupplierModelID != "vendor-model-v1" || created.AfterSupplierModelID != "vendor-model-v2" || created.BeforeCoefficient != "0.6800" || created.AfterCoefficient != "0.6800" || f.resource != resourceBefore || !f.pendingPrice || len(f.effects) != 1 || f.effects[0].Action != "CREATE" || !f.effects[0].ScheduleReminder {
+		t.Fatalf("bad internal price plan create: %+v %v", created, err)
+	}
+	if _, err := s.CreatePriceChange(context.Background(), maintenanceMeta("7"), "11", 2, "vendor-model-v3", "0.4500", "8", modelNow.Add(time.Hour)); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("duplicate pending price plan should conflict: %v", err)
+	}
+	changed, err := s.RevisePriceChange(context.Background(), maintenanceMeta("7"), "81", 1, "vendor-model-v3", "0.6800", "8", modelNow.Add(2*time.Hour))
+	if err != nil || changed.Revision != 2 || changed.BeforeSupplierModelID != "vendor-model-v1" || changed.AfterSupplierModelID != "vendor-model-v3" || changed.BeforeCoefficient != "0.6800" || changed.AfterCoefficient != "0.6800" || changed.AssigneeID != "8" || changed.ExpectedResourceRevision != 2 || f.resource != resourceBefore || len(f.effects) != 2 || f.effects[1].Action != "REVISE" || !f.effects[1].ScheduleReminder {
+		t.Fatalf("bad internal price plan revision: %+v %v", changed, err)
+	}
+}
+
+func TestPriceChangePlanCreationRequiresResourceBuyerAndActiveAssignee(t *testing.T) {
+	f := maintenanceStore()
+	f.resource.Coefficient = "0.6800"
+	s := NewPlanMaintenanceService(f, nil)
+	if _, err := s.CreatePriceChange(context.Background(), maintenanceMeta("8"), "11", 2, "vendor-model-v1", "0.5000", "7", modelNow.Add(time.Hour)); !errors.Is(err, ErrForbidden) || f.plan != nil || len(f.effects) != 0 {
+		t.Fatalf("non-owner created an internal plan: %+v %v", f, err)
+	}
+	if _, err := s.CreatePriceChange(context.Background(), maintenanceMeta("7"), "11", 2, "vendor-model-v1", "0.5000", "99", modelNow.Add(time.Hour)); !errors.Is(err, ErrNotFound) || f.plan != nil || len(f.effects) != 0 {
+		t.Fatalf("inactive assignee was accepted: %+v %v", f, err)
 	}
 }

@@ -66,13 +66,13 @@ const NODE_LABELS: Record<string, string> = {
 const PLAN_LABELS: Record<string, string> = {
   ONLINE: "上架计划",
   OFFLINE: "下架计划",
-  PRICE_CHANGE: "价格变更计划",
+  PRICE_CHANGE: "内部改价计划",
 };
 const ENTITY_LABELS: Record<string, string> = {
   standard_model: "标准模型",
   resource: "资源",
   supply_notice: "公告",
-  supply_plan: "上下架计划",
+  supply_plan: "资源计划",
   formal_config: "正式配置",
 };
 const SUPPLY_NOTICE_KINDS = new Set(["ONLINE_OFFLINE_PLAN", "RESOURCE_CHANGE", "RESOURCE_ONLINED", "RESOURCE_OFFLINED", "COST_CHANGE"]);

@@ -7,7 +7,18 @@ import (
 	"model_bss/internal/domain/supply"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestResourceProjectionEqualityIgnoresReadOnlyAdmissionTimestamp(t *testing.T) {
+	base := ResourceProjection{ID: "1", SupplierID: "2", StandardModelID: "3", Region: "CN", SupplierModelID: "vendor-model", Coefficient: "0.7000", BuyerID: "4", State: "ADMITTED", EverAdmitted: true, CreatedAt: time.Date(2026, 10, 20, 1, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 21, 1, 0, 0, 0, time.UTC)}
+	derived := base
+	admittedAt := base.CreatedAt.Add(time.Hour)
+	derived.AdmittedAt = &admittedAt
+	if !resourceProjectionEqual(base, derived) {
+		t.Fatal("historical admission timestamp must not be treated as mutable resource control state")
+	}
+}
 
 func TestResourceReadRejectsMalformedRequestsBeforeTransaction(t *testing.T) {
 	if got, err := NewResourceReadStore(`public;DROP TABLE resource`, nil, nil); err == nil || got != nil {

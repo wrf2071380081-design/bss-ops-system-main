@@ -31,7 +31,9 @@ snapshot继续使用已有 `contract=supply.standard_model, schema_version=1, mo
 
 F3后续已落实[资源控制快照存储](./resource-control-storage.draft.md)：resource保持原生列，A控制元数据与完整安全资源状态写入operation_log.after的保留RESOURCE_REVISION记录，协议为supply.resource/v1。锁资源后读取已保存revision，更新/日志同外层事务；该类状态依据不能按临时日志裁剪。创建服务已接真实A存储，并为草稿报告转存保留B事务接口，不在草稿阶段伪造resource。B真实来源/版本/锁序、正式配置适配及生产装配仍须完成。
 
-F4后续已落实[正式配置原生存储](./formal-config-storage.draft.md)：api_key_enc保存带密钥版本的密封信封；配置revision/逻辑状态/确认依据在保留安全快照，日志仅含密封信封指纹，不含密文或密钥版本。当前采购人来自显式assignment_log记录链，缺链的历史主体拒绝猜测。资源绑定共用supplier锁，真实引用与停用竞争已验证；公共加密/URL/归属初始化及B节点事实仍须真实装配。
+F4早期实现曾在`api_key_enc`中保存带密钥版本的密封信封；此段保留历史状态。DEC-018后当前字段保存原始Key，业务版本/确认依据仍由安全快照承载。当前采购人来自显式assignment_log记录链，缺链的历史主体拒绝猜测。资源绑定共用supplier锁；B办理事实仍须真实装配。
+
+2026-10-23 更新：DEC-018已将正式配置Key改为原样存储并移除AES-GCM；Stage79已通过临时API、真实配置组件和隔离v36库验证新建、轮换、脱敏回读和日志无原文，未部署到主Docker API。当前规则见[正式配置存储契约](./formal-config-storage.draft.md)及[TDD Stage 78–79](../TDD/SUMMARY.md#stage-78正式配置key移除aes-gcm加密)。
 
 ## 4. 结构版本与部署
 

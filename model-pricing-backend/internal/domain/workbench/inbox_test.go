@@ -75,6 +75,17 @@ func TestInboxPlanDeeplinkCarriesPlanIDAndRegion(t *testing.T) {
 	}
 }
 
+func TestInboxQuoteApprovalDeeplinkOpensExistingApprovalQueue(t *testing.T) {
+	store := &fakeInboxStore{inbox: []InboxItem{{BizType: "QUOTE_APPROVAL", BizID: 42, State: "TODO"}}, total: 1}
+	result, err := NewInboxService(store).Inbox(context.Background(), InboxQuery{}, 7)
+	if err != nil || len(result.List) != 1 {
+		t.Fatalf("inbox result=%+v err=%v", result, err)
+	}
+	if got, want := result.List[0].Deeplink, "/internal/supplier-quotes?quote_id=42"; got != want {
+		t.Fatalf("quote approval deeplink=%q, want %q", got, want)
+	}
+}
+
 func TestMarkNoticeReadNotFound(t *testing.T) {
 	svc := NewInboxService(&fakeInboxStore{})
 	if err := svc.MarkNoticeRead(context.Background(), 999, 1); !errors.Is(err, ErrNoticeNotFound) {

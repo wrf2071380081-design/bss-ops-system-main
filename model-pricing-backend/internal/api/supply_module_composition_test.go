@@ -15,12 +15,6 @@ import (
 	"model_bss/internal/repo"
 )
 
-type compositionSealer struct{}
-
-func (compositionSealer) Seal(context.Context, string, supply.SecretBinding) (supply.SecretEnvelope, error) {
-	return supply.SecretEnvelope{Ciphertext: []byte("sealed"), KeyVersion: "test"}, nil
-}
-
 type compositionURLPolicy struct{}
 
 func (compositionURLPolicy) ValidateFormalURL(context.Context, string) error { return nil }
@@ -44,7 +38,7 @@ func newCompositionOptions(t *testing.T) SupplyRouteModuleOptions {
 		StandardModelSupplyOptions: StandardModelSupplyOptions{
 			DB: raw, Schema: "public", IdemStore: repo.NewIdempotencyRepo(orm), SourcePolicy: policy,
 		},
-		SecretSealer: compositionSealer{}, FormalURLPolicy: compositionURLPolicy{},
+		FormalURLPolicy: compositionURLPolicy{},
 		ResourceLog:     func(context.Context, *sql.Tx, supplypg.ResourceStateLog) error { return nil },
 		FormalConfigLog: func(context.Context, *sql.Tx, supplypg.FormalConfigLog) error { return nil },
 		NoticeLog:       func(context.Context, *sql.Tx, supply.NoticeReadOperation) error { return nil },
@@ -73,7 +67,7 @@ func TestNewSupplyRouteModuleReportsMissingRealProviders(t *testing.T) {
 	if !errors.Is(err, supply.ErrDependencyUnavailable) {
 		t.Fatalf("missing providers should fail closed with dependency error, got %v", err)
 	}
-	for _, name := range []string{"database", "idempotency", "resource_log", "admission.proof", "resource_creation.lock_source", "test_evidence_authority", "pending_configuration", "secret_sealer"} {
+	for _, name := range []string{"database", "idempotency", "resource_log", "admission.proof", "resource_creation.lock_source", "test_evidence_authority", "pending_configuration"} {
 		if !strings.Contains(err.Error(), name) {
 			t.Errorf("missing-provider error omitted %q: %v", name, err)
 		}

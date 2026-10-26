@@ -2,9 +2,6 @@ package supplypg
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -218,13 +215,7 @@ func TestResourceEvidenceAdmissionChainPostgres34(t *testing.T) {
 	if _, err := evidence.AttachTestEvidence(ctx, actor, supply.TestEvidenceCommand{ResourceID: first.Resource.ID, ReportID: future}); !errors.Is(err, supply.ErrRevisionConflict) {
 		t.Fatal("future target accepted", err)
 	}
-	key := sha256.Sum256([]byte("chain-test-key-not-production"))
-	block, _ := aes.NewCipher(key[:])
-	aead, err := cipher.NewGCMWithRandomNonce(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	configService := supply.NewFormalConfigService(NewFormalConfigWork(configs, resolve), configPGSealer{aead}, configPGURL{}, func() time.Time { return now })
+	configService := supply.NewFormalConfigService(NewFormalConfigWork(configs, resolve), configPGURL{}, func() time.Time { return now })
 	secret := "formal-chain-test-secret"
 	input := supply.FormalConfigInput{Scope: "全部模型", BaseURL: "https://formal.example/v1", APIKey: &secret, ExternalConfirmed: true}
 	config, err := configService.Create(ctx, buyer, "21", input)
@@ -415,7 +406,7 @@ func TestResourceEvidenceAdmissionChainPostgres34(t *testing.T) {
 	if err := json.Unmarshal(eventRaw, &event); err != nil || string(event["resource_revision"]) != `"5"` || !strings.Contains(string(logRaw), command.CompletionNote) {
 		t.Fatal("event/receipt omitted completion or string revision", err)
 	}
-	for _, bad := range []string{secret, "formal.example", "test-config-key-v1", "api_key_enc"} {
+	for _, bad := range []string{secret, "formal.example", "api_key_enc"} {
 		if strings.Contains(string(logRaw), bad) || strings.Contains(string(eventRaw), bad) {
 			t.Fatal("credential entered admission log/outbox")
 		}

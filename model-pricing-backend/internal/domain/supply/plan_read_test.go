@@ -40,3 +40,20 @@ func TestPlanSummaryUsesInitiatorAndDoesNotExecuteOrBlockFutureDueTime(t *testin
 		t.Fatalf("GET mutated stale plan or hid mismatch: %+v %v", stale, err)
 	}
 }
+
+func TestPriceChangePlanPermissionsSeparateInitiatorAndAssignedExecutor(t *testing.T) {
+	plan := &ResourcePlan{ID: "81", ResourceID: "11", Region: "CN", Kind: "PRICE_CHANGE", Status: "PENDING", CreatedBy: "7", AssigneeID: "8", SupplierModelID: "vendor-model-v1", BeforeSupplierModelID: "vendor-model-v1", AfterSupplierModelID: "vendor-model-v1", Revision: 1, ExpectedResourceRevision: 2, BeforeCoefficient: "0.6800", AfterCoefficient: "0.5000", DueAt: modelNow.Add(time.Hour), CreatedAt: modelNow, Reason: "内部采购调整"}
+	store := &planSummaryMemory{record: PlanReadRecord{Plan: plan, ResourceID: "11", ResourceRegion: "CN", ResourceBuyerID: "7", ResourceRevision: 2}}
+	initiator, err := NewPlanReader(store).Get(context.Background(), "7", "81")
+	if err != nil || !initiator.IsInitiator || !initiator.Permissions.CanRevise || !initiator.Permissions.CanCancel || initiator.Permissions.CanExecute {
+		t.Fatalf("wrong initiator permissions: %+v %v", initiator, err)
+	}
+	executor, err := NewPlanReader(store).Get(context.Background(), "8", "81")
+	if err != nil || executor.IsInitiator || executor.Permissions.CanRevise || executor.Permissions.CanCancel || !executor.Permissions.CanExecute {
+		t.Fatalf("wrong assigned executor permissions: %+v %v", executor, err)
+	}
+	other, err := NewPlanReader(store).Get(context.Background(), "9", "81")
+	if err != nil || other.Permissions.CanRevise || other.Permissions.CanCancel || other.Permissions.CanExecute {
+		t.Fatalf("unrelated staff received plan permissions: %+v %v", other, err)
+	}
+}

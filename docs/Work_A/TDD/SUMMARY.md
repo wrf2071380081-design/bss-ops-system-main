@@ -1,6 +1,6 @@
 # A 模块 TDD 汇总
 
-> 当前交接入口（2026-10-22）：[责任与接入参数](../supply/2026-10-22-handoff.md)、[交接验收清单](./2026-10-22-handoff-acceptance.md)。Stage59 已用 Go 1.26 编译当前后端、通过相关定向测试并更新本地 API 容器；真实计划执行/提醒、配置密钥写入和 B 流程联合验收仍待完成。以下各阶段保留当时结论，旧“未装配/运行库32”等描述不代表当前源码状态。交接文档中的待验场景不等于已执行通过。
+> 当前交接入口（截至 2026-10-24）：[责任与接入参数](../supply/2026-10-22-handoff.md)、[交接验收清单](./handoff-acceptance.md)。Stage83 完成本轮快速交付计划中的定向收尾；Stage84补齐模型广场在模型详情与供应商详情之间往返时恢复列表及来源筛选状态，并通过定向浏览器脚本和生产构建。主 Docker 当前快照为 v36/dirty=false，API 与 PostgreSQL 运行且健康，工作区 API 已更新到 `model_bss_api_latest`。主库业务表为空，真实登录页面验收覆盖空数据状态；报告附件、B真实办理/报告来源、资源绑定准入等跨模块场景仍待提供方联调。下方阶段条目保留执行时状态；最新状态以 Stage83–84 和交接清单为准。
 
 > 职责更正：总览/A任务书/共享契约只有A/B/C三条线，没有独立公共负责人；共享文件统一维护未点名全部由谁负责。A负责F4/F13等业务闭环，C明确提供F14日志/绑定helper。历史阶段的“待公共负责人”只保留当时表述，不能据此移交A责任；最新交接清单已校正。
 
@@ -452,13 +452,13 @@ go test -p 1 -count=1 ./internal/api ./internal/infra/supplypg                  
 
 当前 8080 API 的 `/healthz` 返回 200，未认证访问标准模型路由返回 401；用本地测试账号登录后，标准模型和模型广场列表均返回成功，当前记录数均为 0。前端开发服务器根页返回 200。没有创建业务数据，因此这里只证明当前工作区 API 已在 v36 容器环境启动、认证及列表读取可用，不代表新增、核验、资源准入或配置写入闭环已通过。旧容器二进制备份和新构建均在忽略的 `model-pricing-backend/bin/` 下；未提交、推送或执行迁移。
 
-## Stage 47：供应商申报前端最小闭环
+## Stage 47：供应商申报页面最小闭环
 
-补齐 A 负责的供应商门户前端空页：模型新增现在支持一份多行申报、标准模型安全目录选择、显式保存草稿、保存后的逐行连通性/压力测试启动与刷新、批次测试覆盖提示和申报提交；草稿/申报记录页签读取列表并开放可编辑草稿。测试状态由 API 返回，前端区分“做过测试”和“测试通过”；每行连通性已测且至少一行压力测试已测才开放批次提交。价格变更仍从模型管理页按资源及原 revision 发起，不直接改资源。
+补齐 A 任务范围内的供应商门户模型新增页面：支持一份多行申报、标准模型安全目录选择、显式保存草稿、保存后的逐行连通性/压力测试启动与刷新、批次测试覆盖提示和申报提交；草稿/申报记录页签读取列表并开放可编辑草稿。测试状态由接口返回，页面区分“做过测试”和“测试通过”；每行连通性已测且至少一行压力测试已测才开放批次提交。价格变更仍从模型管理页按资源及原 revision 发起，不直接改资源。
 
 验证：`npm.cmd run build` 首次暴露两个模板事件的隐式 `any`，修正事件处理后再次构建通过。Vite保留既有 500 kB chunk 提示。没有运行完整测试套件，没有创建或修改业务数据。`127.0.0.1:8080/healthz` 返回健康、`127.0.0.1:5173/` 返回 HTTP 200；本轮 Docker CLI 仍因 Docker Desktop pipe `Access is denied` 不可检查，所以未确认当前 Docker 容器是否包含本轮前端源码。
 
-真实供应商申报 API 尚未可联调：`internal/api/router_submission.go` 的 B 路由注册仍为空；`/supplier/models`、安全标准模型选项、草稿/逐行测试/提交与价格变更的接口尚未由真实提供方开放。详细字段和隔离要求已补入[公共集成请求](../supply/public-integration-request.md#17-供应商门户前端-api-接入)。旧单模型 `/supplier/model-applications` 未复用。源码与前端构建通过，不等于供应商门户页面/API真实可用。未提交或推送。
+真实供应商申报 API 尚未可联调：申报/办理/测试相关业务模块的接口仍未开放；`/supplier/models`、安全标准模型选项、草稿/逐行测试/提交与价格变更的接口尚未由真实提供方提供。详细字段和隔离要求已补入[供应商门户跨模块接口契约](../supply/public-integration-request.md#17-供应商门户跨模块接口契约)。旧单模型 `/supplier/model-applications` 未复用。源码与页面构建通过，不等于供应商门户页面/API真实可用。未提交或推送。
 
 ## Stage 48：F4 正式配置维护入口
 
@@ -551,13 +551,13 @@ go test -p 1 -count=1 ./internal/api ./internal/infra/supplypg                  
 
 ## 2026-10-22 交接文档补充
 
-新增[supply三模块协作交接清单](../supply/2026-10-22-handoff.md)与[TDD交接验收清单](./2026-10-22-handoff-acceptance.md)。按公共/B/C明确真实提供方、A接续实现、代码入口、参数和最小验收条件；将Stage54/56/57已通过范围与配置/准入/报告/执行/提醒等待项分开。同步修正入口、规划和核查清单中的运行库32、主路由未挂载、前端审批守卫未实现、运行PlanExecutor已注入等过时状态。
+新增[supply三模块协作交接清单](../supply/2026-10-22-handoff.md)与[TDD交接验收清单](./handoff-acceptance.md)。按公共/B/C明确真实提供方、A接续实现、代码入口、参数和最小验收条件；将Stage54/56/57已通过范围与配置/准入/报告/执行/提醒等待项分开。同步修正入口、规划和核查清单中的运行库32、主路由未挂载、前端审批守卫未实现、运行PlanExecutor已注入等过时状态。
 
 本次仅核对源码及现有阶段记录、补交接说明，不执行新业务测试、不增加“通过”结论，不修改功能代码/数据库/容器，也不提交或推送。交接后的真实结果继续追加本文件，不新增分散results或上传evidence。
 
 ### 同日职责核对更正
 
-重新核读总览§〇.1/〇.2及F1–F17、A任务书、附01§2.2/3.2/6.1/10：项目是A/B/C三人；“公共统一维护”是共享文件协作，未指定独立第四负责人；C明确提供F14日志/绑定工具。已修正交接清单和当前规划：正式配置安全实现/接线、资源状态、F13执行/提醒由A继续推进，B交付真实流程/测试，C完成客户/报价及F14。热点文件修改仍按统一维护规则。F8按总览与A任务书由A做前端/B做后端，附01页面表及总览文件表的冲突已注明。仅更正文档，不改变业务规则、实现和验证结果。
+重新核读总览§〇.1/〇.2及F1–F17、A任务书、附01§2.2/3.2/6.1/10：项目是A/B/C三人；“公共统一维护”是共享文件协作，未指定独立第四负责人；C明确提供F14日志/绑定工具。已修正交接清单和当前规划：正式配置安全实现/接线、资源状态、F13执行/提醒由A继续推进，B交付F5–F7流程/测试事实，C完成客户/报价及F14。热点文件修改仍按统一维护规则。供应商门户按业务模块及A任务书范围说明；此前按前端/后端描述F8责任的表述已更正，不据文件目录或页面入口重新切分模块。仅更正文档，不改变业务规则、实现和验证结果。
 
 <a id="stage-58-a-侧配置安全计划执行与提醒源码接线2026-10-22"></a>
 ## Stage 58：A 侧配置安全、计划执行与提醒源码接线（2026-10-22）
@@ -659,3 +659,119 @@ Go 1.26环境下`go test ./internal/api -run 'TestResourceReportHTTP' -count=1`�
 定向 Go 验证通过：`TestPlanExecutionHTTPReturnsBlockedOutcomeAs409WithPlanData`确认 BLOCKED 以409返回计划版本，并以相同幂等键重放原409响应且执行器只调用一次；`TestIdempotency_ReplaysCommittedTerminal409WithBusinessData`确认终态409连同业务数据被同键重放；新增的 PostgreSQL v36 提醒用例通过。前两项为 HTTP/幂等中间件测试夹具，不是运行 API 与真实数据库事务的端到端 HTTP 验收。
 
 以上仅运行三项定向用例，未跑全套测试。主运行库未写入，未执行迁移，未提交或推送。隔离 Go 容器及验收数据库在验证后清理。
+
+## Stage 72：模型广场详情列与供应商模型详情页（2026-10-23）
+
+模型广场汇总列表增加独立“详情”操作，打开该模型的供应来源；供应来源行的“详情”现在进入该供应商对应的模型资料页，页头明确供应商、标准模型及接口模型ID，保留返回供应来源的路径。详情页复用现有资源详情、报告、正式配置/接入、计划和操作记录组件。资源详情读取增加供应商ID、标准模型ID交叉核对，避免显示错配资源。
+
+前端生产构建 `npm.cmd run build` 通过（包含 `vue-tsc --noEmit`）；Vite输出保留既有大于500kB的chunk提示。未运行页面/API/数据库联合验收。运行装配仍未注入 `ResourceReports` 可信报告及附件提供方，真实报告历史和文件下载因此仍不算接通；本次只完成入口与页面复用，不将构建结果当作报告联调证据。
+
+## Stage 73：跟进 main 模型详情页并接入报告历史入口（2026-10-23）
+
+拉取并快进合入 `origin/main` 至 `f6d6cf0`。与本地 `ModelPlaza.vue` 有内容冲突，按要求保留 main 版的模型广场入口和新增 `ModelPlazaDetail.vue`，未用本地旧详情覆盖；其他 A 侧未提交改动已恢复。
+
+在 main 新详情页中，将每条来源的“详情”接到资源详情抽屉并校验供应商/标准模型归属；“查看报告”打开报告历史页签，“资源操作”进入该资源可用的接入/配置或上下架计划页签；模型级操作记录页签接到 main 新增的 `ModelSourceOperationRecords`。报告读取器从 `test_report`/`test_job` 提供真实列表和详情投影，按已选中的资源证据快照判断目标版本；不向前端返回文件路径或 URL。附件目前只显示为存在但暂不可下载，等待受控文件存储/授权提供方。
+
+`npm.cmd run build` 通过（`vue-tsc --noEmit` 与 Vite 构建；保留既有大 chunk 提示）。Go 编译及非空报告数据库/API联调未执行：Go CLI 不在 PATH，Docker Desktop Linux Engine 当时未启动。数据库迁移、API容器更新、提交和推送均未执行。自动暂存保留为 `codex-temp-before-main-sync-20261023`，用于冲突恢复；工作区原有其他 A 侧未提交更改仍在。
+
+## Stage 74：F13 内部采购系数改价计划（2026-10-23）
+
+新增[内部采购系数改价计划契约](../supply/internal-price-change-plan.draft.md)并落地首版。该计划独立于供应商改价审批：模型广场资源详情可创建计划，选择在职办理人、系数、预计时间和原因；计划支持查看、修改、取消、指定办理人登记实际完成。工作台将待办投影给指定办理人并沿用带具体 plan_id 的资源计划跳转。预计时间只提醒，不调用供应商生产接口。
+
+授权基线：资源归属采购人创建，发起人修改/取消，指定办理人执行。执行时校验资源修订号和原系数；成功在一个事务内更新系数与资源修订号、写完成依据/操作日志、`RESOURCE_COEFFICIENT_CHANGED` 成本事件和 `COST_CHANGE` 公告，同时保留测试、配置和资源状态事实。冲突写入 `BLOCKED`，不更新资源或发布成本事件，并由 HTTP 返回携带计划数据的409。无需新增数据库迁移，复用原生计划快照、资源修订快照、日志及事件/outbox结构。
+
+验证：前端 `npm.cmd test` 114项通过，`npm.cmd run build`（含 `vue-tsc --noEmit`）通过；Go 1.26 Docker 环境中 `internal/domain/supply`、`internal/infra/supplypg`、`internal/domain/workbench` 测试通过，`internal/api` 的 `TestPricePlanHTTP*` 定向用例通过。一次全 `internal/api` 包测试中，现存 `TestRouterSupplierPortalProfileNotGuardedByRequirePerm` 失败（源码保护测试的范围断言命中供应商区块之后的内部客户路由）；该项不属于改价计划。
+
+当前未设置专用 PostgreSQL 测试库，因此未验证数据库中的改价成功事务、BLOCKED/409真实提交及重放，也未更新或重启 `model_bss_api_latest`。运行库没有因本切片执行迁移或业务写入。工作区未提交或推送。
+
+## Stage 75：改价计划 v36 HTTP 事务验收与报价审批待办接入（2026-10-23）
+
+工作台收件箱在共享 `v_work_item` 投影之外增加待审批报价投影：每条 `APPROVING` 报价分配给所有在职且 `can_approve_supplier=true` 的员工；同一报价原先分配给采购人的通用 `QUOTE` 待办在审批中隐藏，避免把审批误交给供应商归属采购人。工作台详情深链进入既有 `/internal/supplier-quotes?quote_id=...`；报价页读取该 ID 后打开原有差异抽屉并沿用现有审批资格、行级范围和 approve/reject API。没有恢复独立审批中心，也没有修改报价审批事务。
+
+为内部采购系数改价计划新增真实 HTTP/PostgreSQL v36 集成验收：通过 A 路由和真实幂等中间件创建计划并登记完成；成功事务核对资源系数/修订、计划 DONE、操作记录、`RESOURCE_COEFFICIENT_CHANGED` 事件和 COST_CHANGE 公告。资源版本并发变化时核对 BLOCKED 与409均已提交，同一幂等键重放同一业务响应且不改写资源。无需数据库迁移。
+
+验证：Docker Go 1.26 下收件箱仓储/深链/改价路由定向单测通过；隔离 v36 PostgreSQL 上 `TestWorkbenchInboxHTTPProjectsQuoteApprovalsOnlyToEligibleStaffPostgres36` 与 `TestPriceChangePlanHTTPPostgres36CommitsExecutionAndBlockedReplay` 通过。`npm.cmd run build`（含 `vue-tsc --noEmit`）通过，保留既有大 chunk 提示；当前 API 二进制构建成功并更新现有 `model_bss_api_latest`，健康检查为 `db=up/status=ok`，未认证的工作台 API 返回401。
+
+验收库从主库只读克隆，测试夹具已清空后删除；临时低权限数据库角色也已删除。主运行库只读复核仍为 v36，供应商/资源/计划/报价记录均为0；未执行迁移或业务写入。保留旧 API 二进制回滚副本 `model-pricing-backend/bin/server-v36.before-stage75`（Git 忽略目录）。未提交或推送，未运行完整测试套件。
+
+## Stage 76：标准模型单一保存与原子人工核验（2026-10-23）
+
+按最新“手动补全”原型将维护弹窗收敛为单一“保存并留痕”按钮。新增/更新统一走 `manual-completion` API：不完整资料可保存为待补齐且不可报价；完整资料需要当前维护人、官方来源策略、核对日期、完整性及 revision 均通过，后端在同一事务内保存当前状态、一个新版本快照和操作记录，并写入核验人。资料变化只递增一个 revision/version；保存不再先写更新再单独调用 verify。旧创建/更新/核验路由仍保留兼容。
+
+定向验证通过：Go 1.26 Docker 下 `go test ./internal/domain/supply -run 'TestModelServiceManualSave'`、`go test ./internal/api -run 'TestSupplyHTTPManualCompletionUsesOneAtomicSaveContract'`；前端标准模型 API scenario 2项通过；`npm.cmd run typecheck` 与 `npm.cmd run build` 通过，构建保留既有大 chunk 提示。浏览器交互脚本未执行，因为当前项目环境未安装 `playwright` 模块。
+
+未进行 PostgreSQL 运行库写入、迁移或 API 容器更新；本阶段未提交或推送。原型差异记录已同步到需求规划、决策记录和标准模型 API 契约。
+
+## Stage 77：供应商申报测试 Key 一次录入与复用（2026-10-23）
+
+按本轮决策不为供应商测试 Key 新增 BSS 加解密。供应商申报页面保存成功后清空 Key 输入框，只显示是否已有配置；编辑已保存草稿时，Key 留空表示沿用，填入新 Key 表示替换。发起测试的浏览器请求只提交测试类别，不重复发送 URL/Key；供应商自测的 URL、Key、额度与内部平台测试所用 URL、Key、额度分开说明。API DTO 增加 `test_api_key_configured` 状态字段，前端错误响应脱敏覆盖 `test_api_key` 等键名。幂等缓存仍只保留 payload 指纹和幂等键，不保存请求正文。
+
+TDD 红灯证据：旧页面在保存成功后仍将明文留在密码框，Playwright 用例按此行为失败；脱敏单测因 `test_api_key` 未匹配敏感字段而失败。修正后定向验证通过：`node tests/supplier-test-key.browser.mjs` 覆盖已有草稿首次录入 Key、成功后清空输入、空值更新不带 Key、测试触发只传类别以及 sessionStorage 不留明文；`node --experimental-strip-types --test tests/supplier-test-key.test.ts` 通过；`npm.cmd run typecheck` 通过。没有运行完整前端测试套件或构建。
+
+此验证使用浏览器和模拟 API 响应，证明 A 页面行为及请求契约，不证明后端持久化、数据库明文策略、Inspector 关联或真实测试调度。当前供应商申报/测试后端仍由 B 接入，测试路由为空；后续需由 B 的真实接口返回 Key 配置状态、空 Key 更新保留已保存值，并使用供应商自己的凭据和额度调用 Inspector。内部测试继续使用平台凭据。正式运行配置现有 AES-GCM 加密本切片未改，数据库未迁移、未写入，API 容器未更新，未提交或推送。
+
+## Stage 78：正式配置 Key 移除 AES-GCM 加密（2026-10-23）
+
+按用户明确的后续决定，移除 F4 `supplier_formal_config` 正式配置 API Key 的 AES-GCM 实现。领域写服务不再依赖 `SecretSealer`；运行装配不再读取 `MODEL_BSS_FORMAL_CONFIG_KEY_VERSION` / `MODEL_BSS_FORMAL_CONFIG_KEY`，创建、更新正式配置不再因为缺密钥而不可用。持久层直接保存输入 Key 到共享 000033 物理列 `api_key_enc`，字段改名留待共享迁移流程。HTTP 回执、页面和操作日志仍使用安全投影，Key 原文不返回、不写日志；留空更新保留原 Key，旧 `se1` 封套不自动解密，要求重新录入后使用。供应商申报自测 Key 与正式配置 Key 仍属于不同链路。
+
+TDD 定向验证通过，命令：`go test ./internal/domain/supply ./internal/infra/supplypg ./internal/infra/supplysecurity ./internal/api ./cmd/server ./cmd/seedchain -run "TestFormal|TestNewSupplyRouteModule|TestSupplyFormalConfig" -count=1`，在 Docker Desktop 的 Go 1.26 容器执行。覆盖无加密器创建、明文保存/安全投影、留空保留/Key轮换、旧封套重录、存储字符上限、日志指纹字段兼容、HTTPS URL策略、正式配置HTTP契约和运行入口编译。专用 PostgreSQL 集成用例因本轮未提供隔离测试数据库而跳过；没有访问或写入主运行库。
+
+本轮未修改共享迁移，未部署或重启 API 镜像，未改写历史提交，也未提交/推送。Docker 中 `model_bss_api_latest` 反复重启的原因经容器日志确认是 `model_bss_pg` 已停止，API 连接 `host.docker.internal:5433` 被拒并以退出码1结束；与 AES Key 配置无关。Stage 77 中“本轮正式配置 AES-GCM 未改”的说法描述的是当时切片，现由本阶段决策和代码状态覆盖。
+
+## Stage 79：正式配置 Key 前后端与 v36 数据库联调（2026-10-23）
+
+使用 Docker Go 1.26 编译当前工作区 API，在临时 v36 数据库副本和临时 API 容器上验证；主库、现有 `model_bss_api_latest` 与其二进制未改。Playwright 经真实员工登录页以 `buyer_a` 登录，随后挂载正式配置真实 Vue 组件（临时联调资源夹具）执行新建和 Key 轮换。新建 POST 返回200、版本1；轮换 PUT 返回200、版本3；随后 GET 返回单条、版本3。写入和列表响应均不含 `api_key`/`api_key_enc` 字段及 Key 明文，只返回掩码和已配置状态。数据库确认共享 `api_key_enc` 物理列等于本次虚构 Key 原文且不是旧 `se1` 封套格式；三个版本的 `operation_log` 均未含原文。临时 API 未设置 AES 密钥环境变量，仍启动并通过 `db=up` 健康检查。
+
+跨端口直连测试另发现本机浏览器的 PUT 被 CORS 拦截：OPTIONS 返回204，但公共 CORS 中间件未返回 `Access-Control-Allow-Methods`。通过 Vite `/api` 同源代理后，Playwright 页面新建、轮换和掩码回读全部通过；本机 `.env.local` 目前配置为 `http://127.0.0.1:8080/api` 直连，若继续使用该方式，更新/停用请求仍需补 CORS 方法配置或改走同源代理。该 CORS 问题不属于 Key 存储逻辑，本阶段未改公共中间件。
+
+联调页使用真实配置组件但以临时资源夹具承载；没有覆盖模型广场完整资源抽屉导航，也没有调用真实供应商端点。验证后移除临时数据库、API 容器、Vite 进程、临时页面/配置和编译二进制。运行库仍为36；未迁移、未写主库、未部署 `model_bss_api_latest`、未提交或推送。
+
+## Stage 80：供应商模型详情导航与准入时间展示（2026-10-23）
+
+模型广场供应来源行的“详情”进入供应商模型页，带上供应商、资源、标准模型和区域上下文；该页列出同一供应商的模型，并打开所选资源详情。上下文不匹配时拒绝展示。列表准入时间改为读取真实准入操作记录：从 `operation_log` 中最早的资源 `RESOURCE_REVISION` 且 `after.operation=ADMIT` 记录取值；找不到记录时显示“未记录”，不再用资源创建时间冒充准入时间。
+
+定向浏览器场景 `node tests/model-plaza-supplier-detail.browser.mjs` 通过，使用模拟 API 响应验证详情导航、供应商模型列表、所选资源展示、跨供应商隔离及缺失准入时间的展示。Docker Go 1.26 下 `TestResourceProjectionEqualityIgnoresReadOnlyAdmissionTimestamp` 和 `TestResourceReadPostgres34Native` 通过；数据库检查使用从当前 v36 主库结构生成的临时 schema-only 数据库和测试事务夹具，验证准入时间取自操作记录、缺记录保持空值及资源读取投影。`npm.cmd run build` 通过（保留既有大 chunk 提示）。这些结果不是完整的页面/API/真实业务数据库联合验收。
+
+本阶段未迁移或写入主运行库，未更新 `model_bss_api_latest`，未运行全套测试，也未提交或推送。真实报告历史目前仍未做非空专项 API/数据库验收；报告列表元数据适配仍在开发，v36 没有可信报告来源字段，来源未知时必须显示“未记录”，不能按推断填充。
+
+## Stage 81：报告历史元数据读取与展示（2026-10-23）
+
+报告列表和详情补齐原型展示字段：测试日期、测试项、操作人、来源、场景。读取器从 `test_report.tested_at/scene/tested_by`、`test_job.category` 及内部员工姓名投影这些字段；v36没有可信报告来源字段，因此 `source` 保持空值，页面展示“未记录”，不猜测供应商或内部来源。列表以测试日期排序，详情展示同一组元数据；API校验时间、测试项和来源枚举，并继续做凭据/原始载荷安全投影。
+
+定向验证通过：前端 `supply-front-completion.scenario.ts` 2项通过（报告元数据安全投影、非法来源和时间拒绝）；`npm.cmd run build` 通过，保留既有大 chunk 提示。Docker Go 1.26 下 `TestResourceProjectionEqualityIgnoresReadOnlyAdmissionTimestamp`、`TestResourceReadPostgres34Native`、`go test ./internal/domain/supply -count=1` 和 `go test ./internal/api -run "TestResourceReportHTTP" -count=1` 通过；`CGO_ENABLED=0 go build ./cmd/server` 成功。仓储用例在临时 schema-only 数据库插入合成报告与操作记录，验证报告日期/测试项/操作人/场景读取及来源不被虚构；API测试用隔离的 HTTP reader fixture。
+
+本阶段结束后已删除临时数据库 `model_bss_a_schema34_admitted_20261023` 和临时 Go 缓存卷。主库仍为 `36|dirty=false`，未执行迁移或业务写入；现有 `model_bss_api_latest` 未更新，`/healthz` 返回 `db=up/status=ok`。未做真实登录浏览器→API→含业务报告数据数据库的全链路验收，附件下载仍缺受控存储/授权提供方；未运行全套测试，未提交或推送。
+
+## 运行状态与 Key 联调范围复核（2026-10-23，非新增测试）
+
+Stage81 结束时的 `/healthz` 是当时快照，不能代表当前容器状态。用户随后报告 `model_bss_api_latest` 反复重启；本次复核运行 `docker ps` 时 Docker Engine 返回 `Access is denied`，因此没有重新确认容器状态、日志或重启原因。Stage78 曾在当时观察到 API 因 PostgreSQL 容器停止而连接失败；不能把那次原因直接套用到当前重启。
+
+DEC-018 正式配置 Key 改动已做前后端联调：Stage79 使用真实员工登录、正式配置 Vue 组件、临时 API 和隔离 v36 PostgreSQL 副本，验证创建、轮换、掩码回读、明文落库及日志脱敏。它没有更新 `model_bss_api_latest`，也没有经过主运行库；因此“Key改动在隔离环境联调通过”和“当前主Docker容器正在运行该改动”是两件事。
+
+## Stage 82：内部改价计划支持修改接口模型ID（2026-10-24）
+
+按新版原型，将供应商接口模型ID作为改价计划的目标值。计划保存修改前/后的接口模型ID和采购系数；允许只改ID、只改系数或两者都改，只有两项均未变化时拒绝。创建和修改不会直接变更资源，指定办理人登记完成时才在执行提案中更新资源接口模型ID/系数并递增资源revision；接口模型ID变化时递增target_version，保留旧报告记录但将旧目标报告标为过期。执行事件与公告记录对应前后ID/系数和目标版本。旧v36计划快照可按历史资源状态恢复目标快照，不新增迁移。
+
+TDD定向验证通过：前端 `node --experimental-strip-types --test tests/price-change-plan.test.ts tests/plan-permissions.test.ts tests/plan-maintenance.test.ts` 共9项通过，覆盖ID-only创建/修改、无变化拒绝、权限、请求回执及计划摘要；`npm.cmd run typecheck` 通过。Go 1.26容器下 `go test -count=1 ./internal/domain/supply ./internal/api ./internal/infra/supplypg -run 'Test(InternalPriceChangePlan|PriceChangePlan|PricePlanHTTP|PlanMaintenance|PlanExecutionPostgres|PlanMaintenancePostgres|CanonicalStatePlan)'` 通过，覆盖领域执行与旧报告目标失效、HTTP契约、计划存储兼容和相关包编译。
+
+尚未完成隔离数据库联合验收。`TestPriceChangePlanHTTPPostgres36CommitsExecutionAndBlockedReplay` 在本轮以 `-v` 显式执行，因未配置 `SUPPLY_SCHEMA_TEST_DB` 而跳过；它不能算作新ID语义的PostgreSQL通过证据。四页签真实数据浏览器验收、API容器构建/更新也未执行；本阶段未连接或写入主运行库、未迁移、未提交或推送。下一步使用专用v36隔离库运行成功执行（核对资源ID/target_version/旧报告失效）、冲突BLOCKED/409和同键重放，再做页面数据冒烟。
+
+## Stage 83：三模块快速交付收尾与改价目标ID v36 联调（2026-10-24）
+
+按快速交付计划完成新增改价语义和 A 三入口的轻量联合冒烟。基于主库 v36 schema-only 创建隔离数据库，运行 `TestPriceChangePlanHTTPPostgres36CommitsExecutionAndBlockedReplay`，通过计划创建、执行时更新资源接口模型ID/采购系数、资源 revision 与 target_version 递增、旧目标报告失效、冲突保存 BLOCKED，以及相同幂等键重放 409。另运行 `TestWorkbenchInboxHTTPProjectsQuoteApprovalsOnlyToEligibleStaffPostgres36`，通过有审批资格员工与普通员工的工作台审批事项投影差异。验收数据及临时数据库均已清理；主库未写业务数据、未执行迁移。
+
+定向前端验证通过：`node tests/standard-model.browser.mjs`、`node tests/model-plaza-supplier-detail.browser.mjs`（供应商模型详情四页签及资源范围隔离）、`node tests/workbench-a.browser.mjs`；改价计划及计划权限/维护测试 9 项通过；`npm.cmd run typecheck` 和 `npm.cmd run build` 通过。另用 Playwright Edge 通道真实登录本机 `smoke_admin` 测试账号，工作台、标准模型库、模型广场页面均完成加载，API 调用成功，退出登录成功且无页面 JavaScript 错误。主库相关业务表为空，因此这次真实 UI/API 冒烟验证的是空数据呈现；四页签的非空业务内容由前端 API fixture 场景覆盖，不宣称真实供应商/报告数据全链路已通过。
+
+用 Go 1.26 Docker 环境构建工作区 API 并更新本机 `model_bss_api_latest`；当前容器 `running`、RestartCount=0，`/healthz` 返回 `db=up/status=ok`。`model_bss_pg` 正常运行；只读核对迁移为 `36|false`，标准模型、供应商和资源主表记录数均为 0。Vite 本机 `127.0.0.1:5173` 返回 200。此前观察到的 27 次 API 重启发生在 PostgreSQL 不可连接时；本次 Docker 手动重启更新后计数为 0，不能据此保证未来数据库不可用时不会再次重启。
+
+本阶段未运行全套测试，未迁移或写主运行库，未提交、推送或改写 Git 历史。剩余跨模块验收包括 B 提供的真实报告/办理授权/附件下载事实、资源配置绑定与逐资源准入、供应商批准改价后续办理；报告来源在 v36 无可信字段时继续显示“未记录”。
+
+## Stage 84：模型广场详情往返保留筛选上下文（2026-10-24）
+
+模型广场打开模型详情、进入供应商详情后再返回时，保留原模型列表的筛选、分页和排序状态；模型详情至供应商详情的往返也保留来源筛选，并恢复原选中供应商上下文。状态通过路由查询参数传递，仅接受页面使用的筛选字段。供应商详情返回模型详情后，资源范围仍按供应商/模型/区域校验。
+
+定向浏览器脚本 `node tests/model-plaza-supplier-detail.browser.mjs` 通过。脚本挂载实际 `ModelPlaza.vue`、`ModelPlazaDetail.vue` 和供应商详情组件，以 fixture API 验证详情往返、列表及来源筛选恢复、四个供应商页签和资源范围隔离；缺失准入时间仍展示“未记录”。`npm.cmd run build`（含 `vue-tsc --noEmit`）通过，Vite保留既有大chunk提示。
+
+随后重跑 `node tests/standard-model.browser.mjs` 与 `node tests/workbench-a.browser.mjs` 均通过：标准模型场景覆盖单一保存、冲突恢复、历史/日志、非维护人只读及不完整草稿；工作台场景覆盖本人已阅、他人只读、计划版本提示和资源范围。两脚本均挂载实际 Vue 组件并使用 API fixture，不作为真实数据库写入证据。只读探测 `127.0.0.1:5173` 返回200，`/healthz` 返回 `db=up/status=ok`；Docker CLI 在本会话返回 `Access is denied`，因此没有重新核对容器 RestartCount，运行容器状态仍以Stage83记录的快照为准。
+
+本阶段只改前端导航状态与浏览器脚本，没有新增真实业务数据、调用非空后端数据或更新API容器；因此不替代真实供应商/报告页面联调。未运行全套测试、未迁移或写主库、未提交或推送。
