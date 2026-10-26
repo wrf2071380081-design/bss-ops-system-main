@@ -1,6 +1,7 @@
 package supply
 
 import (
+	"errors"
 	"math"
 	"time"
 )
@@ -10,6 +11,13 @@ type ResourceEvidenceChange struct {
 	Outcome  string
 	Changed  bool
 }
+
+// ErrTestEvidenceRequired 表示登记接入缺少可用的测试证据：
+// 报告不存在、未通过，或测试目标已变化（指纹不符导致报告失效）。
+// ErrTestInProgress 表示该资源/申报行还有测试在跑，此时不允许改动测试目标或撤回。
+var ErrTestInProgress = errors.New("test is in progress")
+
+var ErrTestEvidenceRequired = errors.New("test evidence is required and must still be valid")
 
 func ProposeTestEvidence(r *Resource, report *ResourceReportSummary, now time.Time) (*ResourceEvidenceChange, error) {
 	if r == nil {

@@ -20,12 +20,20 @@ const history = computed(() => submissions.value.filter(item => item.status !== 
 let active = true;
 let request: AbortController | undefined;
 
-function newModel() { void router.push({ path: "/supplier/submissions/simple", query: { kind: "MODEL_NEW" } }); }
+function newModel() { void router.push({ path: "/supplier/submissions/new", query: { kind: "MODEL_NEW" } }); }
 function editDraft(item: SupplierSubmissionDTO) { void router.push({ path: "/supplier/submissions/new", query: { kind: item.kind, id: item.id } }); }
 function onTabChange(tabName: string | number) { if (tabName !== "start") void load(); }
 function statusLabel(value: string) {
-  const labels: Record<string, string> = { DRAFT: "草稿", SUBMITTED: "已提交", PENDING_APPROVAL: "待审批", APPROVED: "已批准", PROCESSING: "办理中", COMPLETED: "已完成", REJECTED: "已退回", WITHDRAWN: "已撤回", FAILED: "处理失败" };
-  return labels[value] || value || "—";
+  const labels: Record<string, string> = {
+    DRAFT: "草稿",
+    PENDING_TEST: "等待测试补齐",
+    PENDING_APPROVAL: "待接入",
+    PROCESSING: "办理中",
+    APPROVED: "通过",
+    REJECTED: "不通过",
+    WITHDRAWN: "已撤回",
+  };
+  return labels[value] || value;
 }
 async function load() {
   request?.abort();
@@ -89,11 +97,26 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
       <section class="panel supplier-list-panel">
         <el-alert v-if="error" :title="error" type="error" :closable="false"><el-button text @click="load">重新加载</el-button></el-alert>
         <el-table v-loading="loading" :data="history" row-key="id" empty-text="暂无申报记录">
-          <el-table-column label="申报内容" min-width="240"><template #default="{ row }"><strong>{{ row.kind === 'PRICE_CHANGE' ? '价格变更' : '模型新增' }} · {{ row.rows.length }} 个模型</strong><div class="muted">{{ row.reason || '—' }}</div></template></el-table-column>
-          <el-table-column label="状态" width="130"><template #default="{ row }"><el-tag>{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
+          <el-table-column label="申报内容" min-width="280">
+            <template #default="{ row }">
+              <strong>{{ (row.model_names?.length ? row.model_names.join('、') : `${row.rows.length} 个模型`) }}</strong>
+              <div class="muted">共 {{ row.row_count || row.rows.length }} 个模型 · {{ row.kind === 'PRICE_CHANGE' ? '价格变更' : '模型新增' }} · {{ row.submission_no || row.id }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="提交人" width="120"><template #default="{ row }">{{ row.submitter_name || '—' }}</template></el-table-column>
           <el-table-column label="提交时间" prop="submitted_at" min-width="170"><template #default="{ row }">{{ row.submitted_at || row.updated_at }}</template></el-table-column>
-          <el-table-column label="模型数" width="100"><template #default="{ row }">{{ row.rows.length }}</template></el-table-column>
-          <el-table-column label="操作" width="100"><template #default="{ row }"><el-button v-if="row.permissions.can_withdraw" link type="danger" @click="withdrawSubmission(row)">撤回</el-button></template></el-table-column>
+          <el-table-column label="当前状态" width="140">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'REJECTED' ? 'danger' : row.status === 'APPROVED' ? 'success' : row.status === 'PENDING_TEST' ? 'warning' : undefined">{{ statusLabel(row.status) }}</el-tag>
+              <div v-if="row.pending_row_count" class="muted">待补 {{ row.pending_row_count }} 个</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="150">
+            <template #default="{ row }">
+              <el-button v-if="row.permissions.can_edit" link type="primary" @click="editDraft(row)">{{ row.status === 'REJECTED' ? '修改重提' : '继续编辑' }}</el-button>
+              <el-button v-if="row.permissions.can_withdraw" link type="danger" @click="withdrawSubmission(row)">撤回</el-button>
+            </template>
+          </el-table-column>
         </el-table>
       </section>
     </el-tab-pane>

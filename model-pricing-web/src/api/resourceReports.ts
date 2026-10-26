@@ -39,7 +39,7 @@ export function validateResourceReport(value: unknown, resourceID: string): Reso
   return { id: row.id, resource_id: resourceID, status: row.status, created_at: row.created_at, tested_at: row.tested_at, test_item: row.test_item.trim(), operator_name: row.operator_name.trim(), source: row.source, scene: row.scene.trim(), finished_at: row.finished_at, target_matches: row.target_matches,
     connectivity_passed: row.connectivity_passed, pressure_passed: row.pressure_passed,
     metrics: { connection_ms: row.metrics.connection_ms, rps: row.metrics.rps, tps: row.metrics.tps },
-    cache_stats: { status: row.cache_stats.status, report_id: row.id, ...(row.cache_stats.status === "PROVIDED" ? { hit_tokens: row.cache_stats.hit_tokens, input_tokens: row.cache_stats.input_tokens } : {}), scene: row.cache_stats.scene },
+    cache_stats: { status: row.cache_stats.status, report_id: row.id, ...(row.cache_stats.status === "PROVIDED" ? { hit_tokens: row.cache_stats.hit_tokens, input_tokens: row.cache_stats.input_tokens, hit_percent: row.cache_stats.hit_percent } : {}), scene: row.cache_stats.scene },
   };
 }
 const base = (resourceID: string) => `/internal/resources/${standardModelVersion(resourceID)}/test-reports`;

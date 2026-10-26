@@ -34,8 +34,13 @@ func TestRouterSupplierPortalProfileNotGuardedByRequirePerm(t *testing.T) {
 	start := strings.Index(text, "// 业务接口：供应商门户")
 	require.GreaterOrEqual(t, start, 0, "router.go 里找不到供应商门户路由块注释")
 	rest := text[start:]
-	if cut := strings.Index(rest, "// 业务接口：客户门户"); cut > 0 {
-		rest = rest[:cut]
+	// 结束边界：优先取"客户门户"注释；若该注释已不存在，则退到第一个内部门户块
+	// （`if portal == "internal"`）。不加这条退路时，后面新增的内部路由块会被
+	// 一并纳入切片，于是内部块正常的 RequirePerm 会被误判成供应商门户违规。
+	for _, marker := range []string{"// 业务接口：客户门户", "\n\tif portal == \"internal\""} {
+		if cut := strings.Index(rest, marker); cut > 0 {
+			rest = rest[:cut]
+		}
 	}
 	// 去掉注释行再断言：本块的注释里本身就写着「不挂 RequirePerm」，
 	// 直接对原文做 NotContains 会被注释命中（踩过一次）。

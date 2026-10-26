@@ -40,7 +40,15 @@ type Deps struct {
 	IdemStore     middleware.IdempotencyStore
 	// SupplyRoutes contains A-owned handlers assembled over the current schema.
 	// It stays nil in environments where the A module is not configured.
-	SupplyRoutes       *SupplyDeps
+	SupplyRoutes *SupplyDeps
+	// TestJobs 是 B 线测试平台发起端口；未配置测试平台时保持 nil（路由不注册）。
+	TestJobs TestJobStarter
+	// TestCallbacks 是测试平台终态回调接收端口；未配置 webhook secret 时保持 nil。
+	TestCallbacks TestCallbackReceiver
+	// SupplierSubmissions 是供应商申报（B-1）服务；未配置时申报路由不注册。
+	SupplierSubmissions *SupplierSubmissionService
+	// ResourceTestTargets 供内部复测（T-10）读取资源自身测试目标。
+	ResourceTestTargets ResourceTestTargetLoader
 	ModelSvc           *model.Service
 	SupplierSvc        *supplier.Service
 	SupplierProfileSvc *supplier.ProfileService
@@ -523,27 +531,27 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 
 	// Stage 2：供应商申报（最少单行链路）。
 	if portal == "supplier" && deps.SupplyChain != nil {
+		// 申报写接口由 B 线的 registerSubmissionRoutes 正式接管
+		// （原简化版 POST /submissions 已删除，避免同路径重复注册导致启动 panic）。
 		sch := NewSupplyChainHandler(deps.SupplyChain)
 		protected.GET("/standard-models", sch.ListStandardModels)
-		protected.POST("/submissions",
-			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
-			sch.CreateSubmission,
-		)
 	}
 
-	// Stage 2：领导审批 + 办理人模拟测试/接入。
+	// 内部办理台账（只读）。
+	//
+	// 2026-10-26 起：申报状态以 B 线 /supplier/submissions 的状态机为准，
+	// 这里只保留查询入口；原 /approve 与 /simulate 两个"写状态"的入口已下线——
+	// 它们与 B 线的申报状态机口径不同，且 simulate 会绕过测试门禁直接登记接入。
+	// 办理节点推进改走 B 线的 /internal/flows/*（待实现）。
 	if portal == "internal" && deps.SupplyChain != nil {
 		sch := NewSupplyChainHandler(deps.SupplyChain)
 		protected.GET("/approvals/submissions", sch.ListApprovals)
 		protected.GET("/approvals/history", sch.ListApprovalHistory)
 		protected.GET("/supply/suppliers", sch.ListSuppliers)
-		protected.POST("/approvals/submissions/:id/approve",
+		// 驳回：唯一保留的内部写状态入口（approve/simulate 已下线）。
+		protected.POST("/approvals/submissions/:id/reject",
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
-			sch.Approve,
-		)
-		protected.POST("/approvals/submissions/:id/simulate",
-			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
-			sch.Simulate,
+			sch.Reject,
 		)
 	}
 

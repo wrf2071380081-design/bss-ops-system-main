@@ -1,6 +1,11 @@
 import { standardModelVersion } from "./standardModels.contract";
-import { apiRequest } from "./http";
-import type { SupplierModelOptionDTO, SupplierSubmissionDTO, SupplierSubmissionListParams, SupplierSubmissionPageDTO, SupplierSubmissionTestDTO, SupplierSubmissionWrite, SupplierTestCategory, SupplierTestJobDTO } from "./supplierSubmissions.types";
+import { apiFileRequest, apiRequest } from "./http";
+import type {
+  SupplierBatchTestResultDTO, SupplierImportPreviewDTO, SupplierModelOptionDTO,
+  SupplierSubmissionDTO, SupplierSubmissionFilterOptionsDTO, SupplierSubmissionListParams,
+  SupplierSubmissionPageDTO, SupplierSubmissionTestDTO, SupplierSubmissionWrite,
+  SupplierTestCategory, SupplierTestJobDTO,
+} from "./supplierSubmissions.types";
 
 const base = "/supplier/submissions";
 function submissionID(value: string) { standardModelVersion(value); return encodeURIComponent(value); }
@@ -51,6 +56,32 @@ export const supplierSubmissionsApi = {
     const result = await apiRequest<SupplierTestJobDTO>({ method: "POST", url, data, idempotency: { scope: `${url}:${category}`, payload: data, lifecycle } });
     standardModelVersion(result.job_id);
     validateTest(result, category);
+    return result;
+  },
+  async batchTest(id: string, categories: SupplierTestCategory[], lifecycle: string) {
+    const url = `${base}/${submissionID(id)}/tests`;
+    const data = { categories };
+    const result = await apiRequest<SupplierBatchTestResultDTO>({
+      method: "POST", url, data, idempotency: { scope: `${url}:${categories.join("+")}`, payload: data, lifecycle },
+    });
+    if (!result || !Array.isArray(result.items) || typeof result.started !== "number") {
+      throw new Error("批量测试响应不符合约定，请重新查询进度。");
+    }
+    return result;
+  },
+  async filterOptions(signal?: AbortSignal) {
+    const result = await apiRequest<SupplierSubmissionFilterOptionsDTO>({ url: `${base}/filter-options`, signal });
+    if (!result || !Array.isArray(result.companies)) throw new Error("筛选选项响应不符合约定。");
+    return result;
+  },
+  importTemplate() {
+    return apiFileRequest({ url: `${base}/import/template` });
+  },
+  async parseImport(file: File) {
+    const form = new FormData();
+    form.append("file", file);
+    const result = await apiRequest<SupplierImportPreviewDTO>({ method: "POST", url: `${base}/import/parse`, data: form });
+    if (!result || !Array.isArray(result.rows)) throw new Error("导入解析响应不符合约定。");
     return result;
   },
   async testStatus(id: string, rowID: string, category: SupplierTestCategory, signal?: AbortSignal) {

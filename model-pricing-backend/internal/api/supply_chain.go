@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"context"
 	"database/sql"
 	"fmt"
@@ -63,52 +64,6 @@ FROM public.standard_model WHERE status='ACTIVE' ORDER BY company,name`)
 	return list, rows.Err()
 }
 
-// CreateSubmission 供应商提交一个模型申报（单行，PENDING_APPROVAL）。
-func (r *SupplyChainRuntime) CreateSubmission(ctx context.Context, supplierID int64, modelID int64, supplierModel, coefficient string) (int64, error) {
-	var region, status string
-	if err := r.raw.QueryRowContext(ctx, `SELECT region,status FROM public.supplier WHERE id=$1`, supplierID).Scan(&region, &status); err != nil {
-		if err == sql.ErrNoRows {
-			return 0, supply.ErrNotFound
-		}
-		return 0, err
-	}
-	if status != "ACTIVE" {
-		return 0, supply.ErrInactive
-	}
-	value, err := strconv.ParseFloat(strings.TrimSpace(coefficient), 64)
-	if err != nil || value <= 0 || value > 1 {
-		return 0, fmt.Errorf("coefficient must be in (0,1]")
-	}
-	if strings.TrimSpace(supplierModel) == "" {
-		return 0, fmt.Errorf("supplier_model_name is required")
-	}
-	var modelCount int
-	if err := r.raw.QueryRowContext(ctx, `SELECT count(*) FROM public.standard_model WHERE id=$1 AND status='ACTIVE'`, modelID).Scan(&modelCount); err != nil {
-		return 0, err
-	}
-	if modelCount == 0 {
-		return 0, supply.ErrNotFound
-	}
-	tx, err := r.raw.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	var submissionID int64
-	if err := tx.QueryRowContext(ctx, `INSERT INTO public.submission(supplier_id,kind,region,status,reason)
-VALUES($1,'MODEL_NEW',$2,'PENDING_APPROVAL','供应商提交模型申报') RETURNING id`, supplierID, region).Scan(&submissionID); err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO public.submission_row
-(submission_id,standard_model_id,supplier_model_name,coefficient,participate_test,row_status)
-VALUES($1,$2,$3,$4::numeric,true,'PENDING')`, submissionID, modelID, strings.TrimSpace(supplierModel), strings.TrimSpace(coefficient)); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return submissionID, nil
-}
 
 // ApprovalRow 审批列表行。
 type ApprovalRow struct {
@@ -122,6 +77,43 @@ type ApprovalRow struct {
 	SubmittedAt  string `json:"submitted_at"`
 	Submitter    string `json:"submitter"`
 	Kind         string `json:"kind"`
+	// Revision 用于驳回时的乐观锁。
+	Revision int64 `json:"revision"`
+}
+
+// Reject 把申报打回（原型「不通过」）。供应商随后可「修改重提」。
+//
+// 这是本期唯一的内部写状态入口：原 approve/simulate 已下线，
+// 办理节点推进留给 B 线 /internal/flows/*（未实现）。
+func (r *SupplyChainRuntime) Reject(ctx context.Context, submissionID, expectedRevision, staffID int64, reason, requestID string) error {
+	if submissionID <= 0 || expectedRevision <= 0 || staffID <= 0 || strings.TrimSpace(reason) == "" {
+		return supply.ErrReadContract
+	}
+	tx, err := r.raw.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var revision int64
+	err = tx.QueryRowContext(ctx, `UPDATE public.submission
+SET status='REJECTED', revision=revision+1, updated_at=now()
+WHERE id=$1 AND revision=$2 AND status IN ('PENDING_APPROVAL','PROCESSING','PENDING_TEST')
+RETURNING revision`, submissionID, expectedRevision).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return supply.ErrRevisionConflict
+	}
+	if err != nil {
+		return err
+	}
+	after := fmt.Sprintf(`{"status":"REJECTED","revision":%d,"reason":%q}`, revision, strings.TrimSpace(reason))
+	if _, err := tx.ExecContext(ctx, `INSERT INTO public.operation_log
+(entity_type, entity_id, action, "after", reason, request_id, created_at)
+VALUES ('submission', $1, 'REJECT', $2::jsonb, $3, $4, now())`,
+		fmt.Sprintf("%d", submissionID), after, strings.TrimSpace(reason), requestID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *SupplyChainRuntime) ListApprovals(ctx context.Context) ([]ApprovalRow, error) {
@@ -129,9 +121,9 @@ func (r *SupplyChainRuntime) ListApprovals(ctx context.Context) ([]ApprovalRow, 
        (SELECT count(*) FROM public.submission_row r WHERE r.submission_id=s.id),
        NOT EXISTS (SELECT 1 FROM public.resource res WHERE res.supplier_id=s.supplier_id AND res.ever_admitted=true),
        to_char(s.submitted_at,'YYYY-MM-DD"T"HH24:MI:SSOF'),
-       COALESCE(NULLIF(sp.contact,''),sp.phone,'—')
+       COALESCE(NULLIF(sp.contact,''),sp.phone,'—'), s.revision
 FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id
-WHERE s.status IN ('PENDING_APPROVAL','PROCESSING') ORDER BY s.id DESC`)
+WHERE s.status IN ('PENDING_APPROVAL','PROCESSING','PENDING_TEST') ORDER BY s.id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +131,7 @@ WHERE s.status IN ('PENDING_APPROVAL','PROCESSING') ORDER BY s.id DESC`)
 	list := []ApprovalRow{}
 	for rows.Next() {
 		var item ApprovalRow
-		if err := rows.Scan(&item.ID, &item.SupplierID, &item.SupplierName, &item.Region, &item.Status, &item.Kind, &item.RowCount, &item.FirstModel, &item.SubmittedAt, &item.Submitter); err != nil {
+		if err := rows.Scan(&item.ID, &item.SupplierID, &item.SupplierName, &item.Region, &item.Status, &item.Kind, &item.RowCount, &item.FirstModel, &item.SubmittedAt, &item.Submitter, &item.Revision); err != nil {
 			return nil, err
 		}
 		list = append(list, item)
@@ -211,7 +203,7 @@ func (r *SupplyChainRuntime) ListSuppliers(ctx context.Context) ([]SupplierWorks
        COALESCE(s.credit_amount::text,''), COALESCE(s.settlement_currency,''), COALESCE(s.tax_rate::text,''),
        CASE WHEN EXISTS (SELECT 1 FROM public.supplier_formal_config c WHERE c.supplier_id=s.id) THEN '已归档' ELSE '办理中' END,
        CASE WHEN EXISTS (SELECT 1 FROM public.resource r WHERE r.supplier_id=s.id) THEN '已有' ELSE '待接入' END,
-       CASE WHEN EXISTS (SELECT 1 FROM public.submission sub WHERE sub.supplier_id=s.id AND sub.status IN ('PENDING_APPROVAL','PROCESSING')) THEN '有未完成事项' ELSE '无未完成事项' END
+       CASE WHEN EXISTS (SELECT 1 FROM public.submission sub WHERE sub.supplier_id=s.id AND sub.status IN ('PENDING_APPROVAL','PROCESSING','PENDING_TEST')) THEN '有未完成事项' ELSE '无未完成事项' END
 FROM public.supplier s ORDER BY s.id`)
 	if err != nil {
 		return nil, err
@@ -571,30 +563,7 @@ func (h *SupplyChainHandler) ListStandardModels(c *gin.Context) {
 	response.Success(c, gin.H{"list": list})
 }
 
-type createSubmissionRequest struct {
-	ModelID           int64  `json:"model_id"`
-	SupplierModelName string `json:"supplier_model_name"`
-	Coefficient       string `json:"coefficient"`
-}
 
-func (h *SupplyChainHandler) CreateSubmission(c *gin.Context) {
-	op := middleware.OperatorFrom(c)
-	if op == nil || op.OperatorType != "SUPPLIER" {
-		response.Error(c, apperr.ErrUnauthorized)
-		return
-	}
-	var req createSubmissionRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.ModelID <= 0 {
-		response.Error(c, apperr.ErrInvalidParams)
-		return
-	}
-	id, err := h.rt.CreateSubmission(c.Request.Context(), op.OperatorID, req.ModelID, req.SupplierModelName, req.Coefficient)
-	if err != nil {
-		response.Error(c, apperr.ErrInvalidParams)
-		return
-	}
-	response.Success(c, gin.H{"submission_id": id})
-}
 
 func (h *SupplyChainHandler) ListApprovals(c *gin.Context) {
 	op := middleware.OperatorFrom(c)
@@ -650,6 +619,44 @@ func (h *SupplyChainHandler) Approve(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"submission_id": id, "status": "PROCESSING"})
+}
+
+// Reject 是内部驳回入口。
+func (h *SupplyChainHandler) Reject(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	ok, err := h.rt.isApprover(c.Request.Context(), op.StaffID)
+	if err != nil || !ok {
+		response.Error(c, apperr.ErrForbidden)
+		return
+	}
+	parsedID, err := planPositiveID(c.Param("id"))
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	id := int64(parsedID)
+	var body struct {
+		ExpectedRevision int64  `json:"expected_revision"`
+		Reason           string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.ExpectedRevision <= 0 || strings.TrimSpace(body.Reason) == "" {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "expected_revision 与 reason 必填", 400))
+		return
+	}
+	requestID := c.GetString("request_id")
+	if err := h.rt.Reject(c.Request.Context(), id, body.ExpectedRevision, op.StaffID, body.Reason, requestID); err != nil {
+		if errors.Is(err, supply.ErrRevisionConflict) {
+			response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "申报已变化，请刷新后重试", 409))
+			return
+		}
+		supplyHTTPError(c, err)
+		return
+	}
+	response.Success(c, gin.H{"id": strconv.FormatInt(id, 10)})
 }
 
 func (h *SupplyChainHandler) ListSuppliers(c *gin.Context) {

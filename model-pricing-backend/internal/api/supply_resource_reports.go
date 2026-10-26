@@ -18,6 +18,9 @@ import (
 var reportDecimal = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
 var reportTokenCount = regexp.MustCompile(`^[0-9]+$`)
 
+// reportPercent 是平台直接上报的命中率形态（0-100，最多两位小数）。
+var reportPercent = regexp.MustCompile(`^(0|[1-9][0-9]?)(\.[0-9]{1,2})?$|^100(\.0{1,2})?$`)
+
 type supplyResourceReportHandler struct{ reader SupplyResourceReportReader }
 
 func (h *supplyResourceReportHandler) list(c *gin.Context) {
@@ -216,6 +219,13 @@ func validResourceReport(report *supply.ResourceReportView, resourceID string) b
 	}
 	switch cache.Status {
 	case "PROVIDED":
+		// Q4：平台只上报比率时没有 Token 明细，此时用 hit_percent 表达已上报值。
+		if cache.HitTokens == "" && cache.InputTokens == "" {
+			if !reportPercent.MatchString(cache.HitPercent) {
+				return false
+			}
+			return true
+		}
 		if !reportTokenCount.MatchString(cache.HitTokens) || !reportTokenCount.MatchString(cache.InputTokens) {
 			return false
 		}
@@ -225,7 +235,7 @@ func validResourceReport(report *supply.ResourceReportView, resourceID string) b
 			return false
 		}
 	case "NOT_PROVIDED", "NOT_APPLICABLE", "NOT_TESTED":
-		if cache.HitTokens != "" || cache.InputTokens != "" {
+		if cache.HitTokens != "" || cache.InputTokens != "" || cache.HitPercent != "" {
 			return false
 		}
 	default:

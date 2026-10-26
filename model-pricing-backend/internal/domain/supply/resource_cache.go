@@ -7,10 +7,15 @@ import (
 
 // ReportCacheCounters is a fact on one immutable B report, never an editable
 // resource property. The enclosing report supplies its identity.
+//
+// HitPercent 是「平台直接上报的比率」（Q4）：测试平台只给 cache_hit_ratio_pct，
+// 缺总 Token 数时无法反算 HitTokens/InputTokens。此时 HitTokens/InputTokens 留空、
+// 用 HitPercent 表达已上报的值，避免编造数字。
 type ReportCacheCounters struct {
 	Status      string
 	HitTokens   string
 	InputTokens string
+	HitPercent  string
 	Scene       string
 }
 type ResourceCacheStats struct {
@@ -24,6 +29,9 @@ type ResourceCacheStats struct {
 }
 
 var tokenCount = regexp.MustCompile(`^[0-9]+$`)
+
+// percentValue 是「平台直接上报的比率」形态：0-100，最多两位小数。
+var percentValue = regexp.MustCompile(`^(0|[1-9][0-9]?)(\.[0-9]{1,2})?$|^100(\.0{1,2})?$`)
 
 func resourceCacheStats(reportID string, raw *ReportCacheCounters) (ResourceCacheStats, error) {
 	view := ResourceCacheStats{ReportID: reportID, Status: "NOT_PROVIDED"}
@@ -41,13 +49,21 @@ func resourceCacheStats(reportID string, raw *ReportCacheCounters) (ResourceCach
 	view.Scene = raw.Scene
 	switch raw.Status {
 	case "NOT_PROVIDED", "NOT_APPLICABLE":
-		if raw.HitTokens != "" || raw.InputTokens != "" {
+		if raw.HitTokens != "" || raw.InputTokens != "" || raw.HitPercent != "" {
 			return view, ErrReadContract
 		}
 		return view, nil
 	case "PROVIDED":
 	default:
 		return view, ErrReadContract
+	}
+	// 有比率但无 Token 明细：直接采用平台上报值（Q4），不做反算。
+	if raw.HitTokens == "" && raw.InputTokens == "" {
+		if !percentValue.MatchString(raw.HitPercent) {
+			return view, ErrReadContract
+		}
+		view.HitPercent = raw.HitPercent
+		return view, nil
 	}
 	if !tokenCount.MatchString(raw.HitTokens) || !tokenCount.MatchString(raw.InputTokens) {
 		return view, ErrReadContract
