@@ -278,9 +278,12 @@ function testState(tested: boolean, passed: boolean, verdict?: string) {
   if (!verdict) return "已完成";
   return "未通过";
 }
-function testType(tested: boolean, passed: boolean): "success" | "danger" | "info" {
+// 压测没有 verdict：测完只能算「已完成」，不能显示成「未通过」——颜色也得中性。
+function testType(tested: boolean, passed: boolean, verdict?: string): "success" | "danger" | "info" {
   if (!tested) return "info";
-  return passed ? "success" : "danger";
+  if (passed) return "success";
+  if (!verdict) return "info";
+  return "danger";
 }
 function rowMetrics(row: EditableRow) {
   const parts: string[] = [];
@@ -499,8 +502,8 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
       <el-table-column label="测试" min-width="230">
         <template #default="{ row }">
           <div class="test-cell">
-            <span class="test-pill"><el-tag size="small" :type="testType(row.connectivity_tested, row.connectivity_passed)">连通 {{ testState(row.connectivity_tested, row.connectivity_passed, row.connectivity_job?.verdict) }}</el-tag></span>
-            <span v-if="row.participate_test || row.stress_job" class="test-pill"><el-tag size="small" :type="testType(row.stress_tested, row.stress_passed)">压力 {{ testState(row.stress_tested, row.stress_passed, row.stress_job?.verdict) }}</el-tag></span>
+            <span class="test-pill"><el-tag size="small" :type="testType(row.connectivity_tested, row.connectivity_passed, row.connectivity_job?.verdict)">连通 {{ testState(row.connectivity_tested, row.connectivity_passed, row.connectivity_job?.verdict) }}</el-tag></span>
+            <span v-if="row.participate_test || row.stress_job" class="test-pill"><el-tag size="small" :type="testType(row.stress_tested, row.stress_passed, row.stress_job?.verdict)">压力 {{ testState(row.stress_tested, row.stress_passed, row.stress_job?.verdict) }}</el-tag></span>
             <small v-if="rowMetrics(row)" class="muted">{{ rowMetrics(row) }}</small>
             <el-button link type="primary" size="small" :disabled="locked || dirty || (!row.connectivity_job && !row.stress_job)" @click="refreshRow(row)">刷新结果</el-button>
           </div>
