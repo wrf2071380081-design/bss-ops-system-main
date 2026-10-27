@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -185,9 +186,15 @@ func (h *supplierSubmissionHandler) list(c *gin.Context) {
 		writeSubmissionError(c, err)
 		return
 	}
+	// 列表里所有申报都属于同一主体，凭据只取一次。
+	credential, err := h.svc.store.TestCredential(c.Request.Context(), supplierID)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
 	list := make([]submissionDTO, 0, len(headers))
 	for _, header := range headers {
-		list = append(list, buildSubmissionDTO(header, rows[header.ID]))
+		list = append(list, buildSubmissionDTO(header, applyCredential(rows[header.ID], credential)))
 	}
 	response.Success(c, gin.H{"list": list, "total": total, "page": page, "size": size})
 }
@@ -212,7 +219,12 @@ func (h *supplierSubmissionHandler) detail(c *gin.Context) {
 		writeSubmissionError(c, err)
 		return
 	}
-	response.Success(c, buildSubmissionDTO(*header, rows[id]))
+	credential, err := h.svc.store.TestCredential(c.Request.Context(), supplierID)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	response.Success(c, buildSubmissionDTO(*header, applyCredential(rows[id], credential)))
 }
 
 func (h *supplierSubmissionHandler) modelOptions(c *gin.Context) {
@@ -336,26 +348,15 @@ func (h *supplierSubmissionHandler) submit(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	// 折中口径：至少一行「连通通过」即可提交；未通过的行保留为待补。
-	allPassed, err := h.evaluateSubmitGate(ctx, submissionID)
-	switch {
-	case errors.Is(err, errGateNoRows):
-		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "至少需要一行模型", 400))
-		return
-	case errors.Is(err, errGateNoPassedRow):
-		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "至少需要一行连通测试通过（结果达标且未失效）", 409))
-		return
-	case err != nil:
+	// 原型口径（2026-10-27 确认）：覆盖 + 至少一个压力模型即可提交，不看是否通过。
+	if err := h.evaluateSubmitGate(ctx, supplierID, submissionID); err != nil {
 		writeSubmissionError(c, err)
 		return
 	}
-	target := submissionPendingTest
-	if allPassed {
-		target = submissionPending
-	}
 	submitter, _ := h.svc.store.SubmitterName(ctx, supplierID)
+	// 原型：提交即「待审批」。PENDING_TEST 只留给改造前的历史数据。
 	h.transition(c, []string{submissionDraft, submissionRejected, submissionWithdrawn, submissionPendingTest},
-		target, true, submitter)
+		submissionPending, true, submitter)
 }
 
 func (h *supplierSubmissionHandler) withdraw(c *gin.Context) {
@@ -420,17 +421,29 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 	if platformCategory == "stress" && !row.ParticipateTest {
 		return "", actionNotSelected, nil
 	}
-	if jobID, skip := shouldSkipRetest(row, platformCategory); skip {
+	// 000044：URL/Key 统一取**主体**凭据；行上的两列只是快照。
+	// 未登记凭据时直接给出可操作的提示，别让平台侧报 400。
+	baseURL := strings.TrimSpace(row.EffectiveBaseURL)
+	if baseURL == "" {
+		return "", actionFailed, errCredentialMissing
+	}
+	apiKey := "demo-key"
+	if !strings.EqualFold(baseURL, "demo") {
+		// 路线 A：库里存的就是原样 Key，直接取用。
+		if strings.TrimSpace(row.EffectiveAPIKey) == "" {
+			return "", actionFailed, errCredentialMissing
+		}
+		apiKey = row.EffectiveAPIKey
+	}
+	// 本次发单的指纹按当前主体凭据现算：改了凭据就该能重测，旧结果也随之失效。
+	fingerprint := tpdomain.TargetFingerprint(row.StandardModelID, row.SupplierModelName, baseURL, apiKey)
+	if jobID, skip := shouldSkipRetest(row, platformCategory, fingerprint); skip {
 		return jobID, actionSkipped, nil
 	}
 	hadJob := (platformCategory == "stress" && row.StressJobID != nil) || (platformCategory != "stress" && row.TestJobID != nil)
-	apiKey := "demo-key"
-	if row.TestBaseURL != "demo" {
-		// 路线 A：库里存的就是原样 Key，直接取用。
-		if strings.TrimSpace(row.SealedAPIKey) == "" {
-			return "", actionFailed, errCredentialMissing
-		}
-		apiKey = row.SealedAPIKey
+	// 快照与指纹先归位，再发单：两个指纹出自同一份凭据，后续才判得准「失效」。
+	if err := h.svc.store.RefreshRowSnapshot(ctx, rowID, baseURL, apiKey, fingerprint); err != nil {
+		return "", actionFailed, err
 	}
 	resourceID, err := h.svc.store.EnsureTestResource(ctx, row)
 	if err != nil {
@@ -444,11 +457,6 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 			"duration": "30s", "warmup": true, "warmup_duration": "5s",
 		}
 	}
-	fingerprint := row.TestFingerprint
-	if fingerprint == "" {
-		// 老数据没有指纹：按当前值现算，避免发单后立刻被判失效。
-		fingerprint = tpdomain.TargetFingerprint(row.StandardModelID, row.SupplierModelName, row.TestBaseURL, row.SealedAPIKey)
-	}
 	result, err := h.svc.starter.Start(ctx, tpdomain.CreateCommand{
 		ResourceID:        strconv.FormatInt(resourceID, 10),
 		TargetFingerprint: fingerprint,
@@ -457,8 +465,8 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		Owner:      row.SupplierName,
 		Target: tpdomain.Target{
 			// 平台按官方 ID 识别模型；供应商自定义名只用于展示。
-			Model: modelForTest(row.TestBaseURL, row.OfficialID, row.SupplierModelName),
-			BaseURL: row.TestBaseURL, Protocol: "openai", APIKey: apiKey,
+			Model: modelForTest(baseURL, row.OfficialID, row.SupplierModelName),
+			BaseURL: baseURL, Protocol: "openai", APIKey: apiKey,
 		},
 		Params:         params,
 		IdempotencyKey: idempotencyKey,
@@ -489,8 +497,12 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 //       已终态但没有报告结论（工具异常）→ 重测
 //   - 指纹不一致（改了地址/Key/模型）→ 重测
 //
+// currentFingerprint 是按**主体当前凭据**算出来的指纹（000044）。
+// 不能再用行上的 test_fingerprint 比：那是上一次写入的快照，
+// 凭据改了它不会自己变，会导致"改了凭据还不让重测"。
+//
 // 旧实现是"有任务就跳过"，导致改了配置也永远不能重测。
-func shouldSkipRetest(row *supplypg.TestRow, platformCategory string) (string, bool) {
+func shouldSkipRetest(row *supplypg.TestRow, platformCategory, currentFingerprint string) (string, bool) {
 	var jobID *int64
 	var status, jobFingerprint, verdict string
 	if platformCategory == "stress" {
@@ -502,7 +514,7 @@ func shouldSkipRetest(row *supplypg.TestRow, platformCategory string) (string, b
 		return "", false
 	}
 	id := strconv.FormatInt(*jobID, 10)
-	if row.TestFingerprint != "" && jobFingerprint != "" && row.TestFingerprint != jobFingerprint {
+	if currentFingerprint != "" && jobFingerprint != "" && currentFingerprint != jobFingerprint {
 		return id, false // 配置变了：允许重测
 	}
 	if !isTerminalStatus(status) {
@@ -536,7 +548,8 @@ func modelForTest(baseURL, officialID, supplierModelName string) string {
 func writeRowTestError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, errCredentialMissing):
-		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "该申报行未填写测试 API Key", 400))
+		// 000044：凭据是主体级，缺了就是「还没登记」，不是「这一行没填」。
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "请先在申报页登记本主体的测试接口 URL 与 API Key", 400))
 	case errors.Is(err, tpdomain.ErrNotConfigured):
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
 	case errors.Is(err, tpdomain.ErrInvalidCommand):
@@ -720,39 +733,70 @@ func testFailureReason(err error) string {
 	}
 }
 
-// evaluateSubmitGate 判断「是否允许提交」以及「提交后是全通过还是待补」。
+// evaluateSubmitGate 按**原型口径**判断是否允许提交（2026-10-27 确认）。
 //
-// 折中口径（2026-10-26 与原型对齐）：
-//   - 至少一行连通 verdict=pass 且未失效 → 允许提交
-//   - 全部行都满足 → PENDING_APPROVAL；否则 → PENDING_TEST（等待测试补齐）
+// 原型的规则只有两条，且都写在申报页底部那句话里：
+//   - 所有模型均执行连通性测试；
+//   - 至少勾选一个压力测试模型（勾选的行要有压力结果）。
 //
-// 不再要求任何压力测试结果；压力是勾选项，只影响测试范围。
-func (h *supplierSubmissionHandler) evaluateSubmitGate(ctx context.Context, submissionID int64) (bool, error) {
+// **不看 verdict**——原型明确「结果不达标也属于有效结果」，
+// 未通过的行提交后由 supplement_required 标成「待补」，而不是拦在门口。
+//
+// 失效（改了主体凭据 / 改了接口模型）的旧结果不算覆盖：那是旧配置的报告。
+// 这类判断必须用主体当前凭据重算，否则供应商改了凭据还能拿旧结果过门禁。
+func (h *supplierSubmissionHandler) evaluateSubmitGate(ctx context.Context, supplierID, submissionID int64) error {
 	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
 	if err != nil {
-		return false, err
+		return err
 	}
-	list := rows[submissionID]
+	credential, err := h.svc.store.TestCredential(ctx, supplierID)
+	if err != nil {
+		return err
+	}
+	list := applyCredential(rows[submissionID], credential)
 	if len(list) == 0 {
-		return false, errGateNoRows
+		return errGateNoRows
 	}
-	passedRows := 0
+	return checkSubmissionCoverage(list)
+}
+
+// checkSubmissionCoverage 是门禁的纯规则部分（不碰数据库，便于单测）。
+//
+// 返回的 apperr 直接对前端展示，所以文案要带计数——只报 409 不告诉供应商
+// 「还差几个模型」，页面上的提示语就只能是干巴巴的「不能提交」。
+func checkSubmissionCoverage(list []supplypg.SubmissionRowRecord) error {
+	missingConnectivity, selected, pendingStress := 0, 0, 0
 	for _, row := range list {
-		if row.ConnectivityStatus != nil && isTerminalStatus(*row.ConnectivityStatus) &&
-			verdictOK(row.ConnectivityVerdict) && !row.ConnectivityStale {
-			passedRows++
+		if row.ConnectivityStatus == nil || row.ConnectivityStale || !isTerminalStatus(*row.ConnectivityStatus) {
+			missingConnectivity++
+		}
+		if !row.ParticipateTest {
+			continue
+		}
+		selected++
+		if row.StressStatus == nil || row.StressStale || !isTerminalStatus(*row.StressStatus) {
+			pendingStress++
 		}
 	}
-	if passedRows == 0 {
-		return false, errGateNoPassedRow
+	switch {
+	case missingConnectivity > 0:
+		return apperr.New(apperr.ErrIdempotency.Code,
+			fmt.Sprintf("还有 %d 个模型没有连通性测试结果，请先发起测试", missingConnectivity), 409)
+	case selected == 0:
+		return apperr.New(apperr.ErrIdempotency.Code, "请至少勾选一个压力测试模型后再提交", 409)
+	case pendingStress > 0:
+		return apperr.New(apperr.ErrIdempotency.Code,
+			fmt.Sprintf("勾选的模型里还有 %d 个没有压力测试结果，请先发起测试", pendingStress), 409)
 	}
-	return passedRows == len(list), nil
+	return nil
 }
 
 var (
-	errGateNoRows               = errors.New("submission has no rows")
-	errGateNoPassedRow          = errors.New("no row has a passed connectivity test")
-	errGateConnectivityMissing  = errors.New("some rows have no connectivity test")
+	errGateNoRows = errors.New("submission has no rows")
+	// 下面几个保留作语义锚点：日志、单测与后续「等待测试补齐」环节会用到，
+	// 当前门禁直接返回带计数的 apperr，不再靠它们分支。
+	errGateNoPassedRow         = errors.New("no row has a passed connectivity test")
+	errGateConnectivityMissing = errors.New("some rows have no connectivity test")
 	errGateStressMissing        = errors.New("no row has stress test")
 	errGateReportStale          = errors.New("test report is stale after target change")
 )
@@ -764,11 +808,25 @@ func resolveTestCategory(raw string) (string, string, bool) {
 	return category, platformCategory, ok && category != ""
 }
 
-// buildRows 校验行并把 API Key 加密；失败时已写好响应。
+// buildRows 校验行并把主体凭据写进快照；失败时已写好响应。
+//
+// 000044 起 rows[].test_base_url / test_api_key **不再由前端提供**：
+// 凭据是主体资源（/supplier/test-credential），这里统一取主体值做快照。
+// 旧前端仍会带上这两个字段，收到也忽略，避免直接 400 把页面打挂。
 func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, input []submissionWriteRow) ([]supplypg.SubmissionRowInput, bool) {
 	if len(input) == 0 {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "至少需要一行模型", 400))
 		return nil, false
+	}
+	// 未登记凭据不拦：原型允许先把申报行填好、后补凭据，真拦在发测试那一步。
+	credential, err := h.svc.store.TestCredential(c.Request.Context(), supplierID)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return nil, false
+	}
+	snapshotURL, snapshotKey := "", ""
+	if credential != nil {
+		snapshotURL, snapshotKey = credential.BaseURL, credential.APIKey
 	}
 	rows := make([]supplypg.SubmissionRowInput, 0, len(input))
 	for _, row := range input {
@@ -782,7 +840,7 @@ func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, 
 			return nil, false
 		}
 		// 路线 A：按原样保存（与 A 侧正式配置口径一致）。
-		storedKey := strings.TrimSpace(row.TestAPIKey)
+		storedKey := strings.TrimSpace(snapshotKey)
 		if len(storedKey) > 512 {
 			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "测试 Key 超出长度上限", 400))
 			return nil, false
@@ -790,7 +848,7 @@ func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, 
 		rowID, _ := strconv.ParseInt(strings.TrimSpace(row.ID), 10, 64)
 		rows = append(rows, supplypg.SubmissionRowInput{
 			ID: rowID, StandardModelID: modelID, SupplierModelName: strings.TrimSpace(row.InterfaceModelID),
-			Coefficient: strings.TrimSpace(row.Coefficient), TestBaseURL: strings.TrimSpace(row.TestBaseURL),
+			Coefficient: strings.TrimSpace(row.Coefficient), TestBaseURL: strings.TrimSpace(snapshotURL),
 			SealedAPIKey: storedKey, ParticipateTest: row.ParticipateTest,
 		})
 	}
@@ -810,8 +868,25 @@ func (h *supplierSubmissionHandler) respondWithDTO(c *gin.Context, supplierID, i
 		writeSubmissionError(c, err)
 		return false
 	}
-	response.Success(c, buildSubmissionDTO(*header, rows[id]))
+	credential, err := h.svc.store.TestCredential(ctx, supplierID)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return false
+	}
+	response.Success(c, buildSubmissionDTO(*header, applyCredential(rows[id], credential)))
 	return true
+}
+
+// applyCredential 用主体当前凭据重算每行的「结果是否失效」并同步展示用地址。
+// cred 为 nil 时原样返回（退化成按行快照判定，历史数据不会被一片判红）。
+func applyCredential(rows []supplypg.SubmissionRowRecord, cred *supplypg.SupplierTestCredential) []supplypg.SubmissionRowRecord {
+	if cred == nil {
+		return rows
+	}
+	for i := range rows {
+		rows[i].ApplyCredential(cred)
+	}
+	return rows
 }
 
 // buildSubmissionDTO 组装前端契约；顺带推导测试状态与权限。
@@ -941,6 +1016,7 @@ func positiveID(raw string) (int64, error) {
 
 // writeSubmissionError 把领域错误翻译成 HTTP 状态。
 func writeSubmissionError(c *gin.Context, err error) {
+	var appErr apperr.Error
 	switch {
 	case errors.Is(err, supply.ErrNotFound):
 		response.Error(c, apperr.ErrNotFound)
@@ -948,6 +1024,9 @@ func writeSubmissionError(c *gin.Context, err error) {
 		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "申报单已变化，请刷新后重试", 409))
 	case errors.Is(err, supply.ErrForbidden):
 		response.Error(c, apperr.ErrForbidden)
+	case errors.As(err, &appErr):
+		// 门禁这类「带计数的业务拒绝」直接透出原文案，别被兜底成系统错误。
+		response.Error(c, appErr)
 	default:
 		response.Error(c, apperr.ErrSystem)
 	}

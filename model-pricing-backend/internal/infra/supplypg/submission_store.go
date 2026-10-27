@@ -63,6 +63,33 @@ type SubmissionRowRecord struct {
 	// Stale 表示该测试目标的指纹与发单时不一致（改了地址/Key/模型）→ 结果不可用。
 	ConnectivityStale bool
 	StressStale       bool
+	// 发单时测试平台记录的指纹（000044 起用于按主体凭据重算「是否失效」）。
+	ConnectivityJobFingerprint string
+	StressJobFingerprint       string
+}
+
+// ApplyCredential 用**主体当前凭据**重算该行的「结果是否失效」，并同步展示用的测试地址。
+//
+// 为什么不在 SQL 里做：指纹是 `tpdomain.TargetFingerprint` 算的 sha256，
+// 分隔符 `\x00`、大小写与尾部 `/` 的规整规则在 SQL 里复刻迟早漂移，只能放 Go 侧。
+//
+// cred 为 nil（主体还没登记凭据）时**什么都不改**：退化成按行快照判定，
+// 历史数据不会因为「没登记凭据」被一片判红。
+func (r *SubmissionRowRecord) ApplyCredential(cred *SupplierTestCredential) {
+	if r == nil || cred == nil || strings.TrimSpace(cred.BaseURL) == "" {
+		return
+	}
+	current := tpdomain.TargetFingerprint(r.StandardModelID, r.SupplierModelName, cred.BaseURL, cred.APIKey)
+	r.TestBaseURL = cred.BaseURL
+	staleAgainst := func(jobFingerprint string) bool {
+		// 老任务可能没记录指纹：只有两边都有值且不等才算失效，不做无依据的误判。
+		if jobFingerprint == "" {
+			return false
+		}
+		return current != jobFingerprint
+	}
+	r.ConnectivityStale = staleAgainst(r.ConnectivityJobFingerprint)
+	r.StressStale = staleAgainst(r.StressJobFingerprint)
 }
 
 // SubmissionRowInput 是写入用的行。
@@ -236,6 +263,8 @@ ORDER BY r.submission_id, r.id`, args...)
 		}
 		item.ConnectivityStale = fingerprintChanged(connFP)
 		item.StressStale = fingerprintChanged(stressFP)
+		item.ConnectivityJobFingerprint = connFP.String
+		item.StressJobFingerprint = stressFP.String
 		item.ConnectivityStatus = nullableString(connStatus)
 		item.ConnectivityVerdict = nullableString(connVerdict)
 		item.ConnectionMS = nullableString(conn)
@@ -508,6 +537,10 @@ type TestRow struct {
 	ParticipateTest bool
 	TestBaseURL       string
 	SealedAPIKey      string
+	// EffectiveBaseURL / EffectiveAPIKey 是**主体当前凭据**（000044）。
+	// 发测试只用它们；上面两列只是行上的历史快照。
+	EffectiveBaseURL string
+	EffectiveAPIKey  string
 	Coefficient       string
 	Region            string
 	SupplierID        int64
@@ -536,12 +569,14 @@ SELECT r.id, r.submission_id, r.standard_model_id, COALESCE(m.official_id,''), r
        COALESCE(r.test_fingerprint,''), r.resource_id, r.test_job_id, r.stress_job_id, sub.status,
        COALESCE(cj.status,''), COALESCE(cj.target_fingerprint,''),
        COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = cj.id ORDER BY tr.id DESC LIMIT 1),''),
-       COALESCE(sj.status,''), COALESCE(sj.target_fingerprint,''),
-       COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id ORDER BY tr.id DESC LIMIT 1),'')
+		COALESCE(sj.status,''), COALESCE(sj.target_fingerprint,''),
+		COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id ORDER BY tr.id DESC LIMIT 1),''),
+		COALESCE(cred.base_url,''), COALESCE(cred.api_key_enc,'')
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
 JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
 JOIN `+s.table("supplier")+` sp ON sp.id = sub.supplier_id
+LEFT JOIN `+s.table("supplier_test_credential")+` cred ON cred.supplier_id = sub.supplier_id
 LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
 LEFT JOIN `+s.table("test_job")+` sj ON sj.id = r.stress_job_id
 WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionID, supplierID).
@@ -549,7 +584,8 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 			&item.SealedAPIKey, &item.Coefficient, &item.Region, &item.SupplierID, &item.SupplierName,
 			&item.TestFingerprint, &resourceID, &jobID, &stressJobID, &item.SubmissionStatus,
 			&item.TestJobStatus, &item.TestJobFingerprint, &item.TestJobVerdict,
-			&item.StressJobStatus, &item.StressJobFingerprint, &item.StressJobVerdict)
+			&item.StressJobStatus, &item.StressJobFingerprint, &item.StressJobVerdict,
+			&item.EffectiveBaseURL, &item.EffectiveAPIKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
@@ -566,6 +602,28 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 		item.StressJobID = &stressJobID.Int64
 	}
 	return &item, nil
+}
+
+// TestCredential 读本主体的准入测试凭据（000044）；未登记返回 (nil, nil)。
+//
+// 与 SupplierCredentialStore.Get 是同一份 SQL——这里只是给申报侧的调用方
+// 一个不必额外持有凭据仓储的入口。
+func (s *SubmissionStore) TestCredential(ctx context.Context, supplierID int64) (*SupplierTestCredential, error) {
+	return (&SupplierCredentialStore{db: s.db, schema: s.schema}).Get(ctx, supplierID)
+}
+
+// RefreshRowSnapshot 把主体凭据与指纹写到某一行的快照列上。
+//
+// 发单前调用：让「行指纹」与「即将发出去的任务指纹」从同一份凭据算出来，
+// 之后供应商改凭据 → 两者不等 → 结果被判失效，准入侧也拿不到旧报告的背书。
+func (s *SubmissionStore) RefreshRowSnapshot(ctx context.Context, rowID int64, baseURL, apiKey, fingerprint string) error {
+	if rowID <= 0 {
+		return supply.ErrNotFound
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE `+s.table("submission_row")+`
+SET test_base_url = NULLIF($2,''), test_api_key_enc = NULLIF($3,''), test_fingerprint = NULLIF($4,'')
+WHERE id = $1`, rowID, strings.TrimSpace(baseURL), apiKey, fingerprint)
+	return err
 }
 
 // EnsureTestResource 保证该行有一个可挂靠的资源（Q13：测试前先建 PENDING_TEST 资源）。

@@ -47,6 +47,9 @@ type Deps struct {
 	TestCallbacks TestCallbackReceiver
 	// SupplierSubmissions 是供应商申报（B-1）服务；未配置时申报路由不注册。
 	SupplierSubmissions *SupplierSubmissionService
+	// SupplierCredentials 是供应商**主体级**准入测试凭据（000044，原型对齐）。
+	// nil 时 /supplier/test-credential 不注册（同一条纪律：没接仓储就不暴露能力）。
+	SupplierCredentials *SupplierCredentialService
 	// ResourceTestTargets 供内部复测（T-10）读取资源自身测试目标。
 	ResourceTestTargets ResourceTestTargetLoader
 	ModelSvc            *model.Service

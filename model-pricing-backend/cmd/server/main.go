@@ -238,6 +238,12 @@ func main() {
 		log.Warn("initialize supplier account service", zap.Error(err))
 		accountSvc = nil
 	}
+	// 供应商主体级测试凭据（000044，原型对齐）。
+	credentialSvc, err := newSupplierCredentialService(dbClient.DB)
+	if err != nil {
+		log.Warn("initialize supplier credential service", zap.Error(err))
+		credentialSvc = nil
+	}
 	router := api.New(api.Deps{
 		Config:              cfg,
 		Log:                 log,
@@ -250,6 +256,7 @@ func main() {
 		ResourceTestTargets: testTargets(testPlatform),
 		SupplyRoutes:        &supplyRoutes,
 		SupplierSubmissions: submissionSvc,
+		SupplierCredentials: credentialSvc,
 		SupplierAccount:     accountSvc,
 		UploadDir:           cfg.Uploads.Dir,
 		SupplyChain:         supplyChain,
