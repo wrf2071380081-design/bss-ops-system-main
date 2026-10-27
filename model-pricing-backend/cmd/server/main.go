@@ -232,6 +232,12 @@ func main() {
 		log.Warn("initialize supplier submission service", zap.Error(err))
 		submissionSvc = nil
 	}
+	// 供应商门户「账户设置」（M2）：读 supplier 表，明文读写。
+	accountSvc, err := newSupplierAccountService(dbClient.DB)
+	if err != nil {
+		log.Warn("initialize supplier account service", zap.Error(err))
+		accountSvc = nil
+	}
 	router := api.New(api.Deps{
 		Config:             cfg,
 		Log:                log,
@@ -244,6 +250,8 @@ func main() {
 		ResourceTestTargets: testTargets(testPlatform),
 		SupplyRoutes:       &supplyRoutes,
 		SupplierSubmissions: submissionSvc,
+		SupplierAccount:     accountSvc,
+		UploadDir:           cfg.Uploads.Dir,
 		SupplyChain:        supplyChain,
 		CustomerWorkspace:  customerWorkspace,
 		ModelSvc:           modelSvc,

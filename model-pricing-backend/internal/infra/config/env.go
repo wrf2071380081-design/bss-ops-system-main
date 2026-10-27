@@ -44,6 +44,8 @@ func Load() (*Config, error) {
 		"db.sslmode":  "MODEL_BSS_DB_SSLMODE",
 		"db.timezone": "MODEL_BSS_TZ",
 		"docs.enable": "MODEL_BSS_DOCS_ENABLE",
+		// 门户上传目录（2026-10-27）：configs/config.yaml 被忽略，默认值必须落在代码里。
+		"uploads.dir": "MODEL_BSS_UPLOAD_DIR",
 	}
 
 	// 在线接口调试页（Swagger UI）默认开启：内部 BSS 系统，前后端联调期都要用。
@@ -51,6 +53,10 @@ func Load() (*Config, error) {
 	// 放在这里而不是配置文件里，是因为 configs/config.yaml 被 .gitignore 忽略（含密码），
 	// 默认值必须落在代码里才能对所有人都生效。
 	v.SetDefault("docs.enable", true)
+
+	// 上传目录默认落到服务进程工作目录下的 var/uploads（与 bin/test-reports 同思路），
+	// 生产用 uploads.dir 或 MODEL_BSS_UPLOAD_DIR 显式指向独立卷。
+	v.SetDefault("uploads.dir", "var/uploads")
 
 	// worker 默认开启（同理：configs/config.yaml 被 .gitignore 忽略，前端同事 clone 后
 	// 没有这个文件，worker.enable 会落到 Go 零值 false → worker 不启动 → 成本重算不跑）。
