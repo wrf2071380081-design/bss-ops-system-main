@@ -4,10 +4,11 @@ import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { supplierModelsApi } from "../../api/supplierModels";
 import { supplierSubmissionsApi } from "../../api/supplierSubmissions";
+import { supplierTestCredentialApi, type SupplierTestCredentialDTO } from "../../api/supplierTestCredential";
 import { ApiError } from "../../domain/common";
 import type { SupplierImportPreviewDTO, SupplierModelOptionDTO, SupplierSubmissionDTO, SupplierSubmissionRowDTO, SupplierSubmissionTestDTO, SupplierSubmissionWriteRow, SupplierTestCategory, SupplierTestJobDTO } from "../../api/supplierSubmissions.types";
 
-type EditableRow = SupplierSubmissionRowDTO & { test_api_key: string };
+type EditableRow = SupplierSubmissionRowDTO;
 const route = useRoute();
 const router = useRouter();
 const kind = computed(() => route.query.kind === "PRICE_CHANGE" ? "价格变更" : "模型新增");
@@ -17,6 +18,7 @@ const expectedRevision = computed(() => typeof route.query.expected_revision ===
 const modelName = computed(() => typeof route.query.model_name === "string" ? route.query.model_name : "当前模型");
 const savedCoefficient = computed(() => typeof route.query.coefficient === "string" ? route.query.coefficient : "");
 const coefficient = ref(savedCoefficient.value);
+// 申报说明是选填（2026-10-27 确认）：草稿和提交都不拦，详情里空值显示「无补充说明」。
 const reason = ref("");
 const error = ref("");
 const submitting = ref(false);
@@ -32,11 +34,10 @@ const modelLoading = ref(false);
 const modelError = ref("");
 const loadingDraft = ref(false);
 const savedBaseline = ref("");
+// 草稿并发编辑（409）：提示用户先取最新版本再重试，输入一律保留。
 const draftConflict = ref(false), draftRefreshed = ref(false), latestDraftReason = ref("");
 let savedRowIDs: string[] = [];
 const dirty = computed(() => !!savedBaseline.value && savedBaseline.value !== snapshot());
-// 最新确认：至少一行有效连通通过即可提交，压力不强制；逐资源接入仍须自身双测通过。
-const canSubmitBatch = computed(() => rows.value.some(row => row.connectivity_tested && row.connectivity_passed && !row.connectivity_job?.stale));
 const locked = computed(() => !canEdit.value || saving.value || submitting.value || loadingDraft.value);
 const testCategories: SupplierTestCategory[] = ["CONNECTIVITY", "STRESS"];
 let active = true;
@@ -44,48 +45,86 @@ let optionRequest: AbortController | undefined;
 let draftRequest: AbortController | undefined;
 const testBusy = ref<Record<string, boolean>>({});
 const batchBusy = ref<"" | "ALL">("");
-// 门禁提示：把"哪一行还差什么"说清楚，而不是只让按钮变灰。
-const missingConnectivity = computed(() => rows.value.map((row, index) => ({ row, index })).filter(item => !item.row.connectivity_tested).map(item => item.index + 1));
-const passedRowCount = computed(() => rows.value.filter(row => row.connectivity_tested && row.connectivity_passed && !row.connectivity_job?.stale).length);
-const pendingConnectivity = computed(() => rows.value.filter(row => !row.connectivity_job || row.connectivity_job.stale).length);
-const selectedStressCount = computed(() => rows.value.filter(row => row.participate_test).length);
-const pendingStress = computed(() => rows.value.filter(row => row.participate_test && !row.stress_job).length);
-const gateHint = computed(() => {
-  if (!rows.value.length) return "请至少添加一条模型。";
-  if (passedRowCount.value === 0) return "至少需要一行连通测试通过（结果达标且未失效）。";
-  const issues: string[] = [];
-  if (selectedStressCount.value === 0) issues.push("建议至少勾选一个模型做压力测试。");
-  const pending = rows.value.length - passedRowCount.value;
-  if (pending > 0) issues.push(`其余 ${pending} 个模型提交后会标为「待补」。`);
-  return issues.join("");
+
+// ---- 主体级测试凭据（000044 / 原型顶部凭据区）----
+const credential = ref<SupplierTestCredentialDTO>({ base_url: "", has_api_key: false, configured: false });
+const credentialURL = ref("");
+const credentialKey = ref("");
+const credentialLoading = ref(false);
+const credentialSaving = ref(false);
+const credentialNote = computed(() => {
+  if (!credential.value.configured) return "尚未登记测试凭据：发起测试前需先保存一次。";
+  return credential.value.has_api_key ? "已登记测试凭据，Key 只写不读。" : "已登记 URL，还没有保存 Key。";
 });
-function blankRow(): EditableRow {
-  return { id: "", interface_model_id: "", standard_model_id: "", standard_model_name: "", official_id: "", coefficient: "1", test_base_url: "", test_api_key_configured: false, test_api_key: "", row_status: "DRAFT", connectivity_tested: false, connectivity_passed: false, stress_tested: false, stress_passed: false };
+
+async function loadCredential() {
+  credentialLoading.value = true;
+  try {
+    const dto = await supplierTestCredentialApi.get();
+    if (!active) return;
+    credential.value = dto;
+    credentialURL.value = dto.base_url || "";
+  } catch (value) {
+    if (active) showError(value, "测试凭据暂时无法读取，可稍后重试。");
+  } finally {
+    if (active) credentialLoading.value = false;
+  }
 }
-function hasSavedTestKey(row: EditableRow) {
-  // Older drafts had a required key and no presence flag in their response.
-  return row.test_api_key_configured ?? Boolean(row.id);
+
+async function saveCredential() {
+  if (credentialSaving.value) return;
+  const url = credentialURL.value.trim();
+  if (!url) { error.value = "请填写测试接口 URL。"; return; }
+  credentialSaving.value = true;
+  error.value = "";
+  try {
+    const dto = await supplierTestCredentialApi.save(
+      credentialKey.value.trim() ? { base_url: url, api_key: credentialKey.value.trim() } : { base_url: url },
+      crypto.randomUUID(),
+    );
+    if (!active) return;
+    credential.value = dto;
+    credentialURL.value = dto.base_url;
+    credentialKey.value = "";
+    ElMessage.success("测试凭据已保存");
+    // 凭据参与指纹：刷新一次行状态，否则「已失效」要等下次进入页面才更新。
+    if (submissionID.value) await reloadKeepingKeys();
+  } catch (value) {
+    if (active) showError(value, "测试凭据保存失败，请重试。");
+  } finally {
+    if (active) credentialSaving.value = false;
+  }
+}
+
+// ---- 门禁（原型口径：覆盖全部连通 + 至少一个压力模型，不看是否通过）----
+const connectivityMissing = computed(() => rows.value.filter(row => !row.connectivity_tested).length);
+const selectedStressCount = computed(() => rows.value.filter(row => row.participate_test).length);
+const pendingStress = computed(() => rows.value.filter(row => row.participate_test && !row.stress_tested).length);
+const gateError = computed(() => {
+  if (!rows.value.length) return "请至少添加一条模型。";
+  if (connectivityMissing.value > 0) return `还有 ${connectivityMissing.value} 个模型没有连通性测试结果，请先发起测试。`;
+  if (selectedStressCount.value === 0) return "请至少勾选一个压力测试模型。";
+  if (pendingStress.value > 0) return `勾选的模型里还有 ${pendingStress.value} 个没有压力测试结果，请先发起测试。`;
+  return "";
+});
+const canSubmitBatch = computed(() => !gateError.value);
+
+function blankRow(): EditableRow {
+  return { id: "", interface_model_id: "", standard_model_id: "", standard_model_name: "", official_id: "", coefficient: "1", test_base_url: "", test_api_key_configured: false, row_status: "DRAFT", connectivity_tested: false, connectivity_passed: false, stress_tested: false, stress_passed: false };
 }
 function snapshot() {
-  return JSON.stringify({ reason: reason.value, rows: rows.value.map(row => ({ id: row.id, interface_model_id: row.interface_model_id, standard_model_id: row.standard_model_id, coefficient: row.coefficient, test_base_url: row.test_base_url, test_api_key: row.test_api_key, participate_test: !!row.participate_test })) });
+  // 凭据不参与脏检查：它是主体资源，改了也不影响「这份申报还没保存」的判断。
+  return JSON.stringify({ reason: reason.value, rows: rows.value.map(row => ({ id: row.id, interface_model_id: row.interface_model_id, standard_model_id: row.standard_model_id, coefficient: row.coefficient, participate_test: !!row.participate_test })) });
 }
 function rememberSaved() { savedBaseline.value = snapshot(); lifecycle.value = crypto.randomUUID(); }
-function normalizeSaved(dto: SupplierSubmissionDTO, previousRows = rows.value) {
+function normalizeSaved(dto: SupplierSubmissionDTO) {
   draftConflict.value = false; draftRefreshed.value = false; latestDraftReason.value = "";
   savedRowIDs = dto.rows.map(row => row.id).sort();
   submissionID.value = dto.id;
   revision.value = dto.revision;
   canEdit.value = dto.permissions.can_edit;
   reason.value = dto.reason || reason.value;
-  rows.value = dto.rows.map((item, index) => {
-    const previouslyConfigured = previousRows[index]?.test_api_key_configured;
-    const newlyEnteredKey = Boolean(previousRows[index]?.test_api_key.trim());
-    return {
-      ...item,
-      test_api_key_configured: item.test_api_key_configured ?? (previouslyConfigured || newlyEnteredKey || Boolean(item.id)),
-      test_api_key: "",
-    };
-  });
+  rows.value = dto.rows;
   rememberSaved();
 }
 function showError(value: unknown, fallback: string) { error.value = value instanceof Error ? value.message : fallback; }
@@ -100,15 +139,6 @@ function validateRows(): string {
     if (!row.interface_model_id.trim()) return `${line}请填写接口模型 ID。`;
     if (!row.standard_model_id) return `${line}请选择对应标准模型。`;
     if (!coefficientIsValid(row.coefficient)) return `${line}采购系数须大于 0 且不超过 1。`;
-    // demo 是测试平台的演示模式（不连真实服务），不算非法 URL。
-    const rawURL = row.test_base_url.trim();
-    if (rawURL.toLowerCase() !== "demo") {
-      try {
-        const url = new URL(rawURL);
-        if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("scheme");
-      } catch { return `${line}请填写有效的测试服务 URL（或填 demo 使用平台演示模型）。`; }
-    }
-    if (!hasSavedTestKey(row) && !row.test_api_key.trim()) return `${line}请填写用于自测的 Key。`;
   }
   return "";
 }
@@ -141,7 +171,7 @@ async function loadDraft(id: string) {
     const result = await supplierSubmissionsApi.get(id, request.signal);
     if (!active || request.signal.aborted) return;
     if (result.kind !== "MODEL_NEW") throw new Error("当前申报不是模型新增类型。请从申报记录重新打开。");
-    normalizeSaved(result, []);
+    normalizeSaved(result);
   } catch (value) {
     if (active && !request.signal.aborted) error.value = value instanceof Error ? value.message : "申报详情暂时无法加载。";
   } finally { if (active && !request.signal.aborted) loadingDraft.value = false; }
@@ -155,14 +185,13 @@ function selectStandardModel(row: EditableRow, id: string | number) {
   row.official_id = option?.official_id || "";
 }
 function writePayload() {
+  // 000044：行级 URL/Key 已废弃，凭据走 /supplier/test-credential。
   const payloadRows: SupplierSubmissionWriteRow[] = rows.value.map(row => ({
     ...(row.id ? { id: row.id } : {}),
     interface_model_id: row.interface_model_id.trim(),
     standard_model_id: row.standard_model_id,
     coefficient: row.coefficient.trim(),
-    test_base_url: row.test_base_url.trim(),
     participate_test: !!row.participate_test,
-    ...(row.test_api_key.trim() ? { test_api_key: row.test_api_key.trim() } : {}),
   }));
   return { kind: "MODEL_NEW" as const, ...(submissionID.value ? { expected_revision: revision.value } : {}), reason: reason.value.trim(), rows: payloadRows };
 }
@@ -170,17 +199,15 @@ async function saveDraft(): Promise<boolean> {
   if (saving.value || submitting.value || loadingDraft.value || !canEdit.value || draftConflict.value) return false;
   const issue = validateRows();
   if (issue) { error.value = issue; return false; }
-  if (!reason.value.trim()) { error.value = "请填写申报说明。"; return false; }
   saving.value = true;
   error.value = "";
-  const previous = rows.value;
   try {
     const payload = writePayload();
     const result = submissionID.value
       ? await supplierSubmissionsApi.update(submissionID.value, payload, lifecycle.value)
       : await supplierSubmissionsApi.create(payload, lifecycle.value);
     if (!active) return false;
-    normalizeSaved(result, previous);
+    normalizeSaved(result);
     ElMessage.success("草稿已保存");
     return true;
   } catch (value) {
@@ -191,6 +218,10 @@ async function saveDraft(): Promise<boolean> {
     return false;
   } finally { if (active) saving.value = false; }
 }
+/**
+ * 草稿被别人改过（409）时，只允许「取最新版本」而不是直接覆盖：
+ * 先比对行 ID 集合，行结构变了就要求用户重新打开草稿核对，避免静默丢掉别人的改动。
+ */
 async function refreshDraftConflict() {
   if (!draftConflict.value || !submissionID.value || locked.value) return;
   loadingDraft.value = true;
@@ -210,15 +241,6 @@ function applyTest(row: EditableRow, result: SupplierTestJobDTO) {
   const test: SupplierSubmissionTestDTO = { category: result.category, status: result.status, tested: result.tested, passed: result.passed, job_id: result.job_id, report_id: result.report_id, connection_ms: result.connection_ms, rps: result.rps, tps: result.tps };
   if (result.category === "CONNECTIVITY") { row.connectivity_job = test; row.connectivity_tested = result.tested; row.connectivity_passed = result.passed; }
   else { row.stress_job = test; row.stress_tested = result.tested; row.stress_passed = result.passed; }
-}
-async function runTest(row: EditableRow, category: SupplierTestCategory) {
-  if (!submissionID.value || !row.id || testBusy.value[row.id + category]) return;
-  testBusy.value = { ...testBusy.value, [row.id + category]: true };
-  error.value = "";
-  try {
-    applyTest(row, await supplierSubmissionsApi.startTest(submissionID.value, row.id, category, lifecycle.value));
-  } catch (value) { showError(value, "测试任务未能启动。请保存草稿后重试。"); }
-  finally { const next = { ...testBusy.value }; delete next[row.id + category]; testBusy.value = next; }
 }
 async function refreshRow(row: EditableRow) {
   if (!submissionID.value || !row.id) return;
@@ -256,11 +278,21 @@ function testState(tested: boolean, passed: boolean, verdict?: string) {
   if (!verdict) return "已完成";
   return "未通过";
 }
-function testFor(row: EditableRow, category: SupplierTestCategory) { return category === "CONNECTIVITY" ? row.connectivity_job : row.stress_job; }
+function testType(tested: boolean, passed: boolean): "success" | "danger" | "info" {
+  if (!tested) return "info";
+  return passed ? "success" : "danger";
+}
+function rowMetrics(row: EditableRow) {
+  const parts: string[] = [];
+  if (row.connectivity_job?.connection_ms) parts.push(`${row.connectivity_job.connection_ms} ms`);
+  if (row.stress_job?.rps) parts.push(`RPS ${row.stress_job.rps}`);
+  if (row.stress_job?.tps) parts.push(`TPS ${row.stress_job.tps}`);
+  return parts.join(" · ");
+}
 async function reloadKeepingKeys() {
   if (!submissionID.value) return;
   const result = await supplierSubmissionsApi.get(submissionID.value);
-  if (active) normalizeSaved(result, rows.value);
+  if (active) normalizeSaved(result);
 }
 // 单一入口「发起测试／异常重试」：连通测全部行，压力只测勾选行。
 async function runBatch() {
@@ -347,16 +379,15 @@ async function submitDraft() {
     if (!(await saveDraft())) return;
   }
   if (!submissionID.value || !revision.value) { error.value = "草稿尚未保存，请先保存后再提交。"; return; }
-  if (!canSubmitBatch.value) { error.value = `还不能提交：${gateHint.value}`; return; }
-  if (!reason.value.trim()) { error.value = "请填写申报说明。"; return; }
+  if (!canSubmitBatch.value) { error.value = `还不能提交：${gateError.value}`; return; }
   submitting.value = true;
   error.value = "";
   try {
     await supplierSubmissionsApi.submit(submissionID.value, revision.value, reason.value, lifecycle.value);
     if (!active) return;
+    // 提交成功后这份草稿就不该再被改：先落基线，再锁编辑态，避免返回前又点一次保存。
     rememberSaved();
     canEdit.value = false;
-    submitting.value = false;
     ElMessage.success("申报已提交，后续状态以办理进度为准。");
     await router.replace({ path: "/supplier/home", query: { tab: "history" } });
   } catch (value) { if (active) showError(value, "申报未能提交，草稿和输入已保留。"); }
@@ -388,6 +419,7 @@ function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value || saving.valu
 
 onMounted(() => {
   void loadModelOptions();
+  void loadCredential();
   const id = typeof route.query.id === "string" ? route.query.id : "";
   if (id && !isPriceChange.value) void loadDraft(id);
   else if (!isPriceChange.value) { rows.value = [blankRow()]; savedBaseline.value = snapshot(); }
@@ -418,57 +450,87 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
 
   <section v-else class="panel submission-panel" v-loading="loadingDraft">
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
-    <el-alert title="一份申报可包含多个模型。草稿发起测试时会关联测试资源；批准进入办理后正式接管，不重复创建。至少一行有效连通测试通过即可提交，压力测试不强制；每条资源接入仍需自身双测通过。" type="info" :closable="false" />
     <el-alert v-if="draftConflict" title="草稿版本已变化，当前输入已保留。请先刷新最新版本，再核对后重试。" type="warning" :closable="false"><el-button text :disabled="locked" @click="refreshDraftConflict">刷新最新版本并保留草稿</el-button></el-alert>
     <el-alert v-if="draftRefreshed" :title="`已取得最新版本 R${revision}；服务端说明：${latestDraftReason}。当前表单仍为本次草稿，请核对后重试。`" type="warning" :closable="false" />
     <el-alert v-if="modelError" :title="modelError" type="error" :closable="false" show-icon />
 
+    <!-- 主体级测试凭据（原型表单顶部） -->
+    <div class="credential-block" v-loading="credentialLoading">
+      <p class="credential-note">此 URL／Key 仅由供应商本人维护，用于本主体准入测试、供申报模型共用；不用于平台运营测试。</p>
+      <div class="credential-grid">
+        <el-form-item label="测试接口 URL">
+          <el-input v-model="credentialURL" placeholder="https://api.example.com/v1（填 demo 使用平台演示模型）" :disabled="credentialSaving" />
+        </el-form-item>
+        <el-form-item label="测试 API Key（留空保留已保存值）">
+          <el-input v-model="credentialKey" type="password" show-password autocomplete="new-password" :placeholder="credential.has_api_key ? '已保存；填写新 Key 可替换' : '供应商自测使用的 Key'" :disabled="credentialSaving" />
+        </el-form-item>
+      </div>
+      <div class="credential-actions">
+        <el-button size="small" :loading="credentialSaving" @click="saveCredential">保存测试凭据</el-button>
+        <span class="credential-status" :class="{ 'is-missing': !credential.configured }">{{ credentialNote }}</span>
+      </div>
+    </div>
+
     <div class="batch-actions">
-      <el-button size="small" type="primary" :loading="batchBusy === 'ALL'" :disabled="locked || !rows.length" @click="runBatch">发起测试／异常重试</el-button>
       <el-button size="small" :loading="importBusy" :disabled="locked" @click="downloadTemplate">下载导入模板</el-button>
       <el-button size="small" :disabled="locked" @click="triggerImport">导入 Excel</el-button>
       <input ref="importInput" type="file" accept=".xlsx" hidden @change="onImportFile" />
-      <span class="batch-hint">所有模型都会做连通测试；压力测试只做勾选的模型（已勾 {{ selectedStressCount }} 个，待测 {{ pendingStress }} 个）。</span>
+      <span class="batch-hint">所有模型都会做连通性测试；压力测试只做勾选的模型（已勾 {{ selectedStressCount }} 个，待测 {{ pendingStress }} 个）。</span>
     </div>
 
-    <article v-for="(row, index) in rows" :key="row.id || `new-${index}`" class="submission-row">
-      <header class="row-heading">
-        <h2>模型 {{ index + 1 }}</h2>
-        <el-tag v-if="row.id" :type="rowStatusType(row.row_status)">{{ rowStatusLabel(row.row_status) }}</el-tag>
-        <el-tag v-if="row.supplement_required" type="warning" effect="plain">待补</el-tag>
-        <el-button text type="danger" :disabled="locked || rows.length === 1" @click="removeRow(index)">移除</el-button>
-      </header>
-      <div class="row-grid">
-        <el-form-item label="接口模型 ID *"><el-input v-model="row.interface_model_id" placeholder="供应商侧接口模型 ID" :disabled="locked" /></el-form-item>
-        <el-form-item label="对应标准模型 *"><el-select v-model="row.standard_model_id" filterable clearable remote :remote-method="searchModelOptions" :loading="modelLoading" placeholder="选择标准模型" :disabled="locked" @change="selectStandardModel(row, $event)" @visible-change="ensureModelOptions"><el-option v-for="item in modelOptions" :key="item.id" :label="`${item.name || '名称待补齐'} · ${item.official_id || '官方 ID 待补齐'}`" :value="item.id" /></el-select><small v-if="row.standard_model_name" class="muted">{{ row.standard_model_name }} · {{ row.official_id }}</small></el-form-item>
-        <el-form-item label="采购系数 *"><el-input v-model="row.coefficient" inputmode="decimal" placeholder="0.6800" :disabled="locked" /></el-form-item>
-        <el-form-item label="压力测试"><el-checkbox v-model="row.participate_test" :disabled="locked">该模型参与压力测试</el-checkbox></el-form-item>
-        <el-form-item label="测试服务 URL *">
-          <el-input v-model="row.test_base_url" placeholder="https://api.example.com（填 demo 使用平台演示模型）" :disabled="locked" />
-          <small class="muted">填 demo：用平台内置演示模型跑，不连真实服务</small>
-        </el-form-item>
-        <el-form-item :label="hasSavedTestKey(row) ? '测试 Key（留空沿用）' : '测试 Key *'"><el-input v-model="row.test_api_key" type="password" show-password autocomplete="new-password" :placeholder="hasSavedTestKey(row) ? '已保存；填写新 Key 可替换' : '供应商自测使用的 Key'" :disabled="locked" /></el-form-item>
-      </div>
-      <div class="test-area">
-        <div class="test-line">
-          <el-button size="small" :disabled="locked || dirty || (!row.connectivity_job && !row.stress_job)" @click="refreshRow(row)">刷新结果</el-button>
-          <span><strong>连通性：</strong>{{ testState(row.connectivity_tested, row.connectivity_passed, row.connectivity_job?.verdict) }}<em v-if="row.connectivity_job" class="muted">（{{ row.connectivity_job.status }}）</em></span>
-          <span v-if="row.stress_job || row.participate_test"><strong>压力测试：</strong>{{ testState(row.stress_tested, row.stress_passed, row.stress_job?.verdict) }}<em v-if="row.stress_job" class="muted">（{{ row.stress_job.status }}）</em></span>
-        </div>
-        <p v-if="row.connectivity_job?.connection_ms || row.stress_job?.rps" class="test-metrics">
-          <span v-if="row.connectivity_job?.connection_ms">连通耗时 {{ row.connectivity_job.connection_ms }} ms</span>
-          <span v-if="row.stress_job?.rps"> · 压力 RPS {{ row.stress_job.rps }}</span>
-          <span v-if="row.stress_job?.tps"> · TPS {{ row.stress_job.tps }}</span>
-          <span v-if="row.stress_job && !row.stress_job.verdict" class="muted">（压测只出指标，不判定通过/不通过）</span>
-        </p>
-      </div>
-    </article>
-    <el-button :disabled="locked" @click="addRow">添加模型</el-button>
+    <el-table :data="rows" row-key="id" class="submission-table" empty-text="还没有模型，点「添加模型」开始">
+      <el-table-column label="对应标准模型" min-width="260">
+        <template #default="{ row }">
+          <el-select v-model="row.standard_model_id" filterable clearable remote :remote-method="searchModelOptions" :loading="modelLoading" placeholder="选择对应标准模型" :disabled="locked" @change="selectStandardModel(row, $event)" @visible-change="ensureModelOptions">
+            <el-option v-for="item in modelOptions" :key="item.id" :label="`${item.name} · ${item.official_id}`" :value="item.id" />
+          </el-select>
+          <small v-if="row.standard_model_name" class="muted">{{ row.standard_model_name }} · {{ row.official_id }}</small>
+        </template>
+      </el-table-column>
+      <el-table-column label="接口模型 ID" min-width="200">
+        <template #default="{ row }"><el-input v-model="row.interface_model_id" placeholder="供应商侧接口模型 ID" :disabled="locked" /></template>
+      </el-table-column>
+      <el-table-column label="采购系数" width="130">
+        <template #default="{ row }"><el-input v-model="row.coefficient" inputmode="decimal" placeholder="0.6800" :disabled="locked" /></template>
+      </el-table-column>
+      <el-table-column label="压力测试" width="100" align="center">
+        <template #default="{ row }"><el-checkbox v-model="row.participate_test" :disabled="locked">参与</el-checkbox></template>
+      </el-table-column>
+      <el-table-column label="测试" min-width="230">
+        <template #default="{ row }">
+          <div class="test-cell">
+            <span class="test-pill"><el-tag size="small" :type="testType(row.connectivity_tested, row.connectivity_passed)">连通 {{ testState(row.connectivity_tested, row.connectivity_passed, row.connectivity_job?.verdict) }}</el-tag></span>
+            <span v-if="row.participate_test || row.stress_job" class="test-pill"><el-tag size="small" :type="testType(row.stress_tested, row.stress_passed)">压力 {{ testState(row.stress_tested, row.stress_passed, row.stress_job?.verdict) }}</el-tag></span>
+            <small v-if="rowMetrics(row)" class="muted">{{ rowMetrics(row) }}</small>
+            <el-button link type="primary" size="small" :disabled="locked || dirty || (!row.connectivity_job && !row.stress_job)" @click="refreshRow(row)">刷新结果</el-button>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="状态" width="110" align="center">
+        <template #default="{ row }">
+          <el-tag v-if="row.id" size="small" :type="rowStatusType(row.row_status)">{{ rowStatusLabel(row.row_status) }}</el-tag>
+          <span v-else class="muted">未保存</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="80" align="center">
+        <template #default="{ $index }"><el-button link type="danger" :disabled="locked" @click="removeRow($index)">删除</el-button></template>
+      </el-table-column>
+    </el-table>
 
-    <el-form-item label="申报说明 *"><el-input v-model="reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="locked" /></el-form-item>
-    <el-alert v-if="!canSubmitBatch" :title="`尚不能提交：${gateHint}`" type="warning" :closable="false" show-icon />
-    <el-alert v-else :title="`可以提交。${gateHint}`" type="success" :closable="false" show-icon />
-    <p class="muted">提交要求至少一个模型的连通性测试通过且未失效；压力测试不强制。批量测试会对所有模型执行连通测试，压力只测勾选模型。提交不代表逐资源接入合格，接入仍逐条核对自身连通性和压力测试。</p>
+    <p class="rule-note">所有模型均执行连通性测试；至少勾选一个压力测试模型。同一受测配置一次有效测试；配置变化后可重测，仅改报价不增加机会。工具异常的未完成部分可重试。结果不达标也属于有效结果。</p>
+
+    <div class="form-actions form-actions--inline">
+      <el-button :disabled="locked" @click="addRow">添加模型</el-button>
+      <el-button type="primary" :loading="batchBusy === 'ALL'" :disabled="locked || !rows.length" @click="runBatch">发起测试／异常重试</el-button>
+      <el-button :loading="saving" :disabled="locked || !dirty || draftConflict" @click="saveDraft">{{ draftRefreshed ? '按最新版本重试' : '保存草稿' }}</el-button>
+      <el-button type="success" :loading="submitting" :disabled="locked || !canSubmitBatch || draftConflict" @click="submitDraft">提交申报</el-button>
+    </div>
+
+    <el-form-item label="申报说明">
+      <el-input v-model="reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="locked" placeholder="选填：补充给办理方的信息" />
+    </el-form-item>
+    <el-alert v-if="!canSubmitBatch" :title="`尚不能提交：${gateError}`" type="warning" :closable="false" show-icon />
+    <el-alert v-else title="可以提交：覆盖了全部连通性测试并至少有一个压力测试模型。" type="success" :closable="false" show-icon />
 
     <el-dialog v-model="importDialog" title="导入预览" width="760px">
       <template v-if="importPreview">
@@ -494,10 +556,8 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
     </el-dialog>
     <div class="form-actions">
       <el-button @click="router.push('/supplier/home')">返回</el-button>
-      <el-button type="primary" :loading="saving" :disabled="locked || !dirty || draftConflict" @click="saveDraft">{{ draftRefreshed ? '按最新版本重试' : '保存草稿' }}</el-button>
-      <el-button type="success" :loading="submitting" :disabled="locked || !canSubmitBatch || draftConflict" @click="submitDraft">提交申报</el-button>
     </div>
-    <p class="muted security-note">供应商自测使用本行测试 URL / Key 和供应商额度；保存后发起测试可复用配置，Key 不回显。内部人员发起测试使用平台自己的 URL / Key 和平台额度，与供应商凭据分开。正式运行配置仍单独维护。</p>
+    <p class="muted security-note">测试凭据由主体统一维护，发起测试时按当前凭据计算指纹；换了 URL 或 Key 之后，旧结果会标记为「已失效」需要重测。内部人员发起测试使用平台自己的凭据与额度，与供应商凭据分开。</p>
   </section>
 </template>
 
@@ -507,20 +567,22 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
 .supplier-portal-head h1 { margin: 8px 0 6px; font-size: 32px; letter-spacing: -.02em; }
 .supplier-portal-head p { margin: 0; color: var(--app-text-muted); font-size: 13px; }
 .submission-panel,.price-change-panel { display: grid; gap: 18px; padding: 22px; }
-.options-search { display: flex; gap: 10px; align-items: center; }
+.credential-block { border: 1px solid var(--app-border); border-radius: 8px; padding: 16px 18px; display: grid; gap: 10px; }
+.credential-note { margin: 0; color: var(--app-text-muted); font-size: 12px; line-height: 1.6; }
+.credential-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 18px; }
+.credential-actions { display: flex; align-items: center; gap: 12px; }
+.credential-status { color: var(--app-text-muted); font-size: 12px; }
+.credential-status.is-missing { color: #b42318; }
 .batch-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .batch-hint { color: var(--app-text-muted); font-size: 12px; }
-.submission-row { border: 1px solid var(--app-border); border-radius: 8px; padding: 18px; }
-.row-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.row-heading h2 { margin: 0; font-size: 17px; flex: 1; }
-.row-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 18px; }
-.row-grid .el-select { width: 100%; }
-.test-area { border-top: 1px solid var(--app-border); padding-top: 14px; display: grid; gap: 8px; }
-.test-line { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
-.test-metrics { grid-column: 1/-1; margin: 0; color: var(--app-text-muted); font-size: 12px; }
+.submission-table :deep(.el-select) { width: 100%; }
+.test-cell { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.test-pill { display: inline-flex; }
+.rule-note { margin: 0; color: var(--app-text-muted); font-size: 12px; line-height: 1.7; }
+.form-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.form-actions--inline { justify-content: flex-start; flex-wrap: wrap; }
 .muted,.inline-error { color: var(--app-text-muted); font-size: 12px; }
 .inline-error { color: #b42318; }
-.form-actions { display: flex; justify-content: flex-end; gap: 10px; }
 .security-note { margin: 0; }
-@media(max-width: 760px) { .row-grid { grid-template-columns: 1fr; } .test-area { grid-template-columns: 1fr auto; } .test-area :deep(.el-button:nth-of-type(2n)) { grid-column: 2; } }
+@media(max-width: 900px) { .credential-grid { grid-template-columns: 1fr; } }
 </style>

@@ -8,7 +8,6 @@ import SupplierQuoteImport from "../views/supplier/SupplierQuoteImport.vue";
 import SupplierModelApplications from "../views/supplier/SupplierModelApplications.vue";
 import SupplierAccountSettings from "../views/supplier/SupplierAccountSettings.vue";
 import SupplierSubmissionNew from "../views/supplier/SupplierSubmissionNew.vue";
-import SupplierSubmissionSimple from "../views/supplier/SupplierSubmissionSimple.vue";
 import SupplierQualifications from "../views/supplier/SupplierQualifications.vue";
 import SupplierReconciliation from "../views/supplier/SupplierReconciliation.vue";
 
@@ -35,11 +34,6 @@ export const supplierRoutes: RouteRecordRaw = {
       path: "profile",
       component: SupplierAccountSettings,
       meta: { requiresAuth: true, portal: "supplier", routeKey: "supplier.profile", title: "账户设置", menu: true, order: 30 },
-    },
-    {
-      path: "submissions/simple",
-      component: SupplierSubmissionSimple,
-      meta: { requiresAuth: true, portal: "supplier", routeKey: "supplier.submissionSimple", title: "发起申报", menu: false, order: 36 },
     },
     {
       path: "submissions/new",
