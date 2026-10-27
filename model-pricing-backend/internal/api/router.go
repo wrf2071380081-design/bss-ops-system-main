@@ -95,6 +95,11 @@ type Deps struct {
 	StaffStore orgperm.StaffStore
 	// 阶段 12：供应商门户主体档案只读视图（批次 7a，只做 GET）。
 	SupplierPortalProfileSvc *supplier.PortalProfileService
+	// 供应商门户「账户设置」（M2，2026-10-27）：读 supplier 表，明文读写。
+	// nil 时路由整体不挂载（与其它模块同一条纪律：没接仓储就不暴露能力）。
+	SupplierAccount *SupplierAccountService
+	// UploadDir 是门户上传文件（企业证明）的落盘根目录。
+	UploadDir string
 	// Stage 2：供应商申报 → 领导审批 → mock 测试 → 登记接入。
 	SupplyChain *SupplyChainRuntime
 	// 客户管理合并页：客户列表派生列 / 客户报价 / 特价审批记录（纯只读）。
@@ -670,4 +675,5 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 	registerSupplyRoutes(g, protected, portal, deps)     // A：主数据与供应侧
 	registerSubmissionRoutes(g, protected, portal, deps) // B：申报/办理/测试
 	registerTradeRoutes(g, protected, portal, deps)      // C：客户/报价/留痕
+	registerSupplierAccountRoutes(protected, portal, deps) // 供应商门户：账户设置（M2）
 }

@@ -18,6 +18,13 @@ type Config struct {
 	Docs         Docs         `mapstructure:"docs"`
 	Features     Features     `mapstructure:"features"`
 	TestPlatform TestPlatform `mapstructure:"test_platform"`
+	Uploads      Uploads      `mapstructure:"uploads"`
+}
+
+// Uploads 是门户上传文件的落盘配置（2026-10-27，供应商账户设置用）。
+// 目录不存在时由使用方自动创建；库里只存相对路径，换机器/换卷不用改数据。
+type Uploads struct {
+	Dir string `mapstructure:"dir"`
 }
 
 // TestPlatform 是外部测试平台（open-api v1）的连接配置。

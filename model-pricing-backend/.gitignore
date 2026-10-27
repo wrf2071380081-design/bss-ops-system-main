@@ -33,3 +33,6 @@ Thumbs.db
 logs/
 *.log
 tmp/
+
+# 运行期上传（供应商企业证明等）——运行时产物，不入库
+var/uploads/
