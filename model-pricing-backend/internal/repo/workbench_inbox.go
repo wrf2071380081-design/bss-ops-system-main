@@ -51,6 +51,7 @@ SELECT assignee_id, item_type, state, biz_type, biz_id, title, biz_object, regio
        NULL::bigint AS plan_id
 FROM v_work_item
 WHERE biz_type <> 'PLAN'
+  AND NOT (biz_type='ONBOARDING_NODE' AND title IN ('CONFIG','CONTRACT') AND EXISTS(SELECT 1 FROM operation_log l WHERE l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'flow_id'=v_work_item.biz_id::text))
   AND NOT EXISTS (
       SELECT 1
       FROM todo_task t
@@ -76,6 +77,26 @@ JOIN supplier_profile sp ON sp.id = qs.supplier_id
 JOIN legal_subject ls ON ls.id = sp.subject_id
 JOIN internal_staff st ON st.status = 'ACTIVE' AND st.can_approve_supplier = true
 WHERE qs.status = 'APPROVING'
+UNION ALL
+SELECT st.id,'TODO'::varchar(8),CASE WHEN s.status='PENDING_APPROVAL' THEN 'TODO' ELSE 'DONE' END::varchar(16),
+ 'SUBMISSION_APPROVAL'::varchar(32),s.id,'供应商模型申报审批'::varchar(256),sp.name || ' · ' || s.submission_no,s.region,'MID'::varchar(8),coalesce(s.submitted_at,s.created_at),NULL::bigint
+ FROM submission s JOIN supplier sp ON sp.id=s.supplier_id JOIN internal_staff st ON st.status='ACTIVE' AND st.can_approve_supplier
+ LEFT JOIN LATERAL(SELECT operator_id FROM operation_log WHERE entity_type='submission' AND entity_id=s.id AND (action='REJECT' OR (action='APPROVE' AND "after"->>'contract'='supply.handling_approval')) ORDER BY id DESC LIMIT 1) decided ON TRUE
+ WHERE s.status='PENDING_APPROVAL' OR (decided.operator_id=st.id AND s.status IN('REJECTED','PROCESSING','COMPLETED'))
+UNION ALL
+SELECT n.assignee_id,'TODO'::varchar(8),CASE WHEN n.status='COMPLETED' THEN 'DONE' ELSE 'TODO' END::varchar(16),
+ 'SUBMISSION_HANDLING'::varchar(32),n.id,'测试与资源配置办理'::varchar(256),sp.name || ' · ' || s.submission_no,s.region,'MID'::varchar(8),coalesce(n.completed_at,f.created_at),NULL::bigint
+ FROM onboarding_node n JOIN onboarding_flow f ON f.id=n.flow_id
+ JOIN operation_log l ON l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'node_id'=n.id::text
+ JOIN submission s ON s.id=l.entity_id JOIN supplier sp ON sp.id=s.supplier_id
+ WHERE n.node_key='CONFIG' AND n.enabled AND n.assignee_id IS NOT NULL AND n.status IN('IN_PROGRESS','COMPLETED')
+UNION ALL
+SELECT n.assignee_id,'TODO'::varchar(8),CASE WHEN n.status='COMPLETED' THEN 'DONE' ELSE 'TODO' END::varchar(16),
+ 'SUBMISSION_CONTRACT'::varchar(32),n.id,'合同与授信办理'::varchar(256),sp.name || ' · ' || s.submission_no,s.region,'MID'::varchar(8),coalesce(n.completed_at,f.created_at),NULL::bigint
+ FROM onboarding_node n JOIN onboarding_flow f ON f.id=n.flow_id
+ JOIN operation_log l ON l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'flow_id'=n.flow_id::text
+ JOIN submission s ON s.id=l.entity_id JOIN supplier sp ON sp.id=s.supplier_id
+ WHERE n.node_key='CONTRACT' AND n.enabled AND n.assignee_id IS NOT NULL AND n.status IN('IN_PROGRESS','COMPLETED')
 UNION ALL
 SELECT CASE WHEN p.kind='PRICE_CHANGE' THEN NULLIF(p."after"->'plan'->>'assignee_id','')::bigint ELSE p.created_by END AS assignee_id,
        'TODO'::varchar(8) AS item_type,

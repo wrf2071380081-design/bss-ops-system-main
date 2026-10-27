@@ -36,7 +36,7 @@ func TestResourceReadPostgres34Native(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"standard_model", "standard_model_version", "supplier", "resource", "test_job", "test_report", "operation_log"} {
+	for _, table := range []string{"standard_model", "standard_model_version", "supplier", "resource", "test_job", "test_report", "operation_log", "submission_row"} {
 		if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE `+table+` (LIKE public.`+table+` INCLUDING DEFAULTS INCLUDING IDENTITY INCLUDING CONSTRAINTS) ON COMMIT DROP`); err != nil {
 			t.Fatal(err)
 		}
@@ -182,6 +182,20 @@ func TestResourceReadPostgres34Native(t *testing.T) {
 	g := group.Groups[0]
 	if g.ID != modelIDs[0] || g.ResourceCount != 3 || g.SupplierCount != 3 || g.AvailableCount != 1 || g.CoefficientMin != "0.2000" || g.CoefficientMax != "0.8000" {
 		t.Fatalf("group paginated before aggregate %+v", g)
+	}
+	multi, err := reader.List(ctx, supply.ResourceListQuery{View: "grouped", SupplierIDs: []string{"21", "22"}, Regions: []string{"CN"}, CoefficientMax: "0.7"})
+	if err != nil || multi.Total != 2 || multi.Groups[0].ResourceCount != 1 {
+		t.Fatalf("filtered aggregates wrong: %+v %v", multi, err)
+	}
+	exact, err := reader.List(ctx, supply.ResourceListQuery{View: "flat", ConnectionMax: "0", RPSMin: "200"})
+	if err != nil || exact.Total != 1 || exact.Resources[0].ID != "10" {
+		t.Fatalf("zero/missing range wrong: %+v %v", exact, err)
+	}
+	for _, order := range []string{"asc", "desc"} {
+		admitted, err := reader.List(ctx, supply.ResourceListQuery{View: "flat", SortBy: "admitted_at", Order: order})
+		if err != nil || admitted.Resources[0].ID != "2" {
+			t.Fatalf("admission null-last failed: %+v %v", admitted, err)
+		}
 	}
 	for _, tc := range []struct{ field, ids string }{
 		{"id", "2,10,11,12"}, {"supplier_name", "11,10,2,12"}, {"region", "2,10,12,11"}, {"coefficient", "11,12,10,2"},

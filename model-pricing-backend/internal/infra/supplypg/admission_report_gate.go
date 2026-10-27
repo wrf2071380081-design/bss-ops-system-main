@@ -42,9 +42,9 @@ func (g *AdmissionReportGate) Check(ctx context.Context, resourceID string) erro
 	var reportID sql.NullInt64
 	var connectionPassed, stressPassed sql.NullBool
 	err = g.db.QueryRowContext(ctx, `
-SELECT r.latest_report_id, tr.connection_passed, tr.stress_passed
+SELECT r.latest_test_report_id, tr.connection_passed, tr.stress_passed
 FROM `+g.table("resource")+` r
-LEFT JOIN `+g.table("test_report")+` tr ON tr.id = r.latest_report_id
+LEFT JOIN `+g.table("test_report")+` tr ON tr.id = r.latest_test_report_id AND tr.resource_id = r.id
 WHERE r.id = $1`, id).Scan(&reportID, &connectionPassed, &stressPassed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return supply.ErrNotFound

@@ -26,15 +26,36 @@ export interface ApprovalRow {
 export interface SupplierWorkspaceRow {
   id: number;
   name: string;
+  aliases?: string[];
   region: string;
   phone: string;
   resource_count: number;
   credit_amount: string;
+  credit_status: "AVAILABLE" | "NOT_RECORDED" | "AMBIGUOUS_VERSION" | "INVALID_LEGACY_AMOUNT";
   settlement_currency: string;
   tax_rate: string;
-  contract_status: string;
+  contract_status: "办理中" | "已归档" | "未登记";
   cooperation_stage: string;
   handling_status: string;
+}
+
+export interface SupplierWorkspaceQuery {
+  page: number;
+  size: number;
+  keyword?: string;
+  region?: string;
+  contract_status?: "办理中" | "已归档" | "未登记";
+  cooperation_stage?: string;
+  handling_status?: string;
+  sort_by?: "id" | "name" | "region" | "resource_count" | "contract_status" | "cooperation_stage" | "handling_status";
+  sort_order?: "asc" | "desc";
+}
+
+export interface SupplierWorkspacePage {
+  list: SupplierWorkspaceRow[];
+  total: number;
+  page: number;
+  size: number;
 }
 
 export interface ApprovalHistoryRow {
@@ -79,9 +100,8 @@ export const supplyChainApi = {
     return data.submission_id;
   },
 
-  suppliers: async (): Promise<SupplierWorkspaceRow[]> => {
-    const data = await apiRequest<{ list: SupplierWorkspaceRow[] }>({ url: "/internal/supply/suppliers", method: "GET" });
-    return data.list;
+  suppliers: async (query: SupplierWorkspaceQuery): Promise<SupplierWorkspacePage> => {
+    return apiRequest<SupplierWorkspacePage>({ url: "/internal/supply/suppliers", method: "GET", params: query });
   },
 
   approvalHistory: async (): Promise<ApprovalHistoryRow[]> => {

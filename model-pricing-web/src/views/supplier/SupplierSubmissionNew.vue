@@ -4,6 +4,7 @@ import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { supplierModelsApi } from "../../api/supplierModels";
 import { supplierSubmissionsApi } from "../../api/supplierSubmissions";
+import { ApiError } from "../../domain/common";
 import type { SupplierImportPreviewDTO, SupplierModelOptionDTO, SupplierSubmissionDTO, SupplierSubmissionRowDTO, SupplierSubmissionTestDTO, SupplierSubmissionWriteRow, SupplierTestCategory, SupplierTestJobDTO } from "../../api/supplierSubmissions.types";
 
 type EditableRow = SupplierSubmissionRowDTO & { test_api_key: string };
@@ -31,8 +32,10 @@ const modelLoading = ref(false);
 const modelError = ref("");
 const loadingDraft = ref(false);
 const savedBaseline = ref("");
+const draftConflict = ref(false), draftRefreshed = ref(false), latestDraftReason = ref("");
+let savedRowIDs: string[] = [];
 const dirty = computed(() => !!savedBaseline.value && savedBaseline.value !== snapshot());
-// 折中口径：至少一行连通「通过」即可提交；其余行提交后标为待补。
+// 最新确认：至少一行有效连通通过即可提交，压力不强制；逐资源接入仍须自身双测通过。
 const canSubmitBatch = computed(() => rows.value.some(row => row.connectivity_tested && row.connectivity_passed && !row.connectivity_job?.stale));
 const locked = computed(() => !canEdit.value || saving.value || submitting.value || loadingDraft.value);
 const testCategories: SupplierTestCategory[] = ["CONNECTIVITY", "STRESS"];
@@ -68,6 +71,8 @@ function snapshot() {
 }
 function rememberSaved() { savedBaseline.value = snapshot(); lifecycle.value = crypto.randomUUID(); }
 function normalizeSaved(dto: SupplierSubmissionDTO, previousRows = rows.value) {
+  draftConflict.value = false; draftRefreshed.value = false; latestDraftReason.value = "";
+  savedRowIDs = dto.rows.map(row => row.id).sort();
   submissionID.value = dto.id;
   revision.value = dto.revision;
   canEdit.value = dto.permissions.can_edit;
@@ -162,7 +167,7 @@ function writePayload() {
   return { kind: "MODEL_NEW" as const, ...(submissionID.value ? { expected_revision: revision.value } : {}), reason: reason.value.trim(), rows: payloadRows };
 }
 async function saveDraft(): Promise<boolean> {
-  if (saving.value || submitting.value || !canEdit.value) return false;
+  if (saving.value || submitting.value || loadingDraft.value || !canEdit.value || draftConflict.value) return false;
   const issue = validateRows();
   if (issue) { error.value = issue; return false; }
   if (!reason.value.trim()) { error.value = "请填写申报说明。"; return false; }
@@ -179,9 +184,27 @@ async function saveDraft(): Promise<boolean> {
     ElMessage.success("草稿已保存");
     return true;
   } catch (value) {
-    if (active) showError(value, "草稿保存失败，输入内容已保留。");
+    if (active) {
+      if (value instanceof ApiError && value.httpStatus === 409) { draftConflict.value = true; draftRefreshed.value = false; }
+      showError(value, "草稿保存失败，输入内容已保留。");
+    }
     return false;
   } finally { if (active) saving.value = false; }
+}
+async function refreshDraftConflict() {
+  if (!draftConflict.value || !submissionID.value || locked.value) return;
+  loadingDraft.value = true;
+  try {
+    const latest = await supplierSubmissionsApi.get(submissionID.value);
+    if (!active) return;
+    if (latest.id !== submissionID.value || latest.kind !== "MODEL_NEW" || !latest.permissions.can_edit) throw new Error("当前申报已不能编辑，请从申报记录重新打开；本次输入仍保留。");
+    if (JSON.stringify(latest.rows.map(row => row.id).sort()) !== JSON.stringify(savedRowIDs)) throw new Error("服务端模型行已变化，请复制本次输入并重新打开草稿核对，不能直接覆盖。当前输入已保留。");
+    revision.value = latest.revision;
+    latestDraftReason.value = latest.reason || "未填写";
+    lifecycle.value = crypto.randomUUID();
+    draftConflict.value = false; draftRefreshed.value = true; error.value = "";
+  } catch (value) { if (active) showError(value, "刷新失败，草稿已保留。"); }
+  finally { if (active) loadingDraft.value = false; }
 }
 function applyTest(row: EditableRow, result: SupplierTestJobDTO) {
   const test: SupplierSubmissionTestDTO = { category: result.category, status: result.status, tested: result.tested, passed: result.passed, job_id: result.job_id, report_id: result.report_id, connection_ms: result.connection_ms, rps: result.rps, tps: result.tps };
@@ -331,6 +354,9 @@ async function submitDraft() {
   try {
     await supplierSubmissionsApi.submit(submissionID.value, revision.value, reason.value, lifecycle.value);
     if (!active) return;
+    rememberSaved();
+    canEdit.value = false;
+    submitting.value = false;
     ElMessage.success("申报已提交，后续状态以办理进度为准。");
     await router.replace({ path: "/supplier/home", query: { tab: "history" } });
   } catch (value) { if (active) showError(value, "申报未能提交，草稿和输入已保留。"); }
@@ -392,7 +418,9 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
 
   <section v-else class="panel submission-panel" v-loading="loadingDraft">
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
-    <el-alert title="一份申报可包含多个模型。草稿阶段只保存申报行和测试记录；提交后由办理流程创建正式资源。" type="info" :closable="false" />
+    <el-alert title="一份申报可包含多个模型。草稿发起测试时会关联测试资源；批准进入办理后正式接管，不重复创建。至少一行有效连通测试通过即可提交，压力测试不强制；每条资源接入仍需自身双测通过。" type="info" :closable="false" />
+    <el-alert v-if="draftConflict" title="草稿版本已变化，当前输入已保留。请先刷新最新版本，再核对后重试。" type="warning" :closable="false"><el-button text :disabled="locked" @click="refreshDraftConflict">刷新最新版本并保留草稿</el-button></el-alert>
+    <el-alert v-if="draftRefreshed" :title="`已取得最新版本 R${revision}；服务端说明：${latestDraftReason}。当前表单仍为本次草稿，请核对后重试。`" type="warning" :closable="false" />
     <el-alert v-if="modelError" :title="modelError" type="error" :closable="false" show-icon />
 
     <div class="batch-actions">
@@ -412,7 +440,7 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
       </header>
       <div class="row-grid">
         <el-form-item label="接口模型 ID *"><el-input v-model="row.interface_model_id" placeholder="供应商侧接口模型 ID" :disabled="locked" /></el-form-item>
-        <el-form-item label="对应标准模型 *"><el-select v-model="row.standard_model_id" filterable clearable remote :remote-method="searchModelOptions" :loading="modelLoading" placeholder="选择标准模型" :disabled="locked" @change="selectStandardModel(row, $event)" @visible-change="ensureModelOptions"><el-option v-for="item in modelOptions" :key="item.id" :label="`${item.name} · ${item.official_id}`" :value="item.id" /></el-select><small v-if="row.standard_model_name" class="muted">{{ row.standard_model_name }} · {{ row.official_id }}</small></el-form-item>
+        <el-form-item label="对应标准模型 *"><el-select v-model="row.standard_model_id" filterable clearable remote :remote-method="searchModelOptions" :loading="modelLoading" placeholder="选择标准模型" :disabled="locked" @change="selectStandardModel(row, $event)" @visible-change="ensureModelOptions"><el-option v-for="item in modelOptions" :key="item.id" :label="`${item.name || '名称待补齐'} · ${item.official_id || '官方 ID 待补齐'}`" :value="item.id" /></el-select><small v-if="row.standard_model_name" class="muted">{{ row.standard_model_name }} · {{ row.official_id }}</small></el-form-item>
         <el-form-item label="采购系数 *"><el-input v-model="row.coefficient" inputmode="decimal" placeholder="0.6800" :disabled="locked" /></el-form-item>
         <el-form-item label="压力测试"><el-checkbox v-model="row.participate_test" :disabled="locked">该模型参与压力测试</el-checkbox></el-form-item>
         <el-form-item label="测试服务 URL *">
@@ -440,7 +468,7 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
     <el-form-item label="申报说明 *"><el-input v-model="reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="locked" /></el-form-item>
     <el-alert v-if="!canSubmitBatch" :title="`尚不能提交：${gateHint}`" type="warning" :closable="false" show-icon />
     <el-alert v-else :title="`可以提交。${gateHint}`" type="success" :closable="false" show-icon />
-    <p class="muted">规则：所有模型均执行连通性测试；同一受测配置一次有效测试，配置变化后可重测；仅改报价不增加测试机会；工具异常的未完成部分可重试；结果不达标也属于有效结果。</p>
+    <p class="muted">提交要求至少一个模型的连通性测试通过且未失效；压力测试不强制。批量测试会对所有模型执行连通测试，压力只测勾选模型。提交不代表逐资源接入合格，接入仍逐条核对自身连通性和压力测试。</p>
 
     <el-dialog v-model="importDialog" title="导入预览" width="760px">
       <template v-if="importPreview">
@@ -466,8 +494,8 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
     </el-dialog>
     <div class="form-actions">
       <el-button @click="router.push('/supplier/home')">返回</el-button>
-      <el-button type="primary" :loading="saving" :disabled="locked || !dirty" @click="saveDraft">保存草稿</el-button>
-      <el-button type="success" :loading="submitting" :disabled="locked || !canSubmitBatch" @click="submitDraft">提交申报</el-button>
+      <el-button type="primary" :loading="saving" :disabled="locked || !dirty || draftConflict" @click="saveDraft">{{ draftRefreshed ? '按最新版本重试' : '保存草稿' }}</el-button>
+      <el-button type="success" :loading="submitting" :disabled="locked || !canSubmitBatch || draftConflict" @click="submitDraft">提交申报</el-button>
     </div>
     <p class="muted security-note">供应商自测使用本行测试 URL / Key 和供应商额度；保存后发起测试可复用配置，Key 不回显。内部人员发起测试使用平台自己的 URL / Key 和平台额度，与供应商凭据分开。正式运行配置仍单独维护。</p>
   </section>

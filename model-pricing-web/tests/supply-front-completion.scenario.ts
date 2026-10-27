@@ -33,3 +33,14 @@ test("report projection checks resource/report identity and never retains provid
   assert.throws(() => validateResourceReport({ ...report, source: "GUESSED" }, "31"));
   assert.throws(() => validateResourceReport({ ...report, tested_at: "unknown" }, "31"));
 });
+
+test("B queued and failed jobs keep unknown test/finish dates nullable", () => {
+  for (const status of ["RUNNING", "FAILED"]) {
+    const result = validateResourceReport({ ...report, status, tested_at: null, finished_at: null,
+      target_matches: false, connectivity_passed: null, pressure_passed: null,
+      cache_stats: { status: "NOT_TESTED", report_id: report.id } }, "31");
+    assert.equal(result.tested_at, null);
+    assert.equal(result.finished_at, null);
+  }
+  assert.throws(() => validateResourceReport({ ...report, status: "COMPLETED", finished_at: null }, "31"));
+});

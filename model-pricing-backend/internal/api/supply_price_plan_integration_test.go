@@ -182,6 +182,22 @@ func TestPriceChangePlanHTTPPostgres36CommitsExecutionAndBlockedReplay(t *testin
 	}
 
 	planOK, _ := createPlan(resourceOK, "success")
+	createKey := label + "-create-success"
+	differentCreateBody := fmt.Sprintf(`{"resource_id":%q,"supplier_model_id":%q,"expected_resource_revision":"1","after_coefficient":"0.7000","assignee_id":%q,"due_at":%q,"reason":"%s changed payload"}`, resourceOK, label+"-vendor-target-different", assigneeID, time.Now().Add(2*time.Hour).UTC().Format(time.RFC3339), label)
+	differentCreate := call(actorNumber, http.MethodPost, "/api/internal/plans/price-change", differentCreateBody, createKey)
+	if differentCreate.Code != http.StatusBadRequest {
+		t.Fatalf("same idempotency key with a different plan body must return 400, got %d: %s", differentCreate.Code, differentCreate.Body)
+	}
+	var plansAfterConflict, doneIdempotencyRows int
+	if err := raw.QueryRowContext(ctx, `SELECT count(*) FROM plan WHERE resource_id=$1`, resourceOK).Scan(&plansAfterConflict); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.QueryRowContext(ctx, `SELECT count(*) FROM idempotency_key WHERE request_id=$1 AND status='DONE'`, createKey).Scan(&doneIdempotencyRows); err != nil {
+		t.Fatal(err)
+	}
+	if plansAfterConflict != 1 || doneIdempotencyRows != 1 {
+		t.Fatalf("idempotency conflict changed stored plan/result plans=%d completed_keys=%d", plansAfterConflict, doneIdempotencyRows)
+	}
 	executeBody := `{"expected_revision":"1","confirmed":true,"completion_note":"QA ONLY 已完成外部改价登记","reason":"隔离库改价执行"}`
 	executeKey := label + "-execute-success"
 	executed := call(assigneeNumber, http.MethodPost, "/api/internal/plans/"+planOK+"/execute", executeBody, executeKey)

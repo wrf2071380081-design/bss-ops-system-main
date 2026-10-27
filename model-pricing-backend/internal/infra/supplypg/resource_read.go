@@ -66,11 +66,16 @@ func resourceReadQuery(q supply.ResourceListQuery, view string) (string, []any, 
 	}
 	allowed := []string{"id", "name", "company", "model_type", "supplier_count", "resource_count", "available_count", "coefficient_min", "coefficient_max"}
 	if view == "flat" {
-		allowed = []string{"id", "supplier_name", "region", "coefficient", "state", "updated_at", "connection_ms", "rps", "tps", "cache_hit_rate"}
+		allowed = []string{"id", "supplier_name", "region", "coefficient", "state", "updated_at", "admitted_at", "connection_ms", "rps", "tps", "cache_hit_rate"}
 	}
 	if !slices.Contains(allowed, q.SortBy) {
 		return "", nil, supply.ErrReadContract
 	}
+	normalized, normalizeErr := supply.NormalizeResourceListQuery(q)
+	if normalizeErr != nil {
+		return "", nil, supply.ErrReadContract
+	}
+	q = normalized
 	where := []string{"TRUE"}
 	args := []any{}
 	add := func(v string) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
@@ -114,6 +119,22 @@ func resourceReadQuery(q supply.ResourceListQuery, view string) (string, []any, 
 			where = append(where, f.column+"="+add(value))
 		}
 	}
+	for _, f := range []struct {
+		column string
+		values []string
+	}{{"m.company", q.Companies}, {"m.model_type", q.ModelTypes}, {"r.supplier_id", q.SupplierIDs}, {"r.region", q.Regions}, {"r.state", q.States}} {
+		if len(f.values) == 0 {
+			continue
+		}
+		params := []string{}
+		for _, v := range f.values {
+			params = append(params, add(v))
+			if f.column == "r.state" && v == "PENDING_ACCESS" {
+				params = append(params, add("PENDING_ADMIT"))
+			}
+		}
+		where = append(where, f.column+" IN ("+strings.Join(params, ",")+")")
+	}
 	return strings.Join(where, " AND "), args, nil
 }
 
@@ -123,6 +144,10 @@ type resourceReadEntry struct {
 }
 
 func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, args []any) ([]resourceReadEntry, error) {
+	// B allocates physical resources to attach draft tests. They become formal
+	// supply resources only when approval materializes the authoritative A
+	// control snapshot. Keep these allocations out of both lists and details.
+	where = "(" + where + ") AND (NOT EXISTS (SELECT 1 FROM " + s.table("submission_row") + " sr WHERE sr.resource_id=r.id) OR EXISTS (SELECT 1 FROM " + s.table("operation_log") + " ctl WHERE ctl.entity_type='resource' AND ctl.entity_id=r.id AND ctl.action='RESOURCE_REVISION'))"
 	rows, err := tx.QueryContext(ctx, `SELECT r.id::text,r.supplier_id::text,r.standard_model_id::text,r.region,r.supplier_model_name,r.coefficient::text,r.buyer_id::text,r.state,r.ever_admitted,r.latest_test_report_id::text,r.created_at,r.updated_at,admission.admitted_at,s.id::text,s.name,s.region,s.status FROM `+s.table("resource")+` r LEFT JOIN LATERAL (SELECT min(l.created_at) AS admitted_at FROM `+s.table("operation_log")+` l WHERE l.entity_type='resource' AND l.entity_id=r.id AND l.action='RESOURCE_REVISION' AND l."after"->>'operation'='ADMIT') admission ON TRUE LEFT JOIN `+s.table("supplier")+` s ON s.id=r.supplier_id LEFT JOIN `+s.table("standard_model")+` m ON m.id=r.standard_model_id WHERE `+where+` ORDER BY r.id ASC`, args...)
 	if err != nil {
 		return nil, err
@@ -311,6 +336,16 @@ func resourceFlatCompare(a, b resourceReadEntry, q supply.ResourceListQuery) int
 		n = strings.Compare(a.view.State, b.view.State)
 	case "updated_at":
 		n = a.view.UpdatedAt.Compare(b.view.UpdatedAt)
+	case "admitted_at":
+		if a.view.AdmittedAt == nil && b.view.AdmittedAt != nil {
+			return 1
+		}
+		if a.view.AdmittedAt != nil && b.view.AdmittedAt == nil {
+			return -1
+		}
+		if a.view.AdmittedAt != nil {
+			n = a.view.AdmittedAt.Compare(*b.view.AdmittedAt)
+		}
 	default:
 		x, y := resourceMetric(a, q.SortBy), resourceMetric(b, q.SortBy)
 		if x == nil && y != nil {
@@ -350,6 +385,7 @@ func (s *ResourceReadStore) ListResourceRows(ctx context.Context, q supply.Resou
 		if err != nil {
 			return err
 		}
+		entries = filteredResourceEntries(entries, q)
 		total = int64(len(entries))
 		slices.SortFunc(entries, func(a, b resourceReadEntry) int { return resourceFlatCompare(a, b, q) })
 		start, end := resourcePageRange(len(entries), q)
@@ -423,6 +459,7 @@ func (s *ResourceReadStore) ListResourceGroups(ctx context.Context, q supply.Res
 		if err != nil {
 			return err
 		}
+		entries = filteredResourceEntries(entries, q)
 		byID := map[string]*resourceReadGroup{}
 		groups := []*resourceReadGroup{}
 		for _, e := range entries {
@@ -462,4 +499,14 @@ func (s *ResourceReadStore) ListResourceGroups(ctx context.Context, q supply.Res
 		return nil, 0, err
 	}
 	return result, total, nil
+}
+
+func filteredResourceEntries(entries []resourceReadEntry, q supply.ResourceListQuery) []resourceReadEntry {
+	result := make([]resourceReadEntry, 0, len(entries))
+	for _, e := range entries {
+		if supply.ResourceMatchesQuery(e.view, q) {
+			result = append(result, e)
+		}
+	}
+	return result
 }

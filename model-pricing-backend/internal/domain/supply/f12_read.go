@@ -13,6 +13,8 @@ import (
 
 type F12ContractQuery struct {
 	SubjectType, SubjectID, Status string
+	ContractKey                   string
+	LatestOnly                    bool
 	Page, Size                     int
 }
 
@@ -23,34 +25,54 @@ type F12CreditQuery struct {
 }
 
 type F12ContractRecord struct {
-	ID            string     `json:"id"`
-	SubjectType   string     `json:"subject_type"`
-	SubjectID     string     `json:"subject_id"`
-	Status        string     `json:"status"`
-	Version       uint64     `json:"version"`
-	HasAttachment bool       `json:"has_attachment"`
-	SignedAt      *time.Time `json:"signed_at"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID                 string     `json:"id"`
+	ContractKey        string     `json:"contract_key,omitempty"`
+	SubjectType        string     `json:"subject_type"`
+	SubjectID          string     `json:"subject_id"`
+	Status             string     `json:"status"`
+	DocumentName       string     `json:"document_name,omitempty"`
+	DocumentNo         string     `json:"document_no,omitempty"`
+	FileID             string     `json:"file_id,omitempty"`
+	SourceFlowID       string     `json:"source_flow_id,omitempty"`
+	SourceModuleKey    string     `json:"source_module_key,omitempty"`
+	SourceFlowRevision uint64     `json:"source_flow_revision,string,omitempty"`
+	Reason             string     `json:"reason,omitempty"`
+	CreatedBy          string     `json:"created_by,omitempty"`
+	IsLatest           bool       `json:"is_latest,omitempty"`
+	Version            uint64     `json:"version"`
+	HasAttachment      bool       `json:"has_attachment"`
+	SignedAt           *time.Time `json:"signed_at"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 type F12CreditRecord struct {
-	ID          string     `json:"id"`
-	SubjectType string     `json:"subject_type"`
-	SubjectID   string     `json:"subject_id"`
-	Direction   string     `json:"direction"`
-	Amount      string     `json:"amount"`
-	Currency    string     `json:"currency"`
-	Version     uint64     `json:"version"`
-	EffectiveAt *time.Time `json:"effective_at"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID                 string     `json:"id"`
+	SubjectType        string     `json:"subject_type"`
+	SubjectID          string     `json:"subject_id"`
+	Direction          string     `json:"direction"`
+	Amount             string     `json:"amount"`
+	Currency           string     `json:"currency"`
+	DocumentName       string     `json:"document_name,omitempty"`
+	DocumentNo         string     `json:"document_no,omitempty"`
+	FileID             string     `json:"file_id,omitempty"`
+	SourceFlowID       string     `json:"source_flow_id,omitempty"`
+	SourceModuleKey    string     `json:"source_module_key,omitempty"`
+	SourceFlowRevision uint64     `json:"source_flow_revision,string,omitempty"`
+	HasAttachment      bool       `json:"has_attachment"`
+	Reason             string     `json:"reason,omitempty"`
+	CreatedBy          string     `json:"created_by,omitempty"`
+	Version            uint64     `json:"version"`
+	EffectiveAt        *time.Time `json:"effective_at"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 type F12CurrentCredit struct {
-	Direction string           `json:"direction"`
-	Currency  string           `json:"currency"`
-	Status    string           `json:"status"`
-	Record    *F12CreditRecord `json:"record,omitempty"`
+	Direction     string           `json:"direction"`
+	Currency      string           `json:"currency"`
+	Status        string           `json:"status"`
+	LatestVersion uint64           `json:"latest_version"`
+	Record        *F12CreditRecord `json:"record,omitempty"`
 }
 
 type F12ContractPage struct {
@@ -71,8 +93,8 @@ type F12CreditPage struct {
 // F12ReadStore exposes only the compatibility fields present in native v36.
 // The store must never copy contract.file_ref or contract.note into these DTOs.
 type F12ReadStore interface {
-	ListSupplierContracts(context.Context, F12ContractQuery) ([]*F12ContractRecord, int64, error)
-	ListSupplierCredits(context.Context, F12CreditQuery) ([]*F12CreditRecord, int64, []*F12CreditRecord, error)
+	ListF12Contracts(context.Context, F12ContractQuery) ([]*F12ContractRecord, int64, error)
+	ListF12Credits(context.Context, F12CreditQuery) ([]*F12CreditRecord, int64, []*F12CreditRecord, error)
 }
 
 type F12Reader struct{ store F12ReadStore }
@@ -80,8 +102,8 @@ type F12Reader struct{ store F12ReadStore }
 func NewF12Reader(store F12ReadStore) *F12Reader { return &F12Reader{store: store} }
 
 func normalizeF12Subject(subjectType, subjectID string, page, size int) (int, int, error) {
-	if subjectType != "SUPPLIER" {
-		return 0, 0, invalid("subject_type", "v36 compatibility reads currently support SUPPLIER only")
+	if subjectType != "SUPPLIER" && subjectType != "CUSTOMER" {
+		return 0, 0, invalid("subject_type", "expected SUPPLIER or CUSTOMER")
 	}
 	if !validID(subjectID) {
 		return 0, 0, invalid("subject_id", "expected a positive bigint string")
@@ -101,19 +123,28 @@ func (r *F12Reader) ListContracts(ctx context.Context, q F12ContractQuery) (*F12
 	if q.Status != "" && q.Status != "PROCESSING" && q.Status != "ARCHIVED" {
 		return nil, invalid("status", "expected PROCESSING or ARCHIVED")
 	}
+	if (q.ContractKey != "" && !validID(q.ContractKey)) || (q.LatestOnly && q.ContractKey == "") {
+		return nil, invalid("contract_key", "latest contract lookup requires a valid archive key")
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	rows, total, err := r.store.ListSupplierContracts(ctx, q)
+	rows, total, err := r.store.ListF12Contracts(ctx, q)
 	if err != nil {
 		return nil, err
 	}
 	if total < int64(len(rows)) || len(rows) > q.Size {
 		return nil, ErrReadContract
 	}
+	if q.LatestOnly && total > 1 {
+		return nil, ErrRevisionConflict
+	}
 	seen := map[string]bool{}
 	for _, row := range rows {
-		if row == nil || !validID(row.ID) || row.SubjectType != q.SubjectType || row.SubjectID != q.SubjectID || (row.Status != "PROCESSING" && row.Status != "ARCHIVED") || (q.Status != "" && row.Status != q.Status) || row.Version == 0 || row.Version > math.MaxInt32 || row.CreatedAt.IsZero() || row.UpdatedAt.Before(row.CreatedAt) || seen[row.ID] {
+		if row != nil && ((row.ContractKey != "" && !validID(row.ContractKey)) || (q.ContractKey != "" && row.ContractKey != q.ContractKey) || (q.LatestOnly && !row.IsLatest)) {
+			return nil, ErrReadContract
+		}
+		if row == nil || !validID(row.ID) || row.SubjectType != q.SubjectType || row.SubjectID != q.SubjectID || (row.Status != "PROCESSING" && row.Status != "ARCHIVED") || (q.Status != "" && row.Status != q.Status) || row.Version == 0 || row.Version > math.MaxInt32 || !validF12SourceContext(row.SourceFlowID, row.SourceModuleKey, row.SourceFlowRevision, true) || row.CreatedAt.IsZero() || row.UpdatedAt.Before(row.CreatedAt) || seen[row.ID] {
 			return nil, ErrReadContract
 		}
 		seen[row.ID] = true
@@ -127,7 +158,8 @@ func (r *F12Reader) ListContracts(ctx context.Context, q F12ContractQuery) (*F12
 var f12AmountText = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]{1,2})?$`)
 
 func validF12CreditRecord(row *F12CreditRecord, q F12CreditQuery) bool {
-	if row == nil || !validID(row.ID) || row.SubjectType != q.SubjectType || row.SubjectID != q.SubjectID || row.Direction != "SUPPLIER_TO_US" || (q.Direction != "" && row.Direction != q.Direction) || !currencyCode.MatchString(row.Currency) || (q.Currency != "" && row.Currency != q.Currency) || row.Version == 0 || row.Version > math.MaxInt32 || row.CreatedAt.IsZero() || !f12AmountText.MatchString(row.Amount) {
+	expectedDirection := f12CreditDirection(q.SubjectType)
+	if expectedDirection == "" || row == nil || !validID(row.ID) || row.SubjectType != q.SubjectType || row.SubjectID != q.SubjectID || row.Direction != expectedDirection || (q.Direction != "" && row.Direction != q.Direction) || !currencyCode.MatchString(row.Currency) || (q.Currency != "" && row.Currency != q.Currency) || row.Version == 0 || row.Version > math.MaxInt32 || !validF12SourceContext(row.SourceFlowID, row.SourceModuleKey, row.SourceFlowRevision, true) || row.CreatedAt.IsZero() || !f12AmountText.MatchString(row.Amount) {
 		return false
 	}
 	parts := strings.SplitN(strings.TrimPrefix(row.Amount, "-"), ".", 2)
@@ -136,6 +168,17 @@ func validF12CreditRecord(row *F12CreditRecord, q F12CreditQuery) bool {
 	}
 	_, err := decimal.NewFromString(row.Amount)
 	return err == nil
+}
+
+func f12CreditDirection(subjectType string) string {
+	switch subjectType {
+	case "SUPPLIER":
+		return "SUPPLIER_TO_US"
+	case "CUSTOMER":
+		return "US_TO_CUSTOMER"
+	default:
+		return ""
+	}
 }
 
 func f12CreditDimension(row *F12CreditRecord) string { return row.Direction + "\x00" + row.Currency }
@@ -149,8 +192,8 @@ func (r *F12Reader) ListCredits(ctx context.Context, q F12CreditQuery) (*F12Cred
 	if err != nil {
 		return nil, err
 	}
-	if q.Direction != "" && q.Direction != "SUPPLIER_TO_US" {
-		return nil, invalid("direction", "supplier credit direction must be SUPPLIER_TO_US")
+	if direction := f12CreditDirection(q.SubjectType); q.Direction != "" && q.Direction != direction {
+		return nil, invalid("direction", "credit direction does not match subject type")
 	}
 	if q.Currency != "" && !currencyCode.MatchString(q.Currency) {
 		return nil, invalid("currency", "expected a three-letter uppercase currency")
@@ -165,7 +208,7 @@ func (r *F12Reader) ListCredits(ctx context.Context, q F12CreditQuery) (*F12Cred
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	rows, total, latest, err := r.store.ListSupplierCredits(ctx, q)
+	rows, total, latest, err := r.store.ListF12Credits(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +253,7 @@ func (r *F12Reader) ListCredits(ctx context.Context, q F12CreditQuery) (*F12Cred
 	for _, key := range keys {
 		candidates := groups[key]
 		row := candidates[0]
-		projection := &F12CurrentCredit{Direction: row.Direction, Currency: row.Currency}
+		projection := &F12CurrentCredit{Direction: row.Direction, Currency: row.Currency, LatestVersion: row.Version}
 		switch {
 		case len(candidates) > 1:
 			projection.Status = "AMBIGUOUS_VERSION"

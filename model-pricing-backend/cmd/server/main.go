@@ -205,12 +205,12 @@ func main() {
 	if err != nil {
 		log.Fatal("get sql db", zap.Error(err))
 	}
-	supplyChain := api.NewSupplyChainRuntime(rawDB, nil)
 	customerWorkspace := api.NewCustomerWorkspaceRuntime(rawDB)
 	supplyRoutes, err := newSupplyRuntimeDeps(dbClient.DB, idemStore)
 	if err != nil {
 		log.Fatal("initialize A supply routes", zap.Error(err))
 	}
+	supplyChain := api.NewSupplyChainRuntime(rawDB, nil, supplyRoutes.F12Readiness)
 	planReminderStore, err := newSupplyPlanReminderStore(dbClient.DB)
 	if err != nil {
 		log.Fatal("initialize A plan reminders", zap.Error(err))
@@ -239,24 +239,24 @@ func main() {
 		accountSvc = nil
 	}
 	router := api.New(api.Deps{
-		Config:             cfg,
-		Log:                log,
-		Health:             dbClient,
-		AuthService:        authService,
-		SessionReader:      authRepo,
-		IdemStore:          idemStore,
-		TestJobs:           testJobStarter(testPlatform),
-		TestCallbacks:      testCallbackReceiver(testPlatform),
+		Config:              cfg,
+		Log:                 log,
+		Health:              dbClient,
+		AuthService:         authService,
+		SessionReader:       authRepo,
+		IdemStore:           idemStore,
+		TestJobs:            testJobStarter(testPlatform),
+		TestCallbacks:       testCallbackReceiver(testPlatform),
 		ResourceTestTargets: testTargets(testPlatform),
-		SupplyRoutes:       &supplyRoutes,
+		SupplyRoutes:        &supplyRoutes,
 		SupplierSubmissions: submissionSvc,
 		SupplierAccount:     accountSvc,
 		UploadDir:           cfg.Uploads.Dir,
-		SupplyChain:        supplyChain,
-		CustomerWorkspace:  customerWorkspace,
-		ModelSvc:           modelSvc,
-		SupplierSvc:        supplier.NewService(repo.NewSupplierRepo(dbClient.DB)),
-		SupplierProfileSvc: supplier.NewProfileService(repo.NewSupplierRepo(dbClient.DB)),
+		SupplyChain:         supplyChain,
+		CustomerWorkspace:   customerWorkspace,
+		ModelSvc:            modelSvc,
+		SupplierSvc:         supplier.NewService(repo.NewSupplierRepo(dbClient.DB)),
+		SupplierProfileSvc:  supplier.NewProfileService(repo.NewSupplierRepo(dbClient.DB)),
 		// 批次 7a：供应商门户主体档案（只读 GET）。
 		SupplierPortalProfileSvc: supplier.NewPortalProfileService(repo.NewSupplierRepo(dbClient.DB)),
 		SupplierQuoteSvc:         quoteSvc,
@@ -299,9 +299,6 @@ func main() {
 	sched := worker.NewScheduler(worker.NewCronLocker(dbClient.DB), log, loc)
 	nJobs := worker.RegisterJobs(sched, cfg.Worker, approveSvc, lifecycleSvc, costSvc, costJobs, eventJobs)
 	nJobs += worker.RegisterPlanReminderJob(sched, cfg.Worker, planReminderStore, log)
-	if testPlatform != nil && testPlatform.Service != nil {
-		nJobs += worker.RegisterTestPlatformPollJob(sched, cfg.Worker, cfg.TestPlatform, testPlatform.Service, log)
-	}
 	if testPlatform != nil && testPlatform.Service != nil {
 		nJobs += worker.RegisterTestPlatformPollJob(sched, cfg.Worker, cfg.TestPlatform, testPlatform.Service, log)
 	}

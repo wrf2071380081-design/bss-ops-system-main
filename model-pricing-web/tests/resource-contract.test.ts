@@ -24,6 +24,16 @@ test("cache formatting derives percentage once from original integer strings", (
   assert.throws(() => resourceCacheDisplay({ status: "PROVIDED", hit_tokens: "3", input_tokens: "2" }, "COMPLETED"));
 });
 
+test("B ratio-only cache reports preserve zero without inventing token counts", () => {
+  assert.equal(resourceCacheDisplay({ status: "PROVIDED", hit_percent: "0.00" }, "COMPLETED"), "0.00%");
+  assert.equal(resourceCacheDisplay({ status: "PROVIDED", hit_percent: "12.50" }, "COMPLETED"), "12.50%");
+  assert.equal(resourceCacheDisplay({ status: "PROVIDED", hit_percent: "100" }, "COMPLETED"), "100.00%");
+  for (const hit_percent of ["", "-1", "100.01", "NaN", "1e2", "0.001"]) {
+    assert.throws(() => resourceCacheDisplay({ status: "PROVIDED", hit_percent }, "COMPLETED"));
+  }
+  assert.throws(() => resourceCacheDisplay({ status: "PROVIDED", hit_percent: "50", hit_tokens: "1" }, "COMPLETED"));
+});
+
 test("resource metrics distinguish exact zero from missing and preserve large values", () => {
   assert.equal(resourceMetricDisplay("0.00", "COMPLETED"), "0.00");
   assert.equal(resourceMetricDisplay("9007199254740993", "COMPLETED"), "9007199254740993");

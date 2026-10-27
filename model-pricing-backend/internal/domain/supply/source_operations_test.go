@@ -45,3 +45,26 @@ func TestSourceOperationsValidateScopeAndProjection(t *testing.T) {
 		t.Fatalf("wrong resource accepted: %v", err)
 	}
 }
+
+func TestSupplierOperationsAcceptSubjectRecordsWithoutResource(t *testing.T) {
+	for _, entityType := range []string{"supplier", "supplier_qualification", "supplier_formal_config", "contract", "credit_line"} {
+		entityID := "8"
+		if entityType == "supplier" { entityID = "3" }
+		store := &sourceOperationFake{rows: []SourceOperation{{ID: "9", EntityType: entityType, EntityID: entityID, SupplierID: "3", Region: "CN", Action: "UPDATE", CreatedAt: time.Now()}}}
+		reader := NewSourceOperationReader(store)
+		if _, err := reader.List(context.Background(), SourceOperationQuery{SupplierID: "3", EntityType: entityType}); err != nil {
+			t.Fatalf("subject-level %s must not require a resource: %v", entityType, err)
+		}
+		if _, err := reader.List(context.Background(), SourceOperationQuery{ModelID: "1"}); err != ErrReadContract {
+			t.Fatalf("model scope accepted supplier-level history: %v", err)
+		}
+		store.rows[0].SupplierID = "4"
+		if _, err := reader.List(context.Background(), SourceOperationQuery{SupplierID: "3"}); err != ErrReadContract {
+			t.Fatalf("cross-supplier history accepted: %v", err)
+		}
+	}
+	store := &sourceOperationFake{}
+	if _, err := NewSourceOperationReader(store).List(context.Background(), SourceOperationQuery{SupplierID: "3", EntityType: "account"}); err == nil || store.called {
+		t.Fatal("unknown history category reached persistence")
+	}
+}

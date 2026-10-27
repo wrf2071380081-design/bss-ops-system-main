@@ -10,8 +10,23 @@ import {
   type ResourceAdmissionInput,
 } from "./resourceOperations.contract";
 import type { ResourceRow } from "./resources.types";
+import { buildApprovedPrice, parseResourceWorkflow, type ApprovedPriceOption } from "./resourceWorkflow.contract";
 
 export const resourceOperationsApi = {
+  async refreshEvidence(resource: ResourceRow, reason: string, lifecycle: string) {
+    if(!reason.trim())throw new Error('请填写同步原因。');
+    const data={expected_revision:standardModelVersion(resource.revision),reason:reason.trim()};
+    return apiRequest<{resource_id:string;revision:string;report_id:string;state:string}>({method:'POST',url:`/internal/resources/${encodeURIComponent(standardModelVersion(resource.id))}/refresh-test-evidence`,data,idempotency:{scope:`resource-evidence:${resource.id}`,payload:data,lifecycle}});
+  },
+  async workflow(resourceID: string, signal?: AbortSignal) {
+    return parseResourceWorkflow(await apiRequest<unknown>({url:`/internal/resources/${encodeURIComponent(standardModelVersion(resourceID))}/workflow-actions`,signal}));
+  },
+  async applyApprovedPrice(resource: ResourceRow, source: ApprovedPriceOption, confirmed: boolean, note: string, reason: string, lifecycle: string) {
+    const data=buildApprovedPrice(resource.revision,source,confirmed,note,reason);
+    const result=await apiRequest<{resource_id:string;revision:string;coefficient:string;changed:boolean}>({method:'POST',url:`/internal/resources/${encodeURIComponent(standardModelVersion(resource.id))}/apply-approved-price`,data,idempotency:{scope:`approved-price:${resource.id}`,payload:data,lifecycle}});
+    if(!result||result.resource_id!==resource.id||typeof result.changed!=='boolean'||result.revision!==(BigInt(data.expected_revision)+(result.changed?1n:0n)).toString()||Number(result.coefficient)!==Number(source.coefficient))throw new Error('改价回执不一致，请刷新资源后查看办理结果。');
+    return result;
+  },
   async formalConfigs(supplierID: string, region: string, signal?: AbortSignal): Promise<FormalConfigOption[]> {
     const result = await apiRequest<unknown>({ url: `/internal/suppliers/${encodeURIComponent(standardModelVersion(supplierID))}/formal-configs`, signal });
     return validateFormalConfigOptions(result, supplierID, region);

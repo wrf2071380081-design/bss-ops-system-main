@@ -1,130 +1,127 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
-import { supplyChainApi, type ApprovalHistoryRow, type ApprovalRow, type SupplierWorkspaceRow } from "../../../api/supplyChain";
-import { workbenchApi, type WorkbenchPersonDTO } from "../../../modules/workbench/api/workbench";
-import { formatDateTime } from "../../../domain/date";
-import { useSessionStore } from "../../../stores/session";
+import { supplyChainApi, type SupplierWorkspaceRow } from "../../../api/supplyChain";
+import { formatSupplierTaxRate } from "../../../domain/supplierTax";
 
-const session = useSessionStore();
+const route = useRoute();
+const router = useRouter();
+const routeFilter = (key: string) => typeof route.query[key] === "string" ? route.query[key] : "";
+const routePage = Number(routeFilter("page"));
+const routeSize = Number(routeFilter("size"));
+const supplierSortFields = ["id", "name", "region", "resource_count", "contract_status", "cooperation_stage", "handling_status"] as const;
+type SupplierSortField = (typeof supplierSortFields)[number];
 const activeTab = ref("suppliers");
-const quoteTab = ref("pending");
 
 const suppliers = ref<SupplierWorkspaceRow[]>([]);
 const supplierLoading = ref(false);
 const supplierError = ref("");
-const filters = reactive({ keyword: "", region: "", contract: "", stage: "", handling: "" });
-const supplierDetailVisible = ref(false);
-const supplierDetail = ref<SupplierWorkspaceRow>();
-
-const approvals = ref<ApprovalRow[]>([]);
-const history = ref<ApprovalHistoryRow[]>([]);
-const quoteLoading = ref(false);
-const quoteError = ref("");
-const people = ref<WorkbenchPersonDTO[]>([]);
-const approveVisible = ref(false);
-const current = ref<ApprovalRow>();
-const testAssignee = ref(0);
-const contractAssignee = ref(0);
-const reason = ref("同意接入");
-const busy = ref(false);
-const simulatingId = ref(0);
-const historyVisible = ref(false);
-const historyDetail = ref<ApprovalHistoryRow>();
+const supplierPage = ref(Number.isSafeInteger(routePage) && routePage > 0 ? routePage : 1);
+const supplierPageSize = ref([10, 20, 50, 100].includes(routeSize) ? routeSize : 20);
+const supplierTotal = ref(0);
+let supplierLoadRevision = 0;
+const supplierSortBy = ref<SupplierSortField>(supplierSortFields.includes(routeFilter("sort_by") as SupplierSortField) ? routeFilter("sort_by") as SupplierSortField : "id");
+const supplierSortOrder = ref<"asc" | "desc">(routeFilter("sort_order") === "desc" ? "desc" : "asc");
+type SupplierContractStatus = SupplierWorkspaceRow["contract_status"];
+const contractStatuses: SupplierContractStatus[] = ["已归档", "办理中", "未登记"];
+const routeContractStatus = routeFilter("contract");
+const filters = reactive<{ keyword: string; region: string; contract: SupplierContractStatus | ""; stage: string; handling: string }>({ keyword: routeFilter("keyword"), region: routeFilter("region"), contract: contractStatuses.includes(routeContractStatus as SupplierContractStatus) ? routeContractStatus as SupplierContractStatus : "", stage: routeFilter("stage"), handling: routeFilter("handling") });
 
 const regionLabel = (region: string) => region === "OVERSEAS" ? "海外" : "国内";
-const statusLabel = (status: string) => status === "PENDING_APPROVAL" ? "待审批" : status === "PROCESSING" ? "办理中" : status === "COMPLETED" ? "已完成" : status === "REJECTED" ? "已驳回" : status;
-const resultLabel = (result: string) => result === "APPROVE" ? "通过" : result === "REJECT" ? "不通过" : "历史批次";
-const resultType = (result: string) => result === "APPROVE" ? "success" : result === "REJECT" ? "danger" : "info";
-const formatTime = (value?: string | null) => formatDateTime(value, "—", false);
+const contractStatusType = (status: SupplierWorkspaceRow["contract_status"]) => status === "已归档" ? "success" : status === "办理中" ? "warning" : "info";
 const currencyAmount = (row: SupplierWorkspaceRow) => {
+  if (row.credit_status === "AMBIGUOUS_VERSION") return "版本冲突，待核对";
+  if (row.credit_status === "INVALID_LEGACY_AMOUNT") return "额度异常，待核对";
   if (!row.credit_amount) return "待记录";
   const symbol = row.settlement_currency === "USD" ? "$" : "¥";
   const amount = Number(row.credit_amount);
   return Number.isFinite(amount) ? `${symbol}${amount.toLocaleString()}` : row.credit_amount;
 };
 
-const filteredSuppliers = computed(() => suppliers.value.filter(row => {
-  if (filters.keyword && !row.name.toLowerCase().includes(filters.keyword.trim().toLowerCase())) return false;
-  if (filters.region && row.region !== filters.region) return false;
-  if (filters.contract && row.contract_status !== filters.contract) return false;
-  if (filters.stage && row.cooperation_stage !== filters.stage) return false;
-  if (filters.handling && row.handling_status !== filters.handling) return false;
-  return true;
-}));
+const filteredSuppliers = computed(() => suppliers.value);
 
 async function loadSuppliers() {
+  const revision = ++supplierLoadRevision;
   supplierLoading.value = true;
   supplierError.value = "";
-  try { suppliers.value = await supplyChainApi.suppliers(); }
-  catch (value) { supplierError.value = value instanceof Error ? value.message : "供应商列表加载失败。"; }
-  finally { supplierLoading.value = false; }
-}
-
-async function loadQuotes() {
-  quoteLoading.value = true;
-  quoteError.value = "";
   try {
-    const [pending, records, staff] = await Promise.all([supplyChainApi.approvals(), supplyChainApi.approvalHistory(), workbenchApi.people()]);
-    approvals.value = pending;
-    history.value = records;
-    people.value = staff;
-  } catch (value) {
-    quoteError.value = value instanceof Error ? value.message : "供应商报价/审批记录加载失败。";
-  } finally {
-    quoteLoading.value = false;
-  }
-}
-
-function openSupplier(row: SupplierWorkspaceRow) { supplierDetail.value = row; supplierDetailVisible.value = true; }
-function openApprove(row: ApprovalRow) {
-  current.value = row;
-  const self = session.user?.staffId || people.value[0]?.id || 0;
-  testAssignee.value = self;
-  contractAssignee.value = self;
-  reason.value = "同意接入";
-  approveVisible.value = true;
-}
-function openHistory(row: ApprovalHistoryRow) { historyDetail.value = row; historyVisible.value = true; }
-
-async function approve() {
-  if (!current.value || busy.value) return;
-  if (!testAssignee.value) { ElMessage.error("请选择测试与资源配置办理人。"); return; }
-  busy.value = true;
-  try {
-    await supplyChainApi.approve(current.value.id, {
-      test_assignee_id: testAssignee.value,
-      contract_assignee_id: contractAssignee.value || undefined,
-      reason: reason.value.trim() || "同意接入",
+    const result = await supplyChainApi.suppliers({
+      page: supplierPage.value, size: supplierPageSize.value,
+      keyword: filters.keyword.trim(), region: filters.region, contract_status: filters.contract || undefined,
+      cooperation_stage: filters.stage, handling_status: filters.handling,
+      sort_by: supplierSortBy.value, sort_order: supplierSortOrder.value,
     });
-    ElMessage.success("审批已通过");
-    approveVisible.value = false;
-    await Promise.all([loadQuotes(), loadSuppliers()]);
-  } catch (value) {
-    ElMessage.error(value instanceof Error ? value.message : "审批失败，请重试。");
-  } finally { busy.value = false; }
+    if (revision !== supplierLoadRevision) return;
+    if (supplierPage.value > 1 && result.list.length === 0 && result.total > 0) {
+      supplierPage.value = Math.ceil(result.total / supplierPageSize.value);
+      await loadSuppliers(); return;
+    }
+    suppliers.value = result.list;
+    supplierTotal.value = result.total;
+  }
+  catch (value) {
+    if (revision !== supplierLoadRevision) return;
+    suppliers.value = [];
+    supplierTotal.value = 0;
+    supplierError.value = value instanceof Error ? value.message : "供应商列表加载失败。";
+  }
+  finally { if (revision === supplierLoadRevision) supplierLoading.value = false; }
 }
 
-async function simulate(row: ApprovalRow) {
-  if (simulatingId.value) return;
-  simulatingId.value = row.id;
-  try {
-    const result = await supplyChainApi.simulate(row.id);
-    ElMessage.success(`资源 ${result.resource_id} 已登记接入`);
-    await Promise.all([loadQuotes(), loadSuppliers()]);
-  } catch (value) {
-    ElMessage.error(value instanceof Error ? value.message : "模拟接入失败；请确认当前账号是办理人。");
-  } finally { simulatingId.value = 0; }
+function searchSuppliers() { supplierPage.value = 1; void loadSuppliers(); }
+function changeSupplierPage(page: number) { supplierPage.value = page; void loadSuppliers(); }
+function changeSupplierPageSize(size: number) { supplierPageSize.value = size; supplierPage.value = 1; void loadSuppliers(); }
+function supplierSortChanged({ prop, order }: { prop?: string; order?: string | null }) {
+  if (!order) { supplierSortBy.value = "id"; supplierSortOrder.value = "asc"; }
+  else {
+    const allowed = ["id", "name", "region", "resource_count", "contract_status", "cooperation_stage", "handling_status"] as const;
+    if (!prop || !allowed.includes(prop as (typeof allowed)[number])) return;
+    supplierSortBy.value = prop as (typeof allowed)[number];
+    supplierSortOrder.value = order === "descending" ? "desc" : "asc";
+  }
+  searchSuppliers();
 }
 
-function resetFilters() { Object.assign(filters, { keyword: "", region: "", contract: "", stage: "", handling: "" }); }
-onMounted(() => { void loadSuppliers(); void loadQuotes(); });
+function openSupplier(row: SupplierWorkspaceRow) {
+  const id = String(row.id);
+  if (!/^[1-9]\d*$/.test(id)) { ElMessage.error("供应商标识无效，无法打开详情。"); return; }
+  void router.push({ path: `/internal/suppliers/${id}/models`, query: {
+    return_to: "suppliers", supplier_name: row.name,
+    supplier_keyword: filters.keyword, supplier_region: filters.region,
+    supplier_contract: filters.contract, supplier_stage: filters.stage, supplier_handling: filters.handling,
+    supplier_page: String(supplierPage.value), supplier_size: String(supplierPageSize.value),
+    supplier_sort_by: supplierSortBy.value, supplier_sort_order: supplierSortOrder.value,
+  } });
+}
+function openSupplierEntities() {
+  const query: Record<string, string> = { return_to: "suppliers" };
+  if (filters.keyword) query.keyword = filters.keyword;
+  if (filters.region) query.region = filters.region;
+  if (filters.keyword) query.return_keyword = filters.keyword;
+  if (filters.region) query.return_region = filters.region;
+  if (filters.contract) query.return_contract = filters.contract;
+  if (filters.stage) query.return_stage = filters.stage;
+  if (filters.handling) query.return_handling = filters.handling;
+  query.return_page = String(supplierPage.value); query.return_size = String(supplierPageSize.value);
+  query.return_sort_by = supplierSortBy.value; query.return_sort_order = supplierSortOrder.value;
+  void router.push({ path: "/internal/supplier-entities", query });
+}
+
+function openWorkbenchTodos() { void router.push({ path: "/internal/workbench" }); }
+function resetFilters() { Object.assign(filters, { keyword: "", region: "", contract: "", stage: "", handling: "" }); searchSuppliers(); }
+onMounted(() => { void loadSuppliers(); });
+onBeforeUnmount(() => { supplierLoadRevision += 1; });
 </script>
 
 <template>
   <section class="page-heading">
-    <div><div class="eyebrow">INTERNAL / SUPPLIERS</div><h1>供应商管理</h1><p>供应商列表与供应商报价（待审批 / 审批记录）统一在这里。</p></div>
-    <el-button :loading="supplierLoading || quoteLoading" @click="loadSuppliers(); loadQuotes()">刷新</el-button>
+    <div><div class="eyebrow">INTERNAL / SUPPLIERS</div><h1>供应商管理</h1><p>查看供应商主体、合作阶段、合同状态与业务摘要。</p></div>
+    <div class="heading-actions">
+      <el-button @click="openSupplierEntities">供应商主体档案</el-button>
+      <el-button @click="openWorkbenchTodos">打开工作台待办</el-button>
+      <el-button :loading="supplierLoading" @click="loadSuppliers">刷新</el-button>
+    </div>
   </section>
 
   <section class="panel supplier-workspace">
@@ -137,132 +134,47 @@ onMounted(() => { void loadSuppliers(); void loadQuotes(); });
             <el-option value="CN" label="国内" /><el-option value="OVERSEAS" label="海外" />
           </el-select>
           <el-select v-model="filters.contract" placeholder="合同状态" clearable style="width: 120px">
-            <el-option value="已归档" label="已归档" /><el-option value="办理中" label="办理中" />
+            <el-option value="已归档" label="已归档" /><el-option value="办理中" label="办理中" /><el-option value="未登记" label="未登记" />
           </el-select>
           <el-select v-model="filters.stage" placeholder="合作阶段" clearable style="width: 120px">
-            <el-option value="已有" label="已有" /><el-option value="待接入" label="待接入" />
+            <el-option value="潜在" label="潜在" /><el-option value="已有" label="已有" />
           </el-select>
           <el-select v-model="filters.handling" placeholder="办理状态" clearable style="width: 150px">
             <el-option value="有未完成事项" label="有未完成事项" /><el-option value="无未完成事项" label="无未完成事项" />
           </el-select>
+          <el-button type="primary" :loading="supplierLoading" @click="searchSuppliers">查询</el-button>
           <el-button @click="resetFilters">重置</el-button>
         </div>
-        <el-table v-loading="supplierLoading" :data="filteredSuppliers" style="width: 100%">
-          <el-table-column prop="name" label="供应商名称" min-width="160" />
-          <el-table-column prop="resource_count" label="资源数" width="80" />
-          <el-table-column label="国内 / 海外" width="100"><template #default="{ row }">{{ regionLabel(row.region) }}</template></el-table-column>
+        <el-table v-loading="supplierLoading" :data="filteredSuppliers" :default-sort="{ prop: supplierSortBy, order: supplierSortOrder === 'desc' ? 'descending' : 'ascending' }" style="width: 100%" @sort-change="supplierSortChanged">
+          <el-table-column prop="name" label="供应商名称" min-width="160" sortable="custom" />
+          <el-table-column prop="resource_count" label="资源数" width="80" sortable="custom" />
+          <el-table-column prop="region" label="国内 / 海外" width="100" sortable="custom"><template #default="{ row }">{{ regionLabel(row.region) }}</template></el-table-column>
           <el-table-column label="授信额度" width="130">
             <template #default="{ row }"><strong>{{ currencyAmount(row) }}</strong><span class="muted">供应商-我方</span></template>
           </el-table-column>
-          <el-table-column label="合同状态" width="100">
-            <template #default="{ row }"><el-tag :type="row.contract_status === '已归档' ? 'success' : 'warning'" size="small">{{ row.contract_status }}</el-tag></template>
+          <el-table-column prop="contract_status" label="合同状态" width="100" sortable="custom">
+            <template #default="{ row }"><el-tag :type="contractStatusType(row.contract_status)" size="small">{{ row.contract_status }}</el-tag></template>
           </el-table-column>
           <el-table-column label="结算币种" width="100"><template #default="{ row }">{{ row.settlement_currency || "—" }}</template></el-table-column>
-          <el-table-column label="税率" width="80"><template #default="{ row }">{{ row.tax_rate ? `${row.tax_rate}%` : "—" }}</template></el-table-column>
-          <el-table-column label="合作阶段" width="100"><template #default="{ row }">{{ row.cooperation_stage }}</template></el-table-column>
-          <el-table-column label="办理状态" width="130">
+          <el-table-column label="税率" width="80"><template #default="{ row }">{{ formatSupplierTaxRate(row.tax_rate) }}</template></el-table-column>
+          <el-table-column prop="cooperation_stage" label="合作阶段" width="100" sortable="custom"><template #default="{ row }">{{ row.cooperation_stage }}</template></el-table-column>
+          <el-table-column prop="handling_status" label="办理状态" width="130" sortable="custom">
             <template #default="{ row }"><el-tag :type="row.handling_status === '有未完成事项' ? 'warning' : 'info'" size="small">{{ row.handling_status }}</el-tag></template>
           </el-table-column>
           <el-table-column label="详情" width="80"><template #default="{ row }"><el-button size="small" @click="openSupplier(row)">详情</el-button></template></el-table-column>
           <template #empty><el-empty description="暂无供应商" :image-size="64" /></template>
         </el-table>
+        <el-pagination v-if="supplierTotal > 0" class="supplier-pagination" :current-page="supplierPage" :page-size="supplierPageSize" :page-sizes="[10, 20, 50, 100]" :total="supplierTotal" layout="total, sizes, prev, pager, next" @current-change="changeSupplierPage" @size-change="changeSupplierPageSize" />
       </el-tab-pane>
 
-      <el-tab-pane label="供应商报价" name="quotes">
-        <el-alert v-if="quoteError" :title="quoteError" type="error" show-icon :closable="false" />
-        <el-tabs v-model="quoteTab">
-          <el-tab-pane label="待审批" name="pending">
-            <el-table v-loading="quoteLoading" :data="approvals" style="width: 100%">
-              <el-table-column label="供应商 / 申报类型" min-width="200">
-                <template #default="{ row }"><strong>{{ row.supplier_name }}</strong><span class="muted">{{ row.kind === "MODEL_NEW" ? "模型新增" : row.kind }}</span></template>
-              </el-table-column>
-              <el-table-column prop="row_count" label="模型数" width="90" />
-              <el-table-column prop="submitter" label="供应商提交人" min-width="130" />
-              <el-table-column label="提交时间" width="180"><template #default="{ row }">{{ formatTime(row.submitted_at) }}</template></el-table-column>
-              <el-table-column label="当前状态" width="100"><template #default="{ row }"><el-tag :type="row.status === 'PENDING_APPROVAL' ? 'warning' : 'success'" size="small">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
-              <el-table-column label="操作" width="180">
-                <template #default="{ row }">
-                  <el-button size="small" v-if="row.status === 'PENDING_APPROVAL'" @click="openApprove(row)">详情</el-button>
-                  <el-button size="small" v-else :loading="simulatingId === row.id" @click="simulate(row)">模拟接入</el-button>
-                </template>
-              </el-table-column>
-              <template #empty><el-empty description="暂无待审批申报" :image-size="64" /></template>
-            </el-table>
-          </el-tab-pane>
-
-          <el-tab-pane label="审批记录" name="history">
-            <el-table v-loading="quoteLoading" :data="history" style="width: 100%">
-              <el-table-column label="供应商名称 / 申报" min-width="200">
-                <template #default="{ row }"><strong>{{ row.supplier_name }}</strong><span class="muted">#{{ row.id }} · {{ row.kind === "MODEL_NEW" ? "模型新增" : row.kind }}</span></template>
-              </el-table-column>
-              <el-table-column prop="row_count" label="模型数" width="90" />
-              <el-table-column label="办理状态" width="100"><template #default="{ row }">{{ statusLabel(row.status) }}</template></el-table-column>
-              <el-table-column prop="approver" label="审批人" width="110" />
-              <el-table-column label="审批时间" width="180"><template #default="{ row }">{{ formatTime(row.approved_at) }}</template></el-table-column>
-              <el-table-column label="审批结果" width="100"><template #default="{ row }"><el-tag :type="resultType(row.result)" size="small">{{ resultLabel(row.result) }}</el-tag></template></el-table-column>
-              <el-table-column prop="note" label="审批意见" min-width="180" show-overflow-tooltip />
-              <el-table-column label="详情" width="80"><template #default="{ row }"><el-button size="small" @click="openHistory(row)">详情</el-button></template></el-table-column>
-              <template #empty><el-empty description="暂无审批记录" :image-size="64" /></template>
-            </el-table>
-          </el-tab-pane>
-        </el-tabs>
-      </el-tab-pane>
     </el-tabs>
   </section>
 
-  <el-dialog v-model="supplierDetailVisible" title="供应商详情" width="520px">
-    <el-descriptions v-if="supplierDetail" :column="1" border>
-      <el-descriptions-item label="供应商">{{ supplierDetail.name }}</el-descriptions-item>
-      <el-descriptions-item label="主体 / 手机号">{{ regionLabel(supplierDetail.region) }} · {{ supplierDetail.phone }}</el-descriptions-item>
-      <el-descriptions-item label="资源数">{{ supplierDetail.resource_count }}</el-descriptions-item>
-      <el-descriptions-item label="授信额度">{{ currencyAmount(supplierDetail) }}</el-descriptions-item>
-      <el-descriptions-item label="合同 / 合作">{{ supplierDetail.contract_status }} · {{ supplierDetail.cooperation_stage }}</el-descriptions-item>
-      <el-descriptions-item label="办理状态">{{ supplierDetail.handling_status }}</el-descriptions-item>
-    </el-descriptions>
-    <template #footer><el-button @click="supplierDetailVisible = false">关闭</el-button></template>
-  </el-dialog>
-
-  <el-dialog v-model="approveVisible" title="通过申报并分配办理人" width="520px">
-    <template v-if="current">
-      <p class="dialog-summary">{{ current.supplier_name }} · {{ current.row_count }} 个模型 · {{ statusLabel(current.status) }}</p>
-      <el-form label-position="top">
-        <el-form-item label="测试与资源配置办理人 *">
-          <el-select v-model="testAssignee" filterable style="width: 100%">
-            <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.name" />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="current.first_model" label="合同与授信办理人">
-          <el-select v-model="contractAssignee" filterable style="width: 100%">
-            <el-option :value="0" label="暂不分配" />
-            <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.name" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="审批意见">
-          <el-input v-model="reason" type="textarea" :rows="3" maxlength="200" show-word-limit />
-        </el-form-item>
-      </el-form>
-    </template>
-    <template #footer>
-      <el-button :disabled="busy" @click="approveVisible = false">取消</el-button>
-      <el-button type="primary" :loading="busy" @click="approve">通过并分配</el-button>
-    </template>
-  </el-dialog>
-
-  <el-dialog v-model="historyVisible" title="审批记录详情" width="520px">
-    <el-descriptions v-if="historyDetail" :column="1" border>
-      <el-descriptions-item label="供应商">{{ historyDetail.supplier_name }} · #{{ historyDetail.id }}</el-descriptions-item>
-      <el-descriptions-item label="模型数 / 办理状态">{{ historyDetail.row_count }} · {{ statusLabel(historyDetail.status) }}</el-descriptions-item>
-      <el-descriptions-item label="审批人 / 时间">{{ historyDetail.approver || "历史批次" }} · {{ formatTime(historyDetail.approved_at) }}</el-descriptions-item>
-      <el-descriptions-item label="审批结果">{{ resultLabel(historyDetail.result) }}</el-descriptions-item>
-      <el-descriptions-item label="审批意见">{{ historyDetail.note || "—" }}</el-descriptions-item>
-    </el-descriptions>
-    <template #footer><el-button @click="historyVisible = false">关闭</el-button></template>
-  </el-dialog>
 </template>
 
 <style scoped>
 .supplier-workspace { padding: 18px 20px; }
 .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.supplier-pagination { justify-content: flex-end; margin-top: 16px; }
 .muted { display: block; color: var(--app-text-muted); font-size: 12px; margin-top: 4px; }
-.dialog-summary { margin: 0 0 14px; color: var(--app-text-secondary); }
 </style>

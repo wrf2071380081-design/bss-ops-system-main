@@ -73,11 +73,15 @@ func supplyHTTPError(c *gin.Context, err error) {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "字段校验失败："+field.Path, 400))
 	case errors.Is(err, supply.ErrIncomplete):
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "官方资料尚未补齐，无法核验", 400))
+	case errors.Is(err, supply.ErrQualificationMetadataRequired):
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "当前资质结构要求提交资质类型，请刷新表单后重试", 400))
 	case errors.Is(err, supply.ErrForbidden):
 		response.Error(c, apperr.New(apperr.ErrForbidden.Code, "当前人员无权执行此操作", 403))
 	case errors.Is(err, supply.ErrNotFound):
 		response.Error(c, apperr.ErrNotFound)
-	case errors.Is(err, supply.ErrRevisionConflict), errors.Is(err, supply.ErrIdentityConflict), errors.Is(err, supply.ErrInactive), errors.Is(err, supply.ErrSourceRejected), errors.Is(err, supply.ErrConfigInUse), errors.Is(err, supply.ErrConfigInactive), errors.Is(err, supply.ErrSupplierRegionLocked):
+	case errors.Is(err, supply.ErrQualificationFileUnavailable):
+		response.Error(c, apperr.ErrNotFound)
+	case errors.Is(err, supply.ErrRevisionConflict), errors.Is(err, supply.ErrF12ContractArchived), errors.Is(err, supply.ErrIdentityConflict), errors.Is(err, supply.ErrInactive), errors.Is(err, supply.ErrSourceRejected), errors.Is(err, supply.ErrConfigInUse), errors.Is(err, supply.ErrConfigInactive), errors.Is(err, supply.ErrSupplierRegionLocked):
 		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "记录状态或操作依据已发生变化，请刷新后核对", 409))
 	case errors.Is(err, supply.ErrTestInProgress):
 		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "测试进行中，请等待测试完成后再操作", 409))

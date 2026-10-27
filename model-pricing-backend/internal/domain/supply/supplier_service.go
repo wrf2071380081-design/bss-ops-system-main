@@ -3,6 +3,7 @@ package supply
 import (
 	"context"
 	"math"
+	"reflect"
 	"time"
 )
 
@@ -134,11 +135,12 @@ func (s *SupplierService) Update(ctx context.Context, meta WriteMeta, id string,
 		next := current.Clone()
 		now := s.now().UTC().Truncate(time.Microsecond)
 		action := "UPDATE_NOOP"
-		if current.Data != canonical {
+		if !reflect.DeepEqual(current.Data, canonical) {
 			if current.Revision == math.MaxInt64 {
 				return ErrRevisionConflict
 			}
 			next.Data = canonical
+			next.Aliases = SupplierAliasesAfterRename(current.Aliases, current.Data.Name, canonical.Name)
 			next.Revision++
 			next.UpdatedAt = now
 			action = "UPDATE"

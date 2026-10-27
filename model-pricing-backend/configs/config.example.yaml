@@ -73,6 +73,8 @@ features:
 #   base_url 或 token 为空 → 出站关闭（报告读取仍然可用）。
 # ============================================================
 test_platform:
+  internal_base_url: ""   # 平台自有模型接口，与供应商测试URL分开
+  internal_api_key: ""    # 平台自有额度Key；只在本机/部署配置填写，不提交真实值
   enable: true
   base_url: ""            # 例：http://10.19.218.33:18080/open-api
   token: ""               # 例：cons-xxxx（不要提交真实值）

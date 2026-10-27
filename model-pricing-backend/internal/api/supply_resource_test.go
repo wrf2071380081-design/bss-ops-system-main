@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 type resourceHTTPStore struct {
 	row   *supply.ResourceRecord
 	query supply.ResourceListQuery
+	empty bool
 }
 
 func (s *resourceHTTPStore) ResourceFilterOptions(_ context.Context, q supply.ResourceOptionsQuery) (supply.ResourceFilterOptions, error) {
@@ -30,7 +32,29 @@ func (s *resourceHTTPStore) ListResourceGroups(_ context.Context, q supply.Resou
 }
 func (s *resourceHTTPStore) ListResourceRows(_ context.Context, q supply.ResourceListQuery) ([]*supply.ResourceRecord, int64, error) {
 	s.query = q
+	if s.empty {
+		return []*supply.ResourceRecord{}, 0, nil
+	}
 	return []*supply.ResourceRecord{s.row}, 1, nil
+}
+
+func TestSupplyResourceHTTPMultiFilters(t *testing.T) {
+	store := resourceHTTPFixture(t)
+	store.empty = true
+	values := url.Values{"view": {"flat"}, "companies": {`["Company, LLC","示例公司"]`}, "model_types": {`["TEXT","IMAGE"]`}, "supplier_ids": {`["21","9007199254740993"]`}, "regions": {`["CN","OVERSEAS"]`}, "states": {`["ADMITTED","PENDING_TEST"]`}, "coefficient_min": {"0"}, "coefficient_max": {"1"}, "connection_max": {"0"}, "rps_min": {"9007199254740993"}, "tps_max": {"9007199254740994"}, "sort_by": {"admitted_at"}, "order": {"desc"}}
+	router := resourceHTTPRouter(store, "staff", false)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/internal/resources?"+values.Encode(), nil))
+	if w.Code != 200 || len(store.query.Companies) != 2 || store.query.Companies[0] != "Company, LLC" || store.query.SupplierIDs[1] != "9007199254740993" || store.query.ConnectionMax != "0" || store.query.RPSMin != "9007199254740993" || store.query.SortBy != "admitted_at" {
+		t.Fatalf("query=%+v status=%d body=%s", store.query, w.Code, w.Body.String())
+	}
+	for _, query := range []url.Values{{"supplier_ids": {`[21]`}}, {"supplier_ids": {`["21","21"]`}}, {"supplier_id": {"21"}, "supplier_ids": {`["21"]`}}, {"regions": {`["UNKNOWN"]`}}, {"coefficient_min": {"1.1"}}, {"connection_max": {"-1"}}, {"rps_min": {"2"}, "rps_max": {"1"}}, {"tps_max": {"NaN"}}} {
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/internal/resources?"+query.Encode(), nil))
+		if w.Code != 400 {
+			t.Fatalf("accepted query %s: %d %s", query.Encode(), w.Code, w.Body.String())
+		}
+	}
 }
 func (s *resourceHTTPStore) GetResource(_ context.Context, id string) (*supply.ResourceRecord, error) {
 	if id != s.row.Resource.ID {

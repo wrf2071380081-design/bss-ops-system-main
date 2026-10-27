@@ -9,19 +9,30 @@ import (
 )
 
 func supplierProfileData() SupplierData {
-	return SupplierData{Name: "示例供应商", Region: "CN", TaxRate: "0.06", SettlementCurrency: "CNY"}
+	return SupplierData{Name: "示例供应商", Region: "CN", TaxRate: supplierTaxRate("0.06"), SettlementCurrency: "CNY"}
 }
+
+func supplierTaxRate(value string) *string { return &value }
 
 func TestSupplierTaxRateUsesExactRatioAndExplicitCurrency(t *testing.T) {
 	for _, tc := range []struct{ input, want string }{{"0", "0.00000000"}, {"0.06", "0.06000000"}, {"1", "1.00000000"}, {"0.00000001", "0.00000001"}, {"1.00000000", "1.00000000"}} {
 		t.Run(tc.input, func(t *testing.T) {
 			data := supplierProfileData()
-			data.TaxRate = tc.input
+			data.TaxRate = supplierTaxRate(tc.input)
 			profile, err := NewSupplier("11", "7", data, modelNow)
-			if err != nil || profile.Data.TaxRate != tc.want || profile.Data.SettlementCurrency != "CNY" || profile.Established || profile.Revision != 1 || profile.BuyerID != "7" {
+			if err != nil || profile.Data.TaxRate == nil || *profile.Data.TaxRate != tc.want || profile.Data.SettlementCurrency != "CNY" || profile.Established || profile.Revision != 1 || profile.BuyerID != "7" {
 				t.Fatalf("lost explicit profile facts: %+v %v", profile, err)
 			}
 		})
+	}
+}
+
+func TestSupplierTaxRateMayBeMissingWithoutBecomingZero(t *testing.T) {
+	data := supplierProfileData()
+	data.TaxRate = nil
+	profile, err := NewSupplier("11", "7", data, modelNow)
+	if err != nil || profile.Data.TaxRate != nil {
+		t.Fatalf("missing tax rate must remain missing: %+v %v", profile, err)
 	}
 }
 
@@ -31,7 +42,7 @@ func TestSupplierCreateBindsAuthenticatedCreatorAndAuditsAtomically(t *testing.T
 	if err != nil {
 		t.Fatalf("create supplier: %v", err)
 	}
-	if created.ID != "101" || created.BuyerID != "7" || created.Established || created.Status != "ACTIVE" || created.Revision != 1 || created.Data.TaxRate != "0.06000000" {
+	if created.ID != "101" || created.BuyerID != "7" || created.Established || created.Status != "ACTIVE" || created.Revision != 1 || created.Data.TaxRate == nil || *created.Data.TaxRate != "0.06000000" {
 		t.Fatalf("unexpected initial supplier: %+v", created)
 	}
 	if len(db.assignments) != 1 || db.assignments[0] != "101:7:7" {
@@ -56,12 +67,11 @@ func TestSupplierRejectsInvalidSuppliedDataWithoutRounding(t *testing.T) {
 		name   string
 		change func(*SupplierData)
 	}{
-		{"missing tax", func(d *SupplierData) { d.TaxRate = "" }},
-		{"percent instead of ratio", func(d *SupplierData) { d.TaxRate = "6" }},
-		{"negative", func(d *SupplierData) { d.TaxRate = "-0.06" }},
-		{"exponent", func(d *SupplierData) { d.TaxRate = "6e-2" }},
-		{"over precision", func(d *SupplierData) { d.TaxRate = "0.060000001" }},
-		{"over one", func(d *SupplierData) { d.TaxRate = "1.00000001" }},
+		{"percent instead of ratio", func(d *SupplierData) { d.TaxRate = supplierTaxRate("6") }},
+		{"negative", func(d *SupplierData) { d.TaxRate = supplierTaxRate("-0.06") }},
+		{"exponent", func(d *SupplierData) { d.TaxRate = supplierTaxRate("6e-2") }},
+		{"over precision", func(d *SupplierData) { d.TaxRate = supplierTaxRate("0.060000001") }},
+		{"over one", func(d *SupplierData) { d.TaxRate = supplierTaxRate("1.00000001") }},
 		{"empty name", func(d *SupplierData) { d.Name = " " }},
 		{"invalid region", func(d *SupplierData) { d.Region = "DOMESTIC" }},
 		{"missing currency", func(d *SupplierData) { d.SettlementCurrency = "" }},
@@ -189,7 +199,7 @@ func TestSupplierUpdatePreservesBindingAndDerivedFacts(t *testing.T) {
 	data.Contact = "新联系人"
 	data.SettlementCurrency = "USD"
 	updated, err := svc.Update(context.Background(), writeMeta("7"), "11", 1, data)
-	if err != nil || updated.Revision != 2 || updated.BuyerID != "7" || !updated.Established || updated.Data.TaxRate != "0.06000000" || updated.Data.SettlementCurrency != "USD" || !updated.UpdatedAt.Equal(modelNow.Add(time.Hour)) {
+	if err != nil || updated.Revision != 2 || updated.BuyerID != "7" || !updated.Established || updated.Data.TaxRate == nil || *updated.Data.TaxRate != "0.06000000" || updated.Data.SettlementCurrency != "USD" || !updated.UpdatedAt.Equal(modelNow.Add(time.Hour)) {
 		t.Fatalf("profile update changed binding or derived facts: %+v %v", updated, err)
 	}
 	if len(db.operations) != 1 || db.operations[0].Action != "UPDATE" || db.operations[0].Before.Data.Name != "示例供应商" || db.operations[0].After.Data.Name != "新主体名称" || db.operations[0].RequestID != "request-test" || db.operations[0].ActorID != "7" {
@@ -198,6 +208,40 @@ func TestSupplierUpdatePreservesBindingAndDerivedFacts(t *testing.T) {
 	updated.Data.Name = "caller mutation"
 	if db.profiles["11"].Data.Name != "新主体名称" || db.operations[0].After.Data.Name != "新主体名称" {
 		t.Fatal("profile aliases returned result")
+	}
+}
+
+func TestSupplierRenameKeepsFormerNamesSearchableInOrderAndAudit(t *testing.T) {
+	db := newSupplierMemory()
+	old := existingSupplier(t, db)
+	data := old.Data
+	data.Name = "供应商新名"
+	first, err := supplierService(db).Update(context.Background(), writeMeta("7"), "11", old.Revision, data)
+	if err != nil {
+		t.Fatalf("rename supplier: %v", err)
+	}
+	if len(first.Aliases) != 1 || first.Aliases[0] != "示例供应商" {
+		t.Fatalf("rename must retain the prior name as a searchable alias: %#v", first.Aliases)
+	}
+	if len(db.operations) != 1 || len(db.operations[0].After.Aliases) != 1 || db.operations[0].After.Aliases[0] != "示例供应商" {
+		t.Fatalf("rename alias must be captured in the same audit snapshot: %+v", db.operations)
+	}
+
+	data.Name = "供应商第三名"
+	second, err := supplierService(db).Update(context.Background(), writeMeta("7"), "11", first.Revision, data)
+	if err != nil {
+		t.Fatalf("rename supplier a second time: %v", err)
+	}
+	if len(second.Aliases) != 2 || second.Aliases[0] != "示例供应商" || second.Aliases[1] != "供应商新名" {
+		t.Fatalf("rename history must remain ordered and deduplicated: %#v", second.Aliases)
+	}
+	data.Name = "示例供应商"
+	third, err := supplierService(db).Update(context.Background(), writeMeta("7"), "11", second.Revision, data)
+	if err != nil {
+		t.Fatalf("rename supplier back to a former name: %v", err)
+	}
+	if len(third.Aliases) != 2 || third.Aliases[0] != "供应商新名" || third.Aliases[1] != "供应商第三名" {
+		t.Fatalf("current name must not remain duplicated in former names: %#v", third.Aliases)
 	}
 }
 
@@ -251,7 +295,7 @@ func TestSupplierNoOpPreservesRevisionAndWritesAudit(t *testing.T) {
 	db := newSupplierMemory()
 	old := existingSupplier(t, db)
 	data := old.Data
-	data.TaxRate = "0.06"
+	data.TaxRate = supplierTaxRate("0.06")
 	same, err := supplierService(db).Update(context.Background(), writeMeta("7"), "11", 1, data)
 	if err != nil || same.Revision != 1 || !same.UpdatedAt.Equal(old.UpdatedAt) || len(db.operations) != 1 || db.operations[0].Action != "UPDATE_NOOP" || !db.operations[0].OccurredAt.Equal(modelNow.Add(time.Hour)) {
 		t.Fatalf("no-op changed version or lost intent: %+v %v", same, err)

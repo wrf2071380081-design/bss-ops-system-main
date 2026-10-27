@@ -26,7 +26,7 @@ func (h *supplyModelHandler) sourceOperations(c *gin.Context) {
 }
 
 func (h *supplyModelHandler) supplierOperations(c *gin.Context) {
-	values, err := supplyQuery(c, "page", "size")
+	values, err := supplyQuery(c, "page", "size", "entity_type")
 	if err != nil {
 		supplyHTTPError(c, err)
 		return
@@ -36,7 +36,7 @@ func (h *supplyModelHandler) supplierOperations(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	result, err := h.operations.List(c.Request.Context(), supply.SourceOperationQuery{SupplierID: c.Param("id"), Page: page, Size: size})
+	result, err := h.operations.List(c.Request.Context(), supply.SourceOperationQuery{SupplierID: c.Param("id"), EntityType: values.Get("entity_type"), Page: page, Size: size})
 	if err != nil {
 		supplyHTTPError(c, err)
 		return

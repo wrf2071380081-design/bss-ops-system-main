@@ -49,21 +49,21 @@ type Deps struct {
 	SupplierSubmissions *SupplierSubmissionService
 	// ResourceTestTargets 供内部复测（T-10）读取资源自身测试目标。
 	ResourceTestTargets ResourceTestTargetLoader
-	ModelSvc           *model.Service
-	SupplierSvc        *supplier.Service
-	SupplierProfileSvc *supplier.ProfileService
-	SupplierQuoteSvc   *supplier.QuoteService
-	SupplierImportSvc  *supplier.ImportService
-	QuoteApproveSvc    *supplier.ApproveService
-	QuoteLifecycleSvc  *supplier.LifecycleService
-	CostReadSvc        *cost.ReadService
-	CostParamSvc       *cost.ParamService
-	CostLockSvc        *cost.LockService
-	CostCompareSvc     *cost.CompareService
-	PriceSyncSvc       *price.SyncService
-	PriceConfirmSvc    *price.ConfirmService
-	PricingSvc         *pricing.PricingService
-	PricingPublishSvc  *pricing.PublishService
+	ModelSvc            *model.Service
+	SupplierSvc         *supplier.Service
+	SupplierProfileSvc  *supplier.ProfileService
+	SupplierQuoteSvc    *supplier.QuoteService
+	SupplierImportSvc   *supplier.ImportService
+	QuoteApproveSvc     *supplier.ApproveService
+	QuoteLifecycleSvc   *supplier.LifecycleService
+	CostReadSvc         *cost.ReadService
+	CostParamSvc        *cost.ParamService
+	CostLockSvc         *cost.LockService
+	CostCompareSvc      *cost.CompareService
+	PriceSyncSvc        *price.SyncService
+	PriceConfirmSvc     *price.ConfirmService
+	PricingSvc          *pricing.PricingService
+	PricingPublishSvc   *pricing.PublishService
 	// 阶段 8b-2：涨价传导决策队列（08-pricing.md §5）。
 	PricingUpconductionSvc *pricing.UpconductionService
 	// 阶段 9a：客户域（09-customer-quote.md §1/§2）。
@@ -542,18 +542,15 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 		protected.GET("/standard-models", sch.ListStandardModels)
 	}
 
-	// 内部办理台账（只读）。
-	//
-	// 2026-10-26 起：申报状态以 B 线 /supplier/submissions 的状态机为准，
-	// 这里只保留查询入口；原 /approve 与 /simulate 两个"写状态"的入口已下线——
-	// 它们与 B 线的申报状态机口径不同，且 simulate 会绕过测试门禁直接登记接入。
-	// 办理节点推进改走 B 线的 /internal/flows/*（待实现）。
+	// 原生审批从工作台进入 /internal/flows/*，复用实际审批事务与指定办理人。
+	// 旧 /approvals/*/approve 和 /simulate 保持下线，禁止模拟测试绕过准入。
 	if portal == "internal" && deps.SupplyChain != nil {
+		RegisterNativeSupplyFlowRoutes(protected, deps.SupplyChain, deps.IdemStore)
 		sch := NewSupplyChainHandler(deps.SupplyChain)
 		protected.GET("/approvals/submissions", sch.ListApprovals)
 		protected.GET("/approvals/history", sch.ListApprovalHistory)
 		protected.GET("/supply/suppliers", sch.ListSuppliers)
-		// 驳回：唯一保留的内部写状态入口（approve/simulate 已下线）。
+		// 兼容已有驳回入口；正向审批只注册到原生 flows。
 		protected.POST("/approvals/submissions/:id/reject",
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			sch.Reject,
@@ -672,8 +669,8 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 
 	// ---- 重构并行开发：三条线各自的路由文件（各改各的，避免 router.go 冲突） ----
 	// 新增路由一律加到对应文件；上面的遗留路由暂不搬，后续按需迁移。
-	registerSupplyRoutes(g, protected, portal, deps)     // A：主数据与供应侧
-	registerSubmissionRoutes(g, protected, portal, deps) // B：申报/办理/测试
-	registerTradeRoutes(g, protected, portal, deps)      // C：客户/报价/留痕
+	registerSupplyRoutes(g, protected, portal, deps)       // A：主数据与供应侧
+	registerSubmissionRoutes(g, protected, portal, deps)   // B：申报/办理/测试
+	registerTradeRoutes(g, protected, portal, deps)        // C：客户/报价/留痕
 	registerSupplierAccountRoutes(protected, portal, deps) // 供应商门户：账户设置（M2）
 }

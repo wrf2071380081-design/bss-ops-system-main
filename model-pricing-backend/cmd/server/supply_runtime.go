@@ -5,12 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
+	"os"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
 	"model_bss/internal/api"
 	"model_bss/internal/api/middleware"
 	"model_bss/internal/domain/supply"
+	"model_bss/internal/infra/supplyfiles"
 	"model_bss/internal/infra/supplypg"
 	"model_bss/internal/infra/supplysecurity"
 )
@@ -18,7 +22,10 @@ import (
 // newSupplyRuntimeDeps wires the A routes whose facts and persistence already
 // live in schema v36. B-owned submission/report transitions remain behind their
 // existing trusted providers; no HTTP input is promoted to test evidence.
-func newSupplyRuntimeDeps(db *gorm.DB, idem middleware.IdempotencyStore) (api.SupplyDeps, error) {
+func newSupplyRuntimeDeps(db *gorm.DB, idem middleware.IdempotencyStore, workflow ...api.SupplyResourceWorkflowProviders) (api.SupplyDeps, error) {
+	if len(workflow) > 1 {
+		return api.SupplyDeps{}, supply.ErrReadContract
+	}
 	raw, err := db.DB()
 	if err != nil {
 		return api.SupplyDeps{}, err
@@ -49,13 +56,66 @@ func newSupplyRuntimeDeps(db *gorm.DB, idem middleware.IdempotencyStore) (api.Su
 	}
 	deps.SupplierReader = supply.NewSupplierReader(supplierStore)
 	deps.SupplierWriter = supply.NewSupplierService(supplierStore, time.Now)
+	if qualificationRoot := strings.TrimSpace(os.Getenv("MODEL_BSS_SUPPLIER_QUALIFICATION_STORE_DIR")); qualificationRoot != "" {
+		qualificationFiles, err := supplyfiles.NewQualificationFileStore(qualificationRoot)
+		if err != nil {
+			return api.SupplyDeps{}, err
+		}
+		deps.SupplierQualificationFiles = supply.NewSupplierQualificationService(supplierStore, qualificationFiles, time.Now)
+		cleaner, err := supplypg.NewSupplierQualificationAttachmentCleaner(raw, "public", qualificationFiles)
+		if err != nil {
+			log.Printf("supplier qualification orphan cleanup unavailable: %v", err)
+		} else {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if _, cleanupErr := cleaner.CleanupUnreferenced(cleanupCtx); cleanupErr != nil {
+				log.Printf("supplier qualification orphan cleanup skipped: %v", cleanupErr)
+			}
+			cancel()
+		}
+	}
 
 	read := supplypg.ModelReadTransactions(raw)
-	f12Store, err := supplypg.NewF12ReadStore("public", read)
+	mergePreviewStore, err := supplypg.NewSupplierMergePreviewStore("public", supplierStore, read)
+	if err != nil {
+		return api.SupplyDeps{}, err
+	}
+	deps.SupplierMergePreviewReader = supply.NewSupplierMergePreviewReader(mergePreviewStore)
+	f12Store, err := supplypg.NewF12ReadStore("public", supplypg.F12ReadTransactions(raw))
 	if err != nil {
 		return api.SupplyDeps{}, err
 	}
 	deps.F12Reader = supply.NewF12Reader(f12Store)
+	f12Flow, err := supplypg.NewNativeSupplierF12(raw, "public")
+	if err != nil {
+		return api.SupplyDeps{}, err
+	}
+	deps.F12Readiness = supply.NewF12ReadinessService(f12Flow, f12Store)
+	var f12Files supply.F12AttachmentBlobStore
+	var f12AttachmentVerifier supplypg.F12AttachmentVerifier
+	f12AttachmentRoot := strings.TrimSpace(os.Getenv("MODEL_BSS_F12_ATTACHMENT_STORE_DIR"))
+	if f12AttachmentRoot != "" {
+		fileStore, err := supplyfiles.NewF12AttachmentFileStore(f12AttachmentRoot)
+		if err != nil {
+			return api.SupplyDeps{}, err
+		}
+		f12Files = fileStore
+		f12AttachmentVerifier = supplypg.F12AttachmentBlobVerifier{Files: fileStore}
+	}
+	f12RecordStore, err := supplypg.NewF12RecordStore("public", supplypg.GORMModelTxFromContext, f12Flow, f12AttachmentVerifier)
+	if err != nil {
+		return api.SupplyDeps{}, err
+	}
+	deps.F12Writer = supply.NewF12RecordService(f12RecordStore, time.Now)
+	if f12Files != nil {
+		f12Attachments, err := supplypg.NewF12AttachmentService(raw, "public", f12RecordStore, f12Files)
+		if err != nil {
+			return api.SupplyDeps{}, err
+		}
+		deps.F12Attachments = f12Attachments
+		if _, cleanupErr := f12Attachments.CleanupUnreferenced(context.Background()); cleanupErr != nil {
+			log.Printf("F12 attachment orphan cleanup skipped: %v", cleanupErr)
+		}
+	}
 	state, err := supplypg.NewResourceStateStore("public", appendSupplyResourceLog)
 	if err != nil {
 		return api.SupplyDeps{}, err
@@ -65,8 +125,15 @@ func newSupplyRuntimeDeps(db *gorm.DB, idem middleware.IdempotencyStore) (api.Su
 		return api.SupplyDeps{}, err
 	}
 	report := func(ctx context.Context, tx *sql.Tx, resource *supply.Resource) (*supplypg.ReportEvidenceRef, error) {
+		ref, err := (&supplypg.NativeHandling{DB: raw, State: state}).SelectedReport(ctx, tx, resource)
+		if err != nil {
+			return nil, err
+		}
+		if ref != nil {
+			return ref, nil
+		}
 		var jobID string
-		err := tx.QueryRowContext(ctx, `SELECT test_job_id::text FROM public.test_report WHERE id=$1 AND resource_id=$2`, resource.LatestReportID, resource.ID).Scan(&jobID)
+		err = tx.QueryRowContext(ctx, `SELECT test_job_id::text FROM public.test_report WHERE id=$1 AND resource_id=$2`, resource.LatestReportID, resource.ID).Scan(&jobID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, supply.ErrNotFound
 		}
@@ -85,7 +152,7 @@ func newSupplyRuntimeDeps(db *gorm.DB, idem middleware.IdempotencyStore) (api.Su
 			Sequence: resource.LatestReportSequence, Valid: valid,
 		}, nil
 	}
-	resourceStore, err := supplypg.NewResourceReadStore("public", read, state.FactsLoader(report, configs.ResourceView))
+	resourceStore, err := supplypg.NewResourceRepository("public", read, state.FactsLoader(report, configs.ResourceView))
 	if err != nil {
 		return api.SupplyDeps{}, err
 	}
@@ -131,12 +198,14 @@ func newSupplyRuntimeDeps(db *gorm.DB, idem middleware.IdempotencyStore) (api.Su
 	if err != nil {
 		return api.SupplyDeps{}, err
 	}
-	// T-13：登记接入前必须存在有效测试证据（通过 + 已选为证据 + 指纹未变）。
-	gate, gateErr := supplypg.NewAdmissionReportGate(raw, "public")
-	if gateErr != nil {
-		return api.SupplyDeps{}, gateErr
+	providers := api.NewNativeSupplyWorkflowProviders(raw, state)
+	if len(workflow) == 1 {
+		providers = workflow[0]
 	}
-	deps.ResourceAdmitter = api.WithAdmissionGate(deps.ResourceAdmitter, gate)
+	// The transaction work validates selected, version-matched report evidence;
+	// no standalone read outside that transaction can authorize admission.
+	api.WireSupplyResourceWorkflow(&deps, state, configs, supplypg.GORMModelTxFromContext, report, appendSupplyOutbox, providers)
+	deps.ResourceStages = supplypg.NewResourceStageWriter(state, supplypg.GORMModelTxFromContext, deps.ResourceConfigBinder, deps.ResourceAdmitter)
 	deps.Plans = supply.NewPlanReader(planStore)
 	planWriter := supply.NewPlanMaintenanceService(planStore, time.Now)
 	deps.PlanWriter = planWriter

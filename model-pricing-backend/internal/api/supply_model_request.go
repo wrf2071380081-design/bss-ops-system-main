@@ -74,9 +74,16 @@ func supplyJSONValue(dec *json.Decoder, token json.Token, depth int) error {
 	return nil
 }
 func decodeSupplyRequest(c *gin.Context, target any, required []string) error {
-	raw, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
+	return decodeSupplyRequestLimit(c, target, required, 1<<20)
+}
+
+func decodeSupplyRequestLimit(c *gin.Context, target any, required []string, maxBytes int64) error {
+	if maxBytes < 1 {
+		return supplyRequestError("body", "invalid body size limit")
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes))
 	if err != nil || !utf8.Valid(raw) {
-		return supplyRequestError("body", "JSON body is invalid or exceeds 1 MiB")
+		return supplyRequestError("body", "JSON body is invalid or exceeds the request size limit")
 	}
 	tokens := json.NewDecoder(bytes.NewReader(raw))
 	tokens.UseNumber()

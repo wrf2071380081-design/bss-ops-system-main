@@ -9,6 +9,8 @@ import (
 
 type ResourceListQuery struct {
 	View, Keyword, Company, ModelType, SupplierID, StandardModelID, Region, State, SortBy, Order string
+	Companies, ModelTypes, SupplierIDs, Regions, States                                          []string
+	CoefficientMin, CoefficientMax, ConnectionMin, ConnectionMax, RPSMin, RPSMax, TPSMin, TPSMax string
 	Page, Size                                                                                   int
 	NullsLast                                                                                    bool
 	TieBreakBy                                                                                   string
@@ -73,6 +75,10 @@ func normalizeResourceQuery(q ResourceListQuery) (ResourceListQuery, error) {
 	}
 	q.Company = strings.TrimSpace(q.Company)
 	q.Keyword = strings.TrimSpace(q.Keyword)
+	q, err = normalizeResourceFilters(q)
+	if err != nil {
+		return q, err
+	}
 	if err := resourceSearchText("company", q.Company, 128); err != nil {
 		return q, err
 	}
@@ -95,7 +101,7 @@ func normalizeResourceQuery(q ResourceListQuery) (ResourceListQuery, error) {
 	}
 	allowed := []string{"id", "name", "company", "model_type", "supplier_count", "resource_count", "available_count", "coefficient_min", "coefficient_max"}
 	if q.View == "flat" {
-		allowed = []string{"id", "supplier_name", "region", "coefficient", "state", "updated_at", "connection_ms", "rps", "tps", "cache_hit_rate"}
+		allowed = []string{"id", "supplier_name", "region", "coefficient", "state", "updated_at", "admitted_at", "connection_ms", "rps", "tps", "cache_hit_rate"}
 	}
 	if !slices.Contains(allowed, q.SortBy) {
 		return q, invalid("sort_by", "unsupported field for selected view")
@@ -111,7 +117,7 @@ func resourceSearchText(field, value string, limit int) error {
 	return nil
 }
 func resourceMatches(row *ResourceSnapshot, q ResourceListQuery) bool {
-	return (q.Region == "" || row.Region == q.Region) && (q.SupplierID == "" || row.SupplierID == q.SupplierID) && (q.StandardModelID == "" || row.StandardModelID == q.StandardModelID) && (q.Company == "" || row.Company == q.Company) && (q.ModelType == "" || row.ModelType == q.ModelType) && (q.State == "" || row.State == q.State) && (q.Keyword == "" || strings.Contains(strings.ToLower(row.ModelName+" "+row.OfficialID+" "+row.SupplierName+" "+row.SupplierModelID), strings.ToLower(q.Keyword)))
+	return resourceExtraMatches(row, q) && (q.Region == "" || row.Region == q.Region) && (q.SupplierID == "" || row.SupplierID == q.SupplierID) && (q.StandardModelID == "" || row.StandardModelID == q.StandardModelID) && (q.Company == "" || row.Company == q.Company) && (q.ModelType == "" || row.ModelType == q.ModelType) && (q.State == "" || row.State == q.State) && (q.Keyword == "" || strings.Contains(strings.ToLower(row.ModelName+" "+row.OfficialID+" "+row.SupplierName+" "+row.SupplierModelID), strings.ToLower(q.Keyword)))
 }
 func buildResourceGroup(records []*ResourceRecord, q ResourceListQuery) (*ResourceGroup, error) {
 	group := &ResourceGroup{Regions: []string{}, StateCounts: map[string]int{}}

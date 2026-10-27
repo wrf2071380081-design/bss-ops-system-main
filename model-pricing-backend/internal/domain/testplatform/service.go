@@ -51,6 +51,7 @@ type Target struct {
 
 // CreateCommand 是一次发起测试的输入。
 type CreateCommand struct {
+	Source         string
 	ResourceID     string
 	ActorID        string
 	Category       Category
@@ -116,14 +117,14 @@ type Gateway interface {
 
 // NewJobRecord 是新建任务时要落库的字段。
 type NewJobRecord struct {
-	ResourceID     string
-	Category       Category
-	IdempotencyKey string
-	RequestPayload []byte
-	ReviewOf       string
-	ActorID        string
-	ExternalJobID  string
-	Status         string
+	ResourceID        string
+	Category          Category
+	IdempotencyKey    string
+	RequestPayload    []byte
+	ReviewOf          string
+	ActorID           string
+	ExternalJobID     string
+	Status            string
 	TargetFingerprint string
 }
 
@@ -139,18 +140,18 @@ type PendingJob struct {
 
 // Completion 是任务收口时要写回的完整结果。
 type Completion struct {
-	JobID              string
-	ResourceID         string
-	ExternalJobID      string
-	Category           Category
-	FinalStatus        string
-	Verdict            string
-	Outcome            Outcome
-	ResponseSummary    []byte
-	ReportJSON         []byte
-	ReportMD           []byte
-	TestedBy   string
-	FinishedAt time.Time
+	JobID           string
+	ResourceID      string
+	ExternalJobID   string
+	Category        Category
+	FinalStatus     string
+	Verdict         string
+	Outcome         Outcome
+	ResponseSummary []byte
+	ReportJSON      []byte
+	ReportMD        []byte
+	TestedBy        string
+	FinishedAt      time.Time
 }
 
 // Store 是持久化端口（infra/supplypg 实现）。
@@ -204,7 +205,8 @@ func (s *Service) Start(ctx context.Context, cmd CreateCommand) (*StartResult, e
 	}
 	payload, err := json.Marshal(map[string]any{
 		"category": cmd.Category, "resource_id": cmd.ResourceID,
-		"model": cmd.Target.Model, "base_url": cmd.Target.BaseURL,
+		"source": cmd.Source,
+		"model":  cmd.Target.Model, "base_url": cmd.Target.BaseURL,
 	})
 	if err != nil {
 		return nil, err

@@ -6,7 +6,7 @@ export const resourceStateLabels: Record<string, string> = { PENDING_TEST: "待�
 export const resourceRegionLabels: Record<string, string> = { CN: "国内", OVERSEAS: "海外" };
 export const resourceBlockLabels: Record<string, string> = { RESOURCE_NOT_ADMITTED: "资源尚未接入或已下架", SUPPLIER_INACTIVE: "供应商已停用", SUPPLIER_REGION_MISMATCH: "供应商区域不匹配", MODEL_NOT_READY: "标准模型资料或核验尚未就绪", FORMAL_CONFIG_UNAVAILABLE: "正式接口配置尚未就绪", FORMAL_CONFIG_CHANGED: "正式配置已变更，需重新确认绑定", TESTS_REQUIRED: "尚无该资源的有效测试报告", TEST_TARGET_CHANGED: "测试目标已变化，原报告不再适用", TEST_EVIDENCE_INVALID: "测试依据已失效", TESTS_NOT_PASSED: "自身连通或压力测试尚未通过" };
 const groupedSort = ["id", "name", "company", "model_type", "supplier_count", "resource_count", "available_count", "coefficient_min", "coefficient_max"];
-const flatSort = ["id", "supplier_name", "region", "coefficient", "state", "updated_at", "connection_ms", "rps", "tps", "cache_hit_rate"];
+const flatSort = ["id", "supplier_name", "region", "coefficient", "state", "updated_at", "admitted_at", "connection_ms", "rps", "tps", "cache_hit_rate"];
 function invalid(): never { throw new Error("供应资源响应不符合约定，请重新查询。"); }
 function object(value: unknown): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) invalid(); return value as Record<string, unknown>; }
 function coefficient(value: unknown): string {
@@ -19,6 +19,25 @@ export function buildResourceQuery(source: Partial<ResourceQuery>, expand?: { mo
   const view = expand ? "flat" : source.view || "grouped";
   const result: ResourceQuery = { view, page: expand ? expand.page ?? 1 : source.page ?? 1, size: expand ? expand.size ?? 20 : source.size ?? 20, sort_by: expand ? expand.sort_by || "coefficient" : source.sort_by || (view === "flat" ? "coefficient" : "name"), order: expand ? expand.order || "asc" : source.order || "asc" };
   for (const key of ["keyword", "company", "model_type", "supplier_id", "region", "state"] as const) if (source[key]) result[key] = source[key]!.trim();
+  for (const [key, single] of [["companies", "company"], ["model_types", "model_type"], ["supplier_ids", "supplier_id"], ["regions", "region"], ["states", "state"]] as const) {
+    const values = source[key];
+    if (values !== undefined) {
+      if (!Array.isArray(values) || values.length > 50 || values.some(value => typeof value !== "string" || !value.trim()) || new Set(values).size !== values.length || (values.length && source[single])) throw new Error("多选筛选参数不正确。");
+      result[key] = values.map(value => value.trim());
+      for (const value of result[key]!) {
+        if (key === "supplier_ids") standardModelVersion(value);
+        if ((key === "regions" && !resourceRegionLabels[value]) || (key === "states" && !resourceStateLabels[value]) || (key === "model_types" && !modelTypeLabels[value]) || (key === "companies" && [...value].length > 128)) throw new Error("多选筛选参数不正确。");
+      }
+    }
+  }
+  for (const key of ["coefficient", "connection", "rps", "tps"] as const) {
+    const min = source[`${key}_min`], max = source[`${key}_max`];
+    for (const [bound, value] of [["min", min], ["max", max]] as const) if (value !== undefined && value !== "") {
+      if (!/^\d+(?:\.\d+)?$/.test(value) || value.length > 64 || (key === "coefficient" && new Decimal(value).gt(1))) throw new Error("数值区间参数不正确。");
+      result[`${key}_${bound}`] = value;
+    }
+    if (min && max && new Decimal(min).gt(max)) throw new Error("区间下限不能大于上限。");
+  }
   if (expand) result.standard_model_id = standardModelVersion(expand.modelID);
   else if (source.standard_model_id) result.standard_model_id = standardModelVersion(source.standard_model_id);
   if (!["grouped", "flat"].includes(view) || !Number.isSafeInteger(result.page) || result.page < 1 || !Number.isSafeInteger(result.size) || result.size < 1 || result.size > 100 || result.page > Math.floor(Number.MAX_SAFE_INTEGER / result.size)) throw new Error("分页参数不正确。");
@@ -38,6 +57,10 @@ export function resourceCacheDisplay(cache: ResourceCache, testStatus: string): 
   if (testStatus === "NOT_TESTED") return "未测试";
   if (cache.status === "NOT_PROVIDED") return "未提供";
   if (cache.status === "NOT_APPLICABLE") return "不适用";
+  if (cache.status === "PROVIDED" && !cache.hit_tokens && !cache.input_tokens) {
+    if (typeof cache.hit_percent !== "string" || !/^(?:(?:0|[1-9]\d?)(?:\.\d{1,2})?|100(?:\.0{1,2})?)$/.test(cache.hit_percent)) invalid();
+    return `${new Decimal(cache.hit_percent).toFixed(2)}%`;
+  }
   if (cache.status !== "PROVIDED" || typeof cache.hit_tokens !== "string" || typeof cache.input_tokens !== "string" || !/^\d+$/.test(cache.hit_tokens) || !/^\d+$/.test(cache.input_tokens)) invalid();
   const hit = BigInt(cache.hit_tokens), input = BigInt(cache.input_tokens);
   if (input === 0n || hit > input) invalid();
@@ -85,4 +108,12 @@ export function validateResourceRow(value: unknown, expectedID?: string): Resour
   });
   if (validateStandardModel({ ...emptyStandardModel(), price_items: officialPrices as ResourceRow["official_price_items"] }).length) invalid();
   return structuredClone({ ...row, official_price_items: officialPrices }) as unknown as ResourceRow;
+}
+
+export function resourceQueryWire(query: ResourceQuery): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...query };
+  for (const key of ["companies", "model_types", "supplier_ids", "regions", "states"] as const) {
+    if (query[key]?.length) result[key] = JSON.stringify(query[key]); else delete result[key];
+  }
+  return result;
 }

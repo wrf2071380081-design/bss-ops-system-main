@@ -30,8 +30,8 @@ func f12ReadQuery(c *gin.Context, allowed ...string) (url.Values, int, int, erro
 }
 
 func validateF12Subject(values url.Values) error {
-	if values.Get("subject_type") != "SUPPLIER" {
-		return supplyRequestError("subject_type", "expected SUPPLIER")
+	if values.Get("subject_type") != "SUPPLIER" && values.Get("subject_type") != "CUSTOMER" {
+		return supplyRequestError("subject_type", "expected SUPPLIER or CUSTOMER")
 	}
 	if _, err := planPositiveID(values.Get("subject_id")); err != nil {
 		return supplyRequestError("subject_id", "expected a positive bigint string")
@@ -44,7 +44,7 @@ func (h *supplyF12ReadHandler) contracts(c *gin.Context) {
 		supplyHTTPError(c, supply.ErrDependencyUnavailable)
 		return
 	}
-	values, page, size, err := f12ReadQuery(c, "subject_type", "subject_id", "status", "page", "size")
+	values, page, size, err := f12ReadQuery(c, "subject_type", "subject_id", "status", "contract_key", "latest_only", "page", "size")
 	if err != nil {
 		supplyHTTPError(c, err)
 		return
@@ -57,8 +57,23 @@ func (h *supplyF12ReadHandler) contracts(c *gin.Context) {
 		supplyHTTPError(c, supplyRequestError("status", "expected PROCESSING or ARCHIVED"))
 		return
 	}
+	if values.Has("contract_key") {
+		if _, err := planPositiveID(values.Get("contract_key")); err != nil {
+			supplyHTTPError(c, supplyRequestError("contract_key", "expected a positive bigint string"))
+			return
+		}
+	}
+	if values.Has("latest_only") && values.Get("latest_only") != "true" && values.Get("latest_only") != "false" {
+		supplyHTTPError(c, supplyRequestError("latest_only", "expected true or false"))
+		return
+	}
+	if values.Get("latest_only") == "true" && values.Get("contract_key") == "" {
+		supplyHTTPError(c, supplyRequestError("contract_key", "latest lookup requires an archive key"))
+		return
+	}
 	result, err := h.reader.ListContracts(c.Request.Context(), supply.F12ContractQuery{
-		SubjectType: values.Get("subject_type"), SubjectID: values.Get("subject_id"), Status: values.Get("status"), Page: page, Size: size,
+		SubjectType: values.Get("subject_type"), SubjectID: values.Get("subject_id"), Status: values.Get("status"),
+		ContractKey: values.Get("contract_key"), LatestOnly: values.Get("latest_only") == "true", Page: page, Size: size,
 	})
 	if err != nil {
 		supplyHTTPError(c, err)
@@ -81,8 +96,12 @@ func (h *supplyF12ReadHandler) credits(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	if direction := values.Get("direction"); direction != "" && direction != "SUPPLIER_TO_US" {
-		supplyHTTPError(c, supplyRequestError("direction", "supplier credit direction must be SUPPLIER_TO_US"))
+	expectedDirection := "SUPPLIER_TO_US"
+	if values.Get("subject_type") == "CUSTOMER" {
+		expectedDirection = "US_TO_CUSTOMER"
+	}
+	if direction := values.Get("direction"); direction != "" && direction != expectedDirection {
+		supplyHTTPError(c, supplyRequestError("direction", "credit direction does not match subject type"))
 		return
 	}
 	if currency := values.Get("currency"); currency != "" {

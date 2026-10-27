@@ -199,10 +199,18 @@ func validResourceReport(report *supply.ResourceReportView, resourceID string) b
 	if _, err := planPositiveID(report.ID); err != nil {
 		return false
 	}
+	if report.TestJobID != "" && report.TestJobID != report.ID {
+		return false
+	}
+	if report.TestReportID != "" {
+		if _, err := planPositiveID(report.TestReportID); err != nil {
+			return false
+		}
+	}
 	if report.Status != "RUNNING" && report.Status != "COMPLETED" && report.Status != "FAILED" {
 		return false
 	}
-	if report.CreatedAt.IsZero() || report.TestedAt.IsZero() || strings.TrimSpace(report.TestItem) == "" || (report.Source != "" && report.Source != "SUPPLIER" && report.Source != "INTERNAL") || report.TargetMatches == nil || (report.Status != "RUNNING" && report.FinishedAt == nil) {
+	if report.CreatedAt.IsZero() || (report.TestedAt != nil && report.TestedAt.IsZero()) || strings.TrimSpace(report.TestItem) == "" || (report.Source != "" && report.Source != "SUPPLIER" && report.Source != "INTERNAL") || report.TargetMatches == nil || (report.Status == "COMPLETED" && (report.TestedAt == nil || report.FinishedAt == nil)) {
 		return false
 	}
 	if report.FinishedAt != nil && report.FinishedAt.Before(report.CreatedAt) {

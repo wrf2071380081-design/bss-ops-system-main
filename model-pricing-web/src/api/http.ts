@@ -114,11 +114,19 @@ export async function apiRequest<T>(config: ApiRequestConfig): Promise<T> {
   } catch (error) {
     const normalized = normalizeError(error);
     if (normalized.httpStatus === 401 && !config.anonymous) useSessionStore().clear();
+    // A structured supply dependency failure is a definitive terminal response:
+    // the server marks this idempotency request FAILED, so retaining its key
+    // would make the next retry return 409 forever. Transport failures and other
+    // uncertain outcomes still keep the key for safe replay.
+    const terminalDependencyFailure = normalized.httpStatus === 503 &&
+      (normalized.code === 10000 || normalized.code === "10000");
     if (
       idempotency &&
-      !normalized.retryable &&
-      normalized.code !== "IDEMPOTENCY_PROCESSING" &&
-      !(normalized.code === 10005 && normalized.message === "幂等冲突")
+      (terminalDependencyFailure || (
+        !normalized.retryable &&
+        normalized.code !== "IDEMPOTENCY_PROCESSING" &&
+        !(normalized.code === 10005 && normalized.message === "幂等冲突")
+      ))
     ) {
       clearIdempotency(sessionStorage, idempotency);
     }
@@ -133,6 +141,32 @@ export async function apiFileRequest(config: ApiRequestConfig): Promise<Blob> {
     if (response.headers["content-type"]?.includes("application/json"))
       throw new ApiError(response.status, "下载接口返回了JSON，请核对文件接口契约。", "INVALID_RESPONSE");
     return response.data;
+  } catch (error) {
+    if (error instanceof AxiosError && error.response?.data instanceof Blob) {
+      try { error.response.data = JSON.parse(await error.response.data.text()); } catch { /* Non-JSON failures use the HTTP fallback. */ }
+    }
+    const normalized = normalizeError(error);
+    if (normalized.httpStatus === 401 && !config.anonymous) useSessionStore().clear();
+    throw normalized;
+  }
+}
+
+export interface ApiFileDownload {
+  blob: Blob;
+  contentDisposition?: string;
+}
+
+// Preserve response headers for callers that need the server's safe filename.
+export async function apiFileDownloadRequest(config: ApiRequestConfig): Promise<ApiFileDownload> {
+  try {
+    const response = await http.request<Blob>({ ...config, responseType: "blob" });
+    if (response.headers["content-type"]?.includes("application/json"))
+      throw new ApiError(response.status, "下载接口返回了JSON，请核对文件接口契约。", "INVALID_RESPONSE");
+    const contentDisposition = response.headers["content-disposition"];
+    return {
+      blob: response.data,
+      ...(typeof contentDisposition === "string" ? { contentDisposition } : {}),
+    };
   } catch (error) {
     if (error instanceof AxiosError && error.response?.data instanceof Blob) {
       try { error.response.data = JSON.parse(await error.response.data.text()); } catch { /* Non-JSON failures use the HTTP fallback. */ }

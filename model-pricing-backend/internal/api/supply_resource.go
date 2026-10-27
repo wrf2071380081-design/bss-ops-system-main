@@ -69,7 +69,7 @@ type supplyResourcePageDTO struct {
 // @Failure 400,401,403,503 {object} response.Body
 // @Router /api/internal/resources [get]
 func (h *supplyResourceHandler) list(c *gin.Context) {
-	values, err := supplyQuery(c, "view", "page", "size", "company", "model_type", "supplier_id", "standard_model_id", "region", "state", "keyword", "sort_by", "order")
+	values, err := supplyQuery(c, "view", "page", "size", "company", "model_type", "supplier_id", "standard_model_id", "region", "state", "keyword", "sort_by", "order", "companies", "model_types", "supplier_ids", "regions", "states", "coefficient_min", "coefficient_max", "connection_min", "connection_max", "rps_min", "rps_max", "tps_min", "tps_max")
 	if err != nil {
 		supplyHTTPError(c, err)
 		return
@@ -79,7 +79,28 @@ func (h *supplyResourceHandler) list(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	result, err := h.reader.List(c.Request.Context(), supply.ResourceListQuery{View: values.Get("view"), Page: page, Size: size, Company: values.Get("company"), ModelType: values.Get("model_type"), SupplierID: values.Get("supplier_id"), StandardModelID: values.Get("standard_model_id"), Region: values.Get("region"), State: values.Get("state"), Keyword: values.Get("keyword"), SortBy: values.Get("sort_by"), Order: values.Get("order")})
+	query := supply.ResourceListQuery{View: values.Get("view"), Page: page, Size: size, Company: values.Get("company"), ModelType: values.Get("model_type"), SupplierID: values.Get("supplier_id"), StandardModelID: values.Get("standard_model_id"), Region: values.Get("region"), State: values.Get("state"), Keyword: values.Get("keyword"), SortBy: values.Get("sort_by"), Order: values.Get("order")}
+	arrays := []struct {
+		key    string
+		target *[]string
+	}{{"companies", &query.Companies}, {"model_types", &query.ModelTypes}, {"supplier_ids", &query.SupplierIDs}, {"regions", &query.Regions}, {"states", &query.States}}
+	for _, array := range arrays {
+		v, e := supplyModelArray(values, array.key)
+		if e != nil {
+			supplyHTTPError(c, e)
+			return
+		}
+		*array.target = v
+	}
+	query.CoefficientMin = values.Get("coefficient_min")
+	query.CoefficientMax = values.Get("coefficient_max")
+	query.ConnectionMin = values.Get("connection_min")
+	query.ConnectionMax = values.Get("connection_max")
+	query.RPSMin = values.Get("rps_min")
+	query.RPSMax = values.Get("rps_max")
+	query.TPSMin = values.Get("tps_min")
+	query.TPSMax = values.Get("tps_max")
+	result, err := h.reader.List(c.Request.Context(), query)
 	if err != nil {
 		supplyHTTPError(c, err)
 		return

@@ -1,6 +1,6 @@
 import { apiRequest } from "./http";
 import { standardModelVersion } from "./standardModels.contract";
-import { buildResourceQuery, resourceRegionLabels, validateResourceGroup, validateResourceRow } from "./resources.contract";
+import { buildResourceQuery, resourceQueryWire, resourceRegionLabels, validateResourceGroup, validateResourceRow } from "./resources.contract";
 import type { ResourceFilterOptions, ResourceGroup, ResourcePage, ResourceQuery, ResourceRow } from "./resources.types";
 
 function page<T>(value: ResourcePage<unknown>, expected: ResourceQuery, validate: (row: unknown) => T): ResourcePage<T> {
@@ -13,7 +13,7 @@ export const resourcesApi = {
     let expectedTotal: number | undefined;
     for (let currentPage = 1; ; currentPage++) {
       const params = buildResourceQuery({ ...query, view: "flat", page: currentPage, size: 100 });
-      const result = page(await apiRequest<ResourcePage<unknown>>({ url: "/internal/resources", params, signal }), params, validateResourceRow);
+      const result = page(await apiRequest<ResourcePage<unknown>>({ url: "/internal/resources", params: resourceQueryWire(params), signal }), params, validateResourceRow);
       if (expectedTotal !== undefined && result.total !== expectedTotal) throw new Error("供应来源已变化，请刷新后重新筛选。");
       expectedTotal = result.total;
       for (const row of result.list) {
@@ -26,11 +26,11 @@ export const resourcesApi = {
   },
   async groups(query: Partial<ResourceQuery>, signal?: AbortSignal): Promise<ResourcePage<ResourceGroup>> {
     const params = buildResourceQuery({ ...query, view: "grouped" });
-    return page(await apiRequest<ResourcePage<unknown>>({ url: "/internal/resources", params, signal }), params, validateResourceGroup);
+    return page(await apiRequest<ResourcePage<unknown>>({ url: "/internal/resources", params: resourceQueryWire(params), signal }), params, validateResourceGroup);
   },
   async rows(query: ResourceQuery, signal?: AbortSignal): Promise<ResourcePage<ResourceRow>> {
     const params = buildResourceQuery({ ...query, view: "flat" });
-    const result = page(await apiRequest<ResourcePage<unknown>>({ url: "/internal/resources", params, signal }), params, validateResourceRow);
+    const result = page(await apiRequest<ResourcePage<unknown>>({ url: "/internal/resources", params: resourceQueryWire(params), signal }), params, validateResourceRow);
     if (result.list.some(row => (params.standard_model_id && row.standard_model_id !== params.standard_model_id) || (params.region && row.region !== params.region) || (params.supplier_id && row.supplier_id !== params.supplier_id))) throw new Error("来源响应与筛选范围不一致，请重新查询。");
     return result;
   },

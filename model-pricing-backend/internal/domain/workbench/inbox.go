@@ -188,6 +188,10 @@ var ErrNoticeNotFound = fmt.Errorf("notice not found")
 // inboxDeeplink 收件箱跳转。目标页面尚未落地的先返回空，由前端提示"详情页建设中"。
 func inboxDeeplink(bizType string, bizID int64) string {
 	switch bizType {
+	case "SUBMISSION_APPROVAL":
+		return fmt.Sprintf("/internal/workbench?submission_id=%d", bizID)
+	case "SUBMISSION_HANDLING", "SUBMISSION_CONTRACT":
+		return fmt.Sprintf("/internal/workbench?node_id=%d", bizID)
 	case "PLAN":
 		return fmt.Sprintf("/internal/model-plaza/%d", bizID)
 	case "ONBOARDING_NODE":
