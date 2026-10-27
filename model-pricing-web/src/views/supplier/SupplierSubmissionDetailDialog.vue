@@ -27,7 +27,15 @@ const visible = computed({
 
 const kindLabel = computed(() => (detail.value?.kind === "PRICE_CHANGE" ? "价格变更" : "模型新增"));
 const submitterLabel = computed(() => detail.value?.submitter_name || "—");
-const submittedAt = computed(() => detail.value?.submitted_at || detail.value?.updated_at || "—");
+/** 原型的时间写法：2026/10/27 16:32:31。 */
+function formatTime(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+const submittedAt = computed(() => formatTime(detail.value?.submitted_at || detail.value?.updated_at));
 const reasonText = computed(() => detail.value?.reason?.trim() || "无补充说明");
 
 const STATUS_LABELS: Record<string, string> = {

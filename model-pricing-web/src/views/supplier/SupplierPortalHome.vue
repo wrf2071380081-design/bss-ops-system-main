@@ -104,7 +104,17 @@ async function load() {
   } finally { if (active && !current.signal.aborted) loading.value = false; }
 }
 const filteredHistory = computed(() => applyKeyword(history.value));
-const historyCount = computed(() => (hasFilter.value || keyword.value.trim() ? filteredHistory.value.length : total.value));
+// 计数用过滤后的实际条数：后端 total 把 DRAFT 也算进去了，跟这一屏看到的行数对不上。
+const historyCount = computed(() => filteredHistory.value.length);
+
+/** 原型的时间写法：2026/10/27 16:32:31（后端给的是 RFC3339）。 */
+function formatTime(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
 
 // ---- 查看申报 ----
 const detailVisible = ref(false);
@@ -157,7 +167,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
         <el-alert v-if="error" :title="error" type="error" :closable="false"><el-button text @click="load">重新加载</el-button></el-alert>
         <el-table v-loading="loading" :data="drafts" row-key="id" empty-text="暂无草稿">
           <el-table-column label="申报内容" min-width="240"><template #default="{ row }"><strong>{{ row.rows.length }} 个模型</strong><div class="muted">{{ row.reason || '尚未填写说明' }}</div></template></el-table-column>
-          <el-table-column label="最近保存" prop="updated_at" min-width="170" />
+          <el-table-column label="最近保存" min-width="170"><template #default="{ row }">{{ formatTime(row.updated_at) }}</template></el-table-column>
           <el-table-column label="操作" width="120"><template #default="{ row }"><el-button link type="primary" :disabled="!canEdit(row)" @click="editDraft(row)">继续编辑</el-button></template></el-table-column>
         </el-table>
       </section>
@@ -202,7 +212,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
             <template #default="{ row }">{{ row.submitter_name || '—' }}</template>
           </el-table-column>
           <el-table-column label="提交时间" prop="submitted_at" min-width="170" sortable>
-            <template #default="{ row }">{{ row.submitted_at || row.updated_at }}</template>
+            <template #default="{ row }">{{ formatTime(row.submitted_at || row.updated_at) }}</template>
           </el-table-column>
           <el-table-column label="当前状态" width="150" sortable :sort-method="(a: SupplierSubmissionDTO, b: SupplierSubmissionDTO) => statusLabel(a.status).localeCompare(statusLabel(b.status))">
             <template #default="{ row }">

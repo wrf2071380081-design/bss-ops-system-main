@@ -21,6 +21,7 @@ import { supplierAccountHandlers } from "./handlers/supplierAccount";
 import { supplierReconciliationHandlers } from "./handlers/supplierReconciliation";
 import { customerPortalHandlers } from "./handlers/customerPortal";
 import { changeRequestHandlers } from "./handlers/changeRequests";
+import { supplierSubmissionHandlers } from "./handlers/supplierSubmissions";
 
 export const worker = setupWorker(
   ...supplierReviewHandlers,
@@ -45,4 +46,5 @@ export const worker = setupWorker(
   ...supplierReconciliationHandlers,
   ...customerPortalHandlers,
   ...changeRequestHandlers,
+  ...supplierSubmissionHandlers,
 );
