@@ -10,6 +10,27 @@ import (
 	tpdomain "model_bss/internal/domain/testplatform"
 )
 
+// DemoAPIKey 是 `demo` 目标的占位 Key：平台内置演示模型不校验凭据。
+//
+// 抽成常量而不是各写一遍，是因为它参与指纹计算——发单与判失效两处
+// 必须用同一个 Key，否则 demo 目标会出现「刚跑完就判失效」。
+const DemoAPIKey = "demo-key"
+
+// CredentialForTest 返回发测试、算指纹都应使用的一对值。
+//
+// demo 目标无论供应商填了什么 Key，都统一用占位 Key；
+// 其余目标按主体凭据原样使用。
+func CredentialForTest(cred *SupplierTestCredential) (baseURL, apiKey string) {
+	if cred == nil {
+		return "", ""
+	}
+	url := strings.TrimSpace(cred.BaseURL)
+	if strings.EqualFold(url, "demo") {
+		return url, DemoAPIKey
+	}
+	return url, cred.APIKey
+}
+
 // SupplierCredentialStore 是供应商**主体级**准入测试凭据的持久化层（000044）。
 //
 // 为什么放在主体而不是申报行：原型申报页把 URL/Key 收在表单顶部，
@@ -119,6 +140,7 @@ func (s *SupplierCredentialStore) RefreshOpenRowSnapshots(ctx context.Context, s
 	if err != nil || cred == nil {
 		return err
 	}
+	baseURL, apiKey := CredentialForTest(cred)
 	rows, err := s.db.QueryContext(ctx, `
 SELECT r.id, r.standard_model_id, r.supplier_model_name
 FROM `+s.table("submission_row")+` r
@@ -163,8 +185,8 @@ WHERE id = $1`)
 	}
 	defer func() { _ = stmt.Close() }()
 	for _, item := range targets {
-		fingerprint := tpdomain.TargetFingerprint(item.modelID, item.modelName, cred.BaseURL, cred.APIKey)
-		if _, err := stmt.ExecContext(ctx, item.id, cred.BaseURL, cred.APIKey, fingerprint); err != nil {
+		fingerprint := tpdomain.TargetFingerprint(item.modelID, item.modelName, baseURL, apiKey)
+		if _, err := stmt.ExecContext(ctx, item.id, baseURL, apiKey, fingerprint); err != nil {
 			return err
 		}
 	}

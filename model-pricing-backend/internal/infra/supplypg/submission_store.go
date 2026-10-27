@@ -76,11 +76,12 @@ type SubmissionRowRecord struct {
 // cred 为 nil（主体还没登记凭据）时**什么都不改**：退化成按行快照判定，
 // 历史数据不会因为「没登记凭据」被一片判红。
 func (r *SubmissionRowRecord) ApplyCredential(cred *SupplierTestCredential) {
-	if r == nil || cred == nil || strings.TrimSpace(cred.BaseURL) == "" {
+	baseURL, apiKey := CredentialForTest(cred)
+	if r == nil || strings.TrimSpace(baseURL) == "" {
 		return
 	}
-	current := tpdomain.TargetFingerprint(r.StandardModelID, r.SupplierModelName, cred.BaseURL, cred.APIKey)
-	r.TestBaseURL = cred.BaseURL
+	current := tpdomain.TargetFingerprint(r.StandardModelID, r.SupplierModelName, baseURL, apiKey)
+	r.TestBaseURL = baseURL
 	staleAgainst := func(jobFingerprint string) bool {
 		// 老任务可能没记录指纹：只有两边都有值且不等才算失效，不做无依据的误判。
 		if jobFingerprint == "" {

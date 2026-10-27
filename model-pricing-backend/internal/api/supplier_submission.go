@@ -423,17 +423,13 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 	}
 	// 000044：URL/Key 统一取**主体**凭据；行上的两列只是快照。
 	// 未登记凭据时直接给出可操作的提示，别让平台侧报 400。
-	baseURL := strings.TrimSpace(row.EffectiveBaseURL)
-	if baseURL == "" {
+	baseURL, apiKey := supplypg.CredentialForTest(&supplypg.SupplierTestCredential{BaseURL: row.EffectiveBaseURL, APIKey: row.EffectiveAPIKey})
+	if strings.TrimSpace(baseURL) == "" {
 		return "", actionFailed, errCredentialMissing
 	}
-	apiKey := "demo-key"
-	if !strings.EqualFold(baseURL, "demo") {
-		// 路线 A：库里存的就是原样 Key，直接取用。
-		if strings.TrimSpace(row.EffectiveAPIKey) == "" {
-			return "", actionFailed, errCredentialMissing
-		}
-		apiKey = row.EffectiveAPIKey
+	// demo 目标由 CredentialForTest 补占位 Key；其余目标必须真有 Key。
+	if strings.TrimSpace(apiKey) == "" {
+		return "", actionFailed, errCredentialMissing
 	}
 	// 本次发单的指纹按当前主体凭据现算：改了凭据就该能重测，旧结果也随之失效。
 	fingerprint := tpdomain.TargetFingerprint(row.StandardModelID, row.SupplierModelName, baseURL, apiKey)
