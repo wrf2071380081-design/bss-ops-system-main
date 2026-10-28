@@ -183,6 +183,31 @@ function credentialDTO(): SupplierTestCredentialDTO {
   return { ...credential };
 }
 
+/** 模型管理列表的演示数据（结构与 SupplierModelResourceDTO 一致）。 */
+const supplierModelFixtures = [
+  {
+    id: "3", standard_model_id: "15", model_name: "Claude Sonnet 4", official_id: "claude-sonnet-4",
+    supplier_model_id: "demo/deepseek-v4", region: "CN", coefficient: "0.6000", state: "ADMITTED",
+    ever_admitted: true, revision: "1",
+    test: { report_id: "51", status: "COMPLETED", connectivity_tested: true, connectivity_passed: true, stress_tested: true, stress_passed: true, valid: true, connection_ms: "87.00", rps: "28.40", tps: "24500.00" },
+    quote_readiness: { eligible: true, blocked_reasons: [] },
+  },
+  {
+    id: "8", standard_model_id: "12", model_name: "Qwen3 Max", official_id: "qwen3-max",
+    supplier_model_id: "demo/rowB", region: "CN", coefficient: "0.7000", state: "PENDING_TEST",
+    ever_admitted: false, revision: "1",
+    test: { report_id: "52", status: "COMPLETED", connectivity_tested: true, connectivity_passed: true, stress_tested: true, stress_passed: false, valid: true, connection_ms: "96.00", rps: "0", tps: "0" },
+    quote_readiness: { eligible: false, blocked_reasons: ["RESOURCE_NOT_ADMITTED", "TESTS_NOT_PASSED"] },
+  },
+  {
+    id: "9", standard_model_id: "14", model_name: "GPT-4o mini", official_id: "gpt-4o-mini",
+    supplier_model_id: "demo-model-1", region: "OVERSEAS", coefficient: "1.0000", state: "PENDING_TEST",
+    ever_admitted: false, revision: "1",
+    test: { status: "NOT_TESTED", connectivity_tested: false, connectivity_passed: false, stress_tested: false, stress_passed: false, valid: false },
+    quote_readiness: { eligible: false, blocked_reasons: ["RESOURCE_NOT_ADMITTED", "TESTS_REQUIRED"] },
+  },
+];
+
 function findSubmission(id: string) { return submissions.find(item => item.id === id); }
 
 function rowReady(row: SupplierSubmissionRowDTO) {
@@ -200,6 +225,17 @@ function matches(row: SupplierSubmissionRowDTO, filters: URLSearchParams) {
 }
 
 export const supplierSubmissionHandlers = [
+  // 供应商模型管理（2026-10-28）：按原型 7 列所需字段造数据，测试结论覆盖
+  // 已接入可报价 / 待接入有报告 / 待接入无报告 三种态。
+  http.get("/api/supplier/models", () =>
+    result({
+      total: supplierModelFixtures.length,
+      page: 1,
+      size: 100,
+      list: structuredClone(supplierModelFixtures),
+    }),
+  ),
+
   http.get("/api/supplier/test-credential", () => result(credentialDTO())),
 
   http.put("/api/supplier/test-credential", async ({ request }) => {

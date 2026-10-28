@@ -50,6 +50,9 @@ type Deps struct {
 	// SupplierCredentials 是供应商**主体级**准入测试凭据（000044，原型对齐）。
 	// nil 时 /supplier/test-credential 不注册（同一条纪律：没接仓储就不暴露能力）。
 	SupplierCredentials *SupplierCredentialService
+	// SupplierModels 是供应商门户「模型管理」列表（2026-10-28）。
+	// nil 时 /supplier/models 不注册（同一条纪律：没接仓储就不暴露能力）。
+	SupplierModels *SupplierModelService
 	// ResourceTestTargets 供内部复测（T-10）读取资源自身测试目标。
 	ResourceTestTargets ResourceTestTargetLoader
 	ModelSvc            *model.Service

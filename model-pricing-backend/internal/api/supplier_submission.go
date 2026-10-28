@@ -20,13 +20,21 @@ import (
 
 // 申报单状态（Q-B 最小集）。前端按这些值推导 permissions 与列表筛选。
 const (
-	submissionDraft        = "DRAFT"
+	submissionDraft = "DRAFT"
 	// submissionPendingTest 表示已提交但仍有模型未通过连通测试（原型「等待测试补齐」）。
-	submissionPendingTest  = "PENDING_TEST"
+	submissionPendingTest = "PENDING_TEST"
 	submissionPending     = "PENDING_APPROVAL"
 	submissionApproved    = "APPROVED"
 	submissionRejected    = "REJECTED"
 	submissionWithdrawn   = "WITHDRAWN"
+)
+
+// 申报类型（与前端 kind 一致）。
+const (
+	// submissionKindModelNew 是模型新增申报：要跑连通/压力测试，受提交门禁约束。
+	submissionKindModelNew = "MODEL_NEW"
+	// submissionKindPriceChange 是价格变更申报：只调采购系数，不换受测目标，不跑门禁。
+	submissionKindPriceChange = "PRICE_CHANGE"
 )
 
 // SupplierSubmissionService 组合申报的读写与测试发起。
@@ -59,13 +67,13 @@ func (s *SupplierSubmissionService) now() time.Time {
 // ---- DTO（字段名与前端 supplierSubmissions.types.ts 严格一致）----
 
 type submissionTestDTO struct {
-	Category     string  `json:"category"`
-	Status       string  `json:"status"`
-	Tested       bool    `json:"tested"`
-	Passed       bool    `json:"passed"`
+	Category string `json:"category"`
+	Status   string `json:"status"`
+	Tested   bool   `json:"tested"`
+	Passed   bool   `json:"passed"`
 	// Verdict 是平台给出的判定（pass / pass_with_warnings / fail）。
 	// 压力测试没有判定，留空——前端据此区分"未通过"和"已完成但无判定"。
-	Verdict      string  `json:"verdict,omitempty"`
+	Verdict string `json:"verdict,omitempty"`
 	// Stale=true 表示测试目标已变化（改了地址/Key/模型），该结果不再有效。
 	Stale        bool    `json:"stale,omitempty"`
 	JobID        string  `json:"job_id,omitempty"`
@@ -76,24 +84,24 @@ type submissionTestDTO struct {
 }
 
 type submissionRowDTO struct {
-	ID                 string              `json:"id"`
-	InterfaceModelID   string              `json:"interface_model_id"`
-	StandardModelID    string              `json:"standard_model_id"`
-	StandardModelName  string              `json:"standard_model_name"`
-	OfficialID         string              `json:"official_id"`
-	Coefficient        string              `json:"coefficient"`
-	TestBaseURL        string              `json:"test_base_url"`
+	ID                string `json:"id"`
+	InterfaceModelID  string `json:"interface_model_id"`
+	StandardModelID   string `json:"standard_model_id"`
+	StandardModelName string `json:"standard_model_name"`
+	OfficialID        string `json:"official_id"`
+	Coefficient       string `json:"coefficient"`
+	TestBaseURL       string `json:"test_base_url"`
 	// ParticipateTest 是压力测试勾选（原型「压力测试」列）。
-	ParticipateTest    bool                `json:"participate_test"`
+	ParticipateTest bool `json:"participate_test"`
 	// SupplementRequired 表示该行已提交但仍未通过（原型「待补」）。
-	SupplementRequired bool                `json:"supplement_required"`
-	RowStatus          string              `json:"row_status"`
-	ConnectivityTested bool                `json:"connectivity_tested"`
-	ConnectivityPassed bool                `json:"connectivity_passed"`
-	StressTested       bool                `json:"stress_tested"`
-	StressPassed       bool                `json:"stress_passed"`
-	ConnectivityJob    *submissionTestDTO  `json:"connectivity_job,omitempty"`
-	StressJob          *submissionTestDTO  `json:"stress_job,omitempty"`
+	SupplementRequired bool               `json:"supplement_required"`
+	RowStatus          string             `json:"row_status"`
+	ConnectivityTested bool               `json:"connectivity_tested"`
+	ConnectivityPassed bool               `json:"connectivity_passed"`
+	StressTested       bool               `json:"stress_tested"`
+	StressPassed       bool               `json:"stress_passed"`
+	ConnectivityJob    *submissionTestDTO `json:"connectivity_job,omitempty"`
+	StressJob          *submissionTestDTO `json:"stress_job,omitempty"`
 }
 
 type submissionPermissionsDTO struct {
@@ -103,28 +111,28 @@ type submissionPermissionsDTO struct {
 }
 
 type submissionDTO struct {
-	ID            string `json:"id"`
-	SubmissionNo  string `json:"submission_no"`
-	SubmitterName string `json:"submitter_name"`
-	Region        string `json:"region"`
-	RowCount      int    `json:"row_count"`
+	ID            string   `json:"id"`
+	SubmissionNo  string   `json:"submission_no"`
+	SubmitterName string   `json:"submitter_name"`
+	Region        string   `json:"region"`
+	RowCount      int      `json:"row_count"`
 	ModelNames    []string `json:"model_names"`
 	// PendingRowCount 是「提交后仍未通过」的行数，前端用于显示"待补 N 个"。
-	PendingRowCount int `json:"pending_row_count"`
-	Kind        string                   `json:"kind"`
-	Status      string                   `json:"status"`
-	Revision    string                   `json:"revision"`
-	Reason      string                   `json:"reason"`
-	Rows        []submissionRowDTO       `json:"rows"`
-	Permissions submissionPermissionsDTO `json:"permissions"`
-	CreatedAt   time.Time                `json:"created_at"`
-	UpdatedAt   time.Time                `json:"updated_at"`
-	SubmittedAt *time.Time               `json:"submitted_at"`
+	PendingRowCount int                      `json:"pending_row_count"`
+	Kind            string                   `json:"kind"`
+	Status          string                   `json:"status"`
+	Revision        string                   `json:"revision"`
+	Reason          string                   `json:"reason"`
+	Rows            []submissionRowDTO       `json:"rows"`
+	Permissions     submissionPermissionsDTO `json:"permissions"`
+	CreatedAt       time.Time                `json:"created_at"`
+	UpdatedAt       time.Time                `json:"updated_at"`
+	SubmittedAt     *time.Time               `json:"submitted_at"`
 }
 
 type submissionWriteRow struct {
-	ID              string `json:"id"`
-	ParticipateTest bool   `json:"participate_test"`
+	ID               string `json:"id"`
+	ParticipateTest  bool   `json:"participate_test"`
 	InterfaceModelID string `json:"interface_model_id"`
 	StandardModelID  string `json:"standard_model_id"`
 	Coefficient      string `json:"coefficient"`
@@ -133,10 +141,10 @@ type submissionWriteRow struct {
 }
 
 type submissionWrite struct {
-	Kind             string                `json:"kind"`
-	ExpectedRevision string                `json:"expected_revision"`
-	Reason           string                `json:"reason"`
-	Rows             []submissionWriteRow  `json:"rows"`
+	Kind             string               `json:"kind"`
+	ExpectedRevision string               `json:"expected_revision"`
+	Reason           string               `json:"reason"`
+	Rows             []submissionWriteRow `json:"rows"`
 }
 
 // ---- handler ----
@@ -287,7 +295,7 @@ func (h *supplierSubmissionHandler) filterOptions(c *gin.Context) {
 		"regions": option.Regions, "submitters": option.Submitters,
 		"statuses": []string{submissionDraft, submissionPendingTest, submissionPending,
 			submissionApproved, submissionRejected, submissionWithdrawn},
-		"kinds": []string{"MODEL_NEW", "PRICE_CHANGE"},
+		"kinds": []string{submissionKindModelNew, submissionKindPriceChange},
 	})
 }
 
@@ -302,7 +310,7 @@ func (h *supplierSubmissionHandler) create(c *gin.Context) {
 		return
 	}
 	kind := strings.TrimSpace(body.Kind)
-	if kind != "MODEL_NEW" && kind != "PRICE_CHANGE" {
+	if kind != submissionKindModelNew && kind != submissionKindPriceChange {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "kind 只支持 MODEL_NEW / PRICE_CHANGE", 400))
 		return
 	}
@@ -370,10 +378,18 @@ func (h *supplierSubmissionHandler) submit(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	// 原型口径（2026-10-27 确认）：覆盖 + 至少一个压力模型即可提交，不看是否通过。
-	if err := h.evaluateSubmitGate(ctx, supplierID, submissionID); err != nil {
+	// 价格变更没有"测试覆盖"语义（只调系数，不换受测目标），门禁只对模型新增生效。
+	header, err := h.svc.store.Get(ctx, supplierID, submissionID)
+	if err != nil {
 		writeSubmissionError(c, err)
 		return
+	}
+	if header.Kind == submissionKindModelNew {
+		// 原型口径（2026-10-27 确认）：覆盖 + 至少一个压力模型即可提交，不看是否通过。
+		if err := h.evaluateSubmitGate(ctx, supplierID, submissionID); err != nil {
+			writeSubmissionError(c, err)
+			return
+		}
 	}
 	submitter, _ := h.svc.store.SubmitterName(ctx, supplierID)
 	// 原型：提交即「待审批」。PENDING_TEST 只留给改造前的历史数据。
@@ -478,12 +494,12 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 	result, err := h.svc.starter.Start(ctx, tpdomain.CreateCommand{
 		ResourceID:        strconv.FormatInt(resourceID, 10),
 		TargetFingerprint: fingerprint,
-		ActorID:    strconv.FormatInt(supplierID, 10),
-		Category:   tpdomain.Category(platformCategory),
-		Owner:      row.SupplierName,
+		ActorID:           strconv.FormatInt(supplierID, 10),
+		Category:          tpdomain.Category(platformCategory),
+		Owner:             row.SupplierName,
 		Target: tpdomain.Target{
 			// 平台按官方 ID 识别模型；供应商自定义名只用于展示。
-			Model: modelForTest(baseURL, row.OfficialID, row.SupplierModelName),
+			Model:   modelForTest(baseURL, row.OfficialID, row.SupplierModelName),
 			BaseURL: baseURL, Protocol: "openai", APIKey: apiKey,
 		},
 		Params:         params,
@@ -815,8 +831,8 @@ var (
 	// 当前门禁直接返回带计数的 apperr，不再靠它们分支。
 	errGateNoPassedRow         = errors.New("no row has a passed connectivity test")
 	errGateConnectivityMissing = errors.New("some rows have no connectivity test")
-	errGateStressMissing        = errors.New("no row has stress test")
-	errGateReportStale          = errors.New("test report is stale after target change")
+	errGateStressMissing       = errors.New("no row has stress test")
+	errGateReportStale         = errors.New("test report is stale after target change")
 )
 
 // resolveTestCategory 把前端类别翻译成平台门类，并把映射收在一处。

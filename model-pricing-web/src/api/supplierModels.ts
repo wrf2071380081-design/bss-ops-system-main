@@ -32,16 +32,6 @@ export const supplierModelsApi = {
     }
     return { ...result, list: result.list.map(validateRow) };
   },
-  priceChange(resourceID: string, expectedRevision: string, coefficient: string, reason: string, lifecycle: string) {
-    standardModelVersion(resourceID);
-    standardModelVersion(expectedRevision);
-    const normalized = coefficient.trim();
-    const amount = Number(normalized);
-    if (!/^(?:0?\.\d+|1(?:\.0+)?)$/.test(normalized) || !Number.isFinite(amount) || amount <= 0 || amount > 1) {
-      throw new Error("采购系数必须大于 0 且不超过 1。");
-    }
-    const url = `/supplier/models/${encodeURIComponent(resourceID)}/price-change`;
-    const payload = { expected_revision: expectedRevision, coefficient: normalized, reason: reason.trim() };
-    return apiRequest<unknown>({ method: "POST", url, data: payload, idempotency: { scope: url, payload, lifecycle } });
-  },
+  // 2026-10-28：删掉 priceChange。它一直打向不存在的 /supplier/models/:id/price-change；
+  // 价格变更改走申报主链路（kind=PRICE_CHANGE），由 SupplierSubmissionNew 创建 + 提交。
 };

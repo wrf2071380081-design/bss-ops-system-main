@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { supplierModelsApi } from "../../api/supplierModels";
 import { supplierSubmissionsApi } from "../../api/supplierSubmissions";
 import { supplierTestCredentialApi, type SupplierTestCredentialDTO } from "../../api/supplierTestCredential";
 import { ApiError } from "../../domain/common";
@@ -17,6 +16,9 @@ const resourceID = computed(() => typeof route.query.resource_id === "string" ? 
 const expectedRevision = computed(() => typeof route.query.expected_revision === "string" ? route.query.expected_revision : "");
 const modelName = computed(() => typeof route.query.model_name === "string" ? route.query.model_name : "当前模型");
 const savedCoefficient = computed(() => typeof route.query.coefficient === "string" ? route.query.coefficient : "");
+// 价格变更申报要带标准模型与供方模型名，否则后端建行时缺字段。
+const standardModelID = computed(() => typeof route.query.standard_model_id === "string" ? route.query.standard_model_id : "");
+const supplierModelID = computed(() => typeof route.query.supplier_model_id === "string" ? route.query.supplier_model_id : "");
 const coefficient = ref(savedCoefficient.value);
 // 申报说明是选填（2026-10-27 确认）：草稿和提交都不拦，详情里空值显示「无补充说明」。
 const reason = ref("");
@@ -399,11 +401,19 @@ async function submitDraft() {
 async function submitPriceChange() {
   if (submitting.value) return;
   if (!resourceID.value || !expectedRevision.value) { error.value = "缺少资源或版本信息，请从模型管理页面重新发起。"; return; }
+  if (!standardModelID.value || !supplierModelID.value) { error.value = "缺少模型信息，请从模型管理页面重新发起。"; return; }
   if (!reason.value.trim()) { error.value = "请填写价格变更原因。"; return; }
   submitting.value = true;
   error.value = "";
   try {
-    await supplierModelsApi.priceChange(resourceID.value, expectedRevision.value, coefficient.value, reason.value, lifecycle.value);
+    // 价格变更走申报主链路（kind=PRICE_CHANGE），不再依赖不存在的
+    // /supplier/models/:id/price-change：创建 + 提交，后端对这类单子不做测试门禁。
+    const created = await supplierSubmissionsApi.create({
+      kind: "PRICE_CHANGE",
+      reason: reason.value.trim(),
+      rows: [{ interface_model_id: supplierModelID.value, standard_model_id: standardModelID.value, coefficient: coefficient.value.trim() }],
+    }, lifecycle.value);
+    await supplierSubmissionsApi.submit(created.id, created.revision, reason.value.trim(), lifecycle.value);
     if (!active) return;
     ElMessage.success("价格变更申报已提交。");
     await router.replace({ path: "/supplier/home", query: { tab: "history" } });
