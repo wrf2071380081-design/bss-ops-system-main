@@ -62,9 +62,10 @@ try {
     const send = data => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", requestId: "models-test", data }) });
     if (url.pathname === "/api/supplier/models/filter-options") {
       return send({
+        // 与后端一致：公司来自数据，模型类型/接入状态是固定枚举（原型四项 / 三档）。
         companies: [...new Set(fixtures.map(item => item.company))],
-        model_types: [...new Set(fixtures.map(item => item.model_type))],
-        states: [...new Set(fixtures.map(item => item.state))],
+        model_types: ["TEXT", "IMAGE", "VIDEO", "AUDIO"],
+        states: ["PENDING_ACCESS", "ADMITTED", "OFFLINE"],
       });
     }
     if (url.pathname !== "/api/supplier/models") return route.fulfill({ status: 404, contentType: "application/json", body: '{"code":404,"message":"unexpected","data":null}' });
@@ -93,10 +94,34 @@ try {
   // 3. 已下架整行置灰
   assert.equal(await page.locator(".el-table__body tr.row-muted").count(), 1, "已下架行应整行置灰（row-muted）");
 
+  // 3.5 筛选项是固定枚举：模型类型四项（文本/图片/视频/音频）、接入状态三档（待接入/已接入/已下架）
+  const triggers = page.locator(".filters .filter-trigger");
+  const openMenu = async index => {
+    await triggers.nth(index).click();
+    // popover 是懒渲染 + 有展开动画：等它真正可见再读，否则拿到空数组。
+    const menu = page.locator(".filter-popover:visible");
+    await menu.waitFor();
+    assert.equal(await menu.count(), 1, "同一时刻只应有一个筛选弹层可见");
+    return menu;
+  };
+  // 点触发按钮自身收合，比点空白更可靠（点空白依赖 close-on-click-outside 的判定）。
+  const closeMenu = async (index, menu) => {
+    await triggers.nth(index).click();
+    await menu.waitFor({ state: "hidden" });
+  };
+  const readOptions = async index => {
+    const menu = await openMenu(index);
+    const labels = (await menu.locator(".el-checkbox__label").allInnerTexts()).map(text => text.trim());
+    await closeMenu(index, menu);
+    return labels;
+  };
+  assert.deepEqual(await readOptions(0), ["文本", "图片", "视频", "音频"], "模型类型应固定四项");
+  assert.deepEqual(await readOptions(2), ["待接入", "已接入", "已下架"], "接入状态应固定三档");
+
   // 4. 勾选筛选：模型类型选「图片」只剩一行
-  await page.locator(".filters .filter-trigger").first().click();
-  await page.locator(".filter-menu .el-checkbox__label").filter({ hasText: "图片" }).click();
-  await page.locator("body").click();
+  const typeMenu = await openMenu(0);
+  await typeMenu.locator(".el-checkbox__label").filter({ hasText: "图片" }).click();
+  await closeMenu(0, typeMenu);
   await page.waitForTimeout(300);
   assert.equal(await page.locator(".el-table__body tr").count(), 1, "选「图片」后应只剩 1 行");
 

@@ -41,8 +41,21 @@ const rows = computed(() => data.value?.list || []);
 const regionLabel = (region: string) => region === "CN" ? "国内" : region === "OVERSEAS" ? "海外" : region;
 const testLabel = (tested: boolean, passed: boolean) => !tested ? "未测" : passed ? "通过" : "未通过";
 
+/** 供应商视角的接入状态只有三档（原型固定三项）；待测试与待接入合并为「待接入」。 */
+const accessStatusLabels: Record<string, string> = { PENDING_ACCESS: "待接入", ADMITTED: "已接入", OFFLINE: "已下架" };
+const defaultAccessStatuses = ["PENDING_ACCESS", "ADMITTED", "OFFLINE"];
+/** 模型类型固定四项（原型），不随该主体实际拥有的类型增减。 */
+const defaultModelTypes = ["TEXT", "IMAGE", "VIDEO", "AUDIO"];
+
 /** 原型话术：待测试 → 待接入（不向供应商暴露"测试中"这种内部状态）。 */
-function stateLabel(state: string) { return state === "PENDING_TEST" ? "待接入" : state === "PENDING_ACCESS" ? "待接入" : state === "ADMITTED" ? "已接入" : state === "OFFLINE" ? "已下架" : state; }
+function stateLabel(state: string) { return accessStatusLabels[accessStatus(state)] || state; }
+/** 内部资源状态折叠成供应商可见的三档（与后端 SupplierAccessStatus 同口径）。 */
+function accessStatus(state: string) {
+  if (state === "ADMITTED") return "ADMITTED";
+  if (state === "OFFLINE") return "OFFLINE";
+  // PENDING_TEST / PENDING_ACCESS 都算「待接入」。
+  return "PENDING_ACCESS";
+}
 function stateType(state: string): "success" | "warning" | "info" {
   if (state === "ADMITTED") return "success";
   if (state === "OFFLINE") return "info";
@@ -54,19 +67,23 @@ function coefficientText(value: string) {
   return Number.isFinite(amount) ? String(amount) : value;
 }
 
-// 三个筛选项的候选值来自后端 filter-options（按**全部**自有资源给），
-// 不再从当前列表推导——否则列表一空，下拉就没有选项、变成点不动的灰控件。
+// 三个筛选项的候选值来自后端 filter-options：
+//   · 模型类型 / 接入状态是**固定枚举**（原型就是写死的四项 / 三项）；
+//   · 模型公司来自该主体名下的实际资源（开放集合，枚举不出来）。
+// 都不从当前列表推导——否则列表一空，下拉就没有选项、变成点不动的灰控件。
 const options = ref<{ companies: string[]; model_types: string[]; states: string[] }>({ companies: [], model_types: [], states: [] });
-const typeOptions = computed(() => options.value.model_types.map(value => ({ value, label: modelTypeLabels[value] || value })));
+const typeOptions = computed(() => (options.value.model_types.length ? options.value.model_types : defaultModelTypes)
+  .map(value => ({ value, label: modelTypeLabels[value] || value })));
 const companyOptions = computed(() => options.value.companies.map(value => ({ value, label: value })));
-const stateOptions = computed(() => options.value.states.map(value => ({ value: stateLabel(value), label: stateLabel(value) })));
+const stateOptions = computed(() => (options.value.states.length ? options.value.states : defaultAccessStatuses)
+  .map(value => ({ value, label: accessStatusLabels[value] || value })));
 
 const filtered = computed(() => {
   const text = keyword.value.trim().toLowerCase();
   return rows.value.filter(row => {
     if (filters.value.type.length && !filters.value.type.includes(row.model_type)) return false;
     if (filters.value.company.length && !filters.value.company.includes(row.company)) return false;
-    if (filters.value.state.length && !filters.value.state.includes(stateLabel(row.state))) return false;
+    if (filters.value.state.length && !filters.value.state.includes(accessStatus(row.state))) return false;
     if (!text) return true;
     return `${row.supplier_model_id} ${row.model_name}`.toLowerCase().includes(text);
   });

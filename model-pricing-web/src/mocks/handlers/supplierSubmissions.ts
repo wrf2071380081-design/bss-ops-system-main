@@ -252,9 +252,10 @@ export const supplierSubmissionHandlers = [
   // 筛选候选值：按全部自有资源给，不随列表变化（2026-10-28 修「筛选点不动」）。
   http.get("/api/supplier/models/filter-options", () =>
     result({
+      // 与后端一致：公司来自实际数据，类型/状态是固定枚举（原型写死的四项 / 三项）。
       companies: [...new Set(supplierModelFixtures.map(item => item.company))],
-      model_types: [...new Set(supplierModelFixtures.map(item => item.model_type))],
-      states: [...new Set(supplierModelFixtures.map(item => item.state))],
+      model_types: ["TEXT", "IMAGE", "VIDEO", "AUDIO"],
+      states: ["PENDING_ACCESS", "ADMITTED", "OFFLINE"],
     }),
   ),
 

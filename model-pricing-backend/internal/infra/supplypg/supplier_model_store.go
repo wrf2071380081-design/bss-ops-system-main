@@ -78,49 +78,65 @@ func (s *SupplierModelStore) CountAll(ctx context.Context, supplierID int64) (in
 
 // SupplierModelFilterOptions 是筛选条候选值。
 //
-// 取的是该主体**全部**资源（不按可见行规则过滤）：否则页面一空，
-// 三个下拉就都没有候选值、变成点不动的灰控件（2026-10-28 反馈的问题）。
+// 模型类型与接入状态都是**固定枚举**（原型这两组选项就是写死的），
+// 只有模型公司来自该主体名下的实际数据——公司是开放集合，枚举不出来。
+//
+// 公司取的是该主体**全部**资源（不按可见行规则过滤）：否则页面一空，
+// 下拉就没有候选值、变成点不动的灰控件（2026-10-28 反馈的问题）。
 type SupplierModelFilterOptions struct {
 	Companies  []string
 	ModelTypes []string
 	States     []string
 }
 
-// FilterOptions 按主体取筛选候选值（去重、稳定排序由调用方决定）。
+// supplierModelTypes 是平台标准模型的四种类型，对应原型「模型类型」四项。
+var supplierModelTypes = []string{"TEXT", "IMAGE", "VIDEO", "AUDIO"}
+
+// supplierAccessStates 是供应商视角的接入状态三档，对应原型「接入状态」三项。
+//
+// 内部状态里 PENDING_TEST（待测试）和 PENDING_ACCESS（待接入）在供应商侧
+// 都呈现为「待接入」——不向供应商暴露"测试中"这种内部阶段。
+var supplierAccessStates = []string{"PENDING_ACCESS", "ADMITTED", "OFFLINE"}
+
+// SupplierAccessStatus 把内部资源状态折叠成供应商展示用的三档。
+// 与前端 `accessStatus()` 同一口径，改这里要同步前端。
+func SupplierAccessStatus(state string) string {
+	switch state {
+	case "ADMITTED":
+		return "ADMITTED"
+	case "OFFLINE":
+		return "OFFLINE"
+	default:
+		return "PENDING_ACCESS"
+	}
+}
+
+// FilterOptions 按主体取筛选候选值。
 func (s *SupplierModelStore) FilterOptions(ctx context.Context, supplierID int64) (*SupplierModelFilterOptions, error) {
-	options := &SupplierModelFilterOptions{Companies: []string{}, ModelTypes: []string{}, States: []string{}}
+	options := &SupplierModelFilterOptions{
+		Companies:  []string{},
+		ModelTypes: append([]string{}, supplierModelTypes...),
+		States:     append([]string{}, supplierAccessStates...),
+	}
 	if supplierID <= 0 {
 		return options, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT DISTINCT COALESCE(m.company,''), COALESCE(m.model_type,''), r.state
+SELECT DISTINCT COALESCE(m.company,'')
 FROM `+s.table("resource")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
-WHERE r.supplier_id = $1`, supplierID)
+WHERE r.supplier_id = $1 AND m.company <> ''
+ORDER BY 1`, supplierID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	seenCompany := map[string]bool{}
-	seenType := map[string]bool{}
-	seenState := map[string]bool{}
 	for rows.Next() {
-		var company, modelType, state string
-		if err := rows.Scan(&company, &modelType, &state); err != nil {
+		var company string
+		if err := rows.Scan(&company); err != nil {
 			return nil, err
 		}
-		if company != "" && !seenCompany[company] {
-			seenCompany[company] = true
-			options.Companies = append(options.Companies, company)
-		}
-		if modelType != "" && !seenType[modelType] {
-			seenType[modelType] = true
-			options.ModelTypes = append(options.ModelTypes, modelType)
-		}
-		if state != "" && !seenState[state] {
-			seenState[state] = true
-			options.States = append(options.States, state)
-		}
+		options.Companies = append(options.Companies, company)
 	}
 	return options, rows.Err()
 }
