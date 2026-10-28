@@ -1,6 +1,6 @@
 import { apiRequest } from "./http";
 import { standardModelVersion, modelTypeLabels } from "./standardModels.contract";
-import type { SupplierModelListParams, SupplierModelPageDTO, SupplierModelResourceDTO } from "./supplierModels.types";
+import type { SupplierModelFilterOptionsDTO, SupplierModelListParams, SupplierModelPageDTO, SupplierModelResourceDTO } from "./supplierModels.types";
 
 function validateRow(value: unknown): SupplierModelResourceDTO {
   if (!value || typeof value !== "object") throw new Error("模型列表响应不符合约定，请重新查询。");
@@ -28,10 +28,19 @@ export const supplierModelsApi = {
     const query = { ...params, keyword: params.keyword?.trim() || undefined, region: params.region || undefined, state: params.state || undefined };
     const result = await apiRequest<SupplierModelPageDTO>({ url: "/supplier/models", params: query, signal });
     if (!result || !Array.isArray(result.list) || !Number.isSafeInteger(result.total) || result.total < result.list.length ||
+        !Number.isSafeInteger(result.hidden_total) || result.hidden_total < 0 ||
         result.page !== params.page || result.size !== params.size || result.list.length > params.size) {
       throw new Error("模型列表分页响应不符合约定，请重新查询。");
     }
     return { ...result, list: result.list.map(validateRow) };
+  },
+  /** 筛选条候选值：按全部自有资源返回，不随当前列表为空而变化。 */
+  async filterOptions(signal?: AbortSignal): Promise<SupplierModelFilterOptionsDTO> {
+    const result = await apiRequest<SupplierModelFilterOptionsDTO>({ url: "/supplier/models/filter-options", signal });
+    if (!result || !Array.isArray(result.companies) || !Array.isArray(result.model_types) || !Array.isArray(result.states)) {
+      throw new Error("模型筛选候选值响应不符合约定，请重新加载。");
+    }
+    return result;
   },
   // 2026-10-28：删掉 priceChange。它一直打向不存在的 /supplier/models/:id/price-change；
   // 价格变更改走申报主链路（kind=PRICE_CHANGE），由 SupplierSubmissionNew 创建 + 提交。

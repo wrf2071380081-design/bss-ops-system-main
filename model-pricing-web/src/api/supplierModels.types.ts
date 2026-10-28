@@ -31,8 +31,17 @@ export interface SupplierModelResourceDTO {
 export interface SupplierModelPageDTO {
   list: SupplierModelResourceDTO[];
   total: number;
+  /** 被可见行规则挡掉的数量：用来提示「还有 N 个模型在流程中」 */
+  hidden_total: number;
   page: number;
   size: number;
+}
+
+/** 筛选条候选值：后端按全部自有资源给，不随当前列表变化 */
+export interface SupplierModelFilterOptionsDTO {
+  companies: string[];
+  model_types: string[];
+  states: string[];
 }
 
 export interface SupplierModelListParams {

@@ -242,9 +242,19 @@ export const supplierSubmissionHandlers = [
   http.get("/api/supplier/models", () =>
     result({
       total: supplierModelFixtures.length,
+      hidden_total: 2, // 演示：另有 2 个模型还在流程中，用来验证空态/提示分支
       page: 1,
       size: 100,
       list: structuredClone(supplierModelFixtures),
+    }),
+  ),
+
+  // 筛选候选值：按全部自有资源给，不随列表变化（2026-10-28 修「筛选点不动」）。
+  http.get("/api/supplier/models/filter-options", () =>
+    result({
+      companies: [...new Set(supplierModelFixtures.map(item => item.company))],
+      model_types: [...new Set(supplierModelFixtures.map(item => item.model_type))],
+      states: [...new Set(supplierModelFixtures.map(item => item.state))],
     }),
   ),
 

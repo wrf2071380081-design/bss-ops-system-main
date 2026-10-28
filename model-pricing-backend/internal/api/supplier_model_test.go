@@ -20,11 +20,23 @@ type fakeSupplierModelStore struct {
 	gotSize       int
 	rows          []supplypg.SupplierModelRecord
 	total         int64
+	allTotal      int64
+	options       supplypg.SupplierModelFilterOptions
 }
 
 func (f *fakeSupplierModelStore) List(_ context.Context, supplierID int64, page, size int) ([]supplypg.SupplierModelRecord, int64, error) {
 	f.gotSupplierID, f.gotPage, f.gotSize = supplierID, page, size
 	return f.rows, f.total, nil
+}
+
+func (f *fakeSupplierModelStore) CountAll(_ context.Context, supplierID int64) (int64, error) {
+	f.gotSupplierID = supplierID
+	return f.allTotal, nil
+}
+
+func (f *fakeSupplierModelStore) FilterOptions(_ context.Context, supplierID int64) (*supplypg.SupplierModelFilterOptions, error) {
+	f.gotSupplierID = supplierID
+	return &f.options, nil
 }
 
 func newSupplierModelTestContext(t *testing.T, operator *middleware.Operator, rawURL string) (*gin.Context, *httptest.ResponseRecorder) {
@@ -45,7 +57,7 @@ func newSupplierModelTestContext(t *testing.T, operator *middleware.Operator, ra
 
 // 供应商只能看到自己的模型：查询必须带登录态的 supplier_id。
 func TestSupplierModelListScopesToLoggedInSupplier(t *testing.T) {
-	store := &fakeSupplierModelStore{}
+	store := &fakeSupplierModelStore{allTotal: 3}
 	handler := &supplierModelHandler{svc: NewSupplierModelService(store)}
 	c, recorder := newSupplierModelTestContext(t, &middleware.Operator{OperatorType: "SUPPLIER", PortalType: "SUPPLIER", OperatorID: 3, AccountID: 20}, "")
 
@@ -68,6 +80,50 @@ func TestSupplierModelListScopesToLoggedInSupplier(t *testing.T) {
 	}
 	if body.Data.Page != 1 || body.Data.Size != supplierModelDefaultSize {
 		t.Fatalf("默认分页不符：%+v", body.Data)
+	}
+	// 可见 0 条、名下共 3 条 → 页面才知道要提示「还有 3 个在流程中」。
+	if body.Data.Total != 0 || body.Data.HiddenTotal != 3 {
+		t.Fatalf("hidden_total 不符：total=%d hidden=%d", body.Data.Total, body.Data.HiddenTotal)
+	}
+}
+
+// 筛选候选值走独立接口，且取自全部自有资源（不按可见性过滤），
+// 否则页面一空、三个下拉就没有候选值了。
+func TestSupplierModelFilterOptions(t *testing.T) {
+	store := &fakeSupplierModelStore{options: supplypg.SupplierModelFilterOptions{
+		Companies: []string{"Anthropic"}, ModelTypes: []string{"TEXT"}, States: []string{"PENDING_TEST"},
+	}}
+	handler := &supplierModelHandler{svc: NewSupplierModelService(store)}
+	c, recorder := newSupplierModelTestContext(t, &middleware.Operator{OperatorType: "SUPPLIER", PortalType: "SUPPLIER", OperatorID: 3}, "/api/supplier/models/filter-options")
+
+	handler.filterOptions(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d：%s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Data supplierModelFilterOptionsDTO `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应不是合法 JSON：%v", err)
+	}
+	if len(body.Data.Companies) != 1 || body.Data.Companies[0] != "Anthropic" ||
+		len(body.Data.ModelTypes) != 1 || len(body.Data.States) != 1 {
+		t.Fatalf("候选值不符：%+v", body.Data)
+	}
+
+	// 空主体也要回空数组而不是 null
+	empty := &supplierModelHandler{svc: NewSupplierModelService(&fakeSupplierModelStore{})}
+	c2, recorder2 := newSupplierModelTestContext(t, &middleware.Operator{OperatorType: "SUPPLIER", OperatorID: 3}, "/api/supplier/models/filter-options")
+	empty.filterOptions(c2)
+	var body2 struct {
+		Data supplierModelFilterOptionsDTO `json:"data"`
+	}
+	if err := json.Unmarshal(recorder2.Body.Bytes(), &body2); err != nil {
+		t.Fatalf("响应不是合法 JSON：%v", err)
+	}
+	if body2.Data.Companies == nil || body2.Data.ModelTypes == nil || body2.Data.States == nil {
+		t.Fatalf("空候选值应为 []：%+v", body2.Data)
 	}
 }
 

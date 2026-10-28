@@ -54,11 +54,12 @@ function coefficientText(value: string) {
   return Number.isFinite(amount) ? String(amount) : value;
 }
 
-// 三个筛选项的候选值来自当前数据；接入状态用展示文案（待接入/已接入/已下架）。
-const typeOptions = computed(() => distinct(rows.value.map(row => row.model_type)).map(value => ({ value, label: modelTypeLabels[value] || value })));
-const companyOptions = computed(() => distinct(rows.value.map(row => row.company)).map(value => ({ value, label: value })));
-const stateOptions = computed(() => distinct(rows.value.map(row => stateLabel(row.state))).map(value => ({ value, label: value })));
-function distinct(values: string[]) { return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN")); }
+// 三个筛选项的候选值来自后端 filter-options（按**全部**自有资源给），
+// 不再从当前列表推导——否则列表一空，下拉就没有选项、变成点不动的灰控件。
+const options = ref<{ companies: string[]; model_types: string[]; states: string[] }>({ companies: [], model_types: [], states: [] });
+const typeOptions = computed(() => options.value.model_types.map(value => ({ value, label: modelTypeLabels[value] || value })));
+const companyOptions = computed(() => options.value.companies.map(value => ({ value, label: value })));
+const stateOptions = computed(() => options.value.states.map(value => ({ value: stateLabel(value), label: stateLabel(value) })));
 
 const filtered = computed(() => {
   const text = keyword.value.trim().toLowerCase();
@@ -80,8 +81,14 @@ async function load() {
   loading.value = true;
   error.value = "";
   try {
-    const result = await supplierModelsApi.list({ page: 1, size: 100 }, current.signal);
-    if (active && !current.signal.aborted) data.value = result;
+    const [result, filterOptions] = await Promise.all([
+      supplierModelsApi.list({ page: 1, size: 100 }, current.signal),
+      // 候选值失败不影响列表：退化成"没有候选项"，但控件仍然可点。
+      supplierModelsApi.filterOptions(current.signal).catch(() => ({ companies: [], model_types: [], states: [] })),
+    ]);
+    if (!active || current.signal.aborted) return;
+    data.value = result;
+    options.value = filterOptions;
   } catch (value) {
     if (active && !current.signal.aborted) { data.value = undefined; error.value = message(value); }
   } finally { if (active && !current.signal.aborted) loading.value = false; }
@@ -107,9 +114,9 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
     <h2 class="card-title">模型管理</h2>
 
     <div class="filters">
-      <SupplierFilterSelect v-model="filters.type" label="模型类型" :options="typeOptions" :disabled="!typeOptions.length" />
-      <SupplierFilterSelect v-model="filters.company" label="模型公司" :options="companyOptions" :disabled="!companyOptions.length" />
-      <SupplierFilterSelect v-model="filters.state" label="接入状态" :options="stateOptions" :disabled="!stateOptions.length" />
+      <SupplierFilterSelect v-model="filters.type" label="模型类型" :options="typeOptions" />
+      <SupplierFilterSelect v-model="filters.company" label="模型公司" :options="companyOptions" />
+      <SupplierFilterSelect v-model="filters.state" label="接入状态" :options="stateOptions" />
       <el-input v-model="keyword" class="search" placeholder="搜索模型名称 / 接口模型 ID" clearable />
       <el-button @click="resetFilters">重置</el-button>
     </div>
@@ -141,8 +148,12 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
 
       <template #empty>
         <div v-if="hasFilter" class="empty-state">当前筛选暂无数据</div>
+        <div v-else-if="data?.hidden_total" class="empty-state">
+          <p>暂无已接入的模型。另有 {{ data.hidden_total }} 个模型正在接入流程中，可在申报页查看办理进度。</p>
+          <el-button type="primary" plain size="small" @click="router.push('/supplier/home')">去申报页</el-button>
+        </div>
         <div v-else class="empty-state">
-          <p>暂无已接入的模型，可在申报页查看办理进度。</p>
+          <p>还没有申报过模型，先发起一次模型申报吧。</p>
           <el-button type="primary" plain size="small" @click="router.push('/supplier/home')">去申报页</el-button>
         </div>
       </template>

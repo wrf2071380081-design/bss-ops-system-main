@@ -59,11 +59,16 @@ try {
 
   await page.route("**/api/supplier/**", async route => {
     const url = new URL(route.request().url());
+    const send = data => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", requestId: "models-test", data }) });
+    if (url.pathname === "/api/supplier/models/filter-options") {
+      return send({
+        companies: [...new Set(fixtures.map(item => item.company))],
+        model_types: [...new Set(fixtures.map(item => item.model_type))],
+        states: [...new Set(fixtures.map(item => item.state))],
+      });
+    }
     if (url.pathname !== "/api/supplier/models") return route.fulfill({ status: 404, contentType: "application/json", body: '{"code":404,"message":"unexpected","data":null}' });
-    return route.fulfill({
-      status: 200, contentType: "application/json",
-      body: JSON.stringify({ code: 0, message: "ok", requestId: "models-test", data: { total: fixtures.length, page: 1, size: 100, list: fixtures } }),
-    });
+    return send({ total: fixtures.length, hidden_total: 0, page: 1, size: 100, list: fixtures });
   });
 
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__supplier-models`);

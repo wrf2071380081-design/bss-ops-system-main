@@ -64,6 +64,67 @@ const visibleResourceClause = `(r.ever_admitted OR r.state IN ('ADMITTED','OFFLI
   WHERE s.supplier_id = r.supplier_id AND s.status = 'APPROVED'
     AND (sr.resource_id = r.id OR sr.standard_model_id = r.standard_model_id)))`
 
+// CountAll 返回该主体名下**全部**资源数（含未进入可见范围的）。
+// 页面用它算「还有 N 个模型在流程中」，避免按可见行规则过滤后整页空白却没有任何解释。
+func (s *SupplierModelStore) CountAll(ctx context.Context, supplierID int64) (int64, error) {
+	if supplierID <= 0 {
+		return 0, nil
+	}
+	var total int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM `+s.table("resource")+` WHERE supplier_id = $1`, supplierID).Scan(&total)
+	return total, err
+}
+
+// SupplierModelFilterOptions 是筛选条候选值。
+//
+// 取的是该主体**全部**资源（不按可见行规则过滤）：否则页面一空，
+// 三个下拉就都没有候选值、变成点不动的灰控件（2026-10-28 反馈的问题）。
+type SupplierModelFilterOptions struct {
+	Companies  []string
+	ModelTypes []string
+	States     []string
+}
+
+// FilterOptions 按主体取筛选候选值（去重、稳定排序由调用方决定）。
+func (s *SupplierModelStore) FilterOptions(ctx context.Context, supplierID int64) (*SupplierModelFilterOptions, error) {
+	options := &SupplierModelFilterOptions{Companies: []string{}, ModelTypes: []string{}, States: []string{}}
+	if supplierID <= 0 {
+		return options, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT DISTINCT COALESCE(m.company,''), COALESCE(m.model_type,''), r.state
+FROM `+s.table("resource")+` r
+JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
+WHERE r.supplier_id = $1`, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	seenCompany := map[string]bool{}
+	seenType := map[string]bool{}
+	seenState := map[string]bool{}
+	for rows.Next() {
+		var company, modelType, state string
+		if err := rows.Scan(&company, &modelType, &state); err != nil {
+			return nil, err
+		}
+		if company != "" && !seenCompany[company] {
+			seenCompany[company] = true
+			options.Companies = append(options.Companies, company)
+		}
+		if modelType != "" && !seenType[modelType] {
+			seenType[modelType] = true
+			options.ModelTypes = append(options.ModelTypes, modelType)
+		}
+		if state != "" && !seenState[state] {
+			seenState[state] = true
+			options.States = append(options.States, state)
+		}
+	}
+	return options, rows.Err()
+}
+
 // List 按主体分页列出资源；supplier_id 必须由调用方从登录态取得。
 //
 // 报告取「该资源最近一次」：测试重跑过的话旧报告不参与展示，

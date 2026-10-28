@@ -80,8 +80,18 @@ type supplierModelDTO struct {
 type supplierModelPageDTO struct {
 	List  []supplierModelDTO `json:"list"`
 	Total int64              `json:"total"`
-	Page  int                `json:"page"`
-	Size  int                `json:"size"`
+	// HiddenTotal 是有资源但被可见行规则挡掉的数量：页面用它提示
+	// 「还有 N 个模型在流程中」，否则空列表看起来像页面坏了。
+	HiddenTotal int64 `json:"hidden_total"`
+	Page        int   `json:"page"`
+	Size        int   `json:"size"`
+}
+
+// supplierModelFilterOptionsDTO 是筛选条候选值（取全部自有资源，不按可见性过滤）。
+type supplierModelFilterOptionsDTO struct {
+	Companies  []string `json:"companies"`
+	ModelTypes []string `json:"model_types"`
+	States     []string `json:"states"`
 }
 
 type supplierModelQuery struct {
@@ -95,6 +105,8 @@ type supplierModelQuery struct {
 // supplierModelReader 是列表所需的最小仓储接口（便于单测替换）。
 type supplierModelReader interface {
 	List(ctx context.Context, supplierID int64, page, size int) ([]supplypg.SupplierModelRecord, int64, error)
+	CountAll(ctx context.Context, supplierID int64) (int64, error)
+	FilterOptions(ctx context.Context, supplierID int64) (*supplypg.SupplierModelFilterOptions, error)
 }
 
 // SupplierModelService 是供应商门户模型列表服务。
@@ -119,11 +131,45 @@ func (s *SupplierModelService) List(ctx context.Context, supplierID int64, q sup
 	if err != nil {
 		return nil, err
 	}
+	all, err := s.store.CountAll(ctx, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	hidden := all - total
+	if hidden < 0 {
+		hidden = 0
+	}
 	rows := make([]supplierModelDTO, 0, len(records))
 	for i := range records {
 		rows = append(rows, buildSupplierModelDTO(records[i]))
 	}
-	return &supplierModelPageDTO{List: rows, Total: total, Page: q.Page, Size: q.Size}, nil
+	return &supplierModelPageDTO{List: rows, Total: total, HiddenTotal: hidden, Page: q.Page, Size: q.Size}, nil
+}
+
+// FilterOptions 返回筛选条候选值（全部自有资源，不按可见性过滤）。
+//
+// 供页面渲染下拉用：列表被可见行规则挡空时，也不能让筛选控件变成空的下拉。
+func (s *SupplierModelService) FilterOptions(ctx context.Context, supplierID int64) (*supplierModelFilterOptionsDTO, error) {
+	if supplierID <= 0 {
+		return nil, apperr.ErrForbidden
+	}
+	options, err := s.store.FilterOptions(ctx, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	return &supplierModelFilterOptionsDTO{
+		Companies:  nonNilStrings(options.Companies),
+		ModelTypes: nonNilStrings(options.ModelTypes),
+		States:     nonNilStrings(options.States),
+	}, nil
+}
+
+// nonNilStrings 保证 JSON 里是 [] 而不是 null（前端直接 .map 不判空）。
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 // buildSupplierModelDTO 把窄查询结果映射成前端契约。
@@ -238,6 +284,28 @@ func (h *supplierModelHandler) list(c *gin.Context) {
 	response.Success(c, result)
 }
 
+// filterOptions 返回筛选条候选值。
+//
+//	@Summary	供应商门户 模型管理筛选候选值
+//	@Tags		供应商门户
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{object}	response.Body{data=supplierModelFilterOptionsDTO}
+//	@Failure	401	{object}	response.Body
+//	@Router		/api/supplier/models/filter-options [get]
+func (h *supplierModelHandler) filterOptions(c *gin.Context) {
+	supplierID, _, ok := supplierIDFromLogin(c)
+	if !ok {
+		return
+	}
+	result, err := h.svc.FilterOptions(c.Request.Context(), supplierID)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 // registerSupplierModelRoutes 挂载供应商门户模型列表。
 //
 // 只读接口，不挂 RequirePerm（供应商角色零内部权限点），隔离靠登录态 supplier_id。
@@ -247,4 +315,5 @@ func registerSupplierModelRoutes(protected *gin.RouterGroup, svc *SupplierModelS
 	}
 	handler := &supplierModelHandler{svc: svc}
 	protected.GET("/models", handler.list)
+	protected.GET("/models/filter-options", handler.filterOptions)
 }
