@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { supplierSubmissionsApi } from "../../api/supplierSubmissions";
 import { supplierTestCredentialApi, type SupplierTestCredentialDTO } from "../../api/supplierTestCredential";
 import { ApiError } from "../../domain/common";
-import type { SupplierImportPreviewDTO, SupplierModelOptionDTO, SupplierSubmissionDTO, SupplierSubmissionRowDTO, SupplierSubmissionTestDTO, SupplierSubmissionWriteRow, SupplierTestCategory, SupplierTestJobDTO } from "../../api/supplierSubmissions.types";
+import type { SupplierImportPreviewDTO, SupplierModelOptionDTO, SupplierSubmissionDTO, SupplierSubmissionRowDTO, SupplierSubmissionTestDTO, SupplierSubmissionWriteRow, SupplierTestCategory, SupplierTestJobDTO, SupplierTestProgressRowDTO } from "../../api/supplierSubmissions.types";
 
 type EditableRow = SupplierSubmissionRowDTO;
 const route = useRoute();
@@ -174,6 +174,8 @@ async function loadDraft(id: string) {
     if (!active || request.signal.aborted) return;
     if (result.kind !== "MODEL_NEW") throw new Error("当前申报不是模型新增类型。请从申报记录重新打开。");
     normalizeSaved(result);
+    // 重新打开一张还有任务在跑的草稿时接着盯，别让用户回来只看到「测试中」干等。
+    if (hasRunningTest.value) watchTestProgress();
   } catch (value) {
     if (active && !request.signal.aborted) error.value = value instanceof Error ? value.message : "申报详情暂时无法加载。";
   } finally { if (active && !request.signal.aborted) loadingDraft.value = false; }
@@ -246,7 +248,7 @@ async function refreshDraftConflict() {
 }
 function applyTest(row: EditableRow, result: SupplierTestJobDTO) {
   // verdict / stale 要一起带回来，否则「未通过」会被显示成「已完成」。
-  const test: SupplierSubmissionTestDTO = { category: result.category, status: result.status, tested: result.tested, passed: result.passed, verdict: result.verdict, stale: result.stale, job_id: result.job_id, report_id: result.report_id, connection_ms: result.connection_ms, rps: result.rps, tps: result.tps };
+  const test: SupplierSubmissionTestDTO = { category: result.category, status: result.status, tested: result.tested, passed: result.passed, verdict: result.verdict, stale: result.stale, job_id: result.job_id, report_id: result.report_id, connection_ms: result.connection_ms, rps: result.rps, tps: result.tps, started_at: result.started_at, eta_seconds: result.eta_seconds };
   if (result.category === "CONNECTIVITY") { row.connectivity_job = test; row.connectivity_tested = result.tested; row.connectivity_passed = result.passed; }
   else { row.stress_job = test; row.stress_tested = result.tested; row.stress_passed = result.passed; }
 }
@@ -273,6 +275,114 @@ async function refreshTest(row: EditableRow, category: SupplierTestCategory) {
   try { applyTest(row, await supplierSubmissionsApi.testStatus(submissionID.value, row.id, category)); }
   catch (value) { showError(value, "测试进度暂时无法读取。可以稍后重试。"); }
   finally { const next = { ...testBusy.value }; delete next[row.id + category]; testBusy.value = next; }
+}
+
+// ---- 自动盯结果（A）：发起后每几秒拉一次进度，用户不用再手点「刷新结果」 ----
+// 前提：查进度接口是**只读**的（后端 TestProgress 不会发单），否则轮询等于反复发起测试。
+const nowMs = ref(Date.now());
+const pollDelayMs = ref(3000);
+const finishedRowIDs = ref<string[]>([]);
+let pollTimer: number | undefined;
+let clockTimer: number | undefined;
+let lastRunning = new Set<string>();
+
+const isJobRunning = (job?: SupplierSubmissionTestDTO) => Boolean(job && ["QUEUED", "RUNNING"].includes(job.status));
+const hasRunningTest = computed(() => rows.value.some(row => isJobRunning(row.connectivity_job) || isJobRunning(row.stress_job)));
+// 压测耗时来自后端（和发单参数同源），有就拿来当等待预期。
+const testEtaSeconds = computed(() => rows.value.map(row => row.stress_job?.eta_seconds).find(value => typeof value === "number" && value > 0) || 0);
+
+function runningKeySet() {
+  const keys = new Set<string>();
+  for (const row of rows.value) {
+    if (isJobRunning(row.connectivity_job)) keys.add(`${row.id}:CONNECTIVITY`);
+    if (isJobRunning(row.stress_job)) keys.add(`${row.id}:STRESS`);
+  }
+  return keys;
+}
+function clearPollTimer() { if (pollTimer !== undefined) { window.clearTimeout(pollTimer); pollTimer = undefined; } }
+function clearClockTimer() { if (clockTimer !== undefined) { window.clearInterval(clockTimer); clockTimer = undefined; } }
+function stopPolling() { clearPollTimer(); clearClockTimer(); pollDelayMs.value = 3000; }
+function schedulePoll(delay = pollDelayMs.value) {
+  clearPollTimer();
+  if (!active) return;
+  pollTimer = window.setTimeout(() => { void pollProgress(); }, delay);
+}
+function ensureClock() {
+  if (clockTimer !== undefined) return;
+  // 只为了让「已用 N 秒」自己往前走，避免只能等下一次轮询才跳数字。
+  clockTimer = window.setInterval(() => { nowMs.value = Date.now(); }, 1000);
+}
+
+async function pollProgress() {
+  const id = submissionID.value;
+  if (!active || !id) { stopPolling(); return; }
+  // 页面在后台就别 3 秒一次了，切回来会立刻补一次。
+  if (document.visibilityState === "hidden") { schedulePoll(10000); return; }
+  try {
+    const result = await supplierSubmissionsApi.testProgress(id);
+    if (!active || submissionID.value !== id) return;
+    applyProgress(result.rows);
+    if (hasRunningTest.value) {
+      pollDelayMs.value = Math.min(6000, pollDelayMs.value + 500);
+      schedulePoll();
+    } else { finishPolling(); }
+  } catch {
+    // 拉进度失败不该打断用户，退避后重试；真正的错误留给主动操作去暴露。
+    pollDelayMs.value = Math.min(15000, pollDelayMs.value * 2);
+    schedulePoll();
+  }
+}
+
+function applyProgress(items: SupplierTestProgressRowDTO[]) {
+  for (const item of items) {
+    const row = rows.value.find(entry => entry.id === item.row_id);
+    if (!row) continue;
+    // NOT_STARTED 表示这一行根本没有这类任务，别平白给它挂一个「未测试」标签。
+    if (item.connectivity.status !== "NOT_STARTED") applyTest(row, item.connectivity);
+    if (item.stress.status !== "NOT_STARTED") applyTest(row, item.stress);
+  }
+  const after = runningKeySet();
+  const done = [...lastRunning].filter(key => !after.has(key));
+  lastRunning = after;
+  if (!done.length) return;
+  // 有任务刚落地：闪一下这几行，并告诉用户可以去核对了。
+  const ids = [...new Set(done.map(key => key.split(":")[0]))];
+  finishedRowIDs.value = ids;
+  window.setTimeout(() => { finishedRowIDs.value = []; }, 5000);
+  ElMessage.success(ids.length === 1 ? "测试结果已出，可以核对后提交了。" : `${ids.length} 个模型的测试结果已出，可以核对后提交了。`);
+}
+
+function finishPolling() { stopPolling(); lastRunning = new Set(); }
+
+// 发起成功 / 重新打开页面时启动；已无任务在跑就什么都不做。
+function watchTestProgress() {
+  if (!active || !submissionID.value) return;
+  lastRunning = runningKeySet();
+  if (!lastRunning.size) { stopPolling(); return; }
+  ensureClock();
+  schedulePoll(1200);
+}
+
+function rowClassName({ row }: { row: EditableRow }) { return finishedRowIDs.value.includes(row.id) ? "row-finished" : ""; }
+
+// 运行中的标签不说「未测试」，并带上已用时间；超过预估两倍就明说「比预期慢」。
+function testStateLabel(job: SupplierSubmissionTestDTO | undefined, tested: boolean, passed: boolean) {
+  if (isJobRunning(job)) return job?.status === "QUEUED" ? "排队中" : "测试中";
+  return testState(tested, passed, job?.verdict);
+}
+function testTagType(job: SupplierSubmissionTestDTO | undefined, tested: boolean, passed: boolean): "success" | "danger" | "info" | "warning" {
+  if (isJobRunning(job)) return "warning";
+  return testType(tested, passed, job?.verdict);
+}
+function elapsedLabel(job?: SupplierSubmissionTestDTO) {
+  if (!isJobRunning(job) || !job?.started_at) return "";
+  const startedAt = Date.parse(job.started_at);
+  if (!Number.isFinite(startedAt)) return "";
+  const seconds = Math.max(0, Math.floor((nowMs.value - startedAt) / 1000));
+  if (job.status === "QUEUED") return `已排队 ${seconds}s`;
+  const eta = job.eta_seconds || 0;
+  if (eta && seconds > eta * 2) return `已用 ${seconds}s · 比预期慢`;
+  return `已用 ${seconds}s${eta ? ` / 约 ${eta}s` : ""}`;
 }
 // 行状态中文文案（后端派生值 → 原型文案）
 const ROW_STATUS_LABELS: Record<string, string> = {
@@ -344,6 +454,8 @@ async function runBatch() {
     if (result.not_selected) parts.push(`${result.not_selected} 个未勾选压力测试`);
     if (result.failed) parts.push(`${result.failed} 个失败`);
     ElMessage.success(parts.join("，"));
+    // 发起成功就开始盯结果：压测要跑几十秒，别让用户守着点「刷新结果」。
+    watchTestProgress();
   } catch (value) {
     if (active) showError(value, "测试未能启动，请重试。");
   } finally { if (active) batchBusy.value = ""; }
@@ -417,6 +529,7 @@ async function submitDraft() {
     // 提交成功后这份草稿就不该再被改：先落基线，再锁编辑态，避免返回前又点一次保存。
     rememberSaved();
     canEdit.value = false;
+    stopPolling();
     ElMessage.success("申报已提交，后续状态以办理进度为准。");
     await router.replace({ path: "/supplier/home", query: { tab: "history" } });
   } catch (value) { if (active) showError(value, "申报未能提交，草稿和输入已保留。"); }
@@ -463,7 +576,7 @@ onMounted(() => {
   window.addEventListener("beforeunload", beforeUnload);
 });
 onBeforeRouteLeave(canLeave);
-onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.abort(); window.removeEventListener("beforeunload", beforeUnload); });
+onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); draftRequest?.abort(); window.removeEventListener("beforeunload", beforeUnload); });
 </script>
 
 <template>
@@ -515,7 +628,7 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
       <span class="batch-hint">所有模型都会做连通性测试；压力测试只做勾选的模型（已勾 {{ selectedStressCount }} 个，待测 {{ pendingStress }} 个）。</span>
     </div>
 
-    <el-table :data="rows" row-key="id" class="submission-table" empty-text="还没有模型，点「添加模型」开始">
+    <el-table :data="rows" row-key="id" class="submission-table" :row-class-name="rowClassName" empty-text="还没有模型，点「添加模型」开始">
       <el-table-column label="对应标准模型" min-width="260">
         <template #default="{ row }">
           <el-select v-model="row.standard_model_id" filterable clearable remote :remote-method="searchModelOptions" :loading="modelLoading" placeholder="选择对应标准模型" :disabled="locked" @change="selectStandardModel(row, $event)" @visible-change="ensureModelOptions">
@@ -533,11 +646,13 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
       <el-table-column label="压力测试" width="100" align="center">
         <template #default="{ row }"><el-checkbox v-model="row.participate_test" :disabled="locked">参与</el-checkbox></template>
       </el-table-column>
-      <el-table-column label="测试" min-width="230">
+      <el-table-column label="测试" min-width="250">
         <template #default="{ row }">
           <div class="test-cell">
-            <span class="test-pill"><el-tag size="small" :type="testType(row.connectivity_tested, row.connectivity_passed, row.connectivity_job?.verdict)">连通 {{ testState(row.connectivity_tested, row.connectivity_passed, row.connectivity_job?.verdict) }}</el-tag></span>
-            <span v-if="row.participate_test || row.stress_job" class="test-pill"><el-tag size="small" :type="testType(row.stress_tested, row.stress_passed, row.stress_job?.verdict)">压力 {{ testState(row.stress_tested, row.stress_passed, row.stress_job?.verdict) }}</el-tag></span>
+            <span class="test-pill"><el-tag size="small" :type="testTagType(row.connectivity_job, row.connectivity_tested, row.connectivity_passed)">连通 {{ testStateLabel(row.connectivity_job, row.connectivity_tested, row.connectivity_passed) }}</el-tag></span>
+            <span v-if="row.participate_test || row.stress_job" class="test-pill"><el-tag size="small" :type="testTagType(row.stress_job, row.stress_tested, row.stress_passed)">压力 {{ testStateLabel(row.stress_job, row.stress_tested, row.stress_passed) }}</el-tag></span>
+            <small v-if="elapsedLabel(row.connectivity_job)" class="muted">{{ elapsedLabel(row.connectivity_job) }}</small>
+            <small v-if="row.participate_test && elapsedLabel(row.stress_job)" class="muted">{{ elapsedLabel(row.stress_job) }}</small>
             <small v-if="rowMetrics(row)" class="muted">{{ rowMetrics(row) }}</small>
             <el-button link type="primary" size="small" :loading="refreshingRow === row.id" :disabled="locked || (!row.connectivity_job && !row.stress_job)" @click="refreshRow(row)">刷新结果</el-button>
           </div>
@@ -562,6 +677,14 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
       <el-button :loading="saving" :disabled="locked || !dirty || draftConflict" @click="saveDraft">{{ draftRefreshed ? '按最新版本重试' : '保存草稿' }}</el-button>
       <el-button type="success" :loading="submitting" :disabled="locked || !canSubmitBatch || draftConflict" @click="submitDraft">提交申报</el-button>
     </div>
+
+    <el-alert
+      v-if="hasRunningTest"
+      type="info"
+      show-icon
+      :closable="false"
+      :title="`测试正在服务端运行${testEtaSeconds ? `（压测约 ${testEtaSeconds} 秒）` : ''}：页面会自动更新进度和结果，可以先补充其他模型，或者直接离开——回来在「申报记录」里也能看到结果。`"
+    />
 
     <el-form-item label="申报说明">
       <el-input v-model="reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="locked" placeholder="选填：补充给办理方的信息" />
@@ -614,6 +737,8 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
 .batch-hint { color: var(--app-text-muted); font-size: 12px; }
 .submission-table :deep(.el-select) { width: 100%; }
 .test-cell { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+/* 结果刚下来时闪一下，避免用户没注意到自动刷新。 */
+:deep(.el-table__row.row-finished > td) { background: #f0f9eb !important; transition: background-color .6s ease; }
 .test-pill { display: inline-flex; }
 .rule-note { margin: 0; color: var(--app-text-muted); font-size: 12px; line-height: 1.7; }
 .form-actions { display: flex; justify-content: flex-end; gap: 10px; }

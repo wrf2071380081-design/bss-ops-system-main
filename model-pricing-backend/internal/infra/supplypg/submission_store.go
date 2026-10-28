@@ -713,15 +713,90 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 // 一个 GET 也会去调测试平台发单。结果是供应商在页面上点「刷新结果」，
 // 平台那边却真的又起了一轮压测（2026-10-28 实测复现）。
 type RowTestSnapshot struct {
-	JobID    *int64
-	Status   string
-	Verdict  string
-	Stale    bool
-	HasJob   bool
+	JobID   *int64
+	Status  string
+	Verdict string
+	Stale   bool
+	HasJob  bool
+	// StartedAt 是任务建单时间，页面用它算「已用 N 秒」（刷新后也不会从 0 开始）。
+	StartedAt *time.Time
 	// 下面三个是报告里的展示指标（连通看延迟，压测看 RPS/TPS）。
 	ConnectionMS string
 	RPS          string
 	TPS          string
+}
+
+// newRowTestSnapshot 把一组可空列整理成快照（两个查询共用，避免失效判定写两遍）。
+func newRowTestSnapshot(rowFingerprint string, jobID sql.NullInt64, status, jobFP, verdict sql.NullString, createdAt sql.NullTime) RowTestSnapshot {
+	snap := RowTestSnapshot{Status: status.String, Verdict: verdict.String}
+	if jobID.Valid {
+		id := jobID.Int64
+		snap.JobID = &id
+		snap.HasJob = true
+	}
+	if createdAt.Valid {
+		started := createdAt.Time
+		snap.StartedAt = &started
+	}
+	// 老数据可能没有指纹：只有两者都存在且不等才算失效（与 Rows 的口径一致）。
+	snap.Stale = rowFingerprint != "" && jobFP.Valid && jobFP.String != "" && rowFingerprint != jobFP.String
+	return snap
+}
+
+// RowTestProgress 是一行的两类测试进度（列表轮询用）。
+type RowTestProgress struct {
+	RowID        int64
+	Connectivity RowTestSnapshot
+	Stress       RowTestSnapshot
+}
+
+// TestProgress 批量读一张申报单里所有行的测试进度，纯读、一次查询。
+//
+// 页面在等结果时要每隔几秒看一眼，逐行调 TestSnapshot 会变成 N 个请求；
+// 这里一次把两类都带回来，前端按 row_id 合并即可。
+func (s *SubmissionStore) TestProgress(ctx context.Context, supplierID, submissionID int64) ([]RowTestProgress, error) {
+	result, err := s.db.QueryContext(ctx, `
+SELECT r.id, COALESCE(r.test_fingerprint,''),
+       cj.id, cj.status, cj.target_fingerprint, crep.verdict, crep.connection_ms::text, cj.created_at,
+       sj.id, sj.status, sj.target_fingerprint, srep.verdict, srep.rps::text, srep.tps::text, sj.created_at
+FROM `+s.table("submission_row")+` r
+JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
+LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
+LEFT JOIN LATERAL (
+  SELECT verdict, connection_ms FROM `+s.table("test_report")+`
+  WHERE test_job_id = cj.id ORDER BY id DESC LIMIT 1
+) crep ON TRUE
+LEFT JOIN `+s.table("test_job")+` sj ON sj.id = r.stress_job_id
+LEFT JOIN LATERAL (
+  SELECT verdict, rps, tps FROM `+s.table("test_report")+`
+  WHERE test_job_id = sj.id ORDER BY id DESC LIMIT 1
+) srep ON TRUE
+WHERE r.submission_id=$1 AND sub.supplier_id=$2
+ORDER BY r.id`, submissionID, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = result.Close() }()
+	list := make([]RowTestProgress, 0, 8)
+	for result.Next() {
+		var item RowTestProgress
+		var rowFP string
+		var connID, stressID sql.NullInt64
+		var connStatus, connFP, connVerdict, connMS sql.NullString
+		var stressStatus, stressFP, stressVerdict, rps, tps sql.NullString
+		var connAt, stressAt sql.NullTime
+		if err := result.Scan(&item.RowID, &rowFP,
+			&connID, &connStatus, &connFP, &connVerdict, &connMS, &connAt,
+			&stressID, &stressStatus, &stressFP, &stressVerdict, &rps, &tps, &stressAt); err != nil {
+			return nil, err
+		}
+		item.Connectivity = newRowTestSnapshot(rowFP, connID, connStatus, connFP, connVerdict, connAt)
+		item.Connectivity.ConnectionMS = connMS.String
+		item.Stress = newRowTestSnapshot(rowFP, stressID, stressStatus, stressFP, stressVerdict, stressAt)
+		item.Stress.RPS, item.Stress.TPS = rps.String, tps.String
+		list = append(list, item)
+	}
+	return list, result.Err()
 }
 
 // TestSnapshot 读某一行的测试结果快照，不触发任何写操作。
@@ -730,10 +805,11 @@ func (s *SubmissionStore) TestSnapshot(ctx context.Context, supplierID, submissi
 	var connJobID, stressJobID sql.NullInt64
 	var connStatus, connFP, connVerdict, connMS sql.NullString
 	var stressStatus, stressFP, stressVerdict, rps, tps sql.NullString
+	var connAt, stressAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
 SELECT COALESCE(r.test_fingerprint,''),
-       cj.id, cj.status, cj.target_fingerprint, crep.verdict, crep.connection_ms::text,
-       sj.id, sj.status, sj.target_fingerprint, srep.verdict, srep.rps::text, srep.tps::text
+       cj.id, cj.status, cj.target_fingerprint, crep.verdict, crep.connection_ms::text, cj.created_at,
+       sj.id, sj.status, sj.target_fingerprint, srep.verdict, srep.rps::text, srep.tps::text, sj.created_at
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
 LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
@@ -748,39 +824,22 @@ LEFT JOIN LATERAL (
 ) srep ON TRUE
 WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionID, supplierID).
 		Scan(&rowFingerprint,
-			&connJobID, &connStatus, &connFP, &connVerdict, &connMS,
-			&stressJobID, &stressStatus, &stressFP, &stressVerdict, &rps, &tps)
+			&connJobID, &connStatus, &connFP, &connVerdict, &connMS, &connAt,
+			&stressJobID, &stressStatus, &stressFP, &stressVerdict, &rps, &tps, &stressAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	snap := &RowTestSnapshot{}
-	// 老数据可能没有指纹：只有两者都存在且不等才算失效（与 Rows 的口径一致）。
-	stale := func(jobFP sql.NullString) bool {
-		return rowFingerprint != "" && jobFP.Valid && jobFP.String != "" && rowFingerprint != jobFP.String
-	}
 	if platformCategory == "stress" {
-		if stressJobID.Valid {
-			snap.JobID = &stressJobID.Int64
-			snap.HasJob = true
-		}
-		snap.Status = stressStatus.String
-		snap.Verdict = stressVerdict.String
-		snap.Stale = stale(stressFP)
+		snap := newRowTestSnapshot(rowFingerprint, stressJobID, stressStatus, stressFP, stressVerdict, stressAt)
 		snap.RPS, snap.TPS = rps.String, tps.String
-		return snap, nil
+		return &snap, nil
 	}
-	if connJobID.Valid {
-		snap.JobID = &connJobID.Int64
-		snap.HasJob = true
-	}
-	snap.Status = connStatus.String
-	snap.Verdict = connVerdict.String
-	snap.Stale = stale(connFP)
+	snap := newRowTestSnapshot(rowFingerprint, connJobID, connStatus, connFP, connVerdict, connAt)
 	snap.ConnectionMS = connMS.String
-	return snap, nil
+	return &snap, nil
 }
 
 // TestCredential 读本主体的准入测试凭据（000046）；未登记返回 (nil, nil)。

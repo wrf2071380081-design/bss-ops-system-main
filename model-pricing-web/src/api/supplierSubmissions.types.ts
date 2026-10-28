@@ -22,6 +22,10 @@ export interface SupplierSubmissionTestDTO {
   connection_ms?: string | null;
   rps?: string | null;
   tps?: string | null;
+  /** 任务建单时间（RFC3339）；页面用它算「已用 N 秒」 */
+  started_at?: string;
+  /** 该类测试的预估耗时（秒） */
+  eta_seconds?: number;
 }
 
 export interface SupplierSubmissionRowDTO {
@@ -175,4 +179,19 @@ export interface SupplierTestJobDTO {
   rps?: string | null;
   tps?: string | null;
   report_id?: string;
+  /** 任务建单时间（RFC3339）；页面用它算「已用 N 秒」 */
+  started_at?: string;
+  /** 该类测试的预估耗时（秒），用来给用户一个等待预期 */
+  eta_seconds?: number;
+}
+
+/** 单行的两类测试进度（批量查进度接口）。 */
+export interface SupplierTestProgressRowDTO {
+  row_id: string;
+  connectivity: SupplierTestJobDTO;
+  stress: SupplierTestJobDTO;
+}
+
+export interface SupplierTestProgressDTO {
+  rows: SupplierTestProgressRowDTO[];
 }

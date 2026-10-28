@@ -156,6 +156,24 @@ type supplierSubmissionHandler struct{ svc *SupplierSubmissionService }
 var submissionCategoryToPlatform = map[string]string{"CONNECTIVITY": "baseline", "STRESS": "stress"}
 var platformCategoryToSubmission = map[string]string{"baseline": "CONNECTIVITY", "stress": "STRESS"}
 
+// 压测时长：发单参数与页面上的「约需多久」共用这一组常量，别在两处各写一个数字。
+var (
+	stressDuration = 30 * time.Second
+	stressWarmup   = 5 * time.Second
+	// baselineETASeconds 是连通性测试的经验耗时：几秒级，给个保守值让页面有预期。
+	baselineETASeconds = 10
+)
+
+func durationParam(d time.Duration) string { return strconv.Itoa(int(d.Seconds())) + "s" }
+
+// testCategoryETA 返回该类测试的预估耗时（秒），供页面显示「约需 35 秒」。
+func testCategoryETA(category string) int {
+	if category == "STRESS" {
+		return int((stressDuration + stressWarmup).Seconds())
+	}
+	return baselineETASeconds
+}
+
 func (h *supplierSubmissionHandler) supplierID(c *gin.Context) (int64, bool) {
 	op := middleware.OperatorFrom(c)
 	if op == nil || op.OperatorType != "SUPPLIER" || op.OperatorID <= 0 {
@@ -489,7 +507,9 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		// 真机实测：stress 必须显式声明参考引擎，否则 400。
 		params = map[string]any{
 			"engine": "reference-performance-v1", "concurrency": []int{1},
-			"duration": "30s", "warmup": true, "warmup_duration": "5s",
+			"duration":      durationParam(stressDuration),
+			"warmup":        true,
+			"warmup_duration": durationParam(stressWarmup),
 		}
 	}
 	result, err := h.svc.starter.Start(ctx, tpdomain.CreateCommand{
@@ -671,16 +691,9 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 	})
 }
 
-// writeTestSnapshot 回读某一行某一类测试的当前结果，纯读不写。
-// 返回结构与发起测试一致，前端可以用同一套 applyTest 落地。
-func (h *supplierSubmissionHandler) writeTestSnapshot(c *gin.Context, supplierID, submissionID, rowID int64,
-	category, platformCategory string) {
-	snap, err := h.svc.store.TestSnapshot(c.Request.Context(), supplierID, submissionID, rowID, platformCategory)
-	if err != nil {
-		writeSubmissionError(c, err)
-		return
-	}
-	// 判定口径与 buildSubmissionDTO 保持一致：终态且未失效才算「测过」。
+// testSnapshotDTO 把只读快照整理成前端契约（查进度、批量进度共用）。
+// 判定口径与 buildSubmissionDTO 保持一致：终态且未失效才算「测过」。
+func testSnapshotDTO(category string, snap supplypg.RowTestSnapshot) gin.H {
 	tested := snap.HasJob && isTerminalStatus(snap.Status) && !snap.Stale
 	passed := tested && verdictTextOK(snap.Verdict)
 	jobID, status := "", snap.Status
@@ -690,12 +703,60 @@ func (h *supplierSubmissionHandler) writeTestSnapshot(c *gin.Context, supplierID
 	if status == "" {
 		status = "NOT_STARTED"
 	}
-	response.Success(c, gin.H{
+	// 页面用它算「已用 N 秒」，刷新后不会从 0 重新数。
+	startedAt := ""
+	if snap.StartedAt != nil {
+		startedAt = snap.StartedAt.Format(time.RFC3339)
+	}
+	return gin.H{
 		"job_id": jobID, "category": category, "status": status,
 		"tested": tested, "passed": passed, "skipped": false, "action": "QUERY",
 		"verdict": snap.Verdict, "stale": snap.Stale,
 		"connection_ms": snap.ConnectionMS, "rps": snap.RPS, "tps": snap.TPS,
-	})
+		"eta_seconds": testCategoryETA(category), "started_at": startedAt,
+	}
+}
+
+// writeTestSnapshot 回读某一行某一类测试的当前结果，纯读不写。
+// 返回结构与发起测试一致，前端可以用同一套 applyTest 落地。
+func (h *supplierSubmissionHandler) writeTestSnapshot(c *gin.Context, supplierID, submissionID, rowID int64,
+	category, platformCategory string) {
+	snap, err := h.svc.store.TestSnapshot(c.Request.Context(), supplierID, submissionID, rowID, platformCategory)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	response.Success(c, testSnapshotDTO(category, *snap))
+}
+
+// testProgress 批量回读整张单子的测试进度（只读）。
+//
+// 页面等结果时要每几秒看一眼，逐行调 /rows/:rowId/test 会变成 N 个请求；
+// 这里一次返回所有行，前端按 row_id 合并。**绝不能在读路径上发单。**
+func (h *supplierSubmissionHandler) testProgress(c *gin.Context) {
+	supplierID, ok := h.supplierID(c)
+	if !ok {
+		return
+	}
+	submissionID, err := positiveID(c.Param("id"))
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	rows, err := h.svc.store.TestProgress(c.Request.Context(), supplierID, submissionID)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, gin.H{
+			"row_id":       strconv.FormatInt(row.RowID, 10),
+			"connectivity": testSnapshotDTO("CONNECTIVITY", row.Connectivity),
+			"stress":       testSnapshotDTO("STRESS", row.Stress),
+		})
+	}
+	response.Success(c, gin.H{"rows": items})
 }
 
 // verdictTextOK 是 verdictOK 的字符串版（快照读出来的是字符串）。
@@ -1172,6 +1233,8 @@ func registerSupplierSubmissionRoutes(protected *gin.RouterGroup, deps Deps, ide
 	group.POST("/import/parse", handler.importParse)
 	group.GET("/:id", handler.detail)
 	group.GET("/:id/rows/:rowId/test", handler.rowTest)
+	// 批量查进度：页面等结果时每几秒看一眼，只读。
+	group.GET("/:id/test-progress", handler.testProgress)
 	group.POST("/:id/rows/:rowId/test", perClick, handler.rowTest)
 	// 写接口一律挂幂等（红线）。
 	group.POST("", idempotent, handler.create)
