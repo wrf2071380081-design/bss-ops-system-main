@@ -368,6 +368,8 @@ export const supplierSubmissionHandlers = [
   http.post("/api/supplier/submissions/:id/tests", ({ params }) => {
     const record = findSubmission(String(params.id));
     if (!record) return fail(404, "数据不存在");
+    // 与后端一致：一个压测都没勾时不许发起，连通性也不跑。
+    if (!record.rows.some(row => row.participate_test)) return fail(400, "请至少勾选一个压力测试");
     let started = 0;
     for (const row of record.rows) {
       if (!row.connectivity_job) { row.connectivity_job = passedJob("CONNECTIVITY"); row.connectivity_tested = true; row.connectivity_passed = true; started++; }

@@ -173,8 +173,12 @@ func (s *AccountStore) Load(ctx context.Context, supplierID int64) (*AccountReco
 	return s.load(ctx, s.db, supplierID)
 }
 
+// rowQuerier 是 *sql.DB 与 *sql.Tx 的公共读接口：
+// 单行读（load）和「测试期写锁」的多行比对（ensureTargetsStableWhileTesting）
+// 都要能在同一个事务里跑，所以两个方法都列上。
 type rowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 func (s *AccountStore) load(ctx context.Context, q rowQuerier, supplierID int64) (*AccountRecord, error) {

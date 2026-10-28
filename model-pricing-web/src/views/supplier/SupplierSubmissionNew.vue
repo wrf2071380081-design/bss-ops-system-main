@@ -214,7 +214,12 @@ async function saveDraft(): Promise<boolean> {
     return true;
   } catch (value) {
     if (active) {
-      if (value instanceof ApiError && value.httpStatus === 409) { draftConflict.value = true; draftRefreshed.value = false; }
+      // 只有版本冲突才进「取最新版本」流程；测试占用（409 测试进行中）是拒绝本次改动，
+      // 提示成「草稿已变化」会把人引去刷新，刷新也解决不了。
+      // 「申报单已变化」这句是后端 writeSubmissionError 的固定文案，改文案时两边一起改。
+      if (value instanceof ApiError && value.httpStatus === 409 && value.message.includes("申报单已变化")) {
+        draftConflict.value = true; draftRefreshed.value = false;
+      }
       showError(value, "草稿保存失败，输入内容已保留。");
     }
     return false;
@@ -302,6 +307,14 @@ async function reloadKeepingKeys() {
 // 单一入口「发起测试／异常重试」：连通测全部行，压力只测勾选行。
 async function runBatch() {
   if (batchBusy.value || !rows.value.length) return;
+  // 压测是提交门禁的一部分，所以它也是「发起测试」的前置条件：
+  // 一个都没勾时不许先跑连通性。否则连通性白测一轮、压测又补不上，
+  // 用户到提交时才被挡住（2026-10-28 报障）。
+  if (selectedStressCount.value === 0) {
+    error.value = "请至少勾选一个压力测试";
+    ElMessage.warning("请至少勾选一个压力测试");
+    return;
+  }
   if (!submissionID.value || dirty.value) {
     if (!(await saveDraft())) return;
   }

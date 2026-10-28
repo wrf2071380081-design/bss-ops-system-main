@@ -355,7 +355,7 @@ WHERE id=$2 AND supplier_id=$3 AND status = ANY($5) AND revision=$4 RETURNING re
 	if err != nil {
 		return 0, err
 	}
-	if err := s.ensureNoRunningTests(ctx, tx, id); err != nil {
+	if err := s.ensureTargetsStableWhileTesting(ctx, tx, s.table("submission_row"), id, rows); err != nil {
 		return 0, err
 	}
 	if err := syncRows(ctx, tx, s.table("submission_row"), id, rows); err != nil {
@@ -367,20 +367,84 @@ WHERE id=$2 AND supplier_id=$3 AND status = ANY($5) AND revision=$4 RETURNING re
 	return revision, nil
 }
 
-// ensureNoRunningTests 是测试期写锁（T-21）：
-// 还有任务排队/运行时，不允许改测试目标或撤回，否则结果落库后立刻失效、白跑一轮。
-func (s *SubmissionStore) ensureNoRunningTests(ctx context.Context, q interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, submissionID int64) error {
+// runningTestRows 数「本单还有多少行挂着排队/运行中的测试任务」。
+func (s *SubmissionStore) runningTestRows(ctx context.Context, q rowQuerier, submissionID int64) (int, error) {
 	var running int
-	if err := q.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 SELECT count(*) FROM `+s.table("submission_row")+` r
 JOIN `+s.table("test_job")+` j ON j.id = r.test_job_id OR j.id = r.stress_job_id
-WHERE r.submission_id = $1 AND j.status IN ('QUEUED','RUNNING')`, submissionID).Scan(&running); err != nil {
+WHERE r.submission_id = $1 AND j.status IN ('QUEUED','RUNNING')`, submissionID).Scan(&running)
+	return running, err
+}
+
+// ensureNoRunningTests 是测试期写锁（T-21）：
+// 还有任务排队/运行时，不允许改测试目标或撤回，否则结果落库后立刻失效、白跑一轮。
+func (s *SubmissionStore) ensureNoRunningTests(ctx context.Context, q rowQuerier, submissionID int64) error {
+	running, err := s.runningTestRows(ctx, q, submissionID)
+	if err != nil {
 		return err
 	}
 	if running > 0 {
 		return supply.ErrTestInProgress
+	}
+	return nil
+}
+
+// storedTarget 是行上「谁在被测」的那两列，用于和本次提交做比对。
+type storedTarget struct {
+	standardModelID   int64
+	supplierModelName string
+}
+
+// ensureTargetsStableWhileTesting 是测试期写锁的精确版。
+//
+// 原来 UpdateDraft 直接调 ensureNoRunningTests：只要还有测试在跑，整张草稿一行都不许存。
+// 后果是供应商刚点完「发起测试」的那几分钟里，连「压力测试」的勾选都保存不了
+// → 服务端读到的还是 participate_test=false → 压测永远补不上（2026-10-28 实测）。
+//
+// 运行中的测试只对「谁在被测」敏感：换了标准模型或接口模型 ID，结果就会落在
+// 一条已经变过的行上；增删行同理。只改勾选、系数、说明则放行。
+//
+// 为什么不比 base_url / api_key：000046 之后这两列来自**主体凭据**，供应商改凭据
+// 走的是 /supplier/test-credential（不经过这里）；而且 demo 目标会在行上落一个
+// 占位 Key（demo-key），和凭据里的原值天然不相等——按列比会误判成"改了目标"，
+// 实测就是这么把勾选卡住的。凭据真变了，由 ApplyCredential 把旧结果判失效兜底。
+func (s *SubmissionStore) ensureTargetsStableWhileTesting(ctx context.Context, tx *sql.Tx, table string, submissionID int64, rows []SubmissionRowInput) error {
+	running, err := s.runningTestRows(ctx, tx, submissionID)
+	if err != nil || running == 0 {
+		return err
+	}
+	result, err := tx.QueryContext(ctx, `
+SELECT id, standard_model_id, supplier_model_name
+FROM `+table+` WHERE submission_id=$1`, submissionID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = result.Close() }()
+	stored := make(map[int64]storedTarget, len(rows))
+	for result.Next() {
+		var id int64
+		var item storedTarget
+		if err := result.Scan(&id, &item.standardModelID, &item.supplierModelName); err != nil {
+			return err
+		}
+		stored[id] = item
+	}
+	if err := result.Err(); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		old, ok := stored[row.ID]
+		if !ok {
+			return supply.ErrTestInProgress // 新增行，或这行不属于本单
+		}
+		if old.standardModelID != row.StandardModelID || old.supplierModelName != row.SupplierModelName {
+			return supply.ErrTestInProgress
+		}
+		delete(stored, row.ID)
+	}
+	if len(stored) > 0 {
+		return supply.ErrTestInProgress // 删行
 	}
 	return nil
 }

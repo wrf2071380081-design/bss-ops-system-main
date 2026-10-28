@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -641,6 +642,12 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 		writeRowTestError(c, err)
 		return
 	}
+	// 单行发起也算「发起测试」：未勾选时不能悄悄回 200 说没事发生。
+	// 查询进度走 GET，不能因为没勾选就报错，否则轮询会断。
+	if action == actionNotSelected && c.Request.Method == http.MethodPost {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "该模型未勾选压力测试，请先勾选后再发起测试", 400))
+		return
+	}
 	response.Success(c, gin.H{
 		"job_id": jobID, "category": category, "status": "QUEUED",
 		"tested": false, "passed": false, "skipped": action == actionSkipped, "action": action,
@@ -655,6 +662,7 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 //
 // 自动模式的语义：所有行做连通；压力只做勾选了 participate_test 的行。
 // 已有有效结果或正在跑的行跳过；配置变了或上次工具异常的行重测。
+// categories 里含 STRESS 但一行都没勾时直接 400，不发起任何测试。
 func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 	supplierID, ok := h.supplierID(c)
 	if !ok {
@@ -707,6 +715,20 @@ func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
 	if err != nil {
 		writeSubmissionError(c, err)
+		return
+	}
+	// 压测是「门禁的一部分」：一个都没勾时连连通性都不该发起。
+	// 原来这里静默放过（每一行都记 NOT_SELECTED 然后回 200），前端还按成功提示，
+	// 结果供应商以为测过了、提交时却被门禁挡住（2026-10-28 用户报障）。
+	wantStress := false
+	for _, t := range targets {
+		if t.platform == "stress" {
+			wantStress = true
+			break
+		}
+	}
+	if wantStress && !anyStressSelected(rows[submissionID]) {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "请至少勾选一个压力测试", 400))
 		return
 	}
 	type item struct {
@@ -834,6 +856,16 @@ var (
 	errGateStressMissing       = errors.New("no row has stress test")
 	errGateReportStale         = errors.New("test report is stale after target change")
 )
+
+// anyStressSelected 报告这张单子里是否有任意一行勾选了压力测试。
+func anyStressSelected(rows []supplypg.SubmissionRowRecord) bool {
+	for _, row := range rows {
+		if row.ParticipateTest {
+			return true
+		}
+	}
+	return false
+}
 
 // resolveTestCategory 把前端类别翻译成平台门类，并把映射收在一处。
 func resolveTestCategory(raw string) (string, string, bool) {
@@ -1056,6 +1088,11 @@ func writeSubmissionError(c *gin.Context, err error) {
 		response.Error(c, apperr.ErrNotFound)
 	case errors.Is(err, supply.ErrRevisionConflict), errors.Is(err, supply.ErrInactive):
 		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "申报单已变化，请刷新后重试", 409))
+	case errors.Is(err, supply.ErrTestInProgress):
+		// 这里原来是 default → 500「系统错误」：供应商在测试跑着的时候勾一下压力测试，
+		// 保存直接报系统错误，勾选永远存不进去。改成能看懂、能行动的 409。
+		// 注意文案：前端靠「申报单已变化」区分版本冲突与测试占用，别改成同一句。
+		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "测试进行中，请等测试结果回来后再修改受测目标", 409))
 	case errors.Is(err, supply.ErrForbidden):
 		response.Error(c, apperr.ErrForbidden)
 	case errors.As(err, &appErr):
@@ -1069,6 +1106,13 @@ func writeSubmissionError(c *gin.Context, err error) {
 // registerSupplierSubmissionRoutes 挂载供应商申报的正式接口。
 func registerSupplierSubmissionRoutes(protected *gin.RouterGroup, deps Deps, idempotent gin.HandlerFunc) {
 	handler := &supplierSubmissionHandler{svc: deps.SupplierSubmissions}
+	// 发起测试/重测是「每次点击都是一次新命令」：语义键必须带上客户端的幂等键，
+	// 否则 body 固定不变（categories 就那两个值），第二次点击之后全被当成重复请求回放，
+	// 页面上表现为「再点一次没反应」。见 middleware.ClientKeyBizKey。
+	perClick := idempotent
+	if deps.IdemStore != nil {
+		perClick = middleware.Idempotency(deps.IdemStore, middleware.ClientKeyBizKey)
+	}
 	group := protected.Group("/submissions")
 	group.GET("", handler.list)
 	// 静态段先于参数段注册，避免 /model-options 被 /:id 吞掉。
@@ -1079,11 +1123,11 @@ func registerSupplierSubmissionRoutes(protected *gin.RouterGroup, deps Deps, ide
 	group.POST("/import/parse", handler.importParse)
 	group.GET("/:id", handler.detail)
 	group.GET("/:id/rows/:rowId/test", handler.rowTest)
-	group.POST("/:id/rows/:rowId/test", idempotent, handler.rowTest)
+	group.POST("/:id/rows/:rowId/test", perClick, handler.rowTest)
 	// 写接口一律挂幂等（红线）。
 	group.POST("", idempotent, handler.create)
 	group.PUT("/:id", idempotent, handler.update)
-	group.POST("/:id/tests", idempotent, handler.batchTests)
+	group.POST("/:id/tests", perClick, handler.batchTests)
 	group.POST("/:id/submit", idempotent, handler.submit)
 	group.POST("/:id/withdraw", idempotent, handler.withdraw)
 }
