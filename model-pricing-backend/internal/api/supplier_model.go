@@ -60,10 +60,13 @@ type supplierModelQuoteReadinessDTO struct {
 
 // supplierModelDTO 的字段名与 `supplierModels.types.ts` 严格一致。
 type supplierModelDTO struct {
-	ID              string                         `json:"id"`
-	StandardModelID string                         `json:"standard_model_id"`
-	ModelName       string                         `json:"model_name"`
-	OfficialID      string                         `json:"official_id"`
+	ID              string `json:"id"`
+	StandardModelID string `json:"standard_model_id"`
+	ModelName       string `json:"model_name"`
+	OfficialID      string `json:"official_id"`
+	// Company / ModelType 供原型表格的「模型公司」「模型类型」两列使用。
+	Company         string                         `json:"company"`
+	ModelType       string                         `json:"model_type"`
 	SupplierModelID string                         `json:"supplier_model_id"`
 	Region          string                         `json:"region"`
 	Coefficient     string                         `json:"coefficient"`
@@ -146,6 +149,8 @@ func buildSupplierModelDTO(record supplypg.SupplierModelRecord) supplierModelDTO
 		StandardModelID: record.StandardModelID,
 		ModelName:       record.ModelName,
 		OfficialID:      record.OfficialID,
+		Company:         record.Company,
+		ModelType:       record.ModelType,
 		SupplierModelID: record.SupplierModelID,
 		Region:          record.Region,
 		Coefficient:     record.Coefficient,

@@ -187,6 +187,7 @@ function credentialDTO(): SupplierTestCredentialDTO {
 const supplierModelFixtures = [
   {
     id: "3", standard_model_id: "15", model_name: "Claude Sonnet 4", official_id: "claude-sonnet-4",
+    company: "Anthropic", model_type: "TEXT",
     supplier_model_id: "demo/deepseek-v4", region: "CN", coefficient: "0.6000", state: "ADMITTED",
     ever_admitted: true, revision: "1",
     test: { report_id: "51", status: "COMPLETED", connectivity_tested: true, connectivity_passed: true, stress_tested: true, stress_passed: true, valid: true, connection_ms: "87.00", rps: "28.40", tps: "24500.00" },
@@ -194,6 +195,7 @@ const supplierModelFixtures = [
   },
   {
     id: "8", standard_model_id: "12", model_name: "Qwen3 Max", official_id: "qwen3-max",
+    company: "阿里云", model_type: "TEXT",
     supplier_model_id: "demo/rowB", region: "CN", coefficient: "0.7000", state: "PENDING_TEST",
     ever_admitted: false, revision: "1",
     test: { report_id: "52", status: "COMPLETED", connectivity_tested: true, connectivity_passed: true, stress_tested: true, stress_passed: false, valid: true, connection_ms: "96.00", rps: "0", tps: "0" },
@@ -201,10 +203,20 @@ const supplierModelFixtures = [
   },
   {
     id: "9", standard_model_id: "14", model_name: "GPT-4o mini", official_id: "gpt-4o-mini",
+    company: "OpenAI", model_type: "TEXT",
     supplier_model_id: "demo-model-1", region: "OVERSEAS", coefficient: "1.0000", state: "PENDING_TEST",
     ever_admitted: false, revision: "1",
     test: { status: "NOT_TESTED", connectivity_tested: false, connectivity_passed: false, stress_tested: false, stress_passed: false, valid: false },
     quote_readiness: { eligible: false, blocked_reasons: ["RESOURCE_NOT_ADMITTED", "TESTS_REQUIRED"] },
+  },
+  {
+    // 已下架样本：用来验证整行置灰与「模型类型」筛选（图片）。
+    id: "7", standard_model_id: "14", model_name: "图片能力模型 03", official_id: "fast/demo17-model-2",
+    company: "示例多模态研究院", model_type: "IMAGE",
+    supplier_model_id: "fast/demo17-model-2", region: "CN", coefficient: "0.4300", state: "OFFLINE",
+    ever_admitted: true, revision: "1",
+    test: { report_id: "53", status: "COMPLETED", connectivity_tested: true, connectivity_passed: true, stress_tested: true, stress_passed: true, valid: true, connection_ms: "120.00", rps: "12.00", tps: "3000.00" },
+    quote_readiness: { eligible: false, blocked_reasons: ["RESOURCE_NOT_ADMITTED"] },
   },
 ];
 

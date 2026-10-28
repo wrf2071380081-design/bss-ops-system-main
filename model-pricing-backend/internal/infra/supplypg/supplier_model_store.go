@@ -3,6 +3,7 @@ package supplypg
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 )
 
@@ -23,6 +24,8 @@ type SupplierModelRecord struct {
 	StandardModelID string
 	ModelName       string
 	OfficialID      string
+	Company         string
+	ModelType       string
 	SupplierModelID string
 	Region          string
 	Coefficient     string
@@ -50,6 +53,17 @@ func NewSupplierModelStore(db *sql.DB, schema string) (*SupplierModelStore, erro
 
 func (s *SupplierModelStore) table(name string) string { return s.schema + "." + name }
 
+// visibleClause 是原型 sPortalResourceRows() 的可见行规则：
+//
+//	本主体 + 未合并 + 状态在四态内 + （曾接入 或 已接入/已下架 或 有过「通过」的申报）
+//
+// 意义：供应商只该看到「已经进过平台流程」的模型。刚提交还没跑完的、纯草稿阶段的
+// 资源不出现在模型管理里（它们在申报页看进度），否则列表会被半成品塞满。
+const visibleResourceClause = `(r.ever_admitted OR r.state IN ('ADMITTED','OFFLINE') OR EXISTS (
+  SELECT 1 FROM %s s JOIN %s sr ON sr.submission_id = s.id
+  WHERE s.supplier_id = r.supplier_id AND s.status = 'APPROVED'
+    AND (sr.resource_id = r.id OR sr.standard_model_id = r.standard_model_id)))`
+
 // List 按主体分页列出资源；supplier_id 必须由调用方从登录态取得。
 //
 // 报告取「该资源最近一次」：测试重跑过的话旧报告不参与展示，
@@ -64,12 +78,16 @@ func (s *SupplierModelStore) List(ctx context.Context, supplierID int64, page, s
 	if size < 1 {
 		size = 20
 	}
+	visible := fmt.Sprintf(visibleResourceClause, s.table("submission"), s.table("submission_row"))
 	var total int64
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM `+s.table("resource")+` WHERE supplier_id = $1`, supplierID).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM `+s.table("resource")+` r WHERE r.supplier_id = $1 AND `+visible,
+		supplierID).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT r.id::text, r.standard_model_id::text, m.name, COALESCE(m.official_id,''), r.supplier_model_name,
+       COALESCE(m.company,''), COALESCE(m.model_type,''),
        r.region, r.coefficient::text, r.state, r.ever_admitted,
        tr.id::text, COALESCE(tr.verdict,''), COALESCE(tr.connection_passed,false), COALESCE(tr.stress_passed,false),
        tr.connection_ms::text, tr.rps::text, tr.tps::text
@@ -82,7 +100,7 @@ LEFT JOIN LATERAL (
   ORDER BY tested_at DESC, id DESC
   LIMIT 1
 ) tr ON TRUE
-WHERE r.supplier_id = $1
+WHERE r.supplier_id = $1 AND `+visible+`
 ORDER BY r.id
 LIMIT $2 OFFSET $3`, supplierID, size, (page-1)*size)
 	if err != nil {
@@ -94,6 +112,7 @@ LIMIT $2 OFFSET $3`, supplierID, size, (page-1)*size)
 		var item SupplierModelRecord
 		var reportID, verdict, connectionMS, rps, tps sql.NullString
 		if err := rows.Scan(&item.ID, &item.StandardModelID, &item.ModelName, &item.OfficialID, &item.SupplierModelID,
+			&item.Company, &item.ModelType,
 			&item.Region, &item.Coefficient, &item.State, &item.EverAdmitted,
 			&reportID, &verdict, &item.ConnectionPassed, &item.StressPassed,
 			&connectionMS, &rps, &tps); err != nil {

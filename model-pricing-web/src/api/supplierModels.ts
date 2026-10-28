@@ -1,5 +1,5 @@
 import { apiRequest } from "./http";
-import { standardModelVersion } from "./standardModels.contract";
+import { standardModelVersion, modelTypeLabels } from "./standardModels.contract";
 import type { SupplierModelListParams, SupplierModelPageDTO, SupplierModelResourceDTO } from "./supplierModels.types";
 
 function validateRow(value: unknown): SupplierModelResourceDTO {
@@ -10,6 +10,7 @@ function validateRow(value: unknown): SupplierModelResourceDTO {
   standardModelVersion(row.standard_model_id);
   standardModelVersion(row.revision);
   if (!row.model_name?.trim() || !row.official_id?.trim() || !row.supplier_model_id?.trim() ||
+      typeof row.company !== "string" || !modelTypeLabels[row.model_type] ||
       !["CN", "OVERSEAS"].includes(row.region) || !Number.isFinite(coefficient) || coefficient <= 0 || coefficient > 1 ||
       typeof row.ever_admitted !== "boolean" || !row.test || !row.quote_readiness ||
       typeof row.test.connectivity_tested !== "boolean" || typeof row.test.connectivity_passed !== "boolean" ||

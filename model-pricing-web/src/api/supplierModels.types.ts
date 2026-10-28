@@ -3,6 +3,10 @@ export interface SupplierModelResourceDTO {
   standard_model_id: string;
   model_name: string;
   official_id: string;
+  /** 模型公司（原型表格「模型公司」列） */
+  company: string;
+  /** 模型类型枚举 TEXT/IMAGE/VIDEO/AUDIO（原型表格「模型类型」列） */
+  model_type: string;
   supplier_model_id: string;
   region: "CN" | "OVERSEAS";
   coefficient: string;
