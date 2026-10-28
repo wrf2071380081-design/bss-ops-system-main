@@ -117,6 +117,13 @@ try {
   // 4) 结果出来后，提醒「可以离开」的那条就不再占位了
   await page.getByText("可以先补充其他模型", { exact: false }).waitFor({ state: "detached", timeout: 5000 });
 
+  // 5) 回归：还没发起测试的新行，「刷新结果」不能一直转圈
+  //    （refreshingRow 的初值曾是空串，而未保存行的 id 也是空串，两者相等就会常驻 loading）
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__submission-progress`);
+  await page.locator(".submission-table .el-table__body tr").first().waitFor();
+  const spinning = await page.locator(".submission-table .el-button.is-loading, .submission-table .el-icon.is-loading").count();
+  assert.equal(spinning, 0, "未发起测试时「刷新结果」不应显示加载中");
+
   console.log("supplier-test-progress: OK", `progressCalls=${progressCalls}`);
 } finally {
   await browser?.close();

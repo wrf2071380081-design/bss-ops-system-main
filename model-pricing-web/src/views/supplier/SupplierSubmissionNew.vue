@@ -252,7 +252,11 @@ function applyTest(row: EditableRow, result: SupplierTestJobDTO) {
   if (result.category === "CONNECTIVITY") { row.connectivity_job = test; row.connectivity_tested = result.tested; row.connectivity_passed = result.passed; }
   else { row.stress_job = test; row.stress_tested = result.tested; row.stress_passed = result.passed; }
 }
-const refreshingRow = ref("");
+// 正在刷新的行：用 null 而不是 ""——未保存的行 id 就是空串，
+// 用空串当初值会让「刷新结果」按钮在这些行上一直显示 loading（2026-10-28 报障）。
+// 正在刷新的行：用 null 而不是 ""——未保存的行 id 就是空串，
+// 用空串当初值会让「刷新结果」按钮在这些行上一直显示 loading（2026-10-28 报障）。
+const refreshingRow = ref<string | null>(null);
 async function refreshRow(row: EditableRow) {
   if (!submissionID.value || !row.id || refreshingRow.value) return;
   const tasks: Promise<void>[] = [];
@@ -267,7 +271,7 @@ async function refreshRow(row: EditableRow) {
     const running = [row.connectivity_job, row.stress_job].some(job => job && ["QUEUED", "RUNNING"].includes(job.status));
     if (running) ElMessage.info("已刷新：测试仍在进行中，请稍后再看。");
     else ElMessage.success("已刷新测试结果。");
-  } finally { if (active) refreshingRow.value = ""; }
+  } finally { if (active) refreshingRow.value = null; }
 }
 async function refreshTest(row: EditableRow, category: SupplierTestCategory) {
   if (!submissionID.value || !row.id || testBusy.value[row.id + category]) return;
@@ -654,7 +658,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
             <small v-if="elapsedLabel(row.connectivity_job)" class="muted">{{ elapsedLabel(row.connectivity_job) }}</small>
             <small v-if="row.participate_test && elapsedLabel(row.stress_job)" class="muted">{{ elapsedLabel(row.stress_job) }}</small>
             <small v-if="rowMetrics(row)" class="muted">{{ rowMetrics(row) }}</small>
-            <el-button link type="primary" size="small" :loading="refreshingRow === row.id" :disabled="locked || (!row.connectivity_job && !row.stress_job)" @click="refreshRow(row)">刷新结果</el-button>
+            <el-button link type="primary" size="small" :loading="!!row.id && refreshingRow === row.id" :disabled="locked || (!row.connectivity_job && !row.stress_job)" @click="refreshRow(row)">刷新结果</el-button>
           </div>
         </template>
       </el-table-column>
