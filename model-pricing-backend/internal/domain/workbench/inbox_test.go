@@ -99,6 +99,37 @@ func TestInboxQuoteApprovalDeeplinkOpensExistingApprovalQueue(t *testing.T) {
 	}
 }
 
+func TestInboxAssigneeRoleAndDeeplinkPerBizType(t *testing.T) {
+	cases := []struct {
+		item     InboxItem
+		wantRole string
+		wantLink string
+	}{
+		{InboxItem{BizType: "NOTICE", BizID: 9}, "阅读接收人", ""},
+		{InboxItem{BizType: "SUBMISSION_APPROVAL", BizID: 42}, "审批人", "/internal/workbench?submission_id=42"},
+		{InboxItem{BizType: "SUBMISSION_HANDLING", BizID: 42}, "办理人", "/internal/workbench?node_id=42"},
+		{InboxItem{BizType: "SUBMISSION_CONTRACT", BizID: 42}, "办理人", "/internal/workbench?node_id=42"},
+		{InboxItem{BizType: "QUOTE_APPROVAL", BizID: 42}, "审批人", "/internal/supplier-quotes?quote_id=42"},
+		{InboxItem{BizType: "PLAN", BizID: 42}, "发起人", "/internal/model-plaza/42"},
+	}
+	for _, c := range cases {
+		if got := inboxAssigneeRole(c.item); got != c.wantRole {
+			t.Fatalf("%s role = %q, want %q", c.item.BizType, got, c.wantRole)
+		}
+		if got := inboxItemDeeplink(c.item); got != c.wantLink {
+			t.Fatalf("%s deeplink = %q, want %q", c.item.BizType, got, c.wantLink)
+		}
+	}
+	// 旧版通用办理节点没有独立页面，落到供应商列表并按供应商名过滤。
+	legacy := InboxItem{BizType: "ONBOARDING_NODE", BizID: 7, BizObject: "云桥算力"}
+	if got, want := inboxItemDeeplink(legacy), "/internal/suppliers?keyword=%E4%BA%91%E6%A1%A5%E7%AE%97%E5%8A%9B"; got != want {
+		t.Fatalf("legacy node deeplink = %q, want %q", got, want)
+	}
+	if got := inboxAssigneeRole(legacy); got != "办理人" {
+		t.Fatalf("legacy node role = %q, want 办理人", got)
+	}
+}
+
 func TestMarkNoticeReadNotFound(t *testing.T) {
 	svc := NewInboxService(&fakeInboxStore{})
 	if err := svc.MarkNoticeRead(context.Background(), 999, 1); !errors.Is(err, ErrNoticeNotFound) {

@@ -85,6 +85,11 @@ export interface InboxItemDTO {
   region?: string;
   priority: string;
   occurred_at: IsoDateTime;
+  /** 责任人：原型「责任人」列（姓名 + 关系副标题）。 */
+  assignee_id: number;
+  assignee_name: string;
+  /** 阅读接收人 / 审批人 / 办理人 / 发起人 / 处理人 */
+  assignee_role: string;
   deeplink?: string;
   readable: boolean;
 }

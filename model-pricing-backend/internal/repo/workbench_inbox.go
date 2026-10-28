@@ -28,16 +28,18 @@ func (r *WorkbenchInboxRepo) txOf(ctx context.Context) *gorm.DB {
 }
 
 type inboxRow struct {
-	BizType    string    `gorm:"column:biz_type"`
-	BizID      int64     `gorm:"column:biz_id"`
-	ItemType   string    `gorm:"column:item_type"`
-	State      string    `gorm:"column:state"`
-	Title      string    `gorm:"column:title"`
-	BizObject  *string   `gorm:"column:biz_object"`
-	Region     *string   `gorm:"column:region"`
-	Priority   *string   `gorm:"column:priority"`
-	OccurredAt time.Time `gorm:"column:occurred_at"`
-	PlanID     int64     `gorm:"column:plan_id"`
+	BizType      string    `gorm:"column:biz_type"`
+	BizID        int64     `gorm:"column:biz_id"`
+	ItemType     string    `gorm:"column:item_type"`
+	State        string    `gorm:"column:state"`
+	Title        string    `gorm:"column:title"`
+	BizObject    *string   `gorm:"column:biz_object"`
+	Region       *string   `gorm:"column:region"`
+	Priority     *string   `gorm:"column:priority"`
+	OccurredAt   time.Time `gorm:"column:occurred_at"`
+	PlanID       int64     `gorm:"column:plan_id"`
+	AssigneeID   int64     `gorm:"column:assignee_id"`
+	AssigneeName *string   `gorm:"column:assignee_name"`
 }
 
 // workbenchInboxSource keeps the shared view as the source of non-plan items,
@@ -138,15 +140,20 @@ func (r *WorkbenchInboxRepo) ListInbox(ctx context.Context, q workbench.InboxQue
 		return tx
 	}
 
+	// 责任人姓名来自 internal_staff；视图只带 assignee_id。
+	source := func(tx *gorm.DB) *gorm.DB {
+		return tx.Table(workbenchInboxSource).Joins("LEFT JOIN internal_staff st ON st.id = v_work_item.assignee_id")
+	}
+
 	var total int64
-	if err := apply(r.txOf(ctx).Table(workbenchInboxSource)).Count(&total).Error; err != nil {
+	if err := apply(source(r.txOf(ctx))).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	var rows []inboxRow
-	err := apply(r.txOf(ctx).Table(workbenchInboxSource)).
-		Select("biz_type, biz_id, item_type, state, title, biz_object, region, priority, occurred_at, plan_id").
-		Order("occurred_at DESC, biz_id DESC, plan_id DESC NULLS LAST").
+	err := apply(source(r.txOf(ctx))).
+		Select("v_work_item.biz_type, v_work_item.biz_id, v_work_item.item_type, v_work_item.state, v_work_item.title, v_work_item.biz_object, v_work_item.region, v_work_item.priority, v_work_item.occurred_at, v_work_item.plan_id, v_work_item.assignee_id, st.name AS assignee_name").
+		Order("v_work_item.occurred_at DESC, v_work_item.biz_id DESC, v_work_item.plan_id DESC NULLS LAST").
 		Offset((q.Page - 1) * q.Size).
 		Limit(q.Size).
 		Scan(&rows).Error
@@ -164,6 +171,10 @@ func (r *WorkbenchInboxRepo) ListInbox(ctx context.Context, q workbench.InboxQue
 			Title:      row.Title,
 			OccurredAt: row.OccurredAt,
 			PlanID:     row.PlanID,
+			AssigneeID: row.AssigneeID,
+		}
+		if row.AssigneeName != nil {
+			item.AssigneeName = *row.AssigneeName
 		}
 		if row.BizObject != nil {
 			item.BizObject = *row.BizObject

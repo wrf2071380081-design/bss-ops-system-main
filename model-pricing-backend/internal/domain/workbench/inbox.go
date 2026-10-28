@@ -3,6 +3,7 @@ package workbench
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 )
 
@@ -30,8 +31,12 @@ type InboxItem struct {
 	Priority   string    `json:"priority"`
 	OccurredAt time.Time `json:"occurred_at"`
 	PlanID     int64     `json:"plan_id,omitempty"`
-	Deeplink   string    `json:"deeplink,omitempty"`
-	Readable   bool      `json:"readable"` // 只有本人、且是待阅，才可标记已读
+	// 责任人：原型工作台的「责任人」列（姓名 + 关系副标题）。
+	AssigneeID   int64  `json:"assignee_id"`
+	AssigneeName string `json:"assignee_name"`
+	AssigneeRole string `json:"assignee_role"`
+	Deeplink     string `json:"deeplink,omitempty"`
+	Readable     bool   `json:"readable"` // 只有本人、且是待阅，才可标记已读
 }
 
 // InboxResult 收件箱分页结果。
@@ -127,17 +132,34 @@ func (s *InboxService) Inbox(ctx context.Context, q InboxQuery, viewerID int64) 
 		return nil, fmt.Errorf("list inbox: %w", err)
 	}
 	for i := range list {
+		list[i].AssigneeRole = inboxAssigneeRole(list[i])
 		list[i].Deeplink = inboxItemDeeplink(list[i])
 		list[i].Readable = list[i].BizType == "NOTICE" && list[i].State == "READ" && q.AssigneeID == viewerID
 	}
 	return &InboxResult{List: list, Total: total, Page: q.Page, Size: q.Size}, nil
 }
 
+// inboxAssigneeRole 原型「责任人」列的副标题：这个人在这一行里是什么身份。
+func inboxAssigneeRole(item InboxItem) string {
+	switch item.BizType {
+	case "NOTICE":
+		return "阅读接收人"
+	case "SUBMISSION_APPROVAL", "QUOTE_APPROVAL":
+		return "审批人"
+	case "SUBMISSION_HANDLING", "SUBMISSION_CONTRACT", "ONBOARDING_NODE":
+		return "办理人"
+	case "PLAN":
+		return "发起人"
+	default:
+		return "处理人"
+	}
+}
+
 func inboxItemDeeplink(item InboxItem) string {
 	if item.BizType == "PLAN" && item.PlanID > 0 && (item.Region == "CN" || item.Region == "OVERSEAS") {
 		return fmt.Sprintf("/internal/model-plaza/%d?region=%s&tab=plans&plan_id=%d", item.BizID, item.Region, item.PlanID)
 	}
-	return inboxDeeplink(item.BizType, item.BizID)
+	return inboxDeeplink(item)
 }
 
 // People 人员选择器（只读查看他人收件箱用）。
@@ -186,18 +208,19 @@ var ErrInvalidState = fmt.Errorf("invalid state")
 var ErrNoticeNotFound = fmt.Errorf("notice not found")
 
 // inboxDeeplink 收件箱跳转。目标页面尚未落地的先返回空，由前端提示"详情页建设中"。
-func inboxDeeplink(bizType string, bizID int64) string {
-	switch bizType {
+func inboxDeeplink(item InboxItem) string {
+	switch item.BizType {
 	case "SUBMISSION_APPROVAL":
-		return fmt.Sprintf("/internal/workbench?submission_id=%d", bizID)
+		return fmt.Sprintf("/internal/workbench?submission_id=%d", item.BizID)
 	case "SUBMISSION_HANDLING", "SUBMISSION_CONTRACT":
-		return fmt.Sprintf("/internal/workbench?node_id=%d", bizID)
+		return fmt.Sprintf("/internal/workbench?node_id=%d", item.BizID)
 	case "PLAN":
-		return fmt.Sprintf("/internal/model-plaza/%d", bizID)
+		return fmt.Sprintf("/internal/model-plaza/%d", item.BizID)
 	case "ONBOARDING_NODE":
-		return fmt.Sprintf("/internal/supplier-quotes/%d", bizID)
+		// 旧版通用办理节点没有独立页面，落到供应商列表并按供应商名过滤。
+		return "/internal/suppliers?keyword=" + url.QueryEscape(item.BizObject)
 	case "QUOTE_APPROVAL":
-		return fmt.Sprintf("/internal/supplier-quotes?quote_id=%d", bizID)
+		return fmt.Sprintf("/internal/supplier-quotes?quote_id=%d", item.BizID)
 	default:
 		return ""
 	}
