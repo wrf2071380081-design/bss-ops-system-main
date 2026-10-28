@@ -98,6 +98,17 @@ func registerSubmissionRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, po
 	if portal == "supplier" && deps.SupplierSubmissions != nil && deps.IdemStore != nil {
 		registerSupplierSubmissionRoutes(protected, deps, middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey))
 	}
+	// 供应商门户：主体级测试凭据（000046，原型对齐）。
+	// 放在申报同一段：凭据是申报测试的前置条件，改它会刷新未提交申报的快照与指纹。
+	if portal == "supplier" && deps.SupplierCredentials != nil && deps.IdemStore != nil {
+		registerSupplierCredentialRoutes(protected, deps, middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey))
+	}
+	// 供应商门户：模型管理列表（2026-10-28）。
+	// 走 supplypg 的窄查询（resource + 最近报告），不碰 A 线 ReadStore
+	// 那套「buyer_id 非空 + facts 对齐」的严格契约。
+	if portal == "supplier" && deps.SupplierModels != nil {
+		registerSupplierModelRoutes(protected, deps.SupplierModels)
+	}
 	// 一期只开放内部触发：供应商侧自助发起要等申报多行（M3）。
 	if portal == "internal" {
 		handler := &submissionTestHandler{starter: deps.TestJobs, targets: deps.ResourceTestTargets}

@@ -63,6 +63,34 @@ type SubmissionRowRecord struct {
 	// Stale 表示该测试目标的指纹与发单时不一致（改了地址/Key/模型）→ 结果不可用。
 	ConnectivityStale bool
 	StressStale       bool
+	// 发单时测试平台记录的指纹（000046 起用于按主体凭据重算「是否失效」）。
+	ConnectivityJobFingerprint string
+	StressJobFingerprint       string
+}
+
+// ApplyCredential 用**主体当前凭据**重算该行的「结果是否失效」，并同步展示用的测试地址。
+//
+// 为什么不在 SQL 里做：指纹是 `tpdomain.TargetFingerprint` 算的 sha256，
+// 分隔符 `\x00`、大小写与尾部 `/` 的规整规则在 SQL 里复刻迟早漂移，只能放 Go 侧。
+//
+// cred 为 nil（主体还没登记凭据）时**什么都不改**：退化成按行快照判定，
+// 历史数据不会因为「没登记凭据」被一片判红。
+func (r *SubmissionRowRecord) ApplyCredential(cred *SupplierTestCredential) {
+	baseURL, apiKey := CredentialForTest(cred)
+	if r == nil || strings.TrimSpace(baseURL) == "" {
+		return
+	}
+	current := tpdomain.TargetFingerprint(r.StandardModelID, r.SupplierModelName, baseURL, apiKey)
+	r.TestBaseURL = baseURL
+	staleAgainst := func(jobFingerprint string) bool {
+		// 老任务可能没记录指纹：只有两边都有值且不等才算失效，不做无依据的误判。
+		if jobFingerprint == "" {
+			return false
+		}
+		return current != jobFingerprint
+	}
+	r.ConnectivityStale = staleAgainst(r.ConnectivityJobFingerprint)
+	r.StressStale = staleAgainst(r.StressJobFingerprint)
 }
 
 // SubmissionRowInput 是写入用的行。
@@ -97,39 +125,54 @@ func NewSubmissionStore(db *sql.DB, schema string) (*SubmissionStore, error) {
 func (s *SubmissionStore) table(name string) string { return s.schema + "." + name }
 
 // SubmissionFilter 是申报列表的筛选条件（对应原型 6 维筛选）。
+//
+// 2026-10-27 起每个维度都是**多选**：原型筛选项是一列勾选框，
+// 勾几个就查几个，所以这里用切片而不是单个字符串，SQL 走 IN。
 type SubmissionFilter struct {
-	Status    string
-	Kind      string
-	Company   string
-	ModelType string
-	Region    string
-	Submitter string
+	Status    []string
+	Kind      []string
+	Company   []string
+	ModelType []string
+	Region    []string
+	Submitter []string
 }
 
 // Page 按供应商分页列出申报单（新的在前）。
 func (s *SubmissionStore) Page(ctx context.Context, supplierID int64, f SubmissionFilter, page, size int) ([]SubmissionHeader, int64, error) {
 	where := []string{"supplier_id = $1"}
 	args := []any{supplierID}
-	add := func(column, value string) {
-		if strings.TrimSpace(value) == "" {
+	// addIn 把一列值拼成 IN (...)；空值/空切片视为「不限」。
+	addIn := func(column string, values []string) {
+		cleaned := cleanFilterValues(values)
+		if len(cleaned) == 0 {
 			return
 		}
-		args = append(args, strings.TrimSpace(value))
-		where = append(where, column+" = $"+itoa(len(args)))
+		placeholders := make([]string, 0, len(cleaned))
+		for _, value := range cleaned {
+			args = append(args, value)
+			placeholders = append(placeholders, "$"+itoa(len(args)))
+		}
+		where = append(where, column+" IN ("+strings.Join(placeholders, ",")+")")
 	}
-	add("status", f.Status)
-	add("kind", f.Kind)
-	add("region", f.Region)
-	add("submitter_name", f.Submitter)
+	addIn("status", f.Status)
+	addIn("kind", f.Kind)
+	addIn("region", f.Region)
+	addIn("submitter_name", f.Submitter)
 	// 模型公司/类型挂在行上，用 EXISTS 过滤，避免 JOIN 造成重复行。
-	if v := strings.TrimSpace(f.Company); v != "" {
-		args = append(args, v)
-		where = append(where, `EXISTS (SELECT 1 FROM `+s.table("submission_row")+` r JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id WHERE r.submission_id = `+s.table("submission")+`.id AND m.company = $`+itoa(len(args))+`)`)
+	addInRow := func(modelColumn string, values []string) {
+		cleaned := cleanFilterValues(values)
+		if len(cleaned) == 0 {
+			return
+		}
+		placeholders := make([]string, 0, len(cleaned))
+		for _, value := range cleaned {
+			args = append(args, value)
+			placeholders = append(placeholders, "$"+itoa(len(args)))
+		}
+		where = append(where, `EXISTS (SELECT 1 FROM `+s.table("submission_row")+` r JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id WHERE r.submission_id = `+s.table("submission")+`.id AND m.`+modelColumn+` IN (`+strings.Join(placeholders, ",")+`))`)
 	}
-	if v := strings.TrimSpace(f.ModelType); v != "" {
-		args = append(args, v)
-		where = append(where, `EXISTS (SELECT 1 FROM `+s.table("submission_row")+` r JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id WHERE r.submission_id = `+s.table("submission")+`.id AND m.model_type = $`+itoa(len(args))+`)`)
-	}
+	addInRow("company", f.Company)
+	addInRow("model_type", f.ModelType)
 	clause := strings.Join(where, " AND ")
 
 	var total int64
@@ -236,6 +279,8 @@ ORDER BY r.submission_id, r.id`, args...)
 		}
 		item.ConnectivityStale = fingerprintChanged(connFP)
 		item.StressStale = fingerprintChanged(stressFP)
+		item.ConnectivityJobFingerprint = connFP.String
+		item.StressJobFingerprint = stressFP.String
 		item.ConnectivityStatus = nullableString(connStatus)
 		item.ConnectivityVerdict = nullableString(connVerdict)
 		item.ConnectionMS = nullableString(conn)
@@ -246,6 +291,24 @@ ORDER BY r.submission_id, r.id`, args...)
 		result[submissionID] = append(result[submissionID], item)
 	}
 	return result, rows.Err()
+}
+
+// cleanFilterValues 去掉空白并去重，保持传入顺序（SQL 里顺序不影响结果，只影响日志可读性）。
+func cleanFilterValues(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		cleaned = append(cleaned, trimmed)
+	}
+	return cleaned
 }
 
 // CreateDraft 新建草稿（含行）。region 由调用方按供应商主体取。
@@ -508,6 +571,10 @@ type TestRow struct {
 	ParticipateTest bool
 	TestBaseURL       string
 	SealedAPIKey      string
+	// EffectiveBaseURL / EffectiveAPIKey 是**主体当前凭据**（000046）。
+	// 发测试只用它们；上面两列只是行上的历史快照。
+	EffectiveBaseURL string
+	EffectiveAPIKey  string
 	Coefficient       string
 	Region            string
 	SupplierID        int64
@@ -536,12 +603,14 @@ SELECT r.id, r.submission_id, r.standard_model_id, COALESCE(m.official_id,''), r
        COALESCE(r.test_fingerprint,''), r.resource_id, r.test_job_id, r.stress_job_id, sub.status,
        COALESCE(cj.status,''), COALESCE(cj.target_fingerprint,''),
        COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = cj.id ORDER BY tr.id DESC LIMIT 1),''),
-       COALESCE(sj.status,''), COALESCE(sj.target_fingerprint,''),
-       COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id ORDER BY tr.id DESC LIMIT 1),'')
+		COALESCE(sj.status,''), COALESCE(sj.target_fingerprint,''),
+		COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id ORDER BY tr.id DESC LIMIT 1),''),
+		COALESCE(cred.base_url,''), COALESCE(cred.api_key_enc,'')
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
 JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
 JOIN `+s.table("supplier")+` sp ON sp.id = sub.supplier_id
+LEFT JOIN `+s.table("supplier_test_credential")+` cred ON cred.supplier_id = sub.supplier_id
 LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
 LEFT JOIN `+s.table("test_job")+` sj ON sj.id = r.stress_job_id
 WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionID, supplierID).
@@ -549,7 +618,8 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 			&item.SealedAPIKey, &item.Coefficient, &item.Region, &item.SupplierID, &item.SupplierName,
 			&item.TestFingerprint, &resourceID, &jobID, &stressJobID, &item.SubmissionStatus,
 			&item.TestJobStatus, &item.TestJobFingerprint, &item.TestJobVerdict,
-			&item.StressJobStatus, &item.StressJobFingerprint, &item.StressJobVerdict)
+			&item.StressJobStatus, &item.StressJobFingerprint, &item.StressJobVerdict,
+			&item.EffectiveBaseURL, &item.EffectiveAPIKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
@@ -566,6 +636,28 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 		item.StressJobID = &stressJobID.Int64
 	}
 	return &item, nil
+}
+
+// TestCredential 读本主体的准入测试凭据（000046）；未登记返回 (nil, nil)。
+//
+// 与 SupplierCredentialStore.Get 是同一份 SQL——这里只是给申报侧的调用方
+// 一个不必额外持有凭据仓储的入口。
+func (s *SubmissionStore) TestCredential(ctx context.Context, supplierID int64) (*SupplierTestCredential, error) {
+	return (&SupplierCredentialStore{db: s.db, schema: s.schema}).Get(ctx, supplierID)
+}
+
+// RefreshRowSnapshot 把主体凭据与指纹写到某一行的快照列上。
+//
+// 发单前调用：让「行指纹」与「即将发出去的任务指纹」从同一份凭据算出来，
+// 之后供应商改凭据 → 两者不等 → 结果被判失效，准入侧也拿不到旧报告的背书。
+func (s *SubmissionStore) RefreshRowSnapshot(ctx context.Context, rowID int64, baseURL, apiKey, fingerprint string) error {
+	if rowID <= 0 {
+		return supply.ErrNotFound
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE `+s.table("submission_row")+`
+SET test_base_url = NULLIF($2,''), test_api_key_enc = NULLIF($3,''), test_fingerprint = NULLIF($4,'')
+WHERE id = $1`, rowID, strings.TrimSpace(baseURL), apiKey, fingerprint)
+	return err
 }
 
 // EnsureTestResource 保证该行有一个可挂靠的资源（Q13：测试前先建 PENDING_TEST 资源）。
