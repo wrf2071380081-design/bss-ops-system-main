@@ -48,7 +48,7 @@ let draftRequest: AbortController | undefined;
 const testBusy = ref<Record<string, boolean>>({});
 const batchBusy = ref<"" | "ALL">("");
 
-// ---- 主体级测试凭据（000044 / 原型顶部凭据区）----
+// ---- 主体级测试凭据（000046 / 原型顶部凭据区）----
 const credential = ref<SupplierTestCredentialDTO>({ base_url: "", has_api_key: false, configured: false });
 const credentialURL = ref("");
 const credentialKey = ref("");
@@ -187,7 +187,7 @@ function selectStandardModel(row: EditableRow, id: string | number) {
   row.official_id = option?.official_id || "";
 }
 function writePayload() {
-  // 000044：行级 URL/Key 已废弃，凭据走 /supplier/test-credential。
+  // 000046：行级 URL/Key 已废弃，凭据走 /supplier/test-credential。
   const payloadRows: SupplierSubmissionWriteRow[] = rows.value.map(row => ({
     ...(row.id ? { id: row.id } : {}),
     interface_model_id: row.interface_model_id.trim(),

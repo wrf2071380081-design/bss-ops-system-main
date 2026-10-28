@@ -1,4 +1,4 @@
-// Package api 的 supplier_credential.go：供应商**主体级**准入测试凭据（000044）。
+// Package api 的 supplier_credential.go：供应商**主体级**准入测试凭据（000046）。
 //
 // 原型（2026-10-27 版）把测试 URL / Key 收在申报页顶部，一句
 // 「此 URL／Key 仅由供应商本人维护，用于本主体准入测试、供申报模型共用；

@@ -13,7 +13,7 @@ import (
 //	SUPPLIER_CREDENTIAL_TEST_DSN="postgres://app:***@localhost:5433/model_bss?sslmode=disable" \
 //	  go test ./internal/infra/supplypg -run TestSupplierCredentialStore -v
 //
-// 覆盖 000044 的三条关键语义：
+// 覆盖 000046 的三条关键语义：
 //  1. 未登记时 Get 返回 (nil, nil)，不是 ErrNotFound；
 //  2. Upsert 传 nil Key = 留空保留原值；
 //  3. RefreshOpenRowSnapshots 只刷未提交申报（DRAFT/REJECTED/WITHDRAWN）的行。

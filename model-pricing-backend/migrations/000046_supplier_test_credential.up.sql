@@ -1,4 +1,4 @@
--- 000044_supplier_test_credential：测试凭据上移主体（原型对齐，2026-10-27）。
+-- 000046_supplier_test_credential：测试凭据上移主体（原型对齐，2026-10-27）。
 --
 -- 背景：原型申报页把「测试接口 URL / 测试 API Key」放在**主体级**，一句说明
 -- 「此 URL／Key 仅由供应商本人维护，用于本主体准入测试、供申报模型共用」；
@@ -42,5 +42,5 @@ SELECT DISTINCT ON (s.supplier_id)
  ORDER BY s.supplier_id, r.id DESC
 ON CONFLICT (supplier_id) DO NOTHING;
 
-COMMENT ON COLUMN submission_row.test_base_url    IS '主体测试凭据快照（000044 起由 supplier_test_credential 写入，供应商不再直接编辑）';
+COMMENT ON COLUMN submission_row.test_base_url    IS '主体测试凭据快照（000046 起由 supplier_test_credential 写入，供应商不再直接编辑）';
 COMMENT ON COLUMN submission_row.test_api_key_enc IS '主体测试 Key 快照（同上，仅用于报告留痕与历史回放）';

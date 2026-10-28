@@ -31,7 +31,7 @@ func CredentialForTest(cred *SupplierTestCredential) (baseURL, apiKey string) {
 	return url, cred.APIKey
 }
 
-// SupplierCredentialStore 是供应商**主体级**准入测试凭据的持久化层（000044）。
+// SupplierCredentialStore 是供应商**主体级**准入测试凭据的持久化层（000046）。
 //
 // 为什么放在主体而不是申报行：原型申报页把 URL/Key 收在表单顶部，
 // 一句「仅供本主体准入测试、供申报模型共用」；行级凭据会让同一主体

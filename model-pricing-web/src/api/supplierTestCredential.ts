@@ -3,7 +3,7 @@ import { apiRequest } from "./http";
 const base = "/supplier/test-credential";
 
 /**
- * 主体级准入测试凭据（000044，原型对齐）。
+ * 主体级准入测试凭据（000046，原型对齐）。
  *
  * 原型把「测试接口 URL / 测试 API Key」放在申报页顶部，一句
  * 「仅供本主体准入测试、供申报模型共用」——所以它挂在主体上，

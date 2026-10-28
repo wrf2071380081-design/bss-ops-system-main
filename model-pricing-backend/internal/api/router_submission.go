@@ -98,7 +98,7 @@ func registerSubmissionRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, po
 	if portal == "supplier" && deps.SupplierSubmissions != nil && deps.IdemStore != nil {
 		registerSupplierSubmissionRoutes(protected, deps, middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey))
 	}
-	// 供应商门户：主体级测试凭据（000044，原型对齐）。
+	// 供应商门户：主体级测试凭据（000046，原型对齐）。
 	// 放在申报同一段：凭据是申报测试的前置条件，改它会刷新未提交申报的快照与指纹。
 	if portal == "supplier" && deps.SupplierCredentials != nil && deps.IdemStore != nil {
 		registerSupplierCredentialRoutes(protected, deps, middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey))

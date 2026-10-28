@@ -7,7 +7,7 @@ import type {
 import type { SupplierTestCredentialDTO } from "../../api/supplierTestCredential";
 
 /**
- * 供应商申报 + 主体级测试凭据的 Mock（000044，原型对齐）。
+ * 供应商申报 + 主体级测试凭据的 Mock（000046，原型对齐）。
  *
  * 之前 Mock 里完全没有 /supplier/submissions：mock 模式下点开「申报记录」就 401
  * 被踢回登录页，等于这条链路没法在本地验证。这里补一份内存实现，

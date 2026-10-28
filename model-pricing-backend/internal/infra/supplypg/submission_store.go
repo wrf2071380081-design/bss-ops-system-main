@@ -63,7 +63,7 @@ type SubmissionRowRecord struct {
 	// Stale 表示该测试目标的指纹与发单时不一致（改了地址/Key/模型）→ 结果不可用。
 	ConnectivityStale bool
 	StressStale       bool
-	// 发单时测试平台记录的指纹（000044 起用于按主体凭据重算「是否失效」）。
+	// 发单时测试平台记录的指纹（000046 起用于按主体凭据重算「是否失效」）。
 	ConnectivityJobFingerprint string
 	StressJobFingerprint       string
 }
@@ -571,7 +571,7 @@ type TestRow struct {
 	ParticipateTest bool
 	TestBaseURL       string
 	SealedAPIKey      string
-	// EffectiveBaseURL / EffectiveAPIKey 是**主体当前凭据**（000044）。
+	// EffectiveBaseURL / EffectiveAPIKey 是**主体当前凭据**（000046）。
 	// 发测试只用它们；上面两列只是行上的历史快照。
 	EffectiveBaseURL string
 	EffectiveAPIKey  string
@@ -638,7 +638,7 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 	return &item, nil
 }
 
-// TestCredential 读本主体的准入测试凭据（000044）；未登记返回 (nil, nil)。
+// TestCredential 读本主体的准入测试凭据（000046）；未登记返回 (nil, nil)。
 //
 // 与 SupplierCredentialStore.Get 是同一份 SQL——这里只是给申报侧的调用方
 // 一个不必额外持有凭据仓储的入口。

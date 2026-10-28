@@ -81,7 +81,7 @@ export interface SupplierSubmissionWriteRow {
   standard_model_id: string;
   coefficient: string;
   /**
-   * @deprecated 000044 起测试凭据上移主体（`/supplier/test-credential`），
+   * @deprecated 000046 起测试凭据上移主体（`/supplier/test-credential`），
    * 行级 URL/Key 已废弃；服务端收到也会忽略，仅旧客户端兼容保留字段。
    */
   test_base_url?: string;

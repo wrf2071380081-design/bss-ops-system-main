@@ -50,7 +50,7 @@ func newSupplierModelService(db *gorm.DB) (*api.SupplierModelService, error) {
 }
 
 //
-// newSupplierCredentialService 装配供应商**主体级**测试凭据（000044，原型对齐）。
+// newSupplierCredentialService 装配供应商**主体级**测试凭据（000046，原型对齐）。
 //
 // 与申报服务分开构造：凭据的生命周期比单张申报长，且「改凭据 → 刷新未提交申报快照」
 // 这个副作用只归它管，混进申报服务会让依赖方向变乱。

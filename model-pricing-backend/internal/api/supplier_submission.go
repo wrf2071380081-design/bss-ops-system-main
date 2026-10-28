@@ -459,7 +459,7 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 	if platformCategory == "stress" && !row.ParticipateTest {
 		return "", actionNotSelected, nil
 	}
-	// 000044：URL/Key 统一取**主体**凭据；行上的两列只是快照。
+	// 000046：URL/Key 统一取**主体**凭据；行上的两列只是快照。
 	// 未登记凭据时直接给出可操作的提示，别让平台侧报 400。
 	baseURL, apiKey := supplypg.CredentialForTest(&supplypg.SupplierTestCredential{BaseURL: row.EffectiveBaseURL, APIKey: row.EffectiveAPIKey})
 	if strings.TrimSpace(baseURL) == "" {
@@ -531,7 +531,7 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 //       已终态但没有报告结论（工具异常）→ 重测
 //   - 指纹不一致（改了地址/Key/模型）→ 重测
 //
-// currentFingerprint 是按**主体当前凭据**算出来的指纹（000044）。
+// currentFingerprint 是按**主体当前凭据**算出来的指纹（000046）。
 // 不能再用行上的 test_fingerprint 比：那是上一次写入的快照，
 // 凭据改了它不会自己变，会导致"改了凭据还不让重测"。
 //
@@ -582,7 +582,7 @@ func modelForTest(baseURL, officialID, supplierModelName string) string {
 func writeRowTestError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, errCredentialMissing):
-		// 000044：凭据是主体级，缺了就是「还没登记」，不是「这一行没填」。
+		// 000046：凭据是主体级，缺了就是「还没登记」，不是「这一行没填」。
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "请先在申报页登记本主体的测试接口 URL 与 API Key", 400))
 	case errors.Is(err, tpdomain.ErrNotConfigured):
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
@@ -844,7 +844,7 @@ func resolveTestCategory(raw string) (string, string, bool) {
 
 // buildRows 校验行并把主体凭据写进快照；失败时已写好响应。
 //
-// 000044 起 rows[].test_base_url / test_api_key **不再由前端提供**：
+// 000046 起 rows[].test_base_url / test_api_key **不再由前端提供**：
 // 凭据是主体资源（/supplier/test-credential），这里统一取主体值做快照。
 // 旧前端仍会带上这两个字段，收到也忽略，避免直接 400 把页面打挂。
 func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, input []submissionWriteRow) ([]supplypg.SubmissionRowInput, bool) {
