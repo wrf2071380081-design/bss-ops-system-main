@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createServer } from "vite";
+import { resourcePage, resourceOptions } from "./plaza-server.fixture.mjs";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
@@ -20,7 +21,7 @@ source.admitted_at = "2026-10-21T04:00:00Z";
 const other = row("102", "21", "供应商甲", "12", "标准模型乙", "vendor-model-b");
 const otherSupplier = row("201", "22", "供应商乙", "11", "标准模型甲", "vendor-model-c");
 let server, browser;
-const groupQueries = [];
+const flatQueries = [];
 try {
   server = await createServer({ plugins: [plugin], server: { host: "127.0.0.1", port: 0 }, logLevel: "error" });
   await server.listen();
@@ -32,16 +33,12 @@ try {
   page.on("console", message => { if (message.type() === "error") pageErrors.push(message.text()); });
   page.on("response", response => { if (response.status() >= 400) pageErrors.push(`${response.status()} ${response.url()}`); });
   await page.route("**/api/internal/standard-models?**", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data: { list: [model], total: 1, page: 1, size: 100 }, requestId: "supplier-detail-test" }) }));
+  await page.route("**/api/internal/standard-models/11", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data: model, requestId: "supplier-detail-test" }) }));
   await page.route("**/api/internal/standard-models/*/resource-operations?**", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data: { list: [], total: 0, page: 1, size: 20 }, requestId: "supplier-detail-test" }) }));
   await page.route("**/api/internal/resources?**", route => {
     const url = new URL(route.request().url());
-    if (url.searchParams.get("view") === "grouped") {
-      groupQueries.push(Object.fromEntries(url.searchParams));
-      const data = { view: "grouped", list: [{ id: "11", name: "标准模型甲", official_id: "official-a", company: "模型公司", model_type: "TEXT", supplier_count: 1, resource_count: 1, available_count: 1, coefficient_min: "0.7000", coefficient_max: "0.7000", regions: ["CN"], state_counts: { ADMITTED: 1 } }], total: 1, page: Number(url.searchParams.get("page")), size: Number(url.searchParams.get("size")) };
-      return route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data, requestId: "supplier-detail-test" }) });
-    }
-    const rows = url.searchParams.get("supplier_id") === "21" ? [source, other] : [source, otherSupplier];
-    const data = { view: "flat", list: rows, total: rows.length, page: Number(url.searchParams.get("page")), size: Number(url.searchParams.get("size")) };
+    flatQueries.push(Object.fromEntries(url.searchParams));
+    const data = resourcePage([source, other, otherSupplier], Object.fromEntries(url.searchParams));
     return route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data, requestId: "supplier-detail-test" }) });
   });
   await page.route("**/api/internal/resources/*", route => {
@@ -49,7 +46,9 @@ try {
     const found = [source, other].find(resource => resource.id === id);
     return route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data: found, requestId: "supplier-detail-test" }) });
   });
-  await page.route("**/api/internal/supplier-entities/21", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data: { id: "21", buyer_id: "7", name: "供应商甲", region: "CN", registration_no: "91310000TEST001", contact: "联系人甲", phone: "13800000000", tax_rate: "0.06000000", settlement_currency: "CNY", established: true, status: "ACTIVE", revision: "1", created_at: "2026-10-20T01:00:00Z", updated_at: "2026-10-20T01:00:00Z", can_edit: true }, requestId: "supplier-detail-test" }) }));
+  await page.route("**/api/internal/resources/filter-options?**", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, data: resourceOptions([source, other, otherSupplier]) }) }));
+  await page.route("**/api/internal/resources/filter-options", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, data: resourceOptions([source, other, otherSupplier]) }) }));
+  await page.route("**/api/internal/supplier-entities/21", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data: { id: "21", buyer_id: "7", name: "供应商甲", aliases: [], aliases_supported: true, region: "CN", registration_no: "91310000TEST001", contact: "联系人甲", phone: "13800000000", tax_rate: "0.06000000", settlement_currency: "CNY", established: true, status: "ACTIVE", revision: "1", created_at: "2026-10-20T01:00:00Z", updated_at: "2026-10-20T01:00:00Z", can_edit: true }, requestId: "supplier-detail-test" }) }));
   await page.route("**/api/internal/contracts?**", route => {
     const url = new URL(route.request().url());
     assert.equal(url.searchParams.get("subject_type"), "SUPPLIER");
@@ -63,9 +62,10 @@ try {
     return route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data: { list: [], total: 0, page: 1, size: 100, current_credit: [] }, requestId: "supplier-detail-test" }) });
   });
   await page.route("**/api/internal/suppliers/21/operations?**", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data: { list: [], total: 0, page: 1, size: 20 }, requestId: "supplier-detail-test" }) }));
-  await page.route("**/api/internal/quotes/pending?**", route => {
-    const url = new URL(route.request().url());
-    assert.equal(url.searchParams.get("supplier_id"), "21");
+  await page.route("**/api/internal/supplier-entities/21/qualifications?**", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, data: { list: [], total: 0, page: 1, size: 20, metadata_supported: true } }) }));
+  await page.route("**/api/internal/supplier-entities/21/test-config", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, data: { supplier_id: "21", configured: false, base_url: "", revision: "0", has_api_key: false } }) }));
+  await page.route("**/api/internal/flows/suppliers/21/progress", route=>route.fulfill({contentType:'application/json',body:JSON.stringify({code:0,data:{supplier_id:'21',list:[]}})}));
+  await page.route("**/api/internal/flows/suppliers/21/submissions?**", route => {
     return route.fulfill({ contentType: "application/json", body: JSON.stringify({ code: 0, message: "ok", data: { list: [], total: 0, page: 1, size: 20 }, requestId: "supplier-detail-test" }) });
   });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__model-plaza?keyword=%E6%A0%87%E5%87%86%E6%A8%A1%E5%9E%8B%E7%94%B2&region=CN&supplier_id=21&supplier_name=%E4%BE%9B%E5%BA%94%E5%95%86%E7%94%B2&supplier_region=CN&state=ADMITTED&page=1&size=20&sort_by=company&order=desc`, { waitUntil: "domcontentloaded" });
@@ -100,28 +100,49 @@ try {
   await page.getByText("91310000TEST001", { exact: true }).waitFor();
   await page.getByText("合同与授信", { exact: true }).waitFor();
   await page.getByRole("tab", { name: "操作记录", exact: true }).click();
-  await page.getByText("汇总该供应商名下资源和计划的操作摘要；不包含凭据或底层快照。", { exact: true }).waitFor();
+  await page.getByText("汇总主体、资质、正式配置、合同、授信、资源及计划的操作摘要。", { exact: true }).waitFor();
   await page.getByText("暂无操作记录", { exact: true }).waitFor();
   await page.getByRole("tab", { name: "该供应商报价", exact: true }).click();
-  await page.getByText("当前报价接口提供该供应商的待审批报价。已处理报价历史需 C 侧历史查询接口接入。", { exact: true }).waitFor();
-  await page.getByText("当前没有待审批报价", { exact: true }).waitFor();
+  await page.getByText("当前主体的全部模型申报与改价记录，包含草稿、待审批、驳回、办理及已完成状态。", { exact: true }).waitFor();
+  await page.getByText("暂无报价申报历史", { exact: true }).waitFor();
   await page.getByRole("button", { name: "← 返回模型详情", exact: true }).click();
   await page.waitForURL(url => url.pathname === "/internal/model-detail/11");
   assert.equal(await page.getByPlaceholder("供应商名称 / 接口模型 ID").inputValue(), "vendor-model-a");
   assert.equal(await page.locator(".detail-panel tbody tr").count(), 1);
   await page.getByRole("button", { name: "← 返回模型广场", exact: true }).click();
   await page.waitForURL(url => url.pathname === "/internal/model-plaza");
-  await page.locator(".plaza-filters input").first().waitFor();
-  assert.equal(await page.locator(".plaza-filters input").first().inputValue(), "标准模型甲");
+  await page.getByRole("textbox", { name: "搜索模型", exact: true }).waitFor();
+  assert.equal(await page.getByRole("textbox", { name: "搜索模型", exact: true }).inputValue(), "标准模型甲");
   const returnedPlazaURL = new URL(page.url());
   assert.equal(returnedPlazaURL.searchParams.get("supplier_id"), "21");
   assert.equal(returnedPlazaURL.searchParams.get("supplier_name"), "供应商甲");
   assert.match(await page.locator(".plaza-filters").innerText(), /供应商甲/);
   assert.match(await page.locator(".plaza-filters").innerText(), /已接入/);
-  assert.equal(groupQueries.at(-1).supplier_id, "21");
-  assert.equal(groupQueries.at(-1).region, "CN");
-  assert.equal(groupQueries.at(-1).state, "ADMITTED");
-  assert.equal(groupQueries.at(-1).keyword, "标准模型甲");
+  const restored = JSON.parse(returnedPlazaURL.searchParams.get("filters"));
+  assert.deepEqual(restored.supplier_ids, ["21"]);
+  assert.deepEqual(restored.regions, ["CN"]);
+  assert.deepEqual(restored.states, ["ADMITTED"]);
+  assert.equal(restored.keyword, "标准模型甲");
+  const returnedQuery = flatQueries.filter(query => query.view === "grouped").at(-1);
+  assert.equal(returnedQuery.sort_by, "company");
+  assert.equal(returnedQuery.size, "20");
+  assert.deepEqual(JSON.parse(returnedQuery.supplier_ids), ["21"]);
+  await page.waitForFunction(() => document.querySelector(".plaza-table tbody")?.textContent.includes("1 家"));
+  assert.match(await page.locator(".plaza-table tbody").innerText(), /1 家/);
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__model-detail/11?source_page=2&source_size=1`);
+  await page.locator(".detail-panel tbody tr").filter({ hasText: "供应商乙" }).waitFor();
+  assert.equal(await page.locator(".detail-panel tbody tr").count(), 1);
+  assert.equal(flatQueries.at(-1).page, "2");
+  assert.equal(flatQueries.at(-1).size, "1");
+  await page.locator(".detail-panel .el-pagination .btn-prev").click();
+  await page.locator(".detail-panel tbody tr").filter({ hasText: "供应商甲" }).waitFor();
+  assert.equal(flatQueries.at(-1).page, "1");
+  await page.locator(".detail-panel tbody tr").getByRole("button", { name: "详情", exact: true }).click();
+  await page.waitForURL(url => url.pathname === "/internal/suppliers/21/models");
+  assert.equal(new URL(page.url()).searchParams.get("source_size"), "1");
+  await page.getByRole("button", { name: "← 返回模型详情", exact: true }).click();
+  await page.locator(".detail-panel tbody tr").filter({ hasText: "供应商甲" }).waitFor();
+  assert.equal(flatQueries.at(-1).size, "1");
   assert.deepEqual(pageErrors, []);
   console.log("PASS: model plaza filter context survives model and supplier detail navigation; source filters and all four supplier tabs restore correctly; resources remain supplier-scoped and missing admission time stays unrecorded.");
 } finally { await browser?.close(); await server?.close(); }

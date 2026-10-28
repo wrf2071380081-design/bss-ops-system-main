@@ -29,7 +29,9 @@ export const supplierSubmissionsApi = {
     if (!response || !Array.isArray(response.list)) throw new Error("标准模型目录响应不符合约定，请重新查询。");
     for (const item of response.list) {
       standardModelVersion(item.id);
-      if (!item.name?.trim() || !item.official_id?.trim() || !item.company?.trim()) throw new Error("标准模型目录字段不完整，请重新查询。");
+      // Incomplete official data may be saved and used for resource handling.
+      // Identity remains mandatory; missing metadata must not reject the list.
+      if (typeof item.name !== 'string' || typeof item.official_id !== 'string' || typeof item.company !== 'string') throw new Error("标准模型目录字段不完整，请重新查询。");
     }
     return response.list;
   },

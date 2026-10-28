@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,8 @@ type SupplierStore struct {
 
 var _ supply.SupplierUnitOfWork = (*SupplierStore)(nil)
 var _ supply.SupplierReadStore = (*SupplierStore)(nil)
+var _ supply.SupplierQualificationUploadAuthorizer = (*SupplierStore)(nil)
+var _ supply.SupplierAliasCapabilityStore = (*SupplierStore)(nil)
 
 func NewSupplierStore(schema string, db *sql.DB, resolve ModelTxResolver, log ResourceStateLogAppender) (*SupplierStore, error) {
 	if !modelSchemaName.MatchString(schema) {
@@ -37,8 +40,11 @@ func NewSupplierStore(schema string, db *sql.DB, resolve ModelTxResolver, log Re
 	return &SupplierStore{db: db, schema: schema, resolve: resolve, log: log}, nil
 }
 
-func supplierTaxRateToDB(ratio string) (string, error) {
-	rate, err := decimal.NewFromString(ratio)
+func supplierTaxRateToDB(ratio *string) (any, error) {
+	if ratio == nil {
+		return nil, nil
+	}
+	rate, err := decimal.NewFromString(*ratio)
 	if err != nil || rate.IsNegative() || rate.GreaterThan(decimal.NewFromInt(1)) {
 		return "", &supply.FieldError{Path: "tax_rate", Reason: "expected ratio between zero and one"}
 	}
@@ -49,13 +55,16 @@ func supplierTaxRateToDB(ratio string) (string, error) {
 	return percent.StringFixed(2), nil
 }
 
-func supplierTaxRateFromDB(percent string) (string, error) {
+func supplierTaxRateFromDB(percent string) (*string, error) {
 	rate, err := decimal.NewFromString(percent)
 	if err != nil || rate.IsNegative() || rate.GreaterThan(decimal.NewFromInt(100)) || !rate.Equal(rate.Round(2)) {
-		return "", supply.ErrReadContract
+		return nil, supply.ErrReadContract
 	}
-	return rate.Div(decimal.NewFromInt(100)).StringFixed(8), nil
+	canonical := rate.Div(decimal.NewFromInt(100)).StringFixed(8)
+	return &canonical, nil
 }
+
+func supplierDataEqual(left, right supply.SupplierData) bool { return reflect.DeepEqual(left, right) }
 
 func validSupplierAuditTimestamp(action string, createdAt, updatedAt, loggedAt time.Time) bool {
 	createdAt = createdAt.UTC().Truncate(time.Microsecond)
@@ -77,6 +86,45 @@ func validSupplierAuditTimestamp(action string, createdAt, updatedAt, loggedAt t
 }
 
 func (s *SupplierStore) table(name string) string { return `"` + s.schema + `"."` + name + `"` }
+
+func (s *SupplierStore) supplierAliasStructureAvailable(ctx context.Context, tx *sql.Tx) (bool, error) {
+	if s == nil || tx == nil {
+		return false, supply.ErrDependencyUnavailable
+	}
+	var available bool
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) = 5
+FROM information_schema.columns
+WHERE table_schema=$1 AND table_name='supplier_alias'
+  AND (
+    (column_name='id' AND data_type='bigint' AND is_nullable='NO' AND (is_identity='YES' OR column_default IS NOT NULL)) OR
+    (column_name='supplier_id' AND data_type='bigint' AND is_nullable='NO') OR
+    (column_name='alias_name' AND data_type IN ('character varying','text') AND is_nullable='NO' AND COALESCE(character_maximum_length,128)>=128) OR
+    (column_name='normalized_name' AND data_type IN ('character varying','text') AND is_nullable='NO' AND COALESCE(character_maximum_length,128)>=128) OR
+    (column_name='created_at' AND data_type='timestamp with time zone' AND is_nullable='NO' AND column_default IS NOT NULL)
+  )`, s.schema).Scan(&available); err != nil {
+		return false, err
+	}
+	return available, nil
+}
+
+func (s *SupplierStore) SupplierAliasesSupported(ctx context.Context) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, supply.ErrDependencyUnavailable
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	available, err := s.supplierAliasStructureAvailable(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return available, nil
+}
 
 func (s *SupplierStore) Within(ctx context.Context, run func(supply.SupplierTransaction) error) error {
 	if s == nil || s.resolve == nil || s.log == nil || run == nil {
@@ -134,7 +182,7 @@ func nullableSupplierText(value string) any {
 	return value
 }
 
-func canonicalSupplierStorage(input *supply.Supplier) (*supply.Supplier, string, error) {
+func canonicalSupplierStorage(input *supply.Supplier) (*supply.Supplier, any, error) {
 	if input == nil || !modelIdentity(input.ID) || !modelIdentity(input.BuyerID) || input.Revision != 1 || input.Established || input.Status != "ACTIVE" || input.CreatedAt.IsZero() || input.UpdatedAt.Before(input.CreatedAt) {
 		return nil, "", supply.ErrReadContract
 	}
@@ -208,7 +256,11 @@ func (t *supplierTransaction) UpdateSupplier(ctx context.Context, input *supply.
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(canonical.Data, input.Data) || input.UpdatedAt.Before(t.current.UpdatedAt) || input.Data == t.current.Data {
+	if !reflect.DeepEqual(canonical.Data, input.Data) || input.UpdatedAt.Before(t.current.UpdatedAt) || reflect.DeepEqual(input.Data, t.current.Data) {
+		return supply.ErrReadContract
+	}
+	wantAliases := supply.SupplierAliasesAfterRename(t.current.Aliases, t.current.Data.Name, input.Data.Name)
+	if !reflect.DeepEqual(input.Aliases, wantAliases) {
 		return supply.ErrReadContract
 	}
 	taxRate, err := supplierTaxRateToDB(input.Data.TaxRate)
@@ -226,7 +278,88 @@ func (t *supplierTransaction) UpdateSupplier(ctx context.Context, input *supply.
 	if n != 1 {
 		return supply.ErrRevisionConflict
 	}
+	if err := t.store.replaceSupplierAliases(ctx, t.tx, input.ID, input.Data.Name, input.Aliases); err != nil {
+		return err
+	}
 	t.staged = input.Clone()
+	return nil
+}
+
+func normalizeSupplierAlias(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || len([]rune(value)) > 128 {
+		return "", false
+	}
+	return strings.ToLower(value), true
+}
+
+func (s *SupplierStore) replaceSupplierAliases(ctx context.Context, tx *sql.Tx, supplierID, currentName string, aliases []string) error {
+	currentKey, ok := normalizeSupplierAlias(currentName)
+	if !ok {
+		return supply.ErrReadContract
+	}
+	wanted := make(map[string]string, len(aliases))
+	for _, alias := range aliases {
+		key, valid := normalizeSupplierAlias(alias)
+		if !valid || key == currentKey {
+			return supply.ErrReadContract
+		}
+		if _, exists := wanted[key]; exists {
+			return supply.ErrReadContract
+		}
+		wanted[key] = strings.TrimSpace(alias)
+	}
+	aliasTableAvailable, err := s.supplierAliasStructureAvailable(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if !aliasTableAvailable {
+		if len(aliases) == 0 {
+			return nil
+		}
+		return supply.ErrDependencyUnavailable
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT alias_name,normalized_name FROM `+s.table("supplier_alias")+` WHERE supplier_id=$1 ORDER BY id`, supplierID)
+	if err != nil {
+		return err
+	}
+	existing := make(map[string]string, len(wanted))
+	for rows.Next() {
+		var alias, normalized string
+		if err := rows.Scan(&alias, &normalized); err != nil {
+			rows.Close()
+			return err
+		}
+		key, valid := normalizeSupplierAlias(alias)
+		if !valid || key != normalized {
+			rows.Close()
+			return supply.ErrReadContract
+		}
+		existing[normalized] = alias
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for normalized := range existing {
+		if _, keep := wanted[normalized]; !keep {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+s.table("supplier_alias")+` WHERE supplier_id=$1 AND normalized_name=$2`, supplierID, normalized); err != nil {
+				return err
+			}
+		}
+	}
+	for _, alias := range aliases {
+		normalized, _ := normalizeSupplierAlias(alias)
+		if _, found := existing[normalized]; found {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO `+s.table("supplier_alias")+` (supplier_id,alias_name,normalized_name) VALUES($1,$2,$3)`, supplierID, alias, normalized); err != nil {
+			return supplierUniqueError(err)
+		}
+	}
 	return nil
 }
 
@@ -328,7 +461,15 @@ func (s *SupplierStore) List(ctx context.Context, query supply.SupplierListQuery
 		return nil, err
 	}
 	defer tx.Rollback()
-	where := ` WHERE ($1='' OR region=$1) AND ($2='' OR name ILIKE '%'||$2||'%')`
+	aliasTableAvailable, err := s.supplierAliasStructureAvailable(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	nameMatch := `name ILIKE '%'||$2||'%'`
+	if aliasTableAvailable {
+		nameMatch += ` OR EXISTS (SELECT 1 FROM ` + s.table("supplier_alias") + ` sa WHERE sa.supplier_id=` + s.table("supplier") + `.id AND sa.alias_name ILIKE '%'||$2||'%')`
+	}
+	where := ` WHERE ($1='' OR region=$1) AND ($2='' OR (` + nameMatch + `))`
 	var total int64
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM `+s.table("supplier")+where, query.Region, query.Keyword).Scan(&total); err != nil {
 		return nil, err
@@ -383,15 +524,21 @@ func (s *SupplierStore) loadSupplier(ctx context.Context, tx *sql.Tx, id string,
 	if err != nil {
 		return nil, err
 	}
-	if !taxRate.Valid || !currency.Valid {
+	if !currency.Valid {
 		return nil, supply.ErrReadContract
 	}
 	profile.Data.RegistrationNo, profile.Data.Contact, profile.Data.Phone = registration.String, contact.String, phone.String
-	profile.Data.TaxRate, err = supplierTaxRateFromDB(taxRate.String)
+	if taxRate.Valid {
+		profile.Data.TaxRate, err = supplierTaxRateFromDB(taxRate.String)
+		if err != nil {
+			return nil, err
+		}
+	}
+	profile.Data.SettlementCurrency = currency.String
+	profile.Aliases, err = s.supplierAliases(ctx, tx, id, profile.Data.Name)
 	if err != nil {
 		return nil, err
 	}
-	profile.Data.SettlementCurrency = currency.String
 	profile.CreatedAt, profile.UpdatedAt = createdAt.UTC().Truncate(time.Microsecond), updatedAt.UTC().Truncate(time.Microsecond)
 	if (profile.Status != "ACTIVE" && profile.Status != "FROZEN") || (profile.Data.Region != "CN" && profile.Data.Region != "OVERSEAS") {
 		return nil, supply.ErrReadContract
@@ -424,7 +571,7 @@ func (s *SupplierStore) loadSupplier(ctx context.Context, tx *sql.Tx, id string,
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, supply.ErrReadContract
 	}
-	if snapshot.ID != id || snapshot.Revision == 0 || snapshot.Revision > math.MaxInt64 || snapshot.Established != profile.Established || snapshot.Status != profile.Status || snapshot.Data != profile.Data || !snapshot.CreatedAt.UTC().Truncate(time.Microsecond).Equal(profile.CreatedAt) || !snapshot.UpdatedAt.UTC().Truncate(time.Microsecond).Equal(profile.UpdatedAt) || !actor.Valid || !modelIdentity(actor.String) || !reason.Valid || strings.TrimSpace(reason.String) == "" || !requestID.Valid || !modelIdentity(profile.BuyerID) || !validSupplierAuditTimestamp(action.String, profile.CreatedAt, profile.UpdatedAt, loggedAt) {
+	if snapshot.ID != id || snapshot.Revision == 0 || snapshot.Revision > math.MaxInt64 || snapshot.Established != profile.Established || snapshot.Status != profile.Status || !supplierDataEqual(snapshot.Data, profile.Data) || !reflect.DeepEqual(snapshot.Aliases, profile.Aliases) || !snapshot.CreatedAt.UTC().Truncate(time.Microsecond).Equal(profile.CreatedAt) || !snapshot.UpdatedAt.UTC().Truncate(time.Microsecond).Equal(profile.UpdatedAt) || !actor.Valid || !modelIdentity(actor.String) || !reason.Valid || strings.TrimSpace(reason.String) == "" || !requestID.Valid || !modelIdentity(profile.BuyerID) || !validSupplierAuditTimestamp(action.String, profile.CreatedAt, profile.UpdatedAt, loggedAt) {
 		return nil, supply.ErrReadContract
 	}
 	switch action.String {
@@ -445,6 +592,49 @@ func (s *SupplierStore) loadSupplier(ctx context.Context, tx *sql.Tx, id string,
 	}
 	profile.Revision = snapshot.Revision
 	return profile.Clone(), nil
+}
+
+func (s *SupplierStore) supplierAliases(ctx context.Context, tx *sql.Tx, supplierID, currentName string) ([]string, error) {
+	aliasTableAvailable, err := s.supplierAliasStructureAvailable(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if !aliasTableAvailable {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT alias_name,normalized_name FROM `+s.table("supplier_alias")+` WHERE supplier_id=$1 ORDER BY id`, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	currentKey, ok := normalizeSupplierAlias(currentName)
+	if !ok {
+		return nil, supply.ErrReadContract
+	}
+	aliases := make([]string, 0)
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var alias, normalized string
+		if err := rows.Scan(&alias, &normalized); err != nil {
+			return nil, err
+		}
+		key, valid := normalizeSupplierAlias(alias)
+		if !valid || key != normalized || key == currentKey {
+			return nil, supply.ErrReadContract
+		}
+		if _, duplicate := seen[key]; duplicate {
+			return nil, supply.ErrReadContract
+		}
+		seen[key] = struct{}{}
+		aliases = append(aliases, alias)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(aliases) == 0 {
+		return nil, nil
+	}
+	return aliases, nil
 }
 
 func (s *SupplierStore) currentSupplierBuyer(ctx context.Context, tx *sql.Tx, id string) (string, error) {
@@ -471,4 +661,352 @@ func (s *SupplierStore) currentSupplierBuyer(ctx context.Context, tx *sql.Tx, id
 		return "", supply.ErrReadContract
 	}
 	return current, nil
+}
+
+// ListQualifications returns only display metadata and the presence of an
+// attachment reference. The legacy file_ref may contain a storage path and is
+// never returned by this method; downloads require a separate file provider.
+func (s *SupplierStore) ListQualifications(ctx context.Context, supplierID string, query supply.SupplierQualificationQuery) (*supply.SupplierQualificationPage, error) {
+	if s == nil || s.db == nil || !modelIdentity(supplierID) || query.Page < 1 || query.Size < 1 || query.Size > 100 || query.Page > math.MaxInt/query.Size {
+		return nil, supply.ErrDependencyUnavailable
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	metadataSupported, err := qualificationMetadataColumns(ctx, tx, s.schema)
+	if err != nil {
+		return nil, mapSupplierStorageError(err)
+	}
+	var total int64
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM `+s.table("supplier_qualification")+` WHERE supplier_id=$1`, supplierID).Scan(&total); err != nil {
+		return nil, err
+	}
+	typeExpr, fromExpr, toExpr, reviewExpr, revisionExpr, createdByExpr := "NULL::text", "NULL::text", "NULL::text", "NULL::text", "NULL::bigint", "NULL::text"
+	if metadataSupported {
+		typeExpr, fromExpr, toExpr, reviewExpr, revisionExpr, createdByExpr = "qualification_type::text", "valid_from::text", "valid_to::text", "review_status::text", "revision::bigint", "created_by::text"
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id::text,supplier_id::text,name,(file_ref IS NOT NULL AND btrim(file_ref)<>'') AS has_attachment,file_ref,uploaded_at,`+typeExpr+`,`+fromExpr+`,`+toExpr+`,`+reviewExpr+`,`+revisionExpr+`,`+createdByExpr+` FROM `+s.table("supplier_qualification")+` WHERE supplier_id=$1 ORDER BY uploaded_at DESC,id DESC LIMIT $2 OFFSET $3`, supplierID, query.Size, (query.Page-1)*query.Size)
+	if err != nil {
+		return nil, err
+	}
+	result := &supply.SupplierQualificationPage{List: make([]supply.SupplierQualification, 0), Total: total, Page: query.Page, Size: query.Size, MetadataSupported: metadataSupported}
+	for rows.Next() {
+		var item supply.SupplierQualification
+		var fileRef, qualificationType, validFrom, validTo, reviewStatus, createdBy sql.NullString
+		var revision sql.NullInt64
+		if err := rows.Scan(&item.ID, &item.SupplierID, &item.Name, &item.HasAttachment, &fileRef, &item.UploadedAt, &qualificationType, &validFrom, &validTo, &reviewStatus, &revision, &createdBy); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		item.FileReference = fileRef.String
+		item.QualificationType = qualificationType.String
+		item.ValidFrom = qualificationDatePointer(validFrom)
+		item.ValidTo = qualificationDatePointer(validTo)
+		item.ReviewStatus = qualificationStringPointer(reviewStatus)
+		item.CreatedBy = qualificationStringPointer(createdBy)
+		if revision.Valid {
+			if revision.Int64 < 1 || revision.Int64 > math.MaxInt32 {
+				rows.Close()
+				return nil, supply.ErrReadContract
+			}
+			value := uint64(revision.Int64)
+			item.Revision = &value
+		}
+		result.List = append(result.List, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *SupplierStore) CreateQualification(ctx context.Context, meta supply.WriteMeta, supplierID, name, fileRef string, at time.Time) (*supply.SupplierQualification, error) {
+	return s.createQualification(ctx, meta, supplierID, name, fileRef, nil, at)
+}
+
+func (s *SupplierStore) CreateQualificationWithMetadata(ctx context.Context, meta supply.WriteMeta, supplierID, name, fileRef string, details supply.SupplierQualificationMetadata, at time.Time) (*supply.SupplierQualification, error) {
+	return s.createQualification(ctx, meta, supplierID, name, fileRef, &details, at)
+}
+
+// AuthorizeSupplierQualificationUpload performs a preflight ownership check
+// before the domain service writes file bytes. The final write repeats this
+// check under the supplier row lock in createQualification.
+func (s *SupplierStore) AuthorizeSupplierQualificationUpload(ctx context.Context, meta supply.WriteMeta, supplierID string) error {
+	if s == nil || s.resolve == nil || s.log == nil || !modelIdentity(meta.ActorID) || !modelIdentity(supplierID) {
+		return supply.ErrDependencyUnavailable
+	}
+	tx, err := s.resolve(ctx)
+	if err != nil {
+		return mapSupplierStorageError(err)
+	}
+	if tx == nil {
+		return supply.ErrDependencyUnavailable
+	}
+	return s.authorizeQualificationWrite(ctx, tx, meta, supplierID, false)
+}
+
+func (s *SupplierStore) authorizeQualificationOwner(ctx context.Context, tx *sql.Tx, actorID, supplierID string, lock bool) (*supply.Supplier, error) {
+	profile, err := s.loadSupplier(ctx, tx, supplierID, lock)
+	if err != nil {
+		return nil, mapSupplierStorageError(err)
+	}
+	if profile.BuyerID != actorID {
+		return nil, supply.ErrForbidden
+	}
+	var active bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+s.table("internal_staff")+` WHERE id=$1 AND status='ACTIVE')`, actorID).Scan(&active); err != nil {
+		return nil, mapSupplierStorageError(err)
+	}
+	if !active {
+		return nil, supply.ErrForbidden
+	}
+	return profile, nil
+}
+
+func (s *SupplierStore) authorizeQualificationWrite(ctx context.Context, tx *sql.Tx, meta supply.WriteMeta, supplierID string, lock bool) error {
+	profile, err := s.authorizeQualificationOwner(ctx, tx, meta.ActorID, supplierID, lock)
+	if err != nil {
+		return err
+	}
+	if profile.Status != "ACTIVE" {
+		return supply.ErrForbidden
+	}
+	return nil
+}
+
+func (s *SupplierStore) createQualification(ctx context.Context, meta supply.WriteMeta, supplierID, name, fileRef string, details *supply.SupplierQualificationMetadata, at time.Time) (*supply.SupplierQualification, error) {
+	if s == nil || s.resolve == nil || s.log == nil || !modelIdentity(meta.ActorID) || !modelIdentity(supplierID) || strings.TrimSpace(name) == "" || !validSupplierQualificationFileRef(fileRef) || at.IsZero() {
+		return nil, supply.ErrDependencyUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	tx, err := s.resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if tx == nil {
+		return nil, supply.ErrDependencyUnavailable
+	}
+	if err := s.authorizeQualificationWrite(ctx, tx, meta, supplierID, true); err != nil {
+		return nil, err
+	}
+	if details != nil {
+		ready, err := qualificationMetadataColumns(ctx, tx, s.schema)
+		if err != nil {
+			return nil, mapSupplierStorageError(err)
+		}
+		if !ready {
+			return nil, supply.ErrDependencyUnavailable
+		}
+	} else {
+		// Keep the legacy upload contract only while the target schema lacks the
+		// complete metadata set. Once present, omitted fields must not create a
+		// qualification that bypasses the required type/revision metadata.
+		ready, err := qualificationMetadataColumns(ctx, tx, s.schema)
+		if err != nil {
+			return nil, mapSupplierStorageError(err)
+		}
+		if ready {
+			return nil, supply.ErrQualificationMetadataRequired
+		}
+	}
+	row := &supply.SupplierQualification{SupplierID: supplierID, Name: strings.TrimSpace(name), HasAttachment: true, CanDownload: true, FileReference: fileRef, UploadedAt: at.UTC().Truncate(time.Microsecond)}
+	var after any = map[string]any{"supplier_id": supplierID, "name": row.Name, "has_attachment": true, "uploaded_at": row.UploadedAt}
+	if details == nil {
+		if err := tx.QueryRowContext(ctx, `INSERT INTO `+s.table("supplier_qualification")+` (supplier_id,name,file_ref,uploaded_at) VALUES($1,$2,$3,$4) RETURNING id::text`, supplierID, row.Name, fileRef, row.UploadedAt).Scan(&row.ID); err != nil {
+			return nil, mapSupplierStorageError(err)
+		}
+	} else {
+		if err := tx.QueryRowContext(ctx, `INSERT INTO `+s.table("supplier_qualification")+` (supplier_id,name,file_ref,uploaded_at,qualification_type,valid_from,valid_to,revision,created_by) VALUES($1,$2,$3,$4,$5,NULLIF($6,'')::date,NULLIF($7,'')::date,1,$8) RETURNING id::text`, supplierID, row.Name, fileRef, row.UploadedAt, details.Type, details.ValidFrom, details.ValidTo, meta.ActorID).Scan(&row.ID); err != nil {
+			return nil, mapSupplierStorageError(err)
+		}
+		revision := uint64(1)
+		row.QualificationType, row.ValidFrom, row.ValidTo, row.Revision = details.Type, nullableQualificationDate(details.ValidFrom), nullableQualificationDate(details.ValidTo), &revision
+		createdBy := meta.ActorID
+		row.CreatedBy = &createdBy
+		after = map[string]any{"supplier_id": supplierID, "name": row.Name, "qualification_type": details.Type, "valid_from": details.ValidFrom, "valid_to": details.ValidTo, "revision": "1", "created_by": meta.ActorID, "has_attachment": true, "uploaded_at": row.UploadedAt}
+	}
+	afterJSON, err := json.Marshal(after)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.log(ctx, tx, ResourceStateLog{EntityType: "supplier_qualification", EntityID: row.ID, Action: "UPLOAD", ActorID: meta.ActorID, After: afterJSON, Reason: meta.Reason, RequestID: meta.RequestID, OccurredAt: row.UploadedAt}); err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+func (s *SupplierStore) UpdateQualificationMetadata(ctx context.Context, meta supply.WriteMeta, supplierID, qualificationID string, expectedRevision uint64, name string, details supply.SupplierQualificationMetadata, at time.Time) (*supply.SupplierQualification, error) {
+	if s == nil || s.resolve == nil || s.log == nil {
+		return nil, supply.ErrDependencyUnavailable
+	}
+	for _, field := range []struct{ name, value string }{
+		{"actor_id", meta.ActorID}, {"supplier_id", supplierID}, {"qualification_id", qualificationID},
+	} {
+		if !modelIdentity(field.value) {
+			return nil, &supply.FieldError{Path: field.name, Reason: "expected a positive bigint string"}
+		}
+	}
+	if expectedRevision == 0 || expectedRevision >= math.MaxInt32 {
+		return nil, &supply.FieldError{Path: "expected_revision", Reason: "expected a positive revision below the storage limit"}
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || len([]rune(name)) > 128 || at.IsZero() {
+		return nil, supply.ErrReadContract
+	}
+	tx, err := s.resolve(ctx)
+	if err != nil {
+		return nil, mapSupplierStorageError(err)
+	}
+	if tx == nil {
+		return nil, supply.ErrDependencyUnavailable
+	}
+	if err := s.authorizeQualificationWrite(ctx, tx, meta, supplierID, true); err != nil {
+		return nil, err
+	}
+	ready, err := qualificationMetadataColumns(ctx, tx, s.schema)
+	if err != nil {
+		return nil, mapSupplierStorageError(err)
+	}
+	if !ready {
+		return nil, supply.ErrDependencyUnavailable
+	}
+	var before supply.SupplierQualification
+	var fileRef, qualificationType, validFrom, validTo, reviewStatus, createdBy sql.NullString
+	var revision int64
+	err = tx.QueryRowContext(ctx, `SELECT id::text,supplier_id::text,name,file_ref,uploaded_at,qualification_type::text,valid_from::text,valid_to::text,review_status::text,revision::bigint,created_by::text FROM `+s.table("supplier_qualification")+` WHERE id=$1 AND supplier_id=$2 FOR UPDATE`, qualificationID, supplierID).Scan(&before.ID, &before.SupplierID, &before.Name, &fileRef, &before.UploadedAt, &qualificationType, &validFrom, &validTo, &reviewStatus, &revision, &createdBy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, supply.ErrNotFound
+	}
+	if err != nil {
+		return nil, mapSupplierStorageError(err)
+	}
+	if revision < 1 || revision > math.MaxInt32 {
+		return nil, supply.ErrReadContract
+	}
+	if uint64(revision) != expectedRevision {
+		return nil, supply.ErrRevisionConflict
+	}
+	updated, err := tx.ExecContext(ctx, `UPDATE `+s.table("supplier_qualification")+` SET name=$1,qualification_type=$2,valid_from=NULLIF($3,'')::date,valid_to=NULLIF($4,'')::date,revision=revision+1 WHERE id=$5 AND supplier_id=$6 AND revision=$7`, name, details.Type, details.ValidFrom, details.ValidTo, qualificationID, supplierID, int64(expectedRevision))
+	if err != nil {
+		return nil, mapSupplierStorageError(err)
+	}
+	affected, err := updated.RowsAffected()
+	if err != nil {
+		return nil, mapSupplierStorageError(err)
+	}
+	if affected != 1 {
+		return nil, supply.ErrRevisionConflict
+	}
+	row := &supply.SupplierQualification{ID: before.ID, SupplierID: before.SupplierID, Name: name, QualificationType: details.Type,
+		ValidFrom: nullableQualificationDate(details.ValidFrom), ValidTo: nullableQualificationDate(details.ValidTo), HasAttachment: fileRef.Valid && strings.TrimSpace(fileRef.String) != "", FileReference: fileRef.String, UploadedAt: before.UploadedAt}
+	newRevision := uint64(revision + 1)
+	row.Revision = &newRevision
+	if reviewStatus.Valid {
+		row.ReviewStatus = &reviewStatus.String
+	}
+	if createdBy.Valid {
+		row.CreatedBy = &createdBy.String
+	}
+	beforeJSON, err := json.Marshal(map[string]any{"supplier_id": supplierID, "name": before.Name, "qualification_type": qualificationType.String, "valid_from": validFrom.String, "valid_to": validTo.String, "revision": strconv.FormatInt(revision, 10), "created_by": createdBy.String, "has_attachment": row.HasAttachment})
+	if err != nil {
+		return nil, err
+	}
+	afterJSON, err := json.Marshal(map[string]any{"supplier_id": supplierID, "name": name, "qualification_type": details.Type, "valid_from": details.ValidFrom, "valid_to": details.ValidTo, "revision": strconv.FormatUint(newRevision, 10), "created_by": createdBy.String, "has_attachment": row.HasAttachment})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.log(ctx, tx, ResourceStateLog{EntityType: "supplier_qualification", EntityID: row.ID, Action: "UPDATE", ActorID: meta.ActorID, Before: beforeJSON, After: afterJSON, Reason: meta.Reason, RequestID: meta.RequestID, OccurredAt: at.UTC().Truncate(time.Microsecond)}); err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+func qualificationMetadataColumns(ctx context.Context, query interface{ QueryRowContext(context.Context, string, ...any) *sql.Row }, schema string) (bool, error) {
+	var supported bool
+	err := query.QueryRowContext(ctx, `SELECT count(*) = 6
+FROM information_schema.columns
+WHERE table_schema=$1 AND table_name='supplier_qualification'
+  AND (
+    (column_name='qualification_type' AND data_type IN ('character varying','text') AND is_nullable='YES') OR
+    (column_name='valid_from' AND data_type='date' AND is_nullable='YES') OR
+    (column_name='valid_to' AND data_type='date' AND is_nullable='YES') OR
+    (column_name='review_status' AND data_type IN ('character varying','text') AND is_nullable='YES') OR
+    (column_name='revision' AND data_type IN ('integer','bigint') AND is_nullable='NO') OR
+    (column_name='created_by' AND data_type='bigint' AND is_nullable='YES')
+  )`, schema).Scan(&supported)
+	return supported, err
+}
+
+func qualificationStringPointer(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	result := value.String
+	return &result
+}
+
+func qualificationDatePointer(value sql.NullString) *string {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return nil
+	}
+	result := value.String
+	return &result
+}
+
+func nullableQualificationDate(value string) *string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	result := strings.TrimSpace(value)
+	return &result
+}
+
+func (s *SupplierStore) QualificationFileReference(ctx context.Context, actorID, supplierID, qualificationID string) (string, string, error) {
+	if s == nil || s.db == nil || !modelIdentity(actorID) || !modelIdentity(supplierID) || !modelIdentity(qualificationID) {
+		return "", "", supply.ErrDependencyUnavailable
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return "", "", err
+	}
+	defer tx.Rollback()
+	if _, err := s.authorizeQualificationOwner(ctx, tx, actorID, supplierID, false); err != nil {
+		return "", "", err
+	}
+	var fileRef sql.NullString
+	var name string
+	err = tx.QueryRowContext(ctx, `SELECT file_ref,name FROM `+s.table("supplier_qualification")+` WHERE supplier_id=$1 AND id=$2`, supplierID, qualificationID).Scan(&fileRef, &name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", supply.ErrNotFound
+	}
+	if err != nil {
+		return "", "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", "", err
+	}
+	return fileRef.String, name, nil
+}
+
+func validSupplierQualificationFileRef(value string) bool {
+	if len(value) != len("squal:v1:")+32 || !strings.HasPrefix(value, "squal:v1:") {
+		return false
+	}
+	for _, char := range value[len("squal:v1:"):] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
 }

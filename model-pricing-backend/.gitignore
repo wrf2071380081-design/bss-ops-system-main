@@ -30,6 +30,7 @@ Thumbs.db
 
 # 日志与临时
 .qa/
+.private/
 logs/
 *.log
 tmp/

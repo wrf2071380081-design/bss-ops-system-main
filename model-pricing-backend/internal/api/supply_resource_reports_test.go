@@ -68,7 +68,7 @@ func resourceReportHTTPFixture() supply.ResourceReportView {
 	connectivity, pressure := true, true
 	targetMatches := true
 	return supply.ResourceReportView{
-		ID: "21", ResourceID: "11", Status: "COMPLETED", CreatedAt: finished.Add(-time.Minute), TestedAt: testedAt, TestItem: "stress", OperatorName: "测评人员甲", Scene: "压力组合场景", FinishedAt: &finished,
+		ID: "21", ResourceID: "11", Status: "COMPLETED", CreatedAt: finished.Add(-time.Minute), TestedAt: &testedAt, TestItem: "stress", OperatorName: "测评人员甲", Scene: "压力组合场景", FinishedAt: &finished,
 		TargetMatches: &targetMatches, ConnectivityPassed: &connectivity, PressurePassed: &pressure,
 		Metrics:    supply.ResourceReportMetrics{ConnectionMS: reportTestStringPtr("0"), RPS: reportTestStringPtr("12.50")},
 		CacheStats: supply.ResourceCacheStats{ReportID: "21", Status: "NOT_PROVIDED"},

@@ -13,6 +13,7 @@ import { isDecimalAmount } from "../../../domain/money";
 import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
 import { useSessionStore } from "../../../stores/session";
+import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
 
 const permissions = usePermissionStore();
 const session = useSessionStore();
@@ -344,6 +345,7 @@ function openRowQuote(row: CustomerQuoteRow) {
 // ---------------- 详情与移交 ----------------
 const detailVisible = ref(false);
 const detailRow = ref<CustomerWorkspaceRow>();
+const canManageF12 = computed(() => Boolean(detailRow.value && session.user?.staffId && String(detailRow.value.owner_sales_operator_id) === String(session.user.staffId)));
 function openDetail(row: CustomerWorkspaceRow) { detailRow.value = row; detailVisible.value = true; }
 
 const transferVisible = ref(false);
@@ -649,7 +651,7 @@ onMounted(() => { void loadCustomers(); void loadQuotes(); });
     </el-dialog>
 
     <!-- 客户详情 -->
-    <el-dialog v-model="detailVisible" title="客户详情" width="min(680px, 96vw)">
+    <el-dialog v-model="detailVisible" title="客户详情" width="min(980px, 96vw)">
       <el-descriptions v-if="detailRow" :column="2" border>
         <el-descriptions-item label="客户名称">{{ detailRow.name }}</el-descriptions-item>
         <el-descriptions-item label="客户 ID">{{ detailRow.id }}</el-descriptions-item>
@@ -668,6 +670,7 @@ onMounted(() => { void loadCustomers(); void loadQuotes(); });
         <el-descriptions-item label="生效报价">{{ detailRow.active_quotes }} 份</el-descriptions-item>
         <el-descriptions-item label="未完成报价">{{ detailRow.pending_quotes }} 份</el-descriptions-item>
       </el-descriptions>
+      <F12SubjectPanel v-if="detailRow" subject-type="CUSTOMER" :subject-id="String(detailRow.id)" :can-manage="canManageF12" @changed="loadCustomers" />
       <template #footer>
         <el-button @click="detailVisible = false">关闭</el-button>
         <el-button v-if="canTransfer" @click="detailVisible = false; detailRow && openTransfer(detailRow)">移交客户</el-button>

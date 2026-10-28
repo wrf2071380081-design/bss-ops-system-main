@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRouter, useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import { formatDateTime } from "../../../domain/date";
 import { ApiError } from "../../../domain/common";
@@ -13,8 +13,11 @@ import {
   type WorkbenchPersonDTO,
 } from "../../../modules/workbench/api/workbench";
 import NoticeDetailDialog from "../resources/NoticeDetailDialog.vue";
+import SubmissionFlowDialog from './SubmissionFlowDialog.vue';
 
 const router = useRouter();
+const route=useRoute(),selectedFlow=ref<{id:string;node:boolean}>();
+watch(()=>[route.query.submission_id,route.query.node_id],()=>{const raw=route.query.node_id||route.query.submission_id;if(typeof raw==='string'&&/^[1-9]\d*$/.test(raw))selectedFlow.value={id:raw,node:!!route.query.node_id};},{immediate:true});
 
 const activeTab = ref<"todo" | "operations" | "approvals">("todo");
 const selectedStates = ref<InboxState[]>(["TODO", "READ"]);
@@ -233,6 +236,7 @@ function refresh() {
 }
 
 function openItem(item: InboxItemDTO) {
+  if(['SUBMISSION_APPROVAL','SUBMISSION_HANDLING','SUBMISSION_CONTRACT'].includes(item.biz_type)){selectedFlow.value={id:String(item.biz_id),node:item.biz_type!=='SUBMISSION_APPROVAL'};return;}
   if (item.biz_type === "NOTICE" && SUPPLY_NOTICE_KINDS.has(item.title)) {
     const row = item as InboxRow;
     selectedSupplyNotice.value = { id: String(item.biz_id), staffID: row.selected_assignee_id, readOnly: !item.readable };
@@ -257,6 +261,7 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
 </script>
 
 <template>
+  <SubmissionFlowDialog v-if="selectedFlow" :key="`${selectedFlow.id}:${selectedFlow.node}`" :id="selectedFlow.id" :node="selectedFlow.node" @close="selectedFlow=undefined" @changed="loadInbox"/>
   <section class="page-heading">
     <div>
       <div class="eyebrow">INTERNAL WORKBENCH</div>

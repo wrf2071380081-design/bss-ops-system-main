@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -27,20 +29,26 @@ type testPlatformRuntime struct {
 	// Receiver 处理平台终态回调；未配置 webhook secret 时为空（只靠轮询）。
 	Receiver *tpinfra.Receiver
 	// Store 供内部复测读取资源测试目标（T-10）。
-	Store *supplypg.TestPlatformStore
+	Store                           *supplypg.TestPlatformStore
+	InternalBaseURL, InternalAPIKey string
 }
 
 // resourceTestTargets 把存储层的资源测试目标适配成 api 侧端口。
-type resourceTestTargets struct{ store *supplypg.TestPlatformStore }
+type resourceTestTargets struct {
+	store           *supplypg.TestPlatformStore
+	baseURL, apiKey string
+}
 
-func (r resourceTestTargets) TestTarget(ctx context.Context, resourceID string) (*api.ResourceTestTarget, error) {
-	target, err := r.store.ResourceTestConfig(ctx, resourceID)
+func (r resourceTestTargets) TestTarget(ctx context.Context, actorID, resourceID string) (*api.ResourceTestTarget, error) {
+	target, err := r.store.InternalRetestResource(ctx, actorID, resourceID)
 	if err != nil {
 		return nil, err
 	}
+	modelID, _ := strconv.ParseInt(target.StandardModelID, 10, 64)
 	return &api.ResourceTestTarget{
-		Model: target.Model, BaseURL: target.BaseURL, SealedAPIKey: target.SealedAPIKey,
-		SupplierID: target.SupplierID, SupplierName: target.SupplierName,
+		Model: target.Model, BaseURL: r.baseURL, SealedAPIKey: r.apiKey,
+		TargetFingerprint: testplatform.TargetFingerprint(modelID, target.Model, r.baseURL, r.apiKey),
+		SupplierID:        target.SupplierID, SupplierName: target.SupplierName,
 	}, nil
 }
 
@@ -49,7 +57,7 @@ func (r *testPlatformRuntime) Targets() api.ResourceTestTargetLoader {
 	if r == nil || r.Store == nil {
 		return nil
 	}
-	return resourceTestTargets{store: r.Store}
+	return resourceTestTargets{store: r.Store, baseURL: r.InternalBaseURL, apiKey: r.InternalAPIKey}
 }
 
 // testCallbackReceiver 把可能为空的接收器转成接口值（避免"非空接口、空实现"）。
@@ -85,16 +93,15 @@ func newTestPlatformRuntime(cfg *config.Config, db *gorm.DB, log *zap.Logger) (*
 	if err != nil {
 		return nil, err
 	}
-	runtime := &testPlatformRuntime{Reader: reader}
-	if !cfg.TestPlatform.Enable {
-		log.Info("test platform disabled by config, report reader only")
-		return runtime, nil
-	}
 	store, err := supplypg.NewTestPlatformStore(raw, "public", cfg.TestPlatform.ReportDir)
 	if err != nil {
 		return nil, err
 	}
-	runtime.Store = store
+	runtime := &testPlatformRuntime{Reader: reader, Store: store, InternalBaseURL: strings.TrimSpace(cfg.TestPlatform.InternalBaseURL), InternalAPIKey: cfg.TestPlatform.InternalAPIKey}
+	if !cfg.TestPlatform.Enable {
+		log.Info("test platform disabled by config, report reader only")
+		return runtime, nil
+	}
 	gateway, err := tpinfra.NewGateway(tpinfra.Config{
 		BaseURL: cfg.TestPlatform.BaseURL,
 		Token:   cfg.TestPlatform.Token,

@@ -195,7 +195,7 @@ test("retirement uses wire field names while Mock keeps approval-first lifecycle
   } finally { server.close(); }
 });
 
-test("real API module/Axios path retains timeout keys, masks diagnostic data and clears 401 sessions", async () => {
+test("real API module/Axios path retains unknown timeout keys and rotates terminal dependency failures", async () => {
   setActivePinia(createPinia());
   const session = useSessionStore();
   session.user = { id: "real-user-test", name: "test", roleLabel: "custom" };
@@ -205,7 +205,9 @@ test("real API module/Axios path retains timeout keys, masks diagnostic data and
   assert.equal(usePermissionStore().canAction(PERMISSIONS.MODEL_EDIT), true);
   assert.equal(session.user.identityKey, undefined);
   const keys: string[] = [];
+  const dependencyKeys: string[] = [];
   let calls = 0;
+  let dependencyCalls = 0;
   server.use(
     http.post("http://localhost/api/probe", ({ request }) => {
       assert.equal(request.headers.get("Authorization"), "Bearer synthetic-bearer");
@@ -216,6 +218,13 @@ test("real API module/Axios path retains timeout keys, masks diagnostic data and
     http.post("http://localhost/api/rejected", ({ request }) => {
       keys.push(request.headers.get("Idempotency-Key")!);
       return HttpResponse.json({ code: 10001, message: "明确失败" }, { status: 400 });
+    }),
+    http.post("http://localhost/api/dependency-unavailable", ({ request }) => {
+      dependencyKeys.push(request.headers.get("Idempotency-Key")!);
+      dependencyCalls += 1;
+      return dependencyCalls === 1
+        ? HttpResponse.json({ code: 10000, message: "依赖未就绪" }, { status: 503 })
+        : HttpResponse.json({ code: 0, data: { id: "available" } });
     }),
     http.get("http://localhost/api/internal/audit-logs", () => HttpResponse.json({ code: 0, data: { items: [{ id: 1, operator_id: 1, operator_name: "test", operator_role: "ADMIN", action: "PROBE", target_type: "TEST", target_id: 1, before_value: JSON.stringify({ apiKey: "sk-" + "synthetic-key", nested: [{ password: "synthetic-password" }] }), after_value: JSON.stringify({ token: "synthetic-token" }), source_type: "INTERNAL", source_id: "", request_id: "req-1", created_at: "2026-09-17T00:00:00Z" }], total: 1 } })),
     http.get("http://localhost/api/unauthorized", () => HttpResponse.json({ code: 10002, message: "expired" }, { status: 401 })),
@@ -228,6 +237,11 @@ test("real API module/Axios path retains timeout keys, masks diagnostic data and
     assert.equal(keys[0], keys[1]);
     assert.deepEqual(await submit(), { id: "saved" });
     assert.notEqual(keys[2], keys[1]);
+    const retryDependency = () => apiRequest({ url: "/dependency-unavailable", method: "POST", data: { subject: "f12" },
+      idempotency: { scope: "dependency-unavailable", payload: { subject: "f12" }, lifecycle: "f12-dependency-test" } });
+    await assert.rejects(retryDependency);
+    assert.deepEqual(await retryDependency(), { id: "available" });
+    assert.notEqual(dependencyKeys[0], dependencyKeys[1]);
     const reject = () => apiRequest({ url: "/rejected", method: "POST", data: {}, idempotency: { scope: "rejected", payload: {} } });
     await assert.rejects(reject);
     await assert.rejects(reject);

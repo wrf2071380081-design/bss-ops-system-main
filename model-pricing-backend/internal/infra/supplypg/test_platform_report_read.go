@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"model_bss/internal/domain/supply"
-	tpdomain "model_bss/internal/domain/testplatform"
 )
 
 // TestReportReader 实现 A 侧模型广场要的 SupplyResourceReportReader。
@@ -23,11 +22,10 @@ import (
 //
 // 契约约束（见 internal/api/supply_resource_reports.go 的 validResourceReport）：
 //   - Status 只能是 RUNNING / COMPLETED / FAILED
-//   - COMPLETED 时 ConnectivityPassed 与 PressurePassed 必须非 nil
+//   - 每个测试结论仅来自本任务；未测试的类别为 nil，不拼接其他任务结论
 //   - CacheStats.Status ∈ PROVIDED / NOT_PROVIDED / NOT_APPLICABLE / NOT_TESTED
 //
-// 注意：一期把"未测过"和"没通过"都落成 false（契约只接受布尔）。
-// M2 引入三态后改成指针语义，这里不需要调用方改动。
+// 排队、运行及启动失败可没有 tested_at/finished_at，不伪造测试时间。
 type TestReportReader struct {
 	db        *sql.DB
 	schema    string
@@ -49,37 +47,45 @@ func (r *TestReportReader) table(name string) string { return r.schema + "." + n
 
 // reportRow 是一次任务连同其最新产物。
 type reportRow struct {
-	jobID      string
-	status     string
-	verdict    sql.NullString
-	category   string
-	createdAt  time.Time
-	finishedAt sql.NullTime
-	reportID   sql.NullString
-	connMS     sql.NullString
-	connPassed sql.NullBool
-	stressPass sql.NullBool
-	rps        sql.NullString
-	tps        sql.NullString
-	hitTokens  sql.NullInt64
-	inTokens   sql.NullInt64
-	ratio      sql.NullString
-	ratioAvail sql.NullBool
-	scene      sql.NullString
-	reportFile sql.NullString
+	jobID              string
+	status             string
+	verdict            sql.NullString
+	category           string
+	createdAt          time.Time
+	finishedAt         sql.NullTime
+	testedAt           sql.NullTime
+	operatorName       string
+	fingerprint        sql.NullString
+	currentFingerprint sql.NullString
+	source             string
+	reportID           sql.NullString
+	connMS             sql.NullString
+	connPassed         sql.NullBool
+	stressPass         sql.NullBool
+	rps                sql.NullString
+	tps                sql.NullString
+	hitTokens          sql.NullInt64
+	inTokens           sql.NullInt64
+	ratio              sql.NullString
+	ratioAvail         sql.NullBool
+	scene              sql.NullString
+	reportFile         sql.NullString
 }
 
 const reportSelect = `
 SELECT j.id::text, j.status, j.verdict, j.category, j.created_at, j.finished_at,
        r.id::text, r.connection_ms::text, r.connection_passed, r.stress_passed,
        r.rps::text, r.tps::text, r.cache_hit_tokens, r.cache_input_tokens, r.scene, r.report_file,
-       r.cache_hit_ratio::text, r.cache_ratio_available
+       r.cache_hit_ratio::text, r.cache_ratio_available, r.tested_at,
+       COALESCE(st.name,''), j.target_fingerprint,
+       (SELECT sr.test_fingerprint FROM %s.submission_row sr WHERE sr.resource_id=j.resource_id ORDER BY sr.id DESC LIMIT 1), COALESCE(j.request_payload->>'source','')
 FROM %s.test_job j
 LEFT JOIN LATERAL (
   SELECT id, connection_ms, connection_passed, stress_passed, rps, tps,
-         cache_hit_tokens, cache_input_tokens, scene, report_file, cache_hit_ratio, cache_ratio_available
+         cache_hit_tokens, cache_input_tokens, scene, report_file, cache_hit_ratio, cache_ratio_available, tested_at, tested_by
   FROM %s.test_report WHERE test_job_id = j.id ORDER BY id DESC LIMIT 1
-) r ON TRUE`
+) r ON TRUE
+LEFT JOIN %s.internal_staff st ON st.id=COALESCE(r.tested_by,j.created_by)`
 
 func (r *TestReportReader) scanRows(rows *sql.Rows) ([]reportRow, error) {
 	defer func() { _ = rows.Close() }()
@@ -88,7 +94,8 @@ func (r *TestReportReader) scanRows(rows *sql.Rows) ([]reportRow, error) {
 		var item reportRow
 		if err := rows.Scan(&item.jobID, &item.status, &item.verdict, &item.category, &item.createdAt, &item.finishedAt,
 			&item.reportID, &item.connMS, &item.connPassed, &item.stressPass, &item.rps, &item.tps,
-			&item.hitTokens, &item.inTokens, &item.scene, &item.reportFile, &item.ratio, &item.ratioAvail); err != nil {
+			&item.hitTokens, &item.inTokens, &item.scene, &item.reportFile, &item.ratio, &item.ratioAvail,
+			&item.testedAt, &item.operatorName, &item.fingerprint, &item.currentFingerprint, &item.source); err != nil {
 			return nil, err
 		}
 		result = append(result, item)
@@ -121,13 +128,9 @@ WHERE j.resource_id = $1 ORDER BY j.id DESC LIMIT $2 OFFSET $3`, resource, size,
 	if err != nil {
 		return nil, err
 	}
-	flags, err := r.categoryFlags(ctx, resource)
-	if err != nil {
-		return nil, err
-	}
-	result := &supply.ResourceReportPage{Page: page, Size: size, Total: total}
+	result := &supply.ResourceReportPage{List: []supply.ResourceReportView{}, Page: page, Size: size, Total: total}
 	for _, item := range items {
-		view, err := buildReportView(item, resourceID, flags)
+		view, err := buildReportView(item, resourceID, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -162,18 +165,14 @@ WHERE j.resource_id = $1 AND j.id = $2`, resource, jobID)
 	if len(items) == 0 {
 		return nil, supply.ErrNotFound
 	}
-	flags, err := r.categoryFlags(ctx, resource)
-	if err != nil {
-		return nil, err
-	}
-	view, err := buildReportView(items[0], resourceID, flags)
+	view, err := buildReportView(items[0], resourceID, nil)
 	if err != nil {
 		return nil, err
 	}
 	detail := &supply.ResourceReportDetail{ResourceReportView: *view, Files: []supply.ResourceReportFile{}}
 	if items[0].reportFile.Valid && strings.TrimSpace(items[0].reportFile.String) != "" {
 		detail.Files = append(detail.Files, supply.ResourceReportFile{
-			ID: reportID, Name: items[0].reportFile.String, CanDownload: true,
+			ID: items[0].reportID.String, Name: items[0].reportFile.String, CanDownload: true,
 		})
 	}
 	return detail, nil
@@ -215,45 +214,26 @@ func (r *TestReportReader) OpenFile(ctx context.Context, actorID, resourceID, re
 	}, nil
 }
 
-// categoryFlags 取该资源各类测试的最新结论，供"本次只测了一类"时补齐另一类。
-func (r *TestReportReader) categoryFlags(ctx context.Context, resource int64) (map[string]string, error) {
-	flags := map[string]string{}
-	rows, err := r.db.QueryContext(ctx, `
-SELECT j.category, r.verdict FROM `+r.table("test_job")+` j
-JOIN LATERAL (
-  SELECT verdict FROM `+r.table("test_report")+` WHERE test_job_id = j.id ORDER BY id DESC LIMIT 1
-) r ON TRUE
-WHERE j.resource_id = $1
-ORDER BY j.category, j.id DESC`, resource)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var category string
-		var verdict sql.NullString
-		if err := rows.Scan(&category, &verdict); err != nil {
-			return nil, err
-		}
-		// 每个 category 只保留最新一条（ORDER BY 已保证），先到先得。
-		if _, exists := flags[category]; !exists {
-			flags[category] = verdict.String
-		}
-	}
-	return flags, rows.Err()
-}
-
 // buildReportView 把一行数据翻译成 A 侧契约要求的投影。
-func buildReportView(row reportRow, resourceID string, flags map[string]string) (*supply.ResourceReportView, error) {
+func buildReportView(row reportRow, resourceID string, _ map[string]string) (*supply.ResourceReportView, error) {
 	if _, err := parseID(row.jobID); err != nil {
 		return nil, supply.ErrReadContract
 	}
 	view := &supply.ResourceReportView{
 		ID: row.jobID, ResourceID: resourceID, CreatedAt: row.createdAt,
+		TestJobID: row.jobID, TestReportID: row.reportID.String,
+		TestItem: row.category, OperatorName: row.operatorName, Scene: strings.TrimSpace(row.scene.String),
 		CacheStats: supply.ResourceCacheStats{ReportID: row.jobID},
 	}
-	matches := true
+	matches := row.fingerprint.Valid && row.currentFingerprint.Valid && strings.TrimSpace(row.fingerprint.String) != "" && row.fingerprint.String == row.currentFingerprint.String
 	view.TargetMatches = &matches
+	if row.source == "INTERNAL" || row.source == "SUPPLIER" {
+		view.Source = row.source
+	}
+	if row.testedAt.Valid {
+		tested := row.testedAt.Time.UTC()
+		view.TestedAt = &tested
+	}
 
 	switch row.status {
 	case "QUEUED", "RUNNING":
@@ -269,8 +249,8 @@ func buildReportView(row reportRow, resourceID string, flags map[string]string) 
 	}
 	if !row.finishedAt.Valid {
 		view.FinishedAt = nil
-		if view.Status != "RUNNING" {
-			finished := row.createdAt
+		if row.testedAt.Valid {
+			finished := row.testedAt.Time.UTC()
 			view.FinishedAt = &finished
 		}
 	} else {
@@ -278,16 +258,14 @@ func buildReportView(row reportRow, resourceID string, flags map[string]string) 
 		view.FinishedAt = &finished
 	}
 
-	connectivity := boolOrFalse(row.connPassed)
-	if row.category != string(tpdomain.CategoryBaseline) && flags[string(tpdomain.CategoryBaseline)] != "" {
-		connectivity = verdictPassed(flags[string(tpdomain.CategoryBaseline)])
+	if row.connPassed.Valid {
+		value := row.connPassed.Bool
+		view.ConnectivityPassed = &value
 	}
-	pressure := boolOrFalse(row.stressPass)
-	if row.category != string(tpdomain.CategoryStress) && flags[string(tpdomain.CategoryStress)] != "" {
-		pressure = verdictPassed(flags[string(tpdomain.CategoryStress)])
+	if row.stressPass.Valid {
+		value := row.stressPass.Bool
+		view.PressurePassed = &value
 	}
-	view.ConnectivityPassed = &connectivity
-	view.PressurePassed = &pressure
 
 	view.Metrics = supply.ResourceReportMetrics{
 		ConnectionMS: decimalPtr(row.connMS),
@@ -314,10 +292,6 @@ func buildReportView(row reportRow, resourceID string, flags map[string]string) 
 	}
 	return view, nil
 }
-
-func boolOrFalse(value sql.NullBool) bool { return value.Valid && value.Bool }
-
-func verdictPassed(verdict string) bool { return verdict == "pass" || verdict == "pass_with_warnings" }
 
 // reportMetricPattern 限制指标为无符号十进制，负值与科学计数法一律视为缺失。
 var reportMetricPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)

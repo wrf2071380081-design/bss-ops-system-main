@@ -34,15 +34,18 @@ type Uploads struct {
 // Token 属于密钥，只写在被 .gitignore 忽略的 configs/config.yaml 或环境变量里，
 // config.example.yaml 只保留占位。
 type TestPlatform struct {
-	Enable       bool          `mapstructure:"enable"`
-	BaseURL      string        `mapstructure:"base_url"`
-	Token        string        `mapstructure:"token"`
+	// Internal retests use the platform pool/quota, separate from supplier credentials.
+	InternalBaseURL string `mapstructure:"internal_base_url"`
+	InternalAPIKey  string `mapstructure:"internal_api_key"`
+	Enable          bool   `mapstructure:"enable"`
+	BaseURL         string `mapstructure:"base_url"`
+	Token           string `mapstructure:"token"`
 	// WebhookSecret 用于校验回调 X-Signature；为空时回调路由不注册（只靠轮询）。
-	WebhookSecret string       `mapstructure:"webhook_secret"`
-	Timeout      time.Duration `mapstructure:"timeout"`
-	PollInterval time.Duration `mapstructure:"poll_interval"`
-	PollLimit    int           `mapstructure:"poll_limit"`
-	ReportDir    string        `mapstructure:"report_dir"`
+	WebhookSecret string        `mapstructure:"webhook_secret"`
+	Timeout       time.Duration `mapstructure:"timeout"`
+	PollInterval  time.Duration `mapstructure:"poll_interval"`
+	PollLimit     int           `mapstructure:"poll_limit"`
+	ReportDir     string        `mapstructure:"report_dir"`
 }
 
 // Features 是"模块开关"（重构收敛用）：true = 对外保留，false = 不暴露（路由返回 404）。

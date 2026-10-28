@@ -36,7 +36,7 @@ func TestResourceConfigBindingPostgres34(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"standard_model", "standard_model_version", "supplier", "supplier_formal_config", "assignment_log", "operation_log", "resource"} {
+	for _, table := range []string{"standard_model", "standard_model_version", "supplier", "supplier_formal_config", "assignment_log", "operation_log", "resource", "submission_row"} {
 		if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE `+table+` (LIKE public.`+table+` INCLUDING DEFAULTS INCLUDING IDENTITY INCLUDING CONSTRAINTS) ON COMMIT DROP`); err != nil {
 			t.Fatal(err)
 		}

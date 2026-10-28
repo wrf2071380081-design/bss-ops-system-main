@@ -6,7 +6,8 @@ import type { ResourceCache } from "./resources.types";
 // Safe report projection: never copy a provider payload or storage URL into A.
 export interface ResourceReport {
   id: string; resource_id: string; status: "RUNNING" | "COMPLETED" | "FAILED";
-  created_at: string; tested_at: string; test_item: string; operator_name: string;
+  test_job_id?: string; test_report_id?: string;
+  created_at: string; tested_at: string | null; test_item: string; operator_name: string;
   source: "" | "SUPPLIER" | "INTERNAL"; scene: string;
   finished_at: string | null; target_matches: boolean;
   connectivity_passed: boolean | null; pressure_passed: boolean | null;
@@ -21,9 +22,11 @@ export function validateResourceReport(value: unknown, resourceID: string): Reso
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const row = value as ResourceReport;
   standardModelVersion(row.id);
+  if (row.test_job_id !== undefined && row.test_job_id !== row.id) invalid();
+  if (row.test_report_id !== undefined) standardModelVersion(row.test_report_id);
   if (row.resource_id !== resourceID || !["RUNNING", "COMPLETED", "FAILED"].includes(row.status) || typeof row.target_matches !== "boolean") invalid();
   const time = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value) && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
-  if (!time(row.created_at) || !time(row.tested_at) || (row.finished_at !== null && !time(row.finished_at)) || (row.status !== "RUNNING" && row.finished_at === null)) invalid();
+  if (!time(row.created_at) || (row.tested_at !== null && !time(row.tested_at)) || (row.finished_at !== null && !time(row.finished_at)) || (row.status === "COMPLETED" && (row.finished_at === null || row.tested_at === null))) invalid();
   if (typeof row.test_item !== "string" || !row.test_item.trim() || typeof row.operator_name !== "string" || typeof row.scene !== "string" || !["", "SUPPLIER", "INTERNAL"].includes(row.source)) invalid();
   if (![row.connectivity_passed, row.pressure_passed].every(value => value === null || typeof value === "boolean")) invalid();
   if (!row.metrics || !row.cache_stats || row.cache_stats.report_id !== row.id) invalid();
@@ -36,7 +39,7 @@ export function validateResourceReport(value: unknown, resourceID: string): Reso
   if (row.cache_stats.scene !== undefined && typeof row.cache_stats.scene !== "string") invalid();
   resourceCacheDisplay(row.cache_stats, row.cache_stats.status === "NOT_TESTED" ? "NOT_TESTED" : "COMPLETED");
   // Explicit safe projection. Never forward credentials or provider payloads.
-  return { id: row.id, resource_id: resourceID, status: row.status, created_at: row.created_at, tested_at: row.tested_at, test_item: row.test_item.trim(), operator_name: row.operator_name.trim(), source: row.source, scene: row.scene.trim(), finished_at: row.finished_at, target_matches: row.target_matches,
+  return { id: row.id, ...(row.test_job_id ? { test_job_id: row.test_job_id } : {}), ...(row.test_report_id ? { test_report_id: row.test_report_id } : {}), resource_id: resourceID, status: row.status, created_at: row.created_at, tested_at: row.tested_at, test_item: row.test_item.trim(), operator_name: row.operator_name.trim(), source: row.source, scene: row.scene.trim(), finished_at: row.finished_at, target_matches: row.target_matches,
     connectivity_passed: row.connectivity_passed, pressure_passed: row.pressure_passed,
     metrics: { connection_ms: row.metrics.connection_ms, rps: row.metrics.rps, tps: row.metrics.tps },
     cache_stats: { status: row.cache_stats.status, report_id: row.id, ...(row.cache_stats.status === "PROVIDED" ? { hit_tokens: row.cache_stats.hit_tokens, input_tokens: row.cache_stats.input_tokens, hit_percent: row.cache_stats.hit_percent } : {}), scene: row.cache_stats.scene },

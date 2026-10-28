@@ -11,6 +11,7 @@ import (
 // ReportEvidenceRef must be supplied by B inside the same read snapshot, never
 // assembled from an HTTP body or inferred from report arrival time.
 type ReportEvidenceRef struct {
+	BaselineReportID, StressReportID, TargetFingerprint                           string
 	ReportID, JobID, ResourceID, SupplierID, StandardModelID, Region, OriginRowID string
 	OriginRowVersion, TargetVersion, Sequence                                     uint64
 	Valid                                                                         bool
@@ -38,6 +39,9 @@ func ReadSelectedReport(ctx context.Context, tx *sql.Tx, schema string, ref Repo
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if ref.BaselineReportID != "" || ref.StressReportID != "" {
+		return readNativeReportPair(ctx, tx, schema, ref)
 	}
 	table := func(name string) string { return `"` + schema + `"."` + name + `"` }
 	var job, resource string

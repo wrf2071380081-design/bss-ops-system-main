@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { resourceOperationsApi } from "../../../api/resourceOperations";
 import { canAdmitResource, canBindFormalConfig, type FormalConfigOption } from "../../../api/resourceOperations.contract";
 import { resourceRegionLabels } from "../../../api/resources.contract";
 import type { ResourceRow } from "../../../api/resources.types";
+import type { ResourceWorkflowActions } from "../../../api/resourceWorkflow.contract";
 
 const props = defineProps<{ resource: ResourceRow }>();
 const emit = defineEmits<{ updated: [] }>();
@@ -16,6 +17,31 @@ const configDialogOpen = ref(false), configBusy = ref(false);
 const editingConfig = ref<FormalConfigOption>();
 const configLifecycle = ref(crypto.randomUUID());
 const configForm = reactive({ scope: "", base_url: "", api_key: "", reason: "", externalConfirmed: false });
+const workflow = ref<ResourceWorkflowActions>(), workflowError = ref(''), workflowBusy = ref(false);
+const priceForm=reactive({source:'',confirmed:false,note:'',reason:''}), priceBusy=ref(false), priceError=ref(''), priceLifecycle=ref(crypto.randomUUID());
+const evidenceReason=ref(''), evidenceBusy=ref(false), evidenceError=ref(''), evidenceLifecycle=ref(crypto.randomUUID());
+async function refreshEvidence(){
+ if(evidenceBusy.value||!workflow.value?.can_refresh_tests)return;
+ evidenceBusy.value=true;evidenceError.value='';
+ try{await resourceOperationsApi.refreshEvidence(props.resource,evidenceReason.value,evidenceLifecycle.value);if(active){evidenceLifecycle.value=crypto.randomUUID();evidenceReason.value='';ElMessage.success('已同步当前申报行的测试结果');emit('updated');}}
+ catch(error){if(active)evidenceError.value=error instanceof Error?error.message:'测试同步失败，请重试。';}
+ finally{if(active)evidenceBusy.value=false;}
+}
+let workflowRequest: AbortController | undefined;
+async function loadWorkflow(){
+ workflowRequest?.abort();const request=workflowRequest=new AbortController();workflowBusy.value=true;workflowError.value='';workflow.value=undefined;
+ try {const result=await resourceOperationsApi.workflow(props.resource.id,request.signal);if(active&&!request.signal.aborted){workflow.value=result;if(!result.approved_prices.some(p=>p.source_row_id===priceForm.source))priceForm.source=result.approved_prices[0]?.source_row_id||'';}}
+ catch(error){if(active&&!request.signal.aborted)workflowError.value=error instanceof Error?error.message:'当前办理信息不可用。';}
+ finally{if(active&&!request.signal.aborted)workflowBusy.value=false;}
+}
+async function applyPrice(){
+ if(priceBusy.value)return;
+ const source=workflow.value?.approved_prices.find(p=>p.source_row_id===priceForm.source);if(!source){priceError.value='请刷新并选择已批准、分派给本人的改价申报。';return;}
+ priceBusy.value=true;priceError.value='';
+ try{await resourceOperationsApi.applyApprovedPrice(props.resource,source,priceForm.confirmed,priceForm.note,priceForm.reason,priceLifecycle.value);if(!active)return;ElMessage.success('批准改价已登记完成');Object.assign(priceForm,{source:'',confirmed:false,note:'',reason:''});priceLifecycle.value=crypto.randomUUID();emit('updated');void loadWorkflow();}
+ catch(error){if(active)priceError.value=error instanceof Error?error.message:'改价应用失败，输入已保留。';}
+ finally{if(active)priceBusy.value=false;}
+}
 const bindable = computed(() => canBindFormalConfig(props.resource));
 const admissible = computed(() => canAdmitResource(props.resource));
 const eligibleConfigs = computed(() => configs.value.filter(config => config.supplier_id === props.resource.supplier_id && config.region === props.resource.region && config.status === "ACTIVE" && config.has_api_key && config.revision === config.confirmed_revision));
@@ -36,6 +62,7 @@ async function loadConfigs() {
 
 async function bindConfig() {
   if (bindBusy.value) return;
+  if (!workflow.value?.can_bind) {bindError.value='当前没有可办理的配置绑定任务，请刷新办理信息。';return;}
   const config = eligibleConfigs.value.find(item => item.id === selectedConfigID.value);
   if (!config) { bindError.value = "请选择同一供应商和区域中已核验的正式配置。"; return; }
   bindBusy.value = true; bindError.value = ""; bindMessage.value = "";
@@ -103,6 +130,7 @@ async function disableConfig(config: FormalConfigOption) {
 
 async function admit() {
   if (admissionBusy.value) return;
+  if (!workflow.value?.can_admit) {admissionError.value='当前没有可办理的接入任务，请刷新办理信息。';return;}
   admissionBusy.value = true; admissionError.value = ""; admissionMessage.value = "";
   try {
     await resourceOperationsApi.admit(props.resource, { externalConfirmed: externalConfirmed.value, completionNote: completionNote.value, reason: admissionReason.value }, admissionLifecycle.value);
@@ -113,14 +141,22 @@ async function admit() {
   finally { if (active) admissionBusy.value = false; }
 }
 
-onMounted(() => { if (bindable.value) void loadConfigs(); });
-onBeforeUnmount(() => { active = false; configRequest?.abort(); });
+onMounted(() => { void loadWorkflow(); if (bindable.value) void loadConfigs(); });
+watch(() => props.resource.revision, () => { void loadWorkflow(); if (bindable.value) void loadConfigs(); });
+onBeforeUnmount(() => { active = false; configRequest?.abort(); workflowRequest?.abort(); });
 </script>
 
 <template>
   <section class="resource-operations">
     <p class="operation-context">{{ resource.supplier_name }} · {{ resource.model_name }} · {{ resourceRegionLabels[resource.region] }}</p>
     <el-alert type="info" :closable="false" title="服务端将按当前流程节点校验办理人；此页面不指定办理人。" />
+    <el-alert v-if="workflowError" type="warning" :closable="false" :title="workflowError"><el-button text :loading="workflowBusy" @click="loadWorkflow">刷新办理信息</el-button></el-alert>
+    <section v-if="workflow?.can_refresh_tests" class="operation-card">
+      <h3>同步办理测试结果</h3><p class="muted">读取此申报行指定的连通性、压力任务及报告。两项均通过且目标一致后，才可登记接入。</p>
+      <el-input v-model="evidenceReason" aria-label="同步测试原因" placeholder="填写同步原因" maxlength="300" :disabled="evidenceBusy" />
+      <el-alert v-if="evidenceError" type="error" :closable="false" :title="evidenceError" />
+      <el-button :loading="evidenceBusy" :disabled="!evidenceReason.trim()" @click="refreshEvidence">同步测试结果</el-button>
+    </section>
 
     <section v-if="bindable" class="operation-card">
       <header class="config-heading"><h3>正式配置</h3><el-button size="small" @click="openCreateConfig">新建正式配置</el-button></header>
@@ -146,7 +182,7 @@ onBeforeUnmount(() => { active = false; configRequest?.abort(); });
       </el-form>
       <el-alert v-if="bindMessage" type="success" :closable="false" :title="bindMessage" />
       <el-alert v-if="bindError" type="error" :closable="false" :title="bindError"><el-button text @click="emit('updated')">刷新资源后重试</el-button></el-alert>
-      <el-button type="primary" :loading="bindBusy" :disabled="loadingConfigs || !eligibleConfigs.length || !selectedConfigID || !bindReason.trim()" @click="bindConfig">关联正式配置</el-button>
+      <el-button type="primary" :loading="bindBusy" :disabled="!workflow?.can_bind || loadingConfigs || !eligibleConfigs.length || !selectedConfigID || !bindReason.trim()" @click="bindConfig">关联正式配置</el-button>
     </section>
 
     <section v-if="admissible" class="operation-card">
@@ -159,10 +195,23 @@ onBeforeUnmount(() => { active = false; configRequest?.abort(); });
       </el-form>
       <el-alert v-if="admissionMessage" type="success" :closable="false" :title="admissionMessage" />
       <el-alert v-if="admissionError" type="error" :closable="false" :title="admissionError"><el-button text @click="emit('updated')">刷新资源后重试</el-button></el-alert>
-      <el-button type="primary" :loading="admissionBusy" :disabled="admissionBusy || !externalConfirmed || !completionNote.trim() || !admissionReason.trim()" @click="admit">登记接入</el-button>
+      <el-button type="primary" :loading="admissionBusy" :disabled="!workflow?.can_admit || admissionBusy || !externalConfirmed || !completionNote.trim() || !admissionReason.trim()" @click="admit">登记接入</el-button>
     </section>
 
-    <el-alert v-if="!bindable && !admissible" type="info" :closable="false" title="当前资源状态没有待执行的配置关联或接入登记操作。" />
+    <section v-if="workflow?.approved_prices.length" class="operation-card">
+      <h3>供应商批准改价</h3>
+      <p class="muted">仅显示已批准并分派给本人的申报行；采购系数由批准内容确定。</p>
+      <el-form label-position="top" :disabled="priceBusy" @submit.prevent="applyPrice">
+        <el-form-item label="批准改价申报"><el-select v-model="priceForm.source" aria-label="批准改价申报"><el-option v-for="source in workflow.approved_prices" :key="source.source_row_id" :value="source.source_row_id" :label="`申报行 ${source.source_row_id} · 修订 ${source.source_revision} · 采购系数 ${source.coefficient}`" /></el-select></el-form-item>
+        <el-checkbox v-model="priceForm.confirmed">已在外部平台完成批准的采购系数调整</el-checkbox>
+        <el-form-item label="改价完成依据"><el-input v-model="priceForm.note" aria-label="改价完成依据" type="textarea" maxlength="500" /></el-form-item>
+        <el-form-item label="改价登记原因"><el-input v-model="priceForm.reason" aria-label="改价登记原因" maxlength="300" /></el-form-item>
+      </el-form>
+      <el-alert v-if="priceError" type="error" :closable="false" :title="priceError"><el-button text @click="loadWorkflow();emit('updated')">刷新办理信息与资源</el-button></el-alert>
+      <el-button type="primary" :loading="priceBusy" :disabled="!priceForm.source || !priceForm.confirmed || !priceForm.note.trim() || !priceForm.reason.trim()" @click="applyPrice">登记批准改价完成</el-button>
+    </section>
+
+    <el-alert v-if="!bindable && !admissible && workflow && !workflow.approved_prices.length" type="info" :closable="false" title="当前账号没有此资源待执行的配置关联、接入或批准改价任务。" />
   </section>
 
   <el-dialog v-model="configDialogOpen" append-to-body :title="editingConfig ? '修改正式配置' : '新建正式配置'" width="min(560px, 94vw)" :close-on-click-modal="false">

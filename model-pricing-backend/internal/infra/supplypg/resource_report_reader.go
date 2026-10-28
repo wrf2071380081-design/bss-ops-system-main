@@ -162,7 +162,8 @@ func scanResourceReport(row reportRowScanner) (supply.ResourceReportView, bool, 
 		return view, false, "", err
 	}
 	view.CreatedAt = createdAt.UTC()
-	view.TestedAt = testedAt.UTC()
+	tested := testedAt.UTC()
+	view.TestedAt = &tested
 	view.TestItem = strings.TrimSpace(testItem)
 	view.OperatorName = strings.TrimSpace(operatorName)
 	view.Source = "" // v36 stores no trusted supplier/internal provenance for this report.

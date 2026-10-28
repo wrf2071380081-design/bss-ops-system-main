@@ -239,10 +239,16 @@ func (w *modelWriteTransaction) Update(ctx context.Context, m *supply.StandardMo
 	if current.Revision != expected || current.MaintainerID != m.MaintainerID || m.VersionNo != current.VersionNo+1 {
 		return supply.ErrRevisionConflict
 	}
-	values = append(values, current.UpdatedAt)
-	result, err := w.tx.ExecContext(ctx, `UPDATE `+w.table("standard_model")+` SET status=$3,updated_at=$5,updated_by=$2,
- company=$6,name=$7,official_id=$8,model_type=$9,input_modalities=$10::text[],output_modalities=$11::text[],capacity=$12::jsonb,abilities=$13::jsonb,price_items=$14::jsonb,api_access=$15::jsonb,lifecycle=$16::jsonb,sources=$17::jsonb,checked_at=$18
- WHERE id=$1 AND created_at=$4 AND updated_at=$19`, values...)
+	// The row lock plus the current snapshot revision above is the CAS boundary.
+	// Snapshot timestamps retain Go nanoseconds, while PostgreSQL timestamptz
+	// stores microseconds; comparing the snapshot timestamp to the row would
+	// reject valid writes after a create on most clocks.
+	updateValues := make([]any, 0, len(values)-1)
+	updateValues = append(updateValues, values[:3]...)
+	updateValues = append(updateValues, values[4:]...)
+	result, err := w.tx.ExecContext(ctx, `UPDATE `+w.table("standard_model")+` SET status=$3,updated_at=$4,updated_by=$2,
+ company=$5,name=$6,official_id=$7,model_type=$8,input_modalities=$9::text[],output_modalities=$10::text[],capacity=$11::jsonb,abilities=$12::jsonb,price_items=$13::jsonb,api_access=$14::jsonb,lifecycle=$15::jsonb,sources=$16::jsonb,checked_at=$17
+ WHERE id=$1`, updateValues...)
 	if err != nil {
 		return modelUniqueError(err, supply.ErrIdentityConflict)
 	}

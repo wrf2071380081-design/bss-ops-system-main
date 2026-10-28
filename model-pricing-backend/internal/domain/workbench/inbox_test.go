@@ -15,6 +15,19 @@ type fakeInboxStore struct {
 	lastInbox InboxQuery
 }
 
+func TestNativeSubmissionTasksStayInsideWorkbench(t *testing.T) {
+	for _, kind := range []string{"SUBMISSION_APPROVAL", "SUBMISSION_HANDLING", "SUBMISSION_CONTRACT"} {
+		got := inboxItemDeeplink(InboxItem{BizType: kind, BizID: 42})
+		key := "submission_id"
+		if kind != "SUBMISSION_APPROVAL" {
+			key = "node_id"
+		}
+		if want := "/internal/workbench?" + key + "=42"; got != want {
+			t.Fatalf("%s: got %q want %q", kind, got, want)
+		}
+	}
+}
+
 func (f *fakeInboxStore) ListInbox(_ context.Context, q InboxQuery) ([]InboxItem, int64, error) {
 	f.lastInbox = q
 	return f.inbox, f.total, nil

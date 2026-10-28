@@ -74,7 +74,8 @@ test("resource admission and formal-config binding use exact A wire contracts an
       { expected_revision: "2", external_confirmed: true, completion_note: admission.completionNote, reason: admission.reason },
     ]);
     assert.ok(admissionRequests[0]?.key);
-    assert.equal(admissionRequests[0]?.key, admissionRequests[1]?.key);
+    // A structured 503/10000 is a recorded FAILED request; retry with a fresh key.
+    assert.notEqual(admissionRequests[0]?.key, admissionRequests[1]?.key);
     assert.equal(receipt.revision, "3");
 
     const binding = await resourceOperationsApi.bindFormalConfig(resource, configs[0]!, "绑定已核验配置", "bind-attempt-1");

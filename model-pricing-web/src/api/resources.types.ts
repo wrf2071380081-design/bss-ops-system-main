@@ -1,5 +1,7 @@
 import type { StandardPrice } from "./standardModels.types";
 export interface ResourceQuery {
+  companies?: string[]; model_types?: string[]; supplier_ids?: string[]; regions?: string[]; states?: string[];
+  coefficient_min?: string; coefficient_max?: string; connection_min?: string; connection_max?: string; rps_min?: string; rps_max?: string; tps_min?: string; tps_max?: string;
   view: string; page: number; size: number; sort_by: string; order: string;
   keyword?: string; company?: string; model_type?: string; supplier_id?: string; standard_model_id?: string; region?: string; state?: string;
 }

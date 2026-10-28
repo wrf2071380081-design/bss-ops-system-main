@@ -77,9 +77,9 @@ func (s *TestPlatformStore) CreateJob(ctx context.Context, rec tpdomain.NewJobRe
 	}
 	var id string
 	err = s.db.QueryRowContext(ctx, `
-INSERT INTO `+s.table("test_job")+`(resource_id,category,idempotency_key,status,request_payload,review_of_job_id,created_by,created_at)
-VALUES ($1,$2,NULLIF($3,''),$4,$5::jsonb,$6,$7,$8) RETURNING id::text`,
-		resourceID, string(rec.Category), key, status, payload, reviewOf, actor, time.Now().UTC()).Scan(&id)
+INSERT INTO `+s.table("test_job")+`(resource_id,category,idempotency_key,status,request_payload,review_of_job_id,created_by,created_at,target_fingerprint)
+VALUES ($1,$2,NULLIF($3,''),$4,$5::jsonb,$6,$7,$8,NULLIF($9,'')) RETURNING id::text`,
+		resourceID, string(rec.Category), key, status, payload, reviewOf, actor, time.Now().UTC(), strings.TrimSpace(rec.TargetFingerprint)).Scan(&id)
 	if err != nil {
 		return "", err
 	}
@@ -281,6 +281,7 @@ func parseID(raw string) (int64, error) {
 
 // ResourceTestTarget 是资源自身的测试目标配置（内部复测用，T-10）。
 type ResourceTestTarget struct {
+	StandardModelID string
 	Model        string
 	BaseURL      string
 	SealedAPIKey string

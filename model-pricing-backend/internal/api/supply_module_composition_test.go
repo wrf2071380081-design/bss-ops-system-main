@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,6 +19,33 @@ import (
 type compositionURLPolicy struct{}
 
 func (compositionURLPolicy) ValidateFormalURL(context.Context, string) error { return nil }
+
+type cleanupTestF12AttachmentService struct {
+	removed int
+	err     error
+}
+
+func (*cleanupTestF12AttachmentService) Upload(context.Context, supply.WriteMeta, supply.F12AttachmentUploadCommand) (*supply.F12AttachmentMetadata, error) {
+	return nil, nil
+}
+
+func (*cleanupTestF12AttachmentService) Download(context.Context, string, string, string, string, string) (*supply.F12AttachmentContent, error) {
+	return nil, nil
+}
+
+func (s *cleanupTestF12AttachmentService) CleanupUnreferenced(context.Context) (int, error) {
+	return s.removed, s.err
+}
+
+type noCleanupTestF12AttachmentService struct{}
+
+func (*noCleanupTestF12AttachmentService) Upload(context.Context, supply.WriteMeta, supply.F12AttachmentUploadCommand) (*supply.F12AttachmentMetadata, error) {
+	return nil, nil
+}
+
+func (*noCleanupTestF12AttachmentService) Download(context.Context, string, string, string, string, string) (*supply.F12AttachmentContent, error) {
+	return nil, nil
+}
 
 func newCompositionOptions(t *testing.T) SupplyRouteModuleOptions {
 	t.Helper()
@@ -74,6 +102,19 @@ func TestNewSupplyRouteModuleReportsMissingRealProviders(t *testing.T) {
 	}
 }
 
+func TestSupplyRouteModuleResourceOptionsUsesConfiguredStore(t *testing.T) {
+	module, err := NewSupplyRouteModule(newCompositionOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = module.Deps.Resources.Options(ctx, "CN", "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("options must reach the configured store, got %v", err)
+	}
+}
+
 func TestNewSupplyRouteModuleComposesEveryARegisteredRouteAndBService(t *testing.T) {
 	module, err := NewSupplyRouteModule(newCompositionOptions(t))
 	if err != nil {
@@ -85,8 +126,41 @@ func TestNewSupplyRouteModuleComposesEveryARegisteredRouteAndBService(t *testing
 	deps := module.Deps
 	if deps.Reader == nil || deps.Writer == nil || deps.Resources == nil || deps.ResourceAdmitter == nil || deps.ResourceConfigBinder == nil ||
 		deps.FormalConfigs == nil || deps.FormalConfigReader == nil || deps.Notices == nil || deps.NoticeWriter == nil ||
-		deps.Plans == nil || deps.PlanWriter == nil || deps.PlanExecutor == nil || deps.IdemStore == nil {
+		deps.Plans == nil || deps.PlanWriter == nil || deps.PlanExecutor == nil || deps.IdemStore == nil ||
+		deps.F12Reader == nil || deps.F12Readiness == nil || deps.F12Writer == nil || deps.SupplierReader == nil || deps.SupplierWriter == nil {
 		t.Fatalf("A route composition is incomplete: %+v", deps)
+	}
+}
+
+func TestNewSupplyRouteModuleComposesConfiguredPrivateFileStores(t *testing.T) {
+	options := newCompositionOptions(t)
+	options.SupplierQualificationStoreDir = filepath.Join(t.TempDir(), "qualifications")
+	options.F12AttachmentStoreDir = filepath.Join(t.TempDir(), "f12")
+
+	module, err := NewSupplyRouteModule(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if module.Deps.SupplierQualificationFiles == nil || module.Deps.F12Attachments == nil {
+		t.Fatalf("configured A file stores were not composed: qualification=%v F12=%v", module.Deps.SupplierQualificationFiles != nil, module.Deps.F12Attachments != nil)
+	}
+}
+
+func TestSupplyRouteModuleCleanupF12AttachmentOrphans(t *testing.T) {
+	module := &SupplyRouteModule{Deps: SupplyDeps{F12Attachments: &cleanupTestF12AttachmentService{removed: 3}}}
+	removed, err := module.CleanupF12AttachmentOrphans(context.Background())
+	if err != nil || removed != 3 {
+		t.Fatalf("cleanup result = (%d, %v), want (3, nil)", removed, err)
+	}
+
+	module.Deps.F12Attachments = &noCleanupTestF12AttachmentService{}
+	if _, err := module.CleanupF12AttachmentOrphans(context.Background()); !errors.Is(err, supply.ErrDependencyUnavailable) {
+		t.Fatalf("configured attachment provider without cleanup must be explicit, got %v", err)
+	}
+
+	module.Deps.F12Attachments = nil
+	if removed, err := module.CleanupF12AttachmentOrphans(context.Background()); err != nil || removed != 0 {
+		t.Fatalf("unconfigured optional attachments should be a no-op, got (%d, %v)", removed, err)
 	}
 }
 

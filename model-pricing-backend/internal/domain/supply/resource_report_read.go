@@ -8,11 +8,14 @@ import (
 // ResourceReportView is the safe read projection consumed by the A model-plaza
 // report panel. The provider owns report provenance and target matching.
 type ResourceReportView struct {
-	ID                 string                `json:"id"`
+	ID string `json:"id"`
+	// B history is job-based; the persisted evidence report has its own ID.
+	TestJobID          string                `json:"test_job_id,omitempty"`
+	TestReportID       string                `json:"test_report_id,omitempty"`
 	ResourceID         string                `json:"resource_id"`
 	Status             string                `json:"status"`
 	CreatedAt          time.Time             `json:"created_at"`
-	TestedAt           time.Time             `json:"tested_at"`
+	TestedAt           *time.Time            `json:"tested_at"`
 	TestItem           string                `json:"test_item"`
 	OperatorName       string                `json:"operator_name"`
 	Source             string                `json:"source"`

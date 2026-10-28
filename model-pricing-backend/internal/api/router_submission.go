@@ -20,14 +20,18 @@ type TestJobStarter interface {
 	Start(context.Context, tpdomain.CreateCommand) (*tpdomain.StartResult, error)
 }
 
-// ResourceTestTarget 是资源自身登记的测试目标（内部复测 T-10 用）。
+// ResourceTestTarget is an authorized server-side platform target for retests.
+// SealedAPIKey is a historical field name; its value is the platform Key, not
+// the supplier Key, and is never returned to the browser.
 type ResourceTestTarget struct {
 	Model, BaseURL, SealedAPIKey, SupplierID, SupplierName string
+	TargetFingerprint                                      string
 }
 
-// ResourceTestTargetLoader 读取资源测试目标。
+// ResourceTestTargetLoader verifies the authenticated current handler, then
+// loads the platform target without accepting a client-side identity or Key.
 type ResourceTestTargetLoader interface {
-	TestTarget(ctx context.Context, resourceID string) (*ResourceTestTarget, error)
+	TestTarget(ctx context.Context, actorID, resourceID string) (*ResourceTestTarget, error)
 }
 
 // TestCallbackReceiver 是测试平台回调接收端口（infra/testplatform.Receiver 实现）。
@@ -95,8 +99,9 @@ func registerSubmissionRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, po
 		registerSupplierSubmissionRoutes(protected, deps, middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey))
 	}
 	// 一期只开放内部触发：供应商侧自助发起要等申报多行（M3）。
-	if portal == "internal" && deps.TestJobs != nil && deps.IdemStore != nil {
+	if portal == "internal" {
 		handler := &submissionTestHandler{starter: deps.TestJobs, targets: deps.ResourceTestTargets}
+		protected.GET("/resources/:id/tests/options", handler.options)
 		protected.POST("/resources/:id/tests",
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			handler.start,
@@ -106,16 +111,10 @@ func registerSubmissionRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, po
 
 // startTestRequest 是内部发起一次测试的入参。
 //
-// 一期由调用方直接给模型与凭据，用于联调真实链路；
-// M3 改为从资源/供应商主体取共用测试凭据（Q5），届时本结构只留 category 与 params。
+// Only category is accepted. Platform identity, model, URL and quota credentials
+// come from the authorized server provider; supplier self-test stays separate.
 type startTestRequest struct {
-	Category string         `json:"category"`
-	Model    string         `json:"model"`
-	BaseURL  string         `json:"base_url"`
-	Protocol string         `json:"protocol"`
-	APIKey   string         `json:"api_key"`
-	Owner    string         `json:"owner"`
-	Params   map[string]any `json:"params"`
+	Category string `json:"category"`
 }
 
 type submissionTestHandler struct {
@@ -135,7 +134,7 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 		return
 	}
 	var body startTestRequest
-	if err := c.ShouldBindJSON(&body); err != nil {
+	if err := decodeSupplyRequest(c, &body, []string{"category"}); err != nil {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "请求体格式不正确", 400))
 		return
 	}
@@ -144,59 +143,33 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 baseline 或 stress", 400))
 		return
 	}
-	model, baseURL, apiKey := strings.TrimSpace(body.Model), strings.TrimSpace(body.BaseURL), strings.TrimSpace(body.APIKey)
-	supplierName := ""
-	// 内部复测（T-10）：不填目标就用资源上登记的那一套，避免人工重复录入。
-	if model == "" || baseURL == "" {
-		if h.targets == nil {
-			response.Error(c, apperr.New(apperr.ErrSystem.Code, "资源测试配置不可用", 503))
-			return
-		}
-		target, err := h.targets.TestTarget(c.Request.Context(), resourceID)
-		if err != nil {
-			supplyHTTPError(c, err)
-			return
-		}
-		if model == "" {
-			model = target.Model
-		}
-		if baseURL == "" {
-			baseURL = target.BaseURL
-		}
-		supplierName = target.SupplierName
-		if apiKey == "" {
-			if baseURL == "demo" {
-				apiKey = "demo-key"
-			} else {
-				// 路线 A：资源上存的就是原样 Key。
-				if strings.TrimSpace(target.SealedAPIKey) == "" {
-					response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "该资源未保存测试 Key", 400))
-					return
-				}
-				apiKey = target.SealedAPIKey
-			}
-		}
-	}
-	if model == "" || baseURL == "" {
-		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "model 与 base_url 必填", 400))
+	if h.targets == nil {
+		supplyHTTPError(c, supply.ErrDependencyUnavailable)
 		return
 	}
-	owner := strings.TrimSpace(body.Owner)
-	if owner == "" {
-		owner = supplierName
+	target, err := h.targets.TestTarget(c.Request.Context(), strconv.FormatInt(operator.StaffID, 10), resourceID)
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
 	}
+	if !h.retestReady(target) {
+		writeTestStartError(c, tpdomain.ErrNotConfigured)
+		return
+	}
+	owner := target.SupplierName
 	if owner == "" {
 		owner = "resource-" + resourceID
 	}
 	// 平台幂等键与 HTTP 幂等键同源：同一笔业务重试必须命中同一个平台任务。
 	result, err := h.starter.Start(c.Request.Context(), tpdomain.CreateCommand{
-		ResourceID:     resourceID,
-		ActorID:        strconv.FormatInt(operator.StaffID, 10),
-		Category:       category,
-		Owner:          owner,
-		Target:         tpdomain.Target{Model: model, BaseURL: baseURL, Protocol: body.Protocol, APIKey: apiKey},
-		Params:         body.Params,
-		IdempotencyKey: strings.TrimSpace(c.GetHeader("Idempotency-Key")),
+		ResourceID:        resourceID,
+		ActorID:           strconv.FormatInt(operator.StaffID, 10),
+		Category:          category,
+		Owner:             owner,
+		Target:            tpdomain.Target{Model: target.Model, BaseURL: target.BaseURL, APIKey: target.SealedAPIKey},
+		TargetFingerprint: target.TargetFingerprint,
+		Source:            "INTERNAL",
+		IdempotencyKey:    strings.TrimSpace(c.GetHeader("Idempotency-Key")),
 	})
 	if err != nil {
 		writeTestStartError(c, err)
@@ -207,6 +180,36 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 		"external_job_id": result.ExternalID,
 		"status":          result.Status,
 	})
+}
+
+func (h *submissionTestHandler) retestReady(target *ResourceTestTarget) bool {
+	return h != nil && h.starter != nil && target != nil && strings.TrimSpace(target.Model) != "" && strings.TrimSpace(target.BaseURL) != "" && strings.TrimSpace(target.SealedAPIKey) != "" && strings.TrimSpace(target.TargetFingerprint) != ""
+}
+func (h *submissionTestHandler) options(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil || op.PortalType != "INTERNAL" || op.OperatorType != "STAFF" || op.StaffID <= 0 {
+		supplyHTTPError(c, supply.ErrForbidden)
+		return
+	}
+	if _, err := planPositiveID(c.Param("id")); err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	if h.targets == nil {
+		supplyHTTPError(c, supply.ErrDependencyUnavailable)
+		return
+	}
+	target, err := h.targets.TestTarget(c.Request.Context(), strconv.FormatInt(op.StaffID, 10), c.Param("id"))
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	ready := h.retestReady(target)
+	reason := ""
+	if !ready {
+		reason = "平台内部测试接口或Inspector连接尚未配置，请联系部署人员。"
+	}
+	response.Success(c, gin.H{"can_start": ready, "reason": reason, "categories": []string{"baseline", "stress"}})
 }
 
 // writeTestStartError 把测试平台的失败翻译成对前端有意义的状态码。

@@ -76,7 +76,9 @@ func TestModelWritePostgres34Native(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 10, 21, 1, 0, 0, 0, time.UTC)
+	// Keep sub-microsecond precision to verify CAS does not compare a JSON
+	// snapshot timestamp directly with PostgreSQL's truncated timestamptz.
+	now := time.Date(2026, 10, 21, 1, 0, 0, 200235044, time.UTC)
 	svc := supply.NewModelService(work, nil, func() time.Time { return now })
 	meta := supply.WriteMeta{ActorID: "7", Reason: "真实SQL测试", RequestID: "f1-pg-write"}
 	first, err := svc.Create(ctx, meta, supply.ModelData{Name: "草稿一"})
