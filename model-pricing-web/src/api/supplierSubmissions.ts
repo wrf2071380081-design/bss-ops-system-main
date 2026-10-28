@@ -88,7 +88,8 @@ export const supplierSubmissionsApi = {
   },
   async testStatus(id: string, rowID: string, category: SupplierTestCategory, signal?: AbortSignal) {
     const result = await apiRequest<SupplierTestJobDTO>({ url: `${base}/${submissionID(id)}/rows/${submissionID(rowID)}/test`, params: { category }, signal });
-    standardModelVersion(result.job_id);
+    // 查进度是只读的：这一行还没有任务时后端回 job_id=""，不能拿去做正整数字符串校验。
+    if (result.job_id) standardModelVersion(result.job_id);
     validateTest(result, category);
     return result;
   },

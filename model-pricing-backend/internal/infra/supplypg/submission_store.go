@@ -647,13 +647,15 @@ type TestRow struct {
 	ResourceID        *int64
 	TestJobID         *int64
 	StressJobID       *int64
-	// 下面四组用于判断「能否跳过重测」：状态 + 发单时指纹 + 是否已有报告结论。
+	// 下面几组用于判断「能否跳过重测」：状态 + 发单时指纹 + 有没有报告。
 	TestJobStatus      string
 	TestJobFingerprint string
 	TestJobVerdict     string
+	TestJobHasReport   bool
 	StressJobStatus      string
 	StressJobFingerprint string
 	StressJobVerdict     string
+	StressJobHasReport   bool
 	SubmissionStatus  string
 }
 
@@ -669,7 +671,9 @@ SELECT r.id, r.submission_id, r.standard_model_id, COALESCE(m.official_id,''), r
        COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = cj.id ORDER BY tr.id DESC LIMIT 1),''),
 		COALESCE(sj.status,''), COALESCE(sj.target_fingerprint,''),
 		COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id ORDER BY tr.id DESC LIMIT 1),''),
-		COALESCE(cred.base_url,''), COALESCE(cred.api_key_enc,'')
+		COALESCE(cred.base_url,''), COALESCE(cred.api_key_enc,''),
+		EXISTS(SELECT 1 FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = cj.id),
+		EXISTS(SELECT 1 FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id)
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
 JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
@@ -683,7 +687,8 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 			&item.TestFingerprint, &resourceID, &jobID, &stressJobID, &item.SubmissionStatus,
 			&item.TestJobStatus, &item.TestJobFingerprint, &item.TestJobVerdict,
 			&item.StressJobStatus, &item.StressJobFingerprint, &item.StressJobVerdict,
-			&item.EffectiveBaseURL, &item.EffectiveAPIKey)
+			&item.EffectiveBaseURL, &item.EffectiveAPIKey,
+			&item.TestJobHasReport, &item.StressJobHasReport)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
@@ -700,6 +705,82 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 		item.StressJobID = &stressJobID.Int64
 	}
 	return &item, nil
+}
+
+// RowTestSnapshot 是「查测试进度」用的**只读**视图。
+//
+// 为什么要单独一条读路径：原来查进度和发起测试共用 startRowTest，
+// 一个 GET 也会去调测试平台发单。结果是供应商在页面上点「刷新结果」，
+// 平台那边却真的又起了一轮压测（2026-10-28 实测复现）。
+type RowTestSnapshot struct {
+	JobID    *int64
+	Status   string
+	Verdict  string
+	Stale    bool
+	HasJob   bool
+	// 下面三个是报告里的展示指标（连通看延迟，压测看 RPS/TPS）。
+	ConnectionMS string
+	RPS          string
+	TPS          string
+}
+
+// TestSnapshot 读某一行的测试结果快照，不触发任何写操作。
+func (s *SubmissionStore) TestSnapshot(ctx context.Context, supplierID, submissionID, rowID int64, platformCategory string) (*RowTestSnapshot, error) {
+	var rowFingerprint string
+	var connJobID, stressJobID sql.NullInt64
+	var connStatus, connFP, connVerdict, connMS sql.NullString
+	var stressStatus, stressFP, stressVerdict, rps, tps sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+SELECT COALESCE(r.test_fingerprint,''),
+       cj.id, cj.status, cj.target_fingerprint, crep.verdict, crep.connection_ms::text,
+       sj.id, sj.status, sj.target_fingerprint, srep.verdict, srep.rps::text, srep.tps::text
+FROM `+s.table("submission_row")+` r
+JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
+LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
+LEFT JOIN LATERAL (
+  SELECT verdict, connection_ms FROM `+s.table("test_report")+`
+  WHERE test_job_id = cj.id ORDER BY id DESC LIMIT 1
+) crep ON TRUE
+LEFT JOIN `+s.table("test_job")+` sj ON sj.id = r.stress_job_id
+LEFT JOIN LATERAL (
+  SELECT verdict, rps, tps FROM `+s.table("test_report")+`
+  WHERE test_job_id = sj.id ORDER BY id DESC LIMIT 1
+) srep ON TRUE
+WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionID, supplierID).
+		Scan(&rowFingerprint,
+			&connJobID, &connStatus, &connFP, &connVerdict, &connMS,
+			&stressJobID, &stressStatus, &stressFP, &stressVerdict, &rps, &tps)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, supply.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	snap := &RowTestSnapshot{}
+	// 老数据可能没有指纹：只有两者都存在且不等才算失效（与 Rows 的口径一致）。
+	stale := func(jobFP sql.NullString) bool {
+		return rowFingerprint != "" && jobFP.Valid && jobFP.String != "" && rowFingerprint != jobFP.String
+	}
+	if platformCategory == "stress" {
+		if stressJobID.Valid {
+			snap.JobID = &stressJobID.Int64
+			snap.HasJob = true
+		}
+		snap.Status = stressStatus.String
+		snap.Verdict = stressVerdict.String
+		snap.Stale = stale(stressFP)
+		snap.RPS, snap.TPS = rps.String, tps.String
+		return snap, nil
+	}
+	if connJobID.Valid {
+		snap.JobID = &connJobID.Int64
+		snap.HasJob = true
+	}
+	snap.Status = connStatus.String
+	snap.Verdict = connVerdict.String
+	snap.Stale = stale(connFP)
+	snap.ConnectionMS = connMS.String
+	return snap, nil
 }
 
 // TestCredential 读本主体的准入测试凭据（000046）；未登记返回 (nil, nil)。

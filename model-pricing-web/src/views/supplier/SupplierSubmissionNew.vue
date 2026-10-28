@@ -245,16 +245,27 @@ async function refreshDraftConflict() {
   finally { if (active) loadingDraft.value = false; }
 }
 function applyTest(row: EditableRow, result: SupplierTestJobDTO) {
-  const test: SupplierSubmissionTestDTO = { category: result.category, status: result.status, tested: result.tested, passed: result.passed, job_id: result.job_id, report_id: result.report_id, connection_ms: result.connection_ms, rps: result.rps, tps: result.tps };
+  // verdict / stale 要一起带回来，否则「未通过」会被显示成「已完成」。
+  const test: SupplierSubmissionTestDTO = { category: result.category, status: result.status, tested: result.tested, passed: result.passed, verdict: result.verdict, stale: result.stale, job_id: result.job_id, report_id: result.report_id, connection_ms: result.connection_ms, rps: result.rps, tps: result.tps };
   if (result.category === "CONNECTIVITY") { row.connectivity_job = test; row.connectivity_tested = result.tested; row.connectivity_passed = result.passed; }
   else { row.stress_job = test; row.stress_tested = result.tested; row.stress_passed = result.passed; }
 }
+const refreshingRow = ref("");
 async function refreshRow(row: EditableRow) {
-  if (!submissionID.value || !row.id) return;
+  if (!submissionID.value || !row.id || refreshingRow.value) return;
   const tasks: Promise<void>[] = [];
   if (row.connectivity_job) tasks.push(refreshTest(row, "CONNECTIVITY"));
   if (row.stress_job) tasks.push(refreshTest(row, "STRESS"));
-  await Promise.all(tasks);
+  if (!tasks.length) { ElMessage.info("这一行还没有测试任务，请先发起测试。"); return; }
+  refreshingRow.value = row.id;
+  try {
+    await Promise.all(tasks);
+    if (!active) return;
+    // 以前点完什么都没有：现在至少告诉用户刷新到了什么。
+    const running = [row.connectivity_job, row.stress_job].some(job => job && ["QUEUED", "RUNNING"].includes(job.status));
+    if (running) ElMessage.info("已刷新：测试仍在进行中，请稍后再看。");
+    else ElMessage.success("已刷新测试结果。");
+  } finally { if (active) refreshingRow.value = ""; }
 }
 async function refreshTest(row: EditableRow, category: SupplierTestCategory) {
   if (!submissionID.value || !row.id || testBusy.value[row.id + category]) return;
@@ -528,7 +539,7 @@ onBeforeUnmount(() => { active = false; optionRequest?.abort(); draftRequest?.ab
             <span class="test-pill"><el-tag size="small" :type="testType(row.connectivity_tested, row.connectivity_passed, row.connectivity_job?.verdict)">连通 {{ testState(row.connectivity_tested, row.connectivity_passed, row.connectivity_job?.verdict) }}</el-tag></span>
             <span v-if="row.participate_test || row.stress_job" class="test-pill"><el-tag size="small" :type="testType(row.stress_tested, row.stress_passed, row.stress_job?.verdict)">压力 {{ testState(row.stress_tested, row.stress_passed, row.stress_job?.verdict) }}</el-tag></span>
             <small v-if="rowMetrics(row)" class="muted">{{ rowMetrics(row) }}</small>
-            <el-button link type="primary" size="small" :disabled="locked || dirty || (!row.connectivity_job && !row.stress_job)" @click="refreshRow(row)">刷新结果</el-button>
+            <el-button link type="primary" size="small" :loading="refreshingRow === row.id" :disabled="locked || (!row.connectivity_job && !row.stress_job)" @click="refreshRow(row)">刷新结果</el-button>
           </div>
         </template>
       </el-table-column>

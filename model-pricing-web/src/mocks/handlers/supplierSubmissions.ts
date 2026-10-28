@@ -365,6 +365,28 @@ export const supplierSubmissionHandlers = [
     return result(structuredClone(record));
   }),
 
+  // 「刷新结果」是只读的查进度：mock 里也得有，否则点一下就是 404。
+  http.get("/api/supplier/submissions/:id/rows/:rowId/test", ({ params, request }) => {
+    const record = findSubmission(String(params.id));
+    if (!record) return fail(404, "数据不存在");
+    const row = record.rows.find(item => item.id === String(params.rowId));
+    if (!row) return fail(404, "数据不存在");
+    const category = (new URL(request.url).searchParams.get("category") || "").toUpperCase();
+    const job = category === "STRESS" ? row.stress_job : row.connectivity_job;
+    return result({
+      job_id: job ? "1000" : "",
+      category,
+      status: job?.status || "NOT_STARTED",
+      tested: Boolean(job?.tested),
+      passed: Boolean(job?.passed),
+      verdict: job?.verdict || "",
+      stale: false,
+      connection_ms: job?.connection_ms ?? null,
+      rps: job?.rps ?? null,
+      tps: job?.tps ?? null,
+    });
+  }),
+
   http.post("/api/supplier/submissions/:id/tests", ({ params }) => {
     const record = findSubmission(String(params.id));
     if (!record) return fail(404, "数据不存在");

@@ -528,9 +528,14 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 //   - 无任务 → 不跳过
 //   - 有任务且指纹与当前行一致：
 //       排队/运行中 → 跳过（避免重复建任务）
-//       已终态且已有报告结论 → 跳过（结果有效，含不达标）
-//       已终态但没有报告结论（工具异常）→ 重测
+//       已终态且已有报告 → 跳过（结果有效，含不达标）
+//       已终态但没有报告（工具异常）→ 重测
 //   - 指纹不一致（改了地址/Key/模型）→ 重测
+//
+// 判「有没有结果」看的是**报告是否存在**，不是 verdict 是否非空。
+// 压力测试本来就没有 verdict（只有 RPS/TPS），按 verdict 判会把每一次
+// 已完成的压测都当成工具异常，于是每点一次「发起测试」就重跑一轮
+// ——2026-10-28 实测：一条申报单在 4 分钟里跑出 5 个压测任务。
 //
 // currentFingerprint 是按**主体当前凭据**算出来的指纹（000046）。
 // 不能再用行上的 test_fingerprint 比：那是上一次写入的快照，
@@ -539,11 +544,12 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 // 旧实现是"有任务就跳过"，导致改了配置也永远不能重测。
 func shouldSkipRetest(row *supplypg.TestRow, platformCategory, currentFingerprint string) (string, bool) {
 	var jobID *int64
-	var status, jobFingerprint, verdict string
+	var status, jobFingerprint string
+	var hasReport bool
 	if platformCategory == "stress" {
-		jobID, status, jobFingerprint, verdict = row.StressJobID, row.StressJobStatus, row.StressJobFingerprint, row.StressJobVerdict
+		jobID, status, jobFingerprint, hasReport = row.StressJobID, row.StressJobStatus, row.StressJobFingerprint, row.StressJobHasReport
 	} else {
-		jobID, status, jobFingerprint, verdict = row.TestJobID, row.TestJobStatus, row.TestJobFingerprint, row.TestJobVerdict
+		jobID, status, jobFingerprint, hasReport = row.TestJobID, row.TestJobStatus, row.TestJobFingerprint, row.TestJobHasReport
 	}
 	if jobID == nil {
 		return "", false
@@ -555,10 +561,10 @@ func shouldSkipRetest(row *supplypg.TestRow, platformCategory, currentFingerprin
 	if !isTerminalStatus(status) {
 		return id, true // 排队/运行中
 	}
-	if strings.TrimSpace(verdict) != "" {
-		return id, true // 已有结论（无论通过与否都算有效测试）
+	if hasReport {
+		return id, true // 有报告就是有效结果（不达标也算）
 	}
-	return id, false // 终态但无报告：工具异常，重试
+	return id, false // 终态但没有报告：工具异常，重试
 }
 
 // demoTestModel 是测试平台 demo 模式内置的模型名。
@@ -632,6 +638,13 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 CONNECTIVITY / STRESS", 400))
 		return
 	}
+	// 查进度走只读快照，绝不发单。
+	// 这条分支原来是直接调 startRowTest：一个 GET 就会去测试平台建任务，
+	// 页面上的「刷新结果」于是变成了「又发起一轮压测」（2026-10-28 实测）。
+	if c.Request.Method == http.MethodGet {
+		h.writeTestSnapshot(c, supplierID, submissionID, rowID, category, platformCategory)
+		return
+	}
 	if h.svc.starter == nil {
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
 		return
@@ -643,8 +656,7 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 		return
 	}
 	// 单行发起也算「发起测试」：未勾选时不能悄悄回 200 说没事发生。
-	// 查询进度走 GET，不能因为没勾选就报错，否则轮询会断。
-	if action == actionNotSelected && c.Request.Method == http.MethodPost {
+	if action == actionNotSelected {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "该模型未勾选压力测试，请先勾选后再发起测试", 400))
 		return
 	}
@@ -652,6 +664,38 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 		"job_id": jobID, "category": category, "status": "QUEUED",
 		"tested": false, "passed": false, "skipped": action == actionSkipped, "action": action,
 	})
+}
+
+// writeTestSnapshot 回读某一行某一类测试的当前结果，纯读不写。
+// 返回结构与发起测试一致，前端可以用同一套 applyTest 落地。
+func (h *supplierSubmissionHandler) writeTestSnapshot(c *gin.Context, supplierID, submissionID, rowID int64,
+	category, platformCategory string) {
+	snap, err := h.svc.store.TestSnapshot(c.Request.Context(), supplierID, submissionID, rowID, platformCategory)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	// 判定口径与 buildSubmissionDTO 保持一致：终态且未失效才算「测过」。
+	tested := snap.HasJob && isTerminalStatus(snap.Status) && !snap.Stale
+	passed := tested && verdictTextOK(snap.Verdict)
+	jobID, status := "", snap.Status
+	if snap.JobID != nil {
+		jobID = strconv.FormatInt(*snap.JobID, 10)
+	}
+	if status == "" {
+		status = "NOT_STARTED"
+	}
+	response.Success(c, gin.H{
+		"job_id": jobID, "category": category, "status": status,
+		"tested": tested, "passed": passed, "skipped": false, "action": "QUERY",
+		"verdict": snap.Verdict, "stale": snap.Stale,
+		"connection_ms": snap.ConnectionMS, "rps": snap.RPS, "tps": snap.TPS,
+	})
+}
+
+// verdictTextOK 是 verdictOK 的字符串版（快照读出来的是字符串）。
+func verdictTextOK(value string) bool {
+	return value == "pass" || value == "pass_with_warnings"
 }
 
 // batchTests 是「发起测试／异常重试」的唯一入口。
