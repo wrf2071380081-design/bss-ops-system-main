@@ -177,8 +177,13 @@ func main() {
 		if i == 1 {
 			status = "RUNNING"
 		}
-		job, err := store.CreateJob(ctx, tp.NewJobRecord{ResourceID: m.Resources[0], Category: tp.CategoryStress, ActorID: actor, Status: status, IdempotencyKey: fmt.Sprintf("%s-job-%d", run, i), TargetFingerprint: run + "-target"})
+		// 每个任务给不同的目标指纹：库里现在有「同一资源+类别+受测目标只能有一个活跃任务」
+		// 的唯一索引（000047），共用指纹会让第 2 条起被判定为重复而拿不到新任务。
+		job, created, err := store.CreateJob(ctx, tp.NewJobRecord{ResourceID: m.Resources[0], Category: tp.CategoryStress, ActorID: actor, Status: status, IdempotencyKey: fmt.Sprintf("%s-job-%d", run, i), TargetFingerprint: fmt.Sprintf("%s-target-%d", run, i)})
 		must(err)
+		if !created {
+			panic(fmt.Sprintf("fixture job %d unexpectedly deduplicated", i))
+		}
 		m.Jobs = append(m.Jobs, job)
 		save(path, m)
 		if i < 2 {

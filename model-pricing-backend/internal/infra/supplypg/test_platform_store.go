@@ -41,22 +41,33 @@ func NewTestPlatformStore(db *sql.DB, schema, reportDir string) (*TestPlatformSt
 
 func (s *TestPlatformStore) table(name string) string { return s.schema + "." + name }
 
-// CreateJob 建本地任务行。带幂等键时先查后插，保证同键不重复建单。
-func (s *TestPlatformStore) CreateJob(ctx context.Context, rec tpdomain.NewJobRecord) (string, error) {
+// CreateJob 建本地任务行，created=false 表示「同一受测目标已经有活跃任务」。
+//
+// 去重靠库上的部分唯一索引 uk_test_job_active_target
+// (resource_id, category, NULLIF(target_fingerprint,'')) WHERE status IN ('QUEUED','RUNNING')：
+// 插入撞上就回查那一条，交给调用方复用。这样并发发起只会有一单真正落库。
+//
+// 为什么不再只靠幂等键：批量发起时键里带纳秒，永远唯一；而按键去重又会把
+// 「同键但受测目标已经变了」的重测请求错误地复用到旧任务上。键保留为记录用途，
+// 只在「同键 + 同目标 + 仍在跑」时兜一层。
+func (s *TestPlatformStore) CreateJob(ctx context.Context, rec tpdomain.NewJobRecord) (string, bool, error) {
 	resourceID, err := parseID(rec.ResourceID)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
+	fingerprint := strings.TrimSpace(rec.TargetFingerprint)
 	key := strings.TrimSpace(rec.IdempotencyKey)
 	if key != "" {
 		var existing string
-		err := s.db.QueryRowContext(ctx,
-			`SELECT id::text FROM `+s.table("test_job")+` WHERE idempotency_key=$1 ORDER BY id DESC LIMIT 1`, key).Scan(&existing)
+		err := s.db.QueryRowContext(ctx, `
+SELECT id::text FROM `+s.table("test_job")+`
+WHERE idempotency_key=$1 AND COALESCE(target_fingerprint,'')=$2 AND status IN ('QUEUED','RUNNING')
+ORDER BY id DESC LIMIT 1`, key, fingerprint).Scan(&existing)
 		if err == nil {
-			return existing, nil
+			return existing, false, nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
-			return "", err
+			return "", false, err
 		}
 	}
 	payload := "null"
@@ -78,12 +89,72 @@ func (s *TestPlatformStore) CreateJob(ctx context.Context, rec tpdomain.NewJobRe
 	var id string
 	err = s.db.QueryRowContext(ctx, `
 INSERT INTO `+s.table("test_job")+`(resource_id,category,idempotency_key,status,request_payload,review_of_job_id,created_by,created_at,target_fingerprint)
-VALUES ($1,$2,NULLIF($3,''),$4,$5::jsonb,$6,$7,$8,NULLIF($9,'')) RETURNING id::text`,
-		resourceID, string(rec.Category), key, status, payload, reviewOf, actor, time.Now().UTC(), strings.TrimSpace(rec.TargetFingerprint)).Scan(&id)
+VALUES ($1,$2,NULLIF($3,''),$4,$5::jsonb,$6,$7,$8,NULLIF($9,''))
+ON CONFLICT DO NOTHING
+RETURNING id::text`,
+		resourceID, string(rec.Category), key, status, payload, reviewOf, actor, time.Now().UTC(), fingerprint).Scan(&id)
+	if err == nil {
+		return id, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", false, err
+	}
+	// 没插进去 = 撞上了「同一受测目标已有活跃任务」的唯一索引：复用那一条。
+	existing, findErr := s.activeJobID(ctx, resourceID, string(rec.Category), fingerprint)
+	if findErr != nil {
+		return "", false, findErr
+	}
+	if existing == "" {
+		return "", false, errors.New("test platform: create job conflicted but no active job found")
+	}
+	return existing, false, nil
+}
+
+// activeJobID 找同一资源+类别+受测目标下正在排队/运行的任务。
+func (s *TestPlatformStore) activeJobID(ctx context.Context, resourceID int64, category, fingerprint string) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `
+SELECT id::text FROM `+s.table("test_job")+`
+WHERE resource_id=$1 AND category=$2 AND COALESCE(target_fingerprint,'')=$3 AND status IN ('QUEUED','RUNNING')
+ORDER BY id DESC LIMIT 1`, resourceID, category, fingerprint).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
 	return id, nil
+}
+
+// FailJob 把任务收成 FAILED。发起时平台没受理就立刻调用，
+// 避免留下永远 QUEUED 的僵尸（既占去重槽位，又永远轮询不到）。
+func (s *TestPlatformStore) FailJob(ctx context.Context, localID, reason string) error {
+	id, err := parseID(localID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE `+s.table("test_job")+`
+SET status='FAILED', finished_at=now(),
+    response_summary = COALESCE(response_summary,'{}'::jsonb) || jsonb_build_object('start_error',$2)
+WHERE id=$1 AND status IN ('QUEUED','RUNNING')`, id, strings.TrimSpace(reason))
+	return err
+}
+
+// FailOrphans 收掉「建了本地单但一直没拿到平台任务号」的僵尸任务。
+// 进程在 CreateJob 与 AttachExternalJob 之间挂掉会留下这种行。
+func (s *TestPlatformStore) FailOrphans(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		olderThan = 10 * time.Minute
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE `+s.table("test_job")+`
+SET status='FAILED', finished_at=now(),
+    response_summary = COALESCE(response_summary,'{}'::jsonb) || jsonb_build_object('start_error','orphan: platform job id never attached')
+WHERE status IN ('QUEUED','RUNNING') AND external_job_id IS NULL AND created_at < $1`,
+		time.Now().UTC().Add(-olderThan))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // AttachExternalJob 回填平台任务号与最新状态。

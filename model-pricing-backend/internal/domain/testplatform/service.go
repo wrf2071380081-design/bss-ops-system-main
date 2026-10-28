@@ -156,7 +156,12 @@ type Completion struct {
 
 // Store 是持久化端口（infra/supplypg 实现）。
 type Store interface {
-	CreateJob(context.Context, NewJobRecord) (string, error)
+	// CreateJob 建本地任务行。created=false 表示「同一资源+类别+受测目标已经有一个
+	// 排队/运行中的任务」，返回的是那条已有任务的 ID，调用方**不得**再去调平台。
+	// 这个判定必须原子（库里靠唯一索引），否则并发请求会各自发一单。
+	CreateJob(context.Context, NewJobRecord) (id string, created bool, err error)
+	// FailJob 把任务收成 FAILED（平台没受理 / 发起过程中失败）；不留 QUEUED 僵尸占着去重槽位。
+	FailJob(ctx context.Context, localID, reason string) error
 	AttachExternalJob(ctx context.Context, localID, externalID, status string) error
 	PendingJobs(context.Context, int) ([]PendingJob, error)
 	CompleteJob(context.Context, Completion) (string, error)
@@ -189,10 +194,25 @@ type StartResult struct {
 	LocalJobID string
 	ExternalID string
 	Status     string
+	// Deduplicated 为 true 表示**没有**真的调平台：同一受测目标已经有排队/运行中的
+	// 任务，直接把那一条复用回来。调用方据此把动作标成「跳过」而不是「已发起」。
+	Deduplicated bool
 }
 
-// Start 发起一次测试：先落本地任务（拿到本地 ID 用于幂等），再调用平台。
-// 平台调用失败时任务保留在 QUEUED，由轮询任务重试，不会丢单。
+// orphanGrace 是「本地任务已建、平台任务号一直没回填」的容忍时长。
+const orphanGrace = 10 * time.Minute
+
+// orphanCleaner 是可选能力：收掉发起时中途失败的僵尸任务。
+// 单独成一个可选接口，避免为了清理去改 Store 的所有实现与测试替身。
+type orphanCleaner interface {
+	FailOrphans(ctx context.Context, olderThan time.Duration) (int64, error)
+}
+
+// Start 发起一次测试。
+//
+// 顺序很关键：先抢本地任务行（由库上的唯一索引保证「同一资源+类别+受测目标」只有
+// 一条排队/运行中的任务），抢到了才调平台；没抢到说明已经有一单在跑，直接复用，
+// **绝不重复发单**。并发连点、多标签页、客户端重试都靠这一步兜住。
 func (s *Service) Start(ctx context.Context, cmd CreateCommand) (*StartResult, error) {
 	if !cmd.Category.Valid() {
 		return nil, ErrInvalidCommand
@@ -211,7 +231,7 @@ func (s *Service) Start(ctx context.Context, cmd CreateCommand) (*StartResult, e
 	if err != nil {
 		return nil, err
 	}
-	localID, err := s.store.CreateJob(ctx, NewJobRecord{
+	localID, created, err := s.store.CreateJob(ctx, NewJobRecord{
 		ResourceID: cmd.ResourceID, Category: cmd.Category,
 		IdempotencyKey: cmd.IdempotencyKey, RequestPayload: payload,
 		ReviewOf: cmd.ReviewOf, ActorID: cmd.ActorID, Status: "QUEUED",
@@ -220,9 +240,17 @@ func (s *Service) Start(ctx context.Context, cmd CreateCommand) (*StartResult, e
 	if err != nil {
 		return nil, err
 	}
+	if !created {
+		// 同一受测目标已经有一单在跑/排队：不重复向平台发起。
+		return &StartResult{LocalJobID: localID, Status: "QUEUED", Deduplicated: true}, nil
+	}
 	accepted, err := s.gateway.CreateJob(ctx, cmd)
 	if err != nil {
-		return &StartResult{LocalJobID: localID, Status: "QUEUED"}, err
+		// 平台没受理就必须立刻收口：否则这条任务永远 QUEUED，
+		// 一边占着「同一目标只能有一个活跃任务」的槽位（该目标再也发不出去），
+		// 一边又因为 external_job_id 为空被轮询永远跳过。
+		_ = s.store.FailJob(ctx, localID, err.Error())
+		return nil, err
 	}
 	if err := s.store.AttachExternalJob(ctx, localID, accepted.JobID, mapStatus(accepted.Status)); err != nil {
 		return &StartResult{LocalJobID: localID, ExternalID: accepted.JobID}, err
@@ -242,6 +270,12 @@ type PollResult struct {
 func (s *Service) Poll(ctx context.Context, limit int) (PollResult, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+	// 顺手收掉「本地建了单、平台任务号一直没回填」的僵尸任务：
+	// 它们永远进不了 PendingJobs，不收掉就会一直占着唯一索引里的那个槽位，
+	// 让同一受测目标再也发不出去。清理失败不影响本轮收口。
+	if cleaner, ok := s.store.(orphanCleaner); ok {
+		_, _ = cleaner.FailOrphans(ctx, orphanGrace)
 	}
 	jobs, err := s.store.PendingJobs(ctx, limit)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -154,6 +155,24 @@ type supplierSubmissionHandler struct{ svc *SupplierSubmissionService }
 // 前端测试类别 ↔ 平台门类。映射必须留在 API 边界：平台只认 baseline/stress。
 var submissionCategoryToPlatform = map[string]string{"CONNECTIVITY": "baseline", "STRESS": "stress"}
 var platformCategoryToSubmission = map[string]string{"baseline": "CONNECTIVITY", "stress": "STRESS"}
+
+// 压测时长：发单参数与页面上的「约需多久」共用这一组常量，别在两处各写一个数字。
+var (
+	stressDuration = 30 * time.Second
+	stressWarmup   = 5 * time.Second
+	// baselineETASeconds 是连通性测试的经验耗时：几秒级，给个保守值让页面有预期。
+	baselineETASeconds = 10
+)
+
+func durationParam(d time.Duration) string { return strconv.Itoa(int(d.Seconds())) + "s" }
+
+// testCategoryETA 返回该类测试的预估耗时（秒），供页面显示「约需 35 秒」。
+func testCategoryETA(category string) int {
+	if category == "STRESS" {
+		return int((stressDuration + stressWarmup).Seconds())
+	}
+	return baselineETASeconds
+}
 
 func (h *supplierSubmissionHandler) supplierID(c *gin.Context) (int64, bool) {
 	op := middleware.OperatorFrom(c)
@@ -488,7 +507,9 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		// 真机实测：stress 必须显式声明参考引擎，否则 400。
 		params = map[string]any{
 			"engine": "reference-performance-v1", "concurrency": []int{1},
-			"duration": "30s", "warmup": true, "warmup_duration": "5s",
+			"duration":      durationParam(stressDuration),
+			"warmup":        true,
+			"warmup_duration": durationParam(stressWarmup),
 		}
 	}
 	result, err := h.svc.starter.Start(ctx, tpdomain.CreateCommand{
@@ -507,6 +528,11 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 	})
 	if err != nil {
 		return "", actionFailed, err
+	}
+	if result.Deduplicated {
+		// 同一受测目标已经有一单在跑/排队：这次没有真的发起，也不改动行上的任务号。
+		// 并发连点、多标签页都会走到这里，是「不重复烧资源」的最后一道闸。
+		return result.LocalJobID, actionSkipped, nil
 	}
 	localJobID, convErr := strconv.ParseInt(result.LocalJobID, 10, 64)
 	if convErr != nil {
@@ -527,9 +553,14 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 //   - 无任务 → 不跳过
 //   - 有任务且指纹与当前行一致：
 //       排队/运行中 → 跳过（避免重复建任务）
-//       已终态且已有报告结论 → 跳过（结果有效，含不达标）
-//       已终态但没有报告结论（工具异常）→ 重测
+//       已终态且已有报告 → 跳过（结果有效，含不达标）
+//       已终态但没有报告（工具异常）→ 重测
 //   - 指纹不一致（改了地址/Key/模型）→ 重测
+//
+// 判「有没有结果」看的是**报告是否存在**，不是 verdict 是否非空。
+// 压力测试本来就没有 verdict（只有 RPS/TPS），按 verdict 判会把每一次
+// 已完成的压测都当成工具异常，于是每点一次「发起测试」就重跑一轮
+// ——2026-10-28 实测：一条申报单在 4 分钟里跑出 5 个压测任务。
 //
 // currentFingerprint 是按**主体当前凭据**算出来的指纹（000046）。
 // 不能再用行上的 test_fingerprint 比：那是上一次写入的快照，
@@ -538,11 +569,12 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 // 旧实现是"有任务就跳过"，导致改了配置也永远不能重测。
 func shouldSkipRetest(row *supplypg.TestRow, platformCategory, currentFingerprint string) (string, bool) {
 	var jobID *int64
-	var status, jobFingerprint, verdict string
+	var status, jobFingerprint string
+	var hasReport bool
 	if platformCategory == "stress" {
-		jobID, status, jobFingerprint, verdict = row.StressJobID, row.StressJobStatus, row.StressJobFingerprint, row.StressJobVerdict
+		jobID, status, jobFingerprint, hasReport = row.StressJobID, row.StressJobStatus, row.StressJobFingerprint, row.StressJobHasReport
 	} else {
-		jobID, status, jobFingerprint, verdict = row.TestJobID, row.TestJobStatus, row.TestJobFingerprint, row.TestJobVerdict
+		jobID, status, jobFingerprint, hasReport = row.TestJobID, row.TestJobStatus, row.TestJobFingerprint, row.TestJobHasReport
 	}
 	if jobID == nil {
 		return "", false
@@ -554,10 +586,10 @@ func shouldSkipRetest(row *supplypg.TestRow, platformCategory, currentFingerprin
 	if !isTerminalStatus(status) {
 		return id, true // 排队/运行中
 	}
-	if strings.TrimSpace(verdict) != "" {
-		return id, true // 已有结论（无论通过与否都算有效测试）
+	if hasReport {
+		return id, true // 有报告就是有效结果（不达标也算）
 	}
-	return id, false // 终态但无报告：工具异常，重试
+	return id, false // 终态但没有报告：工具异常，重试
 }
 
 // demoTestModel 是测试平台 demo 模式内置的模型名。
@@ -631,6 +663,13 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 CONNECTIVITY / STRESS", 400))
 		return
 	}
+	// 查进度走只读快照，绝不发单。
+	// 这条分支原来是直接调 startRowTest：一个 GET 就会去测试平台建任务，
+	// 页面上的「刷新结果」于是变成了「又发起一轮压测」（2026-10-28 实测）。
+	if c.Request.Method == http.MethodGet {
+		h.writeTestSnapshot(c, supplierID, submissionID, rowID, category, platformCategory)
+		return
+	}
 	if h.svc.starter == nil {
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
 		return
@@ -641,10 +680,88 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 		writeRowTestError(c, err)
 		return
 	}
+	// 单行发起也算「发起测试」：未勾选时不能悄悄回 200 说没事发生。
+	if action == actionNotSelected {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "该模型未勾选压力测试，请先勾选后再发起测试", 400))
+		return
+	}
 	response.Success(c, gin.H{
 		"job_id": jobID, "category": category, "status": "QUEUED",
 		"tested": false, "passed": false, "skipped": action == actionSkipped, "action": action,
 	})
+}
+
+// testSnapshotDTO 把只读快照整理成前端契约（查进度、批量进度共用）。
+// 判定口径与 buildSubmissionDTO 保持一致：终态且未失效才算「测过」。
+func testSnapshotDTO(category string, snap supplypg.RowTestSnapshot) gin.H {
+	tested := snap.HasJob && isTerminalStatus(snap.Status) && !snap.Stale
+	passed := tested && verdictTextOK(snap.Verdict)
+	jobID, status := "", snap.Status
+	if snap.JobID != nil {
+		jobID = strconv.FormatInt(*snap.JobID, 10)
+	}
+	if status == "" {
+		status = "NOT_STARTED"
+	}
+	// 页面用它算「已用 N 秒」，刷新后不会从 0 重新数。
+	startedAt := ""
+	if snap.StartedAt != nil {
+		startedAt = snap.StartedAt.Format(time.RFC3339)
+	}
+	return gin.H{
+		"job_id": jobID, "category": category, "status": status,
+		"tested": tested, "passed": passed, "skipped": false, "action": "QUERY",
+		"verdict": snap.Verdict, "stale": snap.Stale,
+		"connection_ms": snap.ConnectionMS, "rps": snap.RPS, "tps": snap.TPS,
+		"eta_seconds": testCategoryETA(category), "started_at": startedAt,
+	}
+}
+
+// writeTestSnapshot 回读某一行某一类测试的当前结果，纯读不写。
+// 返回结构与发起测试一致，前端可以用同一套 applyTest 落地。
+func (h *supplierSubmissionHandler) writeTestSnapshot(c *gin.Context, supplierID, submissionID, rowID int64,
+	category, platformCategory string) {
+	snap, err := h.svc.store.TestSnapshot(c.Request.Context(), supplierID, submissionID, rowID, platformCategory)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	response.Success(c, testSnapshotDTO(category, *snap))
+}
+
+// testProgress 批量回读整张单子的测试进度（只读）。
+//
+// 页面等结果时要每几秒看一眼，逐行调 /rows/:rowId/test 会变成 N 个请求；
+// 这里一次返回所有行，前端按 row_id 合并。**绝不能在读路径上发单。**
+func (h *supplierSubmissionHandler) testProgress(c *gin.Context) {
+	supplierID, ok := h.supplierID(c)
+	if !ok {
+		return
+	}
+	submissionID, err := positiveID(c.Param("id"))
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	rows, err := h.svc.store.TestProgress(c.Request.Context(), supplierID, submissionID)
+	if err != nil {
+		writeSubmissionError(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, gin.H{
+			"row_id":       strconv.FormatInt(row.RowID, 10),
+			"connectivity": testSnapshotDTO("CONNECTIVITY", row.Connectivity),
+			"stress":       testSnapshotDTO("STRESS", row.Stress),
+		})
+	}
+	response.Success(c, gin.H{"rows": items})
+}
+
+// verdictTextOK 是 verdictOK 的字符串版（快照读出来的是字符串）。
+func verdictTextOK(value string) bool {
+	return value == "pass" || value == "pass_with_warnings"
 }
 
 // batchTests 是「发起测试／异常重试」的唯一入口。
@@ -655,6 +772,7 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 //
 // 自动模式的语义：所有行做连通；压力只做勾选了 participate_test 的行。
 // 已有有效结果或正在跑的行跳过；配置变了或上次工具异常的行重测。
+// categories 里含 STRESS 但一行都没勾时直接 400，不发起任何测试。
 func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 	supplierID, ok := h.supplierID(c)
 	if !ok {
@@ -707,6 +825,20 @@ func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
 	if err != nil {
 		writeSubmissionError(c, err)
+		return
+	}
+	// 压测是「门禁的一部分」：一个都没勾时连连通性都不该发起。
+	// 原来这里静默放过（每一行都记 NOT_SELECTED 然后回 200），前端还按成功提示，
+	// 结果供应商以为测过了、提交时却被门禁挡住（2026-10-28 用户报障）。
+	wantStress := false
+	for _, t := range targets {
+		if t.platform == "stress" {
+			wantStress = true
+			break
+		}
+	}
+	if wantStress && !anyStressSelected(rows[submissionID]) {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "请至少勾选一个压力测试", 400))
 		return
 	}
 	type item struct {
@@ -834,6 +966,16 @@ var (
 	errGateStressMissing       = errors.New("no row has stress test")
 	errGateReportStale         = errors.New("test report is stale after target change")
 )
+
+// anyStressSelected 报告这张单子里是否有任意一行勾选了压力测试。
+func anyStressSelected(rows []supplypg.SubmissionRowRecord) bool {
+	for _, row := range rows {
+		if row.ParticipateTest {
+			return true
+		}
+	}
+	return false
+}
 
 // resolveTestCategory 把前端类别翻译成平台门类，并把映射收在一处。
 func resolveTestCategory(raw string) (string, string, bool) {
@@ -1056,6 +1198,11 @@ func writeSubmissionError(c *gin.Context, err error) {
 		response.Error(c, apperr.ErrNotFound)
 	case errors.Is(err, supply.ErrRevisionConflict), errors.Is(err, supply.ErrInactive):
 		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "申报单已变化，请刷新后重试", 409))
+	case errors.Is(err, supply.ErrTestInProgress):
+		// 这里原来是 default → 500「系统错误」：供应商在测试跑着的时候勾一下压力测试，
+		// 保存直接报系统错误，勾选永远存不进去。改成能看懂、能行动的 409。
+		// 注意文案：前端靠「申报单已变化」区分版本冲突与测试占用，别改成同一句。
+		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "测试进行中，请等测试结果回来后再修改受测目标", 409))
 	case errors.Is(err, supply.ErrForbidden):
 		response.Error(c, apperr.ErrForbidden)
 	case errors.As(err, &appErr):
@@ -1069,6 +1216,13 @@ func writeSubmissionError(c *gin.Context, err error) {
 // registerSupplierSubmissionRoutes 挂载供应商申报的正式接口。
 func registerSupplierSubmissionRoutes(protected *gin.RouterGroup, deps Deps, idempotent gin.HandlerFunc) {
 	handler := &supplierSubmissionHandler{svc: deps.SupplierSubmissions}
+	// 发起测试/重测是「每次点击都是一次新命令」：语义键必须带上客户端的幂等键，
+	// 否则 body 固定不变（categories 就那两个值），第二次点击之后全被当成重复请求回放，
+	// 页面上表现为「再点一次没反应」。见 middleware.ClientKeyBizKey。
+	perClick := idempotent
+	if deps.IdemStore != nil {
+		perClick = middleware.Idempotency(deps.IdemStore, middleware.ClientKeyBizKey)
+	}
 	group := protected.Group("/submissions")
 	group.GET("", handler.list)
 	// 静态段先于参数段注册，避免 /model-options 被 /:id 吞掉。
@@ -1079,11 +1233,13 @@ func registerSupplierSubmissionRoutes(protected *gin.RouterGroup, deps Deps, ide
 	group.POST("/import/parse", handler.importParse)
 	group.GET("/:id", handler.detail)
 	group.GET("/:id/rows/:rowId/test", handler.rowTest)
-	group.POST("/:id/rows/:rowId/test", idempotent, handler.rowTest)
+	// 批量查进度：页面等结果时每几秒看一眼，只读。
+	group.GET("/:id/test-progress", handler.testProgress)
+	group.POST("/:id/rows/:rowId/test", perClick, handler.rowTest)
 	// 写接口一律挂幂等（红线）。
 	group.POST("", idempotent, handler.create)
 	group.PUT("/:id", idempotent, handler.update)
-	group.POST("/:id/tests", idempotent, handler.batchTests)
+	group.POST("/:id/tests", perClick, handler.batchTests)
 	group.POST("/:id/submit", idempotent, handler.submit)
 	group.POST("/:id/withdraw", idempotent, handler.withdraw)
 }

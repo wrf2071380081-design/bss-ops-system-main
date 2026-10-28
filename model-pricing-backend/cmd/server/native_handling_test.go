@@ -149,8 +149,11 @@ func TestNativeHandlingDaily42Success(t *testing.T) {
 			if fp == "" {
 				t.Fatal("actual supplier target fingerprint required")
 			}
-			job, err := store.CreateJob(ctx, tp.NewJobRecord{ResourceID: f.Resource, Category: category, ActorID: "1", TargetFingerprint: fp, IdempotencyKey: f.Run + string(category)})
+			job, created, err := store.CreateJob(ctx, tp.NewJobRecord{ResourceID: f.Resource, Category: category, ActorID: "1", TargetFingerprint: fp, IdempotencyKey: f.Run + string(category)})
 			must(err)
+			if !created {
+				t.Fatalf("fixture job for %s unexpectedly deduplicated", category)
+			}
 			jobs = append(jobs, job)
 			zero, rps, tps := "0.00", "12.00", "34.00"
 			_, err = store.CompleteJob(ctx, tp.Completion{JobID: job, ResourceID: f.Resource, Category: category, FinalStatus: "SUCCEEDED", Verdict: "pass", Outcome: tp.Outcome{ConnectivityPassed: category == tp.CategoryBaseline, PressurePassed: category == tp.CategoryStress, ConnectionMS: &zero, RPS: &rps, TPS: &tps}, TestedBy: "1", ReportJSON: json.RawMessage(`{"purpose":"QA report output; no Inspector call"}`), FinishedAt: time.Now().UTC()})
@@ -361,8 +364,11 @@ func TestNativeHandlingDaily42Success(t *testing.T) {
 	var jobs []string
 	for _, category := range []tp.Category{tp.CategoryBaseline, tp.CategoryStress} {
 		fp := tp.TargetFingerprint(mustInt(f.Model), "qa-native-model", "https://supplier.example/api", "QA fixture")
-		job, err := store.CreateJob(ctx, tp.NewJobRecord{ResourceID: f.Resource, Category: category, ActorID: "1", TargetFingerprint: fp, IdempotencyKey: f.Run + string(category)})
+		job, created, err := store.CreateJob(ctx, tp.NewJobRecord{ResourceID: f.Resource, Category: category, ActorID: "1", TargetFingerprint: fp, IdempotencyKey: f.Run + string(category)})
 		must(err)
+		if !created {
+			t.Fatalf("fixture job for %s unexpectedly deduplicated", category)
+		}
 		jobs = append(jobs, job)
 		zero, rps, tps := "0.00", "12.00", "34.00"
 		outcome := tp.Outcome{ConnectivityPassed: category == tp.CategoryBaseline, PressurePassed: category == tp.CategoryStress, ConnectionMS: &zero, RPS: &rps, TPS: &tps}
@@ -450,7 +456,7 @@ func TestNativeHandlingDaily42Success(t *testing.T) {
 		t.Fatal("price change lost eligibility or failed")
 	}
 	// A later report for a non-designated job must not replace the selected pair.
-	late, err := store.CreateJob(ctx, tp.NewJobRecord{ResourceID: f.Resource, Category: tp.CategoryStress, ActorID: "1", TargetFingerprint: "obsolete-target", IdempotencyKey: f.Run + "-late"})
+	late, _, err := store.CreateJob(ctx, tp.NewJobRecord{ResourceID: f.Resource, Category: tp.CategoryStress, ActorID: "1", TargetFingerprint: "obsolete-target", IdempotencyKey: f.Run + "-late"})
 	must(err)
 	_, err = store.CompleteJob(ctx, tp.Completion{JobID: late, ResourceID: f.Resource, Category: tp.CategoryStress, FinalStatus: "FAILED", Verdict: "fail", Outcome: tp.Outcome{}, TestedBy: "1", FinishedAt: time.Now().UTC()})
 	must(err)

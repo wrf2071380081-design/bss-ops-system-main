@@ -365,9 +365,60 @@ export const supplierSubmissionHandlers = [
     return result(structuredClone(record));
   }),
 
+  // 批量查进度（只读）：页面发起测试后会轮询这个接口。
+  http.get("/api/supplier/submissions/:id/test-progress", ({ params }) => {
+    const record = findSubmission(String(params.id));
+    if (!record) return fail(404, "数据不存在");
+    const snapshot = (category: "CONNECTIVITY" | "STRESS", job: SupplierSubmissionTestDTO | undefined) => ({
+      job_id: job ? "1000" : "",
+      category,
+      status: job?.status || "NOT_STARTED",
+      tested: Boolean(job?.tested),
+      passed: Boolean(job?.passed),
+      verdict: job?.verdict || "",
+      stale: false,
+      connection_ms: job?.connection_ms ?? null,
+      rps: job?.rps ?? null,
+      tps: job?.tps ?? null,
+      eta_seconds: category === "STRESS" ? 35 : 10,
+      started_at: job ? record.updated_at : "",
+    });
+    return result({
+      rows: record.rows.map(row => ({
+        row_id: row.id,
+        connectivity: snapshot("CONNECTIVITY", row.connectivity_job),
+        stress: snapshot("STRESS", row.stress_job),
+      })),
+    });
+  }),
+
+  // 「刷新结果」是只读的查进度：mock 里也得有，否则点一下就是 404。
+  http.get("/api/supplier/submissions/:id/rows/:rowId/test", ({ params, request }) => {
+    const record = findSubmission(String(params.id));
+    if (!record) return fail(404, "数据不存在");
+    const row = record.rows.find(item => item.id === String(params.rowId));
+    if (!row) return fail(404, "数据不存在");
+    const category = (new URL(request.url).searchParams.get("category") || "").toUpperCase();
+    const job = category === "STRESS" ? row.stress_job : row.connectivity_job;
+    return result({
+      job_id: job ? "1000" : "",
+      category,
+      status: job?.status || "NOT_STARTED",
+      tested: Boolean(job?.tested),
+      passed: Boolean(job?.passed),
+      verdict: job?.verdict || "",
+      stale: false,
+      connection_ms: job?.connection_ms ?? null,
+      rps: job?.rps ?? null,
+      tps: job?.tps ?? null,
+    });
+  }),
+
   http.post("/api/supplier/submissions/:id/tests", ({ params }) => {
     const record = findSubmission(String(params.id));
     if (!record) return fail(404, "数据不存在");
+    // 与后端一致：一个压测都没勾时不许发起，连通性也不跑。
+    if (!record.rows.some(row => row.participate_test)) return fail(400, "请至少勾选一个压力测试");
     let started = 0;
     for (const row of record.rows) {
       if (!row.connectivity_job) { row.connectivity_job = passedJob("CONNECTIVITY"); row.connectivity_tested = true; row.connectivity_passed = true; started++; }

@@ -22,6 +22,10 @@ export interface SupplierSubmissionTestDTO {
   connection_ms?: string | null;
   rps?: string | null;
   tps?: string | null;
+  /** 任务建单时间（RFC3339）；页面用它算「已用 N 秒」 */
+  started_at?: string;
+  /** 该类测试的预估耗时（秒） */
+  eta_seconds?: number;
 }
 
 export interface SupplierSubmissionRowDTO {
@@ -167,8 +171,27 @@ export interface SupplierTestJobDTO {
   status: string;
   tested: boolean;
   passed: boolean;
+  /** 平台判定：pass / pass_with_warnings / fail；压力测试无判定时为空 */
+  verdict?: string;
+  /** 测试目标变化后旧结果失效 */
+  stale?: boolean;
   connection_ms?: string | null;
   rps?: string | null;
   tps?: string | null;
   report_id?: string;
+  /** 任务建单时间（RFC3339）；页面用它算「已用 N 秒」 */
+  started_at?: string;
+  /** 该类测试的预估耗时（秒），用来给用户一个等待预期 */
+  eta_seconds?: number;
+}
+
+/** 单行的两类测试进度（批量查进度接口）。 */
+export interface SupplierTestProgressRowDTO {
+  row_id: string;
+  connectivity: SupplierTestJobDTO;
+  stress: SupplierTestJobDTO;
+}
+
+export interface SupplierTestProgressDTO {
+  rows: SupplierTestProgressRowDTO[];
 }

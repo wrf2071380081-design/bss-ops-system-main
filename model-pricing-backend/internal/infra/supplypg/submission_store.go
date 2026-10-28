@@ -355,7 +355,7 @@ WHERE id=$2 AND supplier_id=$3 AND status = ANY($5) AND revision=$4 RETURNING re
 	if err != nil {
 		return 0, err
 	}
-	if err := s.ensureNoRunningTests(ctx, tx, id); err != nil {
+	if err := s.ensureTargetsStableWhileTesting(ctx, tx, s.table("submission_row"), id, rows); err != nil {
 		return 0, err
 	}
 	if err := syncRows(ctx, tx, s.table("submission_row"), id, rows); err != nil {
@@ -367,20 +367,84 @@ WHERE id=$2 AND supplier_id=$3 AND status = ANY($5) AND revision=$4 RETURNING re
 	return revision, nil
 }
 
-// ensureNoRunningTests 是测试期写锁（T-21）：
-// 还有任务排队/运行时，不允许改测试目标或撤回，否则结果落库后立刻失效、白跑一轮。
-func (s *SubmissionStore) ensureNoRunningTests(ctx context.Context, q interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, submissionID int64) error {
+// runningTestRows 数「本单还有多少行挂着排队/运行中的测试任务」。
+func (s *SubmissionStore) runningTestRows(ctx context.Context, q rowQuerier, submissionID int64) (int, error) {
 	var running int
-	if err := q.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 SELECT count(*) FROM `+s.table("submission_row")+` r
 JOIN `+s.table("test_job")+` j ON j.id = r.test_job_id OR j.id = r.stress_job_id
-WHERE r.submission_id = $1 AND j.status IN ('QUEUED','RUNNING')`, submissionID).Scan(&running); err != nil {
+WHERE r.submission_id = $1 AND j.status IN ('QUEUED','RUNNING')`, submissionID).Scan(&running)
+	return running, err
+}
+
+// ensureNoRunningTests 是测试期写锁（T-21）：
+// 还有任务排队/运行时，不允许改测试目标或撤回，否则结果落库后立刻失效、白跑一轮。
+func (s *SubmissionStore) ensureNoRunningTests(ctx context.Context, q rowQuerier, submissionID int64) error {
+	running, err := s.runningTestRows(ctx, q, submissionID)
+	if err != nil {
 		return err
 	}
 	if running > 0 {
 		return supply.ErrTestInProgress
+	}
+	return nil
+}
+
+// storedTarget 是行上「谁在被测」的那两列，用于和本次提交做比对。
+type storedTarget struct {
+	standardModelID   int64
+	supplierModelName string
+}
+
+// ensureTargetsStableWhileTesting 是测试期写锁的精确版。
+//
+// 原来 UpdateDraft 直接调 ensureNoRunningTests：只要还有测试在跑，整张草稿一行都不许存。
+// 后果是供应商刚点完「发起测试」的那几分钟里，连「压力测试」的勾选都保存不了
+// → 服务端读到的还是 participate_test=false → 压测永远补不上（2026-10-28 实测）。
+//
+// 运行中的测试只对「谁在被测」敏感：换了标准模型或接口模型 ID，结果就会落在
+// 一条已经变过的行上；增删行同理。只改勾选、系数、说明则放行。
+//
+// 为什么不比 base_url / api_key：000046 之后这两列来自**主体凭据**，供应商改凭据
+// 走的是 /supplier/test-credential（不经过这里）；而且 demo 目标会在行上落一个
+// 占位 Key（demo-key），和凭据里的原值天然不相等——按列比会误判成"改了目标"，
+// 实测就是这么把勾选卡住的。凭据真变了，由 ApplyCredential 把旧结果判失效兜底。
+func (s *SubmissionStore) ensureTargetsStableWhileTesting(ctx context.Context, tx *sql.Tx, table string, submissionID int64, rows []SubmissionRowInput) error {
+	running, err := s.runningTestRows(ctx, tx, submissionID)
+	if err != nil || running == 0 {
+		return err
+	}
+	result, err := tx.QueryContext(ctx, `
+SELECT id, standard_model_id, supplier_model_name
+FROM `+table+` WHERE submission_id=$1`, submissionID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = result.Close() }()
+	stored := make(map[int64]storedTarget, len(rows))
+	for result.Next() {
+		var id int64
+		var item storedTarget
+		if err := result.Scan(&id, &item.standardModelID, &item.supplierModelName); err != nil {
+			return err
+		}
+		stored[id] = item
+	}
+	if err := result.Err(); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		old, ok := stored[row.ID]
+		if !ok {
+			return supply.ErrTestInProgress // 新增行，或这行不属于本单
+		}
+		if old.standardModelID != row.StandardModelID || old.supplierModelName != row.SupplierModelName {
+			return supply.ErrTestInProgress
+		}
+		delete(stored, row.ID)
+	}
+	if len(stored) > 0 {
+		return supply.ErrTestInProgress // 删行
 	}
 	return nil
 }
@@ -583,13 +647,15 @@ type TestRow struct {
 	ResourceID        *int64
 	TestJobID         *int64
 	StressJobID       *int64
-	// 下面四组用于判断「能否跳过重测」：状态 + 发单时指纹 + 是否已有报告结论。
+	// 下面几组用于判断「能否跳过重测」：状态 + 发单时指纹 + 有没有报告。
 	TestJobStatus      string
 	TestJobFingerprint string
 	TestJobVerdict     string
+	TestJobHasReport   bool
 	StressJobStatus      string
 	StressJobFingerprint string
 	StressJobVerdict     string
+	StressJobHasReport   bool
 	SubmissionStatus  string
 }
 
@@ -605,7 +671,9 @@ SELECT r.id, r.submission_id, r.standard_model_id, COALESCE(m.official_id,''), r
        COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = cj.id ORDER BY tr.id DESC LIMIT 1),''),
 		COALESCE(sj.status,''), COALESCE(sj.target_fingerprint,''),
 		COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id ORDER BY tr.id DESC LIMIT 1),''),
-		COALESCE(cred.base_url,''), COALESCE(cred.api_key_enc,'')
+		COALESCE(cred.base_url,''), COALESCE(cred.api_key_enc,''),
+		EXISTS(SELECT 1 FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = cj.id),
+		EXISTS(SELECT 1 FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id)
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
 JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
@@ -619,7 +687,8 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 			&item.TestFingerprint, &resourceID, &jobID, &stressJobID, &item.SubmissionStatus,
 			&item.TestJobStatus, &item.TestJobFingerprint, &item.TestJobVerdict,
 			&item.StressJobStatus, &item.StressJobFingerprint, &item.StressJobVerdict,
-			&item.EffectiveBaseURL, &item.EffectiveAPIKey)
+			&item.EffectiveBaseURL, &item.EffectiveAPIKey,
+			&item.TestJobHasReport, &item.StressJobHasReport)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
@@ -636,6 +705,141 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 		item.StressJobID = &stressJobID.Int64
 	}
 	return &item, nil
+}
+
+// RowTestSnapshot 是「查测试进度」用的**只读**视图。
+//
+// 为什么要单独一条读路径：原来查进度和发起测试共用 startRowTest，
+// 一个 GET 也会去调测试平台发单。结果是供应商在页面上点「刷新结果」，
+// 平台那边却真的又起了一轮压测（2026-10-28 实测复现）。
+type RowTestSnapshot struct {
+	JobID   *int64
+	Status  string
+	Verdict string
+	Stale   bool
+	HasJob  bool
+	// StartedAt 是任务建单时间，页面用它算「已用 N 秒」（刷新后也不会从 0 开始）。
+	StartedAt *time.Time
+	// 下面三个是报告里的展示指标（连通看延迟，压测看 RPS/TPS）。
+	ConnectionMS string
+	RPS          string
+	TPS          string
+}
+
+// newRowTestSnapshot 把一组可空列整理成快照（两个查询共用，避免失效判定写两遍）。
+func newRowTestSnapshot(rowFingerprint string, jobID sql.NullInt64, status, jobFP, verdict sql.NullString, createdAt sql.NullTime) RowTestSnapshot {
+	snap := RowTestSnapshot{Status: status.String, Verdict: verdict.String}
+	if jobID.Valid {
+		id := jobID.Int64
+		snap.JobID = &id
+		snap.HasJob = true
+	}
+	if createdAt.Valid {
+		started := createdAt.Time
+		snap.StartedAt = &started
+	}
+	// 老数据可能没有指纹：只有两者都存在且不等才算失效（与 Rows 的口径一致）。
+	snap.Stale = rowFingerprint != "" && jobFP.Valid && jobFP.String != "" && rowFingerprint != jobFP.String
+	return snap
+}
+
+// RowTestProgress 是一行的两类测试进度（列表轮询用）。
+type RowTestProgress struct {
+	RowID        int64
+	Connectivity RowTestSnapshot
+	Stress       RowTestSnapshot
+}
+
+// TestProgress 批量读一张申报单里所有行的测试进度，纯读、一次查询。
+//
+// 页面在等结果时要每隔几秒看一眼，逐行调 TestSnapshot 会变成 N 个请求；
+// 这里一次把两类都带回来，前端按 row_id 合并即可。
+func (s *SubmissionStore) TestProgress(ctx context.Context, supplierID, submissionID int64) ([]RowTestProgress, error) {
+	result, err := s.db.QueryContext(ctx, `
+SELECT r.id, COALESCE(r.test_fingerprint,''),
+       cj.id, cj.status, cj.target_fingerprint, crep.verdict, crep.connection_ms::text, cj.created_at,
+       sj.id, sj.status, sj.target_fingerprint, srep.verdict, srep.rps::text, srep.tps::text, sj.created_at
+FROM `+s.table("submission_row")+` r
+JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
+LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
+LEFT JOIN LATERAL (
+  SELECT verdict, connection_ms FROM `+s.table("test_report")+`
+  WHERE test_job_id = cj.id ORDER BY id DESC LIMIT 1
+) crep ON TRUE
+LEFT JOIN `+s.table("test_job")+` sj ON sj.id = r.stress_job_id
+LEFT JOIN LATERAL (
+  SELECT verdict, rps, tps FROM `+s.table("test_report")+`
+  WHERE test_job_id = sj.id ORDER BY id DESC LIMIT 1
+) srep ON TRUE
+WHERE r.submission_id=$1 AND sub.supplier_id=$2
+ORDER BY r.id`, submissionID, supplierID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = result.Close() }()
+	list := make([]RowTestProgress, 0, 8)
+	for result.Next() {
+		var item RowTestProgress
+		var rowFP string
+		var connID, stressID sql.NullInt64
+		var connStatus, connFP, connVerdict, connMS sql.NullString
+		var stressStatus, stressFP, stressVerdict, rps, tps sql.NullString
+		var connAt, stressAt sql.NullTime
+		if err := result.Scan(&item.RowID, &rowFP,
+			&connID, &connStatus, &connFP, &connVerdict, &connMS, &connAt,
+			&stressID, &stressStatus, &stressFP, &stressVerdict, &rps, &tps, &stressAt); err != nil {
+			return nil, err
+		}
+		item.Connectivity = newRowTestSnapshot(rowFP, connID, connStatus, connFP, connVerdict, connAt)
+		item.Connectivity.ConnectionMS = connMS.String
+		item.Stress = newRowTestSnapshot(rowFP, stressID, stressStatus, stressFP, stressVerdict, stressAt)
+		item.Stress.RPS, item.Stress.TPS = rps.String, tps.String
+		list = append(list, item)
+	}
+	return list, result.Err()
+}
+
+// TestSnapshot 读某一行的测试结果快照，不触发任何写操作。
+func (s *SubmissionStore) TestSnapshot(ctx context.Context, supplierID, submissionID, rowID int64, platformCategory string) (*RowTestSnapshot, error) {
+	var rowFingerprint string
+	var connJobID, stressJobID sql.NullInt64
+	var connStatus, connFP, connVerdict, connMS sql.NullString
+	var stressStatus, stressFP, stressVerdict, rps, tps sql.NullString
+	var connAt, stressAt sql.NullTime
+	err := s.db.QueryRowContext(ctx, `
+SELECT COALESCE(r.test_fingerprint,''),
+       cj.id, cj.status, cj.target_fingerprint, crep.verdict, crep.connection_ms::text, cj.created_at,
+       sj.id, sj.status, sj.target_fingerprint, srep.verdict, srep.rps::text, srep.tps::text, sj.created_at
+FROM `+s.table("submission_row")+` r
+JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
+LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
+LEFT JOIN LATERAL (
+  SELECT verdict, connection_ms FROM `+s.table("test_report")+`
+  WHERE test_job_id = cj.id ORDER BY id DESC LIMIT 1
+) crep ON TRUE
+LEFT JOIN `+s.table("test_job")+` sj ON sj.id = r.stress_job_id
+LEFT JOIN LATERAL (
+  SELECT verdict, rps, tps FROM `+s.table("test_report")+`
+  WHERE test_job_id = sj.id ORDER BY id DESC LIMIT 1
+) srep ON TRUE
+WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionID, supplierID).
+		Scan(&rowFingerprint,
+			&connJobID, &connStatus, &connFP, &connVerdict, &connMS, &connAt,
+			&stressJobID, &stressStatus, &stressFP, &stressVerdict, &rps, &tps, &stressAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, supply.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if platformCategory == "stress" {
+		snap := newRowTestSnapshot(rowFingerprint, stressJobID, stressStatus, stressFP, stressVerdict, stressAt)
+		snap.RPS, snap.TPS = rps.String, tps.String
+		return &snap, nil
+	}
+	snap := newRowTestSnapshot(rowFingerprint, connJobID, connStatus, connFP, connVerdict, connAt)
+	snap.ConnectionMS = connMS.String
+	return &snap, nil
 }
 
 // TestCredential 读本主体的准入测试凭据（000046）；未登记返回 (nil, nil)。

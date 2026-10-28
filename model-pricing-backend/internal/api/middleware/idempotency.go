@@ -47,6 +47,21 @@ func DefaultBizKey(c *gin.Context) string {
 		sha256.Sum256([]byte(strings.TrimSpace(body))), operator, c.Request.URL.Path)
 }
 
+// ClientKeyBizKey 在默认语义键后拼上客户端幂等键。
+//
+// 只用于「每次点击都是一次新命令」的接口（发起测试/重测）。
+// 默认 BizKey 只看 body + operator + path，而这类接口的 body 是固定的
+// {"categories":["CONNECTIVITY","STRESS"]}：第一次 DONE 之后，后面每一次点击
+// 都会命中同一条记录被回放旧响应，handler 根本不执行 —— 表现在页面上就是
+// 「补勾压力测试后再点发起测试，什么都没发生」（2026-10-28 实测）。
+//
+// 拼上 Idempotency-Key 之后语义正确：
+//   - 同一个键重试 → 仍然命中 request_id 正常重放（幂等保护不丢）
+//   - 换键再点 → 视为一次新命令，真正执行
+func ClientKeyBizKey(c *gin.Context) string {
+	return DefaultBizKey(c) + "|client:" + strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+}
+
 // rawBodyOf 取得请求体明文。
 //
 // 背景（重要）：此前实现直接读 gin 上下文键 raw_body，但生产链路里**没有任何中间件设置过它**，

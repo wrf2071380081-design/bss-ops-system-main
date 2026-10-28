@@ -4,7 +4,7 @@ import type {
   SupplierBatchTestResultDTO, SupplierImportPreviewDTO, SupplierModelOptionDTO,
   SupplierSubmissionDTO, SupplierSubmissionFilterOptionsDTO, SupplierSubmissionListParams,
   SupplierSubmissionPageDTO, SupplierSubmissionTestDTO, SupplierSubmissionWrite,
-  SupplierTestCategory, SupplierTestJobDTO,
+  SupplierTestCategory, SupplierTestJobDTO, SupplierTestProgressDTO,
 } from "./supplierSubmissions.types";
 
 const base = "/supplier/submissions";
@@ -88,8 +88,15 @@ export const supplierSubmissionsApi = {
   },
   async testStatus(id: string, rowID: string, category: SupplierTestCategory, signal?: AbortSignal) {
     const result = await apiRequest<SupplierTestJobDTO>({ url: `${base}/${submissionID(id)}/rows/${submissionID(rowID)}/test`, params: { category }, signal });
-    standardModelVersion(result.job_id);
+    // 查进度是只读的：这一行还没有任务时后端回 job_id=""，不能拿去做正整数字符串校验。
+    if (result.job_id) standardModelVersion(result.job_id);
     validateTest(result, category);
+    return result;
+  },
+  /** 批量查整张单子的测试进度（只读），页面等结果时用它轮询。 */
+  async testProgress(id: string, signal?: AbortSignal) {
+    const result = await apiRequest<SupplierTestProgressDTO>({ url: `${base}/${submissionID(id)}/test-progress`, signal });
+    if (!result || !Array.isArray(result.rows)) throw new Error("测试进度响应不符合约定，请重新查询。");
     return result;
   },
 };

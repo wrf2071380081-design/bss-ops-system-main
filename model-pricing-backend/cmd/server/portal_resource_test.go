@@ -103,7 +103,7 @@ func TestPortalDraftResourceDaily44(t *testing.T) {
 		}
 		store, err := supplypg.NewTestPlatformStore(db, "public", t.TempDir())
 		must(err)
-		job, err := store.CreateJob(ctx, tp.NewJobRecord{ResourceID: f.Resource, Category: tp.CategoryBaseline, ActorID: "1", TargetFingerprint: row.TestFingerprint, IdempotencyKey: f.Run + "-portal-baseline"})
+		job, _, err := store.CreateJob(ctx, tp.NewJobRecord{ResourceID: f.Resource, Category: tp.CategoryBaseline, ActorID: "1", TargetFingerprint: row.TestFingerprint, IdempotencyKey: f.Run + "-portal-baseline"})
 		must(err)
 		must(submissions.AttachTestJob(ctx, mustInt(f.PortalRow), mustInt(job), "baseline"))
 		zero := "0.00"
