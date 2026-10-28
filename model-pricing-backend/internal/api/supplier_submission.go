@@ -168,9 +168,9 @@ func (h *supplierSubmissionHandler) list(c *gin.Context) {
 		return
 	}
 	filter := supplypg.SubmissionFilter{
-		Status: c.Query("status"), Kind: c.Query("kind"),
-		Company: c.Query("company"), ModelType: c.Query("model_type"),
-		Region: c.Query("region"), Submitter: c.Query("submitter"),
+		Status: filterQueryValues(c, "status"), Kind: filterQueryValues(c, "kind"),
+		Company: filterQueryValues(c, "company"), ModelType: filterQueryValues(c, "model_type"),
+		Region: filterQueryValues(c, "region"), Submitter: filterQueryValues(c, "submitter"),
 	}
 	headers, total, err := h.svc.store.Page(c.Request.Context(), supplierID, filter, page, size)
 	if err != nil {
@@ -197,6 +197,28 @@ func (h *supplierSubmissionHandler) list(c *gin.Context) {
 		list = append(list, buildSubmissionDTO(header, applyCredential(rows[header.ID], credential)))
 	}
 	response.Success(c, gin.H{"list": list, "total": total, "page": page, "size": size})
+}
+
+// filterQueryValues 读多值筛选参数。
+//
+// 原型筛选项是勾选框（可多选），前端用逗号拼接传过来；
+// 同时也接受重复参数（?status=A&status=B），方便直接调接口的人。
+func filterQueryValues(c *gin.Context, key string) []string {
+	raw := c.QueryArray(key)
+	if len(raw) == 0 {
+		if single := c.Query(key); single != "" {
+			raw = []string{single}
+		}
+	}
+	values := make([]string, 0, len(raw))
+	for _, item := range raw {
+		for _, piece := range strings.Split(item, ",") {
+			if trimmed := strings.TrimSpace(piece); trimmed != "" {
+				values = append(values, trimmed)
+			}
+		}
+	}
+	return values
 }
 
 func (h *supplierSubmissionHandler) detail(c *gin.Context) {

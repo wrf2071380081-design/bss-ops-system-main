@@ -119,6 +119,48 @@ const submissions: SupplierSubmissionDTO[] = [
     updated_at: "2026-10-27T09:00:00+08:00",
     submitted_at: null,
   },
+  {
+    id: "104",
+    submission_no: "S00000104",
+    submitter_name: "陈经理",
+    region: "CN",
+    kind: "MODEL_NEW",
+    status: "WITHDRAWN",
+    revision: "4",
+    reason: "报价口径调整，撤回重报",
+    row_count: 1,
+    model_names: ["Gemini 2.5 Pro"],
+    pending_row_count: 0,
+    rows: [rowFixture("205", "Gemini 2.5 Pro", "gemini-2.5-pro", {
+      row_status: "PASSED", connectivity_tested: true, connectivity_passed: true,
+      stress_tested: true, stress_passed: true, connectivity_job: passedJob("CONNECTIVITY"), stress_job: passedJob("STRESS"),
+    })],
+    permissions: { can_edit: true, can_submit: true, can_withdraw: false },
+    created_at: "2026-10-23T14:00:00+08:00",
+    updated_at: "2026-10-23T16:00:00+08:00",
+    submitted_at: "2026-10-23T14:00:00+08:00",
+  },
+  {
+    id: "105",
+    submission_no: "S00000105",
+    submitter_name: "陈经理",
+    region: "OVERSEAS",
+    kind: "MODEL_NEW",
+    status: "APPROVED",
+    revision: "2",
+    reason: "",
+    row_count: 1,
+    model_names: ["GPT-4o Mini TTS"],
+    pending_row_count: 0,
+    rows: [rowFixture("206", "GPT-4o Mini TTS", "gpt-4o-mini-tts", {
+      row_status: "PASSED", connectivity_tested: true, connectivity_passed: true,
+      stress_tested: true, stress_passed: true, connectivity_job: passedJob("CONNECTIVITY"), stress_job: passedJob("STRESS"),
+    })],
+    permissions: { can_edit: false, can_submit: false, can_withdraw: false },
+    created_at: "2026-10-20T11:00:00+08:00",
+    updated_at: "2026-10-21T11:00:00+08:00",
+    submitted_at: "2026-10-20T11:00:00+08:00",
+  },
 ];
 
 let credential: SupplierTestCredentialDTO = {
@@ -133,6 +175,8 @@ const modelOptions = [
   { id: "12", name: "Qwen3-32B", official_id: "Qwen3-32B", company: "阿里云" },
   { id: "13", name: "DeepSeek-V3", official_id: "deepseek-chat", company: "DeepSeek" },
   { id: "14", name: "GPT Image 1", official_id: "gpt-image-1", company: "OpenAI" },
+  { id: "15", name: "Gemini 2.5 Pro", official_id: "gemini-2.5-pro", company: "Google" },
+  { id: "16", name: "GPT-4o Mini TTS", official_id: "gpt-4o-mini-tts", company: "OpenAI" },
 ];
 
 function credentialDTO(): SupplierTestCredentialDTO {
@@ -146,11 +190,12 @@ function rowReady(row: SupplierSubmissionRowDTO) {
 }
 
 function matches(row: SupplierSubmissionRowDTO, filters: URLSearchParams) {
-  const company = filters.get("company");
-  const type = filters.get("model_type");
+  const values = (key: string) => (filters.get(key) || "").split(",").map(item => item.trim()).filter(Boolean);
+  const company = values("company");
+  const type = values("model_type");
   const option = modelOptions.find(item => item.name === row.standard_model_name);
-  if (company && option?.company !== company) return false;
-  if (type && "TEXT" !== type) return false;
+  if (company.length && !company.includes(option?.company || "")) return false;
+  if (type.length && !type.includes("TEXT")) return false;
   return true;
 }
 
@@ -194,13 +239,16 @@ export const supplierSubmissionHandlers = [
     const url = new URL(request.url);
     const page = Number(url.searchParams.get("page") || 1);
     const size = Number(url.searchParams.get("size") || 100);
-    const status = url.searchParams.get("status");
-    const kind = url.searchParams.get("kind");
-    const submitter = url.searchParams.get("submitter");
+    const values = (key: string) => (url.searchParams.get(key) || "").split(",").map(item => item.trim()).filter(Boolean);
+    const status = values("status");
+    const kind = values("kind");
+    const submitter = values("submitter");
+    const region = values("region");
     const filtered = submissions.filter(item => {
-      if (status && item.status !== status) return false;
-      if (kind && item.kind !== kind) return false;
-      if (submitter && item.submitter_name !== submitter) return false;
+      if (status.length && !status.includes(item.status)) return false;
+      if (kind.length && !kind.includes(item.kind)) return false;
+      if (submitter.length && !submitter.includes(item.submitter_name || "")) return false;
+      if (region.length && !region.includes(item.region || "CN")) return false;
       return item.rows.some(row => matches(row, url.searchParams));
     });
     return result({ list: filtered.slice((page - 1) * size, page * size), total: filtered.length, page, size });

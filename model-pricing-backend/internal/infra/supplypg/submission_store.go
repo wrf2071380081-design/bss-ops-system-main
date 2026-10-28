@@ -125,39 +125,54 @@ func NewSubmissionStore(db *sql.DB, schema string) (*SubmissionStore, error) {
 func (s *SubmissionStore) table(name string) string { return s.schema + "." + name }
 
 // SubmissionFilter 是申报列表的筛选条件（对应原型 6 维筛选）。
+//
+// 2026-10-27 起每个维度都是**多选**：原型筛选项是一列勾选框，
+// 勾几个就查几个，所以这里用切片而不是单个字符串，SQL 走 IN。
 type SubmissionFilter struct {
-	Status    string
-	Kind      string
-	Company   string
-	ModelType string
-	Region    string
-	Submitter string
+	Status    []string
+	Kind      []string
+	Company   []string
+	ModelType []string
+	Region    []string
+	Submitter []string
 }
 
 // Page 按供应商分页列出申报单（新的在前）。
 func (s *SubmissionStore) Page(ctx context.Context, supplierID int64, f SubmissionFilter, page, size int) ([]SubmissionHeader, int64, error) {
 	where := []string{"supplier_id = $1"}
 	args := []any{supplierID}
-	add := func(column, value string) {
-		if strings.TrimSpace(value) == "" {
+	// addIn 把一列值拼成 IN (...)；空值/空切片视为「不限」。
+	addIn := func(column string, values []string) {
+		cleaned := cleanFilterValues(values)
+		if len(cleaned) == 0 {
 			return
 		}
-		args = append(args, strings.TrimSpace(value))
-		where = append(where, column+" = $"+itoa(len(args)))
+		placeholders := make([]string, 0, len(cleaned))
+		for _, value := range cleaned {
+			args = append(args, value)
+			placeholders = append(placeholders, "$"+itoa(len(args)))
+		}
+		where = append(where, column+" IN ("+strings.Join(placeholders, ",")+")")
 	}
-	add("status", f.Status)
-	add("kind", f.Kind)
-	add("region", f.Region)
-	add("submitter_name", f.Submitter)
+	addIn("status", f.Status)
+	addIn("kind", f.Kind)
+	addIn("region", f.Region)
+	addIn("submitter_name", f.Submitter)
 	// 模型公司/类型挂在行上，用 EXISTS 过滤，避免 JOIN 造成重复行。
-	if v := strings.TrimSpace(f.Company); v != "" {
-		args = append(args, v)
-		where = append(where, `EXISTS (SELECT 1 FROM `+s.table("submission_row")+` r JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id WHERE r.submission_id = `+s.table("submission")+`.id AND m.company = $`+itoa(len(args))+`)`)
+	addInRow := func(modelColumn string, values []string) {
+		cleaned := cleanFilterValues(values)
+		if len(cleaned) == 0 {
+			return
+		}
+		placeholders := make([]string, 0, len(cleaned))
+		for _, value := range cleaned {
+			args = append(args, value)
+			placeholders = append(placeholders, "$"+itoa(len(args)))
+		}
+		where = append(where, `EXISTS (SELECT 1 FROM `+s.table("submission_row")+` r JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id WHERE r.submission_id = `+s.table("submission")+`.id AND m.`+modelColumn+` IN (`+strings.Join(placeholders, ",")+`))`)
 	}
-	if v := strings.TrimSpace(f.ModelType); v != "" {
-		args = append(args, v)
-		where = append(where, `EXISTS (SELECT 1 FROM `+s.table("submission_row")+` r JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id WHERE r.submission_id = `+s.table("submission")+`.id AND m.model_type = $`+itoa(len(args))+`)`)
-	}
+	addInRow("company", f.Company)
+	addInRow("model_type", f.ModelType)
 	clause := strings.Join(where, " AND ")
 
 	var total int64
@@ -276,6 +291,24 @@ ORDER BY r.submission_id, r.id`, args...)
 		result[submissionID] = append(result[submissionID], item)
 	}
 	return result, rows.Err()
+}
+
+// cleanFilterValues 去掉空白并去重，保持传入顺序（SQL 里顺序不影响结果，只影响日志可读性）。
+func cleanFilterValues(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		cleaned = append(cleaned, trimmed)
+	}
+	return cleaned
 }
 
 // CreateDraft 新建草稿（含行）。region 由调用方按供应商主体取。

@@ -6,6 +6,7 @@ import { supplierSubmissionsApi } from "../../api/supplierSubmissions";
 import type { SupplierSubmissionDTO, SupplierSubmissionFilterOptionsDTO, SupplierSubmissionListParams } from "../../api/supplierSubmissions.types";
 import { useSessionStore } from "../../stores/session";
 import SupplierSubmissionDetailDialog from "./SupplierSubmissionDetailDialog.vue";
+import SupplierFilterSelect from "./SupplierFilterSelect.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -22,30 +23,44 @@ const history = computed(() => submissions.value.filter(item => item.status !== 
 let active = true;
 let request: AbortController | undefined;
 
-// ---- 申报记录筛选（原型 6 维 + 搜索）----
-const filters = reactive<{ company: string; model_type: string; region: string; kind: string; status: string; submitter: string }>({
-  company: "", model_type: "", region: "", kind: "", status: "", submitter: "",
+// ---- 申报记录筛选（原型 6 维多选 + 搜索，勾选即查询）----
+type FilterKey = "company" | "model_type" | "region" | "kind" | "status" | "submitter";
+const filters = reactive<Record<FilterKey, string[]>>({
+  company: [], model_type: [], region: [], kind: [], status: [], submitter: [],
 });
 const keyword = ref("");
 const options = ref<SupplierSubmissionFilterOptionsDTO | null>(null);
 const optionsLoading = ref(false);
 const filterParams = computed<SupplierSubmissionListParams>(() => {
   const params: SupplierSubmissionListParams = { page: 1, size: 100 };
-  if (filters.company) params.company = filters.company;
-  if (filters.model_type) params.model_type = filters.model_type;
-  if (filters.region) params.region = filters.region;
-  if (filters.kind) params.kind = filters.kind as SupplierSubmissionListParams["kind"];
-  if (filters.status) params.status = filters.status;
-  if (filters.submitter) params.submitter = filters.submitter;
+  // 后端按逗号拆多值（也接受重复参数），空数组表示这一维不限。
+  const join = (values: string[]) => values.filter(Boolean).join(",");
+  if (filters.company.length) params.company = join(filters.company);
+  if (filters.model_type.length) params.model_type = join(filters.model_type);
+  if (filters.region.length) params.region = join(filters.region);
+  if (filters.kind.length) params.kind = join(filters.kind) as SupplierSubmissionListParams["kind"];
+  if (filters.status.length) params.status = join(filters.status);
+  if (filters.submitter.length) params.submitter = join(filters.submitter);
   return params;
 });
-const hasFilter = computed(() => Boolean(filters.company || filters.model_type || filters.region || filters.kind || filters.status || filters.submitter));
 const kindOptions = computed(() => options.value?.kinds?.length ? options.value.kinds : ["MODEL_NEW", "PRICE_CHANGE"]);
 const statusOptions = computed(() => options.value?.statuses?.length ? options.value.statuses : ["PENDING_TEST", "PENDING_APPROVAL", "PROCESSING", "APPROVED", "REJECTED", "WITHDRAWN"]);
+// 部署节点是固定枚举，原型里就是「国内 / 海外」两项；后端存 CN / OVERSEAS。
+const regionOptions = [
+  { value: "CN", label: "国内" },
+  { value: "OVERSEAS", label: "海外" },
+];
+// 其余维度优先用后端 filter-options 收窄到「本主体已有数据」，拿不到就退化成内置枚举。
+const companyOptions = computed(() => (options.value?.companies || []).map(item => ({ value: item, label: item })));
+const modelTypeOptions = computed(() => (options.value?.model_types || []).map(item => ({ value: item, label: item })));
+const submitterOptions = computed(() => (options.value?.submitters || []).map(item => ({ value: item, label: item })));
 
 function kindLabel(value: string) { return value === "PRICE_CHANGE" ? "价格变更" : "模型新增"; }
+function regionLabelOf(value: string) {
+  return regionOptions.find(item => item.value === value)?.label || value;
+}
 function resetFilters() {
-  filters.company = ""; filters.model_type = ""; filters.region = ""; filters.kind = ""; filters.status = ""; filters.submitter = "";
+  (Object.keys(filters) as FilterKey[]).forEach(key => { filters[key] = []; });
   keyword.value = "";
   void load();
 }
@@ -81,8 +96,18 @@ function statusType(value: string): "success" | "warning" | "danger" | "info" {
   if (value === "WITHDRAWN") return "info";
   return "info";
 }
-function canWithdraw(item: SupplierSubmissionDTO) { return item.permissions?.can_withdraw && (item.status === "PENDING_APPROVAL" || item.status === "PENDING_TEST"); }
-function canEdit(item: SupplierSubmissionDTO) { return Boolean(item.permissions?.can_edit); }
+// 操作栏固定三个按钮，按状态决定能不能点（原型就是「都在，但灰掉」）：
+//   查看申报 —— 任何状态都能看，只读；
+//   撤回     —— 只有待审批（含等待测试补齐）且后端给了 can_withdraw 才能撤回；
+//   修改重提 —— 只有已撤回 / 不通过，且后端给了 can_edit 才能重新编辑。
+function canWithdraw(item: SupplierSubmissionDTO) {
+  return Boolean(item.permissions?.can_withdraw) && (item.status === "PENDING_APPROVAL" || item.status === "PENDING_TEST");
+}
+function canEdit(item: SupplierSubmissionDTO) {
+  return Boolean(item.permissions?.can_edit) && (item.status === "WITHDRAWN" || item.status === "REJECTED");
+}
+/** 草稿 tab 的「继续编辑」只看后端给没给编辑权，不受申报记录的状态门禁影响。 */
+function canContinueDraft(item: SupplierSubmissionDTO) { return Boolean(item.permissions?.can_edit); }
 
 async function loadOptions() {
   if (options.value || optionsLoading.value) return;
@@ -106,6 +131,14 @@ async function load() {
 const filteredHistory = computed(() => applyKeyword(history.value));
 // 计数用过滤后的实际条数：后端 total 把 DRAFT 也算进去了，跟这一屏看到的行数对不上。
 const historyCount = computed(() => filteredHistory.value.length);
+
+// 勾选/取消勾选即刻查询（原型没有「查询」按钮）；关键字是前端过滤，不需要重查。
+let filterTimer: ReturnType<typeof setTimeout> | undefined;
+watch(() => (Object.keys(filters) as FilterKey[]).map(key => filters[key].join(",")).join("|"), () => {
+  if (activeTab.value !== "history") return;
+  if (filterTimer) clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => { void load(); }, 180);
+});
 
 /** 原型的时间写法：2026/10/27 16:32:31（后端给的是 RFC3339）。 */
 function formatTime(value?: string | null) {
@@ -168,7 +201,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
         <el-table v-loading="loading" :data="drafts" row-key="id" empty-text="暂无草稿">
           <el-table-column label="申报内容" min-width="240"><template #default="{ row }"><strong>{{ row.rows.length }} 个模型</strong><div class="muted">{{ row.reason || '尚未填写说明' }}</div></template></el-table-column>
           <el-table-column label="最近保存" min-width="170"><template #default="{ row }">{{ formatTime(row.updated_at) }}</template></el-table-column>
-          <el-table-column label="操作" width="120"><template #default="{ row }"><el-button link type="primary" :disabled="!canEdit(row)" @click="editDraft(row)">继续编辑</el-button></template></el-table-column>
+          <el-table-column label="操作" width="120"><template #default="{ row }"><el-button link type="primary" :disabled="!canContinueDraft(row)" @click="editDraft(row)">继续编辑</el-button></template></el-table-column>
         </el-table>
       </section>
     </el-tab-pane>
@@ -178,27 +211,14 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
         <el-alert v-if="error" :title="error" type="error" :closable="false"><el-button text @click="load">重新加载</el-button></el-alert>
 
         <div class="record-filters">
-          <el-select v-model="filters.company" placeholder="模型公司" clearable size="small" :loading="optionsLoading" :disabled="!options?.companies?.length">
-            <el-option v-for="item in options?.companies || []" :key="item" :label="item" :value="item" />
-          </el-select>
-          <el-select v-model="filters.model_type" placeholder="模型类型" clearable size="small" :loading="optionsLoading" :disabled="!options?.model_types?.length">
-            <el-option v-for="item in options?.model_types || []" :key="item" :label="item" :value="item" />
-          </el-select>
-          <el-select v-model="filters.region" placeholder="部署节点" clearable size="small" :loading="optionsLoading" :disabled="!options?.regions?.length">
-            <el-option v-for="item in options?.regions || []" :key="item" :label="item" :value="item" />
-          </el-select>
-          <el-select v-model="filters.kind" placeholder="申报类型" clearable size="small">
-            <el-option v-for="item in kindOptions" :key="item" :label="kindLabel(item)" :value="item" />
-          </el-select>
-          <el-select v-model="filters.status" placeholder="当前状态" clearable size="small">
-            <el-option v-for="item in statusOptions" :key="item" :label="statusLabel(item)" :value="item" />
-          </el-select>
-          <el-select v-model="filters.submitter" placeholder="供应商提交人" clearable size="small" :loading="optionsLoading" :disabled="!options?.submitters?.length">
-            <el-option v-for="item in options?.submitters || []" :key="item" :label="item" :value="item" />
-          </el-select>
+          <SupplierFilterSelect v-model="filters.company" label="模型公司" :options="companyOptions" :disabled="!companyOptions.length" />
+          <SupplierFilterSelect v-model="filters.model_type" label="模型类型" :options="modelTypeOptions" :disabled="!modelTypeOptions.length" />
+          <SupplierFilterSelect v-model="filters.region" label="部署节点" :options="regionOptions" />
+          <SupplierFilterSelect v-model="filters.kind" label="申报类型" :options="kindOptions.map(item => ({ value: item, label: kindLabel(item) }))" />
+          <SupplierFilterSelect v-model="filters.status" label="当前状态" :options="statusOptions.map(item => ({ value: item, label: statusLabel(item) }))" />
+          <SupplierFilterSelect v-model="filters.submitter" label="供应商提交人" :options="submitterOptions" :disabled="!submitterOptions.length" />
           <el-input v-model="keyword" size="small" class="record-search" placeholder="搜索申报编号 / 模型名称 / 接口模型 ID" clearable />
           <el-button size="small" @click="resetFilters">重置</el-button>
-          <el-button size="small" type="primary" @click="load">查询</el-button>
         </div>
 
         <el-table v-loading="loading" :data="filteredHistory" row-key="id" empty-text="暂无申报记录">
@@ -220,11 +240,12 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
               <div v-if="row.pending_row_count" class="muted">待补 {{ row.pending_row_count }} 个</div>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="170">
+          <el-table-column label="操作" width="230">
             <template #default="{ row }">
+              <!-- 三个按钮常驻，按当前状态置灰（原型如此）：可看、待审批可撤、驳回/撤回可重提 -->
               <el-button link type="primary" @click="openDetail(row)">查看申报</el-button>
-              <el-button v-if="canWithdraw(row)" link type="danger" @click="withdrawSubmission(row)">撤回</el-button>
-              <el-button v-if="canEdit(row)" link type="primary" @click="editDraft(row)">修改重提</el-button>
+              <el-button link type="danger" :disabled="!canWithdraw(row)" @click="withdrawSubmission(row)">撤回</el-button>
+              <el-button link type="primary" :disabled="!canEdit(row)" @click="editDraft(row)">修改重提</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -253,8 +274,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
 .supplier-start__actions { display: flex; gap: 10px; }
 .supplier-list-panel { padding: 18px; }
 .record-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
-.record-filters :deep(.el-select) { width: 130px; }
-.record-search { width: 240px; }
+.record-search { width: 240px; flex: 0 1 240px; }
 .record-count { margin: 12px 0 0; color: var(--app-text-muted); font-size: 12px; }
 .muted { margin-top: 4px; color: var(--app-text-muted); font-size: 12px; }
 .supplier-footnote { margin: 26px 0 0; color: var(--app-text-muted); font-size: 11px; }
