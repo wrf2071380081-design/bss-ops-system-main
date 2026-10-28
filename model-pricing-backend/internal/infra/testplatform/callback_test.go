@@ -36,7 +36,10 @@ type fakeStore struct {
 	completions []tpdomain.Completion
 }
 
-func (f *fakeStore) CreateJob(context.Context, tpdomain.NewJobRecord) (string, error) { return "1", nil }
+func (f *fakeStore) CreateJob(context.Context, tpdomain.NewJobRecord) (string, bool, error) {
+	return "1", true, nil
+}
+func (f *fakeStore) FailJob(context.Context, string, string) error           { return nil }
 func (f *fakeStore) AttachExternalJob(context.Context, string, string, string) error { return nil }
 func (f *fakeStore) PendingJobs(context.Context, int) ([]tpdomain.PendingJob, error) {
 	return nil, nil

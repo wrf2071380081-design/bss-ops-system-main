@@ -509,6 +509,11 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 	if err != nil {
 		return "", actionFailed, err
 	}
+	if result.Deduplicated {
+		// 同一受测目标已经有一单在跑/排队：这次没有真的发起，也不改动行上的任务号。
+		// 并发连点、多标签页都会走到这里，是「不重复烧资源」的最后一道闸。
+		return result.LocalJobID, actionSkipped, nil
+	}
 	localJobID, convErr := strconv.ParseInt(result.LocalJobID, 10, 64)
 	if convErr != nil {
 		return "", actionFailed, convErr
