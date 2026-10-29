@@ -14,7 +14,7 @@ import ResourceOperationRecords from "./ResourceOperationRecords.vue";
 import StandardModelMaintainDialog from "../models/StandardModelMaintainDialog.vue";
 import ResourceReportsPanel from "./ResourceReportsPanel.vue";
 import { canCreateStatePlan } from "../../../api/planCreate.contract";
-const props = defineProps<{ id: string; region: string; presentation?: "drawer" | "page"; expectedSupplierID?: string; expectedModelID?: string; initialPlanID?: string; initialTab?: "profile" | "report" | "reports" | "operations" | "notices" | "plans" | "records" }>();
+const props = defineProps<{ id: string; region: string; presentation?: "drawer" | "page"; expectedSupplierID?: string; expectedModelID?: string; initialPlanID?: string; initialTab?: "profile" | "report" | "reports" | "operations" | "notices" | "affected" | "plans" | "records" }>();
 const emit = defineEmits<{ close: []; changed: [] }>();
 const containerComponent = computed(() => props.presentation === "page" ? "section" : "el-drawer");
 const containerProps = computed(() => props.presentation === "page" ? { class: "resource-detail-page" } : { modelValue: true, title: "供应资源详情", size: "min(760px, 96vw)" });

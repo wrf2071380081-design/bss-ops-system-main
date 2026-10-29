@@ -18,8 +18,12 @@ export interface GenerateCustomerQuoteDraft {
 }
 
 export interface FloorViolationDTO {
-  skuId: string;
-  skuCode: string;
+  /** SKU 口径违规才有；资源口径（RESOURCE）为空。 */
+  skuId?: string;
+  skuCode?: string;
+  /** 资源口径违规才有：资源 ID 与「模型 / 价项」标签。 */
+  resourceId?: string;
+  resourceLabel?: string;
   unitPrice: Money;
   floorPrice: Money;
 }

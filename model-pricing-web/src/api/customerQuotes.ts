@@ -25,7 +25,11 @@ interface GeneratedQuoteWireDTO {
   quote_type: GeneratedCustomerQuoteDTO["quoteType"];
   item_count: number;
   below_floor_count: number;
-  floor_violations?: Array<{ sku_id: string | number; sku_code: string; unit_price: string; floor_price: string }>;
+  floor_violations?: Array<{
+    sku_id?: string | number; sku_code?: string;
+    resource_id?: string | number; price_item_key?: string; model_name?: string; supplier_name?: string;
+    unit_price: string; floor_price: string;
+  }>;
   price_book_version: number;
   valid_until?: string;
   owner_sales_operator_id: string | number;
@@ -69,7 +73,34 @@ export const customerQuotesApi = {
       idempotency: { scope: "customer-quote:generate", payload } }).then((data): GeneratedCustomerQuoteDTO => ({
         id: responseId(data.id), customerId: responseId(data.customer_id), versionNo: data.version_no,
         status: data.status, quoteType: data.quote_type, itemCount: data.item_count, belowFloorCount: data.below_floor_count,
-        floorViolations: (data.floor_violations || []).map((item): FloorViolationDTO => ({ skuId: responseId(item.sku_id), skuCode: item.sku_code,
+        floorViolations: (data.floor_violations || []).map((item): FloorViolationDTO => ({
+          ...(item.sku_id !== undefined ? { skuId: responseId(item.sku_id) } : {}),
+          ...(item.sku_code ? { skuCode: item.sku_code } : {}),
+          ...(item.resource_id !== undefined ? { resourceId: responseId(item.resource_id) } : {}),
+          ...(item.model_name ? { resourceLabel: `${item.model_name}${item.price_item_key ? " / " + item.price_item_key : ""}` } : {}),
+          unitPrice: item.unit_price, floorPrice: item.floor_price })),
+        priceBookVersion: data.price_book_version, validUntil: data.valid_until,
+        ownerSalesOperatorId: responseId(data.owner_sales_operator_id), createdAt: data.created_at,
+      }));
+  },
+  // 资源口径出单（quote_type=RESOURCE）：候选与成本口径来自供应域资源。
+  generateResource: (draft: { customerId: string; validTo?: string; items: Array<{ resourceId: string; priceItemKey: string; unitPrice: string }> }) => {
+    const payload = {
+      customer_id: requestId(draft.customerId),
+      ...(draft.validTo ? { valid_to: draft.validTo } : {}),
+      items: draft.items.map(item => ({
+        resource_id: requestId(item.resourceId), price_item_key: item.priceItemKey, unit_price: item.unitPrice,
+      })),
+    };
+    return apiRequest<GeneratedQuoteWireDTO>({ url: `${basePath}/resource`, method: "POST", data: payload,
+      idempotency: { scope: "customer-quote:generate-resource", payload } }).then((data): GeneratedCustomerQuoteDTO => ({
+        id: responseId(data.id), customerId: responseId(data.customer_id), versionNo: data.version_no,
+        status: data.status, quoteType: data.quote_type, itemCount: data.item_count, belowFloorCount: data.below_floor_count,
+        floorViolations: (data.floor_violations || []).map((item): FloorViolationDTO => ({
+          ...(item.sku_id !== undefined ? { skuId: responseId(item.sku_id) } : {}),
+          ...(item.sku_code ? { skuCode: item.sku_code } : {}),
+          ...(item.resource_id !== undefined ? { resourceId: responseId(item.resource_id) } : {}),
+          ...(item.model_name ? { resourceLabel: `${item.model_name}${item.price_item_key ? " / " + item.price_item_key : ""}` } : {}),
           unitPrice: item.unit_price, floorPrice: item.floor_price })),
         priceBookVersion: data.price_book_version, validUntil: data.valid_until,
         ownerSalesOperatorId: responseId(data.owner_sales_operator_id), createdAt: data.created_at,

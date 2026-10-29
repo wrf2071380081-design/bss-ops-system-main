@@ -113,6 +113,9 @@ func (f *fakeStore) LoadSKUCode(_ context.Context, _ int64) (string, error) {
 func (f *fakeStore) ListCustomerQuotePreviews(_ context.Context, _ int64, _, _ int) (*QuoteHistoryPage, error) {
 	return f.quoteHistory, f.quoteHistoryErr
 }
+func (f *fakeStore) ListCustomersAffectedByResource(_ context.Context, _ OwnerScope, resourceID int64) (*AffectedCustomerResult, error) {
+	return &AffectedCustomerResult{ResourceID: resourceID, List: []AffectedCustomer{}}, f.quoteHistoryErr
+}
 func (f *fakeStore) GenerateQuoteTx(_ context.Context, in GenerateQuoteTxInput, _ int64, _ string) (*GeneratedQuote, error) {
 	f.lastGenInput = in
 	return f.genRes, f.genErr

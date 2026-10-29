@@ -123,6 +123,11 @@ type QuoteItemDetail struct {
 	Currency   string
 	UnitPrice  decimal.Decimal
 	FloorPrice decimal.Decimal
+	// ResourceID/PriceItemKey 是资源口径明细（与 SKUID 二选一，SKUID=0 表示资源口径）。
+	ResourceID   int64
+	PriceItemKey string
+	ModelName    string
+	SupplierName string
 }
 
 // ComputeMarginImpact 纯函数：由 items 计算 margin_impact。

@@ -71,7 +71,9 @@ func (customerQuoteRow) TableName() string { return "customer_quote" }
 type customerQuoteItemRow struct {
 	ID              int64     `gorm:"primaryKey"`
 	CustomerQuoteID int64     `gorm:"column:customer_quote_id"`
-	SkuID           int64     `gorm:"column:sku_id"`
+	SkuID           *int64    `gorm:"column:sku_id"`
+	ResourceID      *int64    `gorm:"column:resource_id"`
+	PriceItemKey    *string   `gorm:"column:price_item_key"`
 	Currency        string    `gorm:"column:currency"`
 	UnitPrice       string    `gorm:"column:unit_price"`
 	FloorPrice      string    `gorm:"column:floor_price"`
@@ -599,14 +601,16 @@ func (r *CustomerRepo) priceBookRowsToDomain(rows []struct {
 // LoadQuoteItems 实现 customer.Store.LoadQuoteItems。
 func (r *CustomerRepo) LoadQuoteItems(ctx context.Context, quoteID int64) ([]customer.QuoteItemRow, error) {
 	var rows []struct {
-		SkuID      int64  `gorm:"column:sku_id"`
-		Currency   string `gorm:"column:currency"`
-		UnitPrice  string `gorm:"column:unit_price"`
-		FloorPrice string `gorm:"column:floor_price"`
+		SKUID        *int64  `gorm:"column:sku_id"`
+		ResourceID   *int64  `gorm:"column:resource_id"`
+		PriceItemKey *string `gorm:"column:price_item_key"`
+		Currency     string  `gorm:"column:currency"`
+		UnitPrice    string  `gorm:"column:unit_price"`
+		FloorPrice   string  `gorm:"column:floor_price"`
 	}
 	err := r.txOf(ctx).Table("customer_quote_item").
 		Where("customer_quote_id = ?", quoteID).
-		Select("sku_id, currency, unit_price, floor_price").
+		Select("sku_id, resource_id, price_item_key, currency, unit_price, floor_price").
 		Scan(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("load quote items quote=%d: %w", quoteID, err)
@@ -615,18 +619,23 @@ func (r *CustomerRepo) LoadQuoteItems(ctx context.Context, quoteID int64) ([]cus
 	for _, rw := range rows {
 		up, err := decimal.NewFromString(rw.UnitPrice)
 		if err != nil {
-			return nil, fmt.Errorf("parse unit_price %q sku=%d: %w", rw.UnitPrice, rw.SkuID, err)
+			return nil, fmt.Errorf("parse unit_price %q quote=%d: %w", rw.UnitPrice, quoteID, err)
 		}
 		fp, err := decimal.NewFromString(rw.FloorPrice)
 		if err != nil {
-			return nil, fmt.Errorf("parse floor_price %q sku=%d: %w", rw.FloorPrice, rw.SkuID, err)
+			return nil, fmt.Errorf("parse floor_price %q quote=%d: %w", rw.FloorPrice, quoteID, err)
 		}
-		out = append(out, customer.QuoteItemRow{
-			SKUID:      rw.SkuID,
-			Currency:   rw.Currency,
-			UnitPrice:  up,
-			FloorPrice: fp,
-		})
+		item := customer.QuoteItemRow{Currency: rw.Currency, UnitPrice: up, FloorPrice: fp}
+		if rw.SKUID != nil {
+			item.SKUID = *rw.SKUID
+		}
+		if rw.ResourceID != nil {
+			item.ResourceID = *rw.ResourceID
+		}
+		if rw.PriceItemKey != nil {
+			item.PriceItemKey = *rw.PriceItemKey
+		}
+		out = append(out, item)
 	}
 	return out, nil
 }
@@ -662,25 +671,42 @@ func (r *CustomerRepo) ListCustomerQuotePreviews(ctx context.Context, customerID
 		quoteIDs = append(quoteIDs, quote.ID)
 	}
 	type itemPreviewRow struct {
-		QuoteID   int64  `gorm:"column:customer_quote_id"`
-		SKUID     int64  `gorm:"column:sku_id"`
-		SKUCode   string `gorm:"column:sku_code"`
-		Currency  string `gorm:"column:currency"`
-		UnitPrice string `gorm:"column:unit_price"`
+		QuoteID      int64   `gorm:"column:customer_quote_id"`
+		SKUID        *int64  `gorm:"column:sku_id"`
+		SKUCode      string  `gorm:"column:sku_code"`
+		ResourceID   *int64  `gorm:"column:resource_id"`
+		PriceItemKey *string `gorm:"column:price_item_key"`
+		ModelName    string  `gorm:"column:model_name"`
+		SupplierName string  `gorm:"column:supplier_name"`
+		Currency     string  `gorm:"column:currency"`
+		UnitPrice    string  `gorm:"column:unit_price"`
 	}
 	var itemRows []itemPreviewRow
 	if err := tx.Table("customer_quote_item cqi").
-		Joins("JOIN model_sku ms ON ms.id = cqi.sku_id").
+		Joins("LEFT JOIN model_sku ms ON ms.id = cqi.sku_id").
+		Joins("LEFT JOIN resource r ON r.id = cqi.resource_id").
+		Joins("LEFT JOIN standard_model sm ON sm.id = r.standard_model_id").
+		Joins("LEFT JOIN supplier sp ON sp.id = r.supplier_id").
 		Where("cqi.customer_quote_id IN ?", quoteIDs).
-		Select("cqi.customer_quote_id, cqi.sku_id, ms.sku_code, cqi.currency, cqi.unit_price").
+		Select("cqi.customer_quote_id, cqi.sku_id, ms.sku_code, cqi.resource_id, cqi.price_item_key, sm.name AS model_name, sp.name AS supplier_name, cqi.currency, cqi.unit_price").
 		Order("cqi.customer_quote_id DESC, cqi.sku_id").Scan(&itemRows).Error; err != nil {
 		return nil, fmt.Errorf("list customer quote preview items: %w", err)
 	}
 	itemsByQuote := make(map[int64][]customer.QuotePreviewItem, len(quotes))
 	for _, item := range itemRows {
-		itemsByQuote[item.QuoteID] = append(itemsByQuote[item.QuoteID], customer.QuotePreviewItem{
-			SKUID: item.SKUID, SKUCode: item.SKUCode, Currency: item.Currency, UnitPrice: item.UnitPrice,
-		})
+		preview := customer.QuotePreviewItem{SKUCode: item.SKUCode, Currency: item.Currency, UnitPrice: item.UnitPrice}
+		if item.SKUID != nil {
+			preview.SKUID = *item.SKUID
+		}
+		if item.ResourceID != nil {
+			preview.ResourceID = *item.ResourceID
+			preview.ModelName = item.ModelName
+			preview.SupplierName = item.SupplierName
+		}
+		if item.PriceItemKey != nil {
+			preview.PriceItemKey = *item.PriceItemKey
+		}
+		itemsByQuote[item.QuoteID] = append(itemsByQuote[item.QuoteID], preview)
 	}
 	for _, quote := range quotes {
 		items := itemsByQuote[quote.ID]
@@ -840,11 +866,10 @@ func (r *CustomerRepo) GenerateQuoteTx(ctx context.Context, in customer.Generate
 		}
 		quoteID = quote.ID
 
-		// 3. INSERT customer_quote_item。
+		// 3. INSERT customer_quote_item（SKU 口径与资源口径二选一，见迁移 000048）。
 		for _, it := range in.Items {
 			item := customerQuoteItemRow{
 				CustomerQuoteID: quoteID,
-				SkuID:           it.SKUID,
 				Currency:        it.Currency,
 				UnitPrice:       it.UnitPrice.StringFixed(8),
 				FloorPrice:      it.FloorPrice.StringFixed(8),
@@ -854,8 +879,16 @@ func (r *CustomerRepo) GenerateQuoteTx(ctx context.Context, in customer.Generate
 				CreatedBy:       int64Ptr(operatorID),
 				UpdatedBy:       int64Ptr(operatorID),
 			}
+			if it.ResourceID > 0 {
+				resourceID, priceItemKey := it.ResourceID, it.PriceItemKey
+				item.ResourceID = &resourceID
+				item.PriceItemKey = &priceItemKey
+			} else {
+				skuID := it.SKUID
+				item.SkuID = &skuID
+			}
 			if err := tx.Create(&item).Error; err != nil {
-				return fmt.Errorf("insert customer_quote_item sku=%d: %w", it.SKUID, err)
+				return fmt.Errorf("insert customer_quote_item sku=%d resource=%d: %w", it.SKUID, it.ResourceID, err)
 			}
 		}
 

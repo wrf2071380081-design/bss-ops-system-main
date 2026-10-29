@@ -5,8 +5,7 @@ import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow, 
 import { customersApi } from "../../../api/customers";
 import type { CustomerTransferImpactDTO } from "../../../api/customers.types";
 import { customerQuotesApi } from "../../../api/customerQuotes";
-import { modelsApi } from "../../../api/models";
-import type { ModelSkuContractDTO } from "../../../api/models.types";
+import { quoteCandidatesApi, type ResourceQuoteCandidate } from "../../../api/quoteCandidates";
 import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
 import { isDecimalAmount } from "../../../domain/money";
@@ -107,10 +106,17 @@ const form = reactive({
   remark: "",
 });
 
+// 报价行按供应资源口径：一条行 = 一个资源的一个官方价项。
 interface QuoteLine {
-  skuId: string;
-  skuCode: string;
-  name: string;
+  resourceId: string;
+  priceItemKey: string;
+  priceItemLabel: string;
+  modelName: string;
+  supplierName: string;
+  region: string;
+  coefficient: string;
+  currency: string;
+  /** 采购成本（官方价 × 采购系数），毛利率以此为基数。 */
   basePrice: string;
   margin: string;
   price: string;
@@ -118,9 +124,8 @@ interface QuoteLine {
 
 const lines = ref<QuoteLine[]>([]);
 const marginAll = ref("0.10");
-const priceBookVersion = ref<number | null>(null);
-const priceBookMap = ref(new Map<string, string>());
-const priceBookMissing = ref(false);
+// 候选资源（供应域已判可报价）。资源口径报价不再走价目表：基准价 = 官方价 × 采购系数。
+const candidateTotal = ref(0);
 
 const customerOptions = computed(() => rows.value.map(row => ({
   id: String(row.id), name: row.name, region: row.region,
@@ -134,34 +139,9 @@ function onCustomerChange(customerId: string) {
   form.customerName = option.name;
   form.region = option.region;
   form.currency = option.currency;
-  void loadPriceBook(customerId);
 }
 
-async function loadPriceBook(customerId: string) {
-  priceBookMap.value = new Map();
-  priceBookVersion.value = null;
-  priceBookMissing.value = false;
-  if (!positiveId(customerId)) return;
-  try {
-    const context = await customerQuotesApi.context(customerId);
-    if (context.priceBook) {
-      priceBookVersion.value = context.priceBook.versionNo;
-      const map = new Map<string, string>();
-      context.priceBook.items.forEach(item => map.set(String(item.skuId), String(item.unitPrice)));
-      priceBookMap.value = map;
-    } else {
-      priceBookMissing.value = true;
-    }
-  } catch (error) {
-    priceBookMissing.value = true;
-    quoteError.value = message(error);
-  }
-  // 已选行同步基准单价（价目表里没有的 SKU 保持为空，由人填）
-  lines.value = lines.value.map(line => {
-    const base = priceBookMap.value.get(line.skuId) || "";
-    return { ...line, basePrice: base, price: line.price || base };
-  });
-}
+// 关联客户变化时不再重算基准价——资源口径的基准价来自候选资源的采购成本。
 
 function startNewQuote(row?: CustomerWorkspaceRow) {
   activeTab.value = "quote";
@@ -174,37 +154,42 @@ function startNewQuote(row?: CustomerWorkspaceRow) {
   form.remark = "";
   form.quoteDate = new Date().toISOString().slice(0, 10);
   lines.value = [];
-  priceBookMap.value = new Map();
-  priceBookVersion.value = null;
-  priceBookMissing.value = false;
-  if (row) void onCustomerChange(String(row.id));
+  if (row) onCustomerChange(String(row.id));
 }
 
+// priceFromMargin 纯函数：报价单价 = 采购成本 ÷ (1 − 毛利率)。
+// 与服务端 floor 同一口径（floor = 成本 ÷ (1 − 最低毛利)），保证填出来的价不会天然破线。
 function priceFromMargin(base: string, margin: string) {
   if (!isDecimalAmount(base)) return "";
   const baseValue = Number(base);
   const marginValue = Number(margin);
   if (!Number.isFinite(baseValue) || !Number.isFinite(marginValue)) return "";
-  const computedValue = baseValue * (1 + marginValue);
+  if (marginValue >= 1 || marginValue < 0) return "";
+  const computedValue = baseValue / (1 - marginValue);
+  if (!Number.isFinite(computedValue)) return "";
   return computedValue.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
 }
 function applyPrice(line: QuoteLine) {
   line.price = line.price || priceFromMargin(line.basePrice, line.margin);
 }
 function applyMarginAll() {
-  if (!isDecimalAmount(marginAll.value)) { ElMessage.error("统一毛利率必须是合法十进制数，例如 0.10"); return; }
+  if (!isDecimalAmount(marginAll.value)) { ElMessage.error("统一毛利率必须是合法十进制数，例如 0.15"); return; }
   if (!lines.value.length) { ElMessage.warning("请先添加模型"); return; }
   lines.value = lines.value.map(line => ({ ...line, margin: marginAll.value, price: priceFromMargin(line.basePrice, marginAll.value) }));
   ElMessage.success(`已按毛利率 ${marginAll.value} 统一 ${lines.value.length} 个模型`);
 }
-function removeLine(skuId: string) { lines.value = lines.value.filter(line => line.skuId !== skuId); }
+function removeLine(resourceId: string, priceItemKey: string) {
+  lines.value = lines.value.filter(line => !(line.resourceId === resourceId && line.priceItemKey === priceItemKey));
+}
+function lineKey(line: QuoteLine) { return `${line.resourceId}:${line.priceItemKey}`; }
 
-// 添加/选择模型
+// 添加/选择资源
 const pickerVisible = ref(false);
 const pickerKeyword = ref("");
 const pickerLoading = ref(false);
 const pickerError = ref("");
-const pickerRows = ref<ModelSkuContractDTO[]>([]);
+const pickerRows = ref<ResourceQuoteCandidate[]>([]);
+// 选中的是「资源:价项」，一条资源有多个官方价项时可分别报价。
 const pickerSelected = reactive(new Set<string>());
 const pickerPage = ref(1);
 const pickerTotal = ref(0);
@@ -215,41 +200,44 @@ async function openPicker() {
   pickerKeyword.value = "";
   pickerSelected.clear();
   pickerRows.value = [];
-  await searchModels(false);
+  await searchCandidates(false);
 }
-async function searchModels(append: boolean) {
+async function searchCandidates(append: boolean) {
   const sequence = ++pickerSequence;
   pickerLoading.value = true;
   pickerError.value = "";
   const page = append ? pickerPage.value + 1 : 1;
   try {
-    const result = await modelsApi.list({ view: "sku", keyword: pickerKeyword.value.trim() || undefined, page, size: 20, lifecycle_status: "PUBLISHED" });
+    const result = await quoteCandidatesApi.list(pickerKeyword.value.trim(), page, 20);
     if (sequence !== pickerSequence) return;
-    const list = result.list.filter((row): row is ModelSkuContractDTO => "sku_code" in row);
-    pickerRows.value = append ? [...pickerRows.value, ...list] : list;
+    pickerRows.value = append ? [...pickerRows.value, ...result.list] : result.list;
     pickerPage.value = page;
     pickerTotal.value = result.total;
+    candidateTotal.value = result.total;
   } catch (error) {
     if (sequence === pickerSequence) pickerError.value = message(error);
   } finally {
     if (sequence === pickerSequence) pickerLoading.value = false;
   }
 }
-function togglePick(skuId: string) {
-  if (pickerSelected.has(skuId)) pickerSelected.delete(skuId); else pickerSelected.add(skuId);
+function togglePick(resourceId: number, priceItemKey: string) {
+  const key = `${resourceId}:${priceItemKey}`;
+  if (pickerSelected.has(key)) pickerSelected.delete(key); else pickerSelected.add(key);
 }
 function confirmPicker() {
-  const chosen = pickerRows.value.filter(row => pickerSelected.has(String(row.id)));
   const next = [...lines.value];
-  chosen.forEach(row => {
-    const skuId = String(row.id);
-    if (next.some(line => line.skuId === skuId)) return;
-    const base = priceBookMap.value.get(skuId) || "";
-    next.push({
-      skuId, skuCode: row.sku_code,
-      name: `${row.vendor_name} / ${row.family_name}`,
-      basePrice: base, margin: marginAll.value,
-      price: base ? priceFromMargin(base, marginAll.value) : "",
+  pickerRows.value.forEach(row => {
+    row.price_items.forEach(item => {
+      const key = `${row.resource_id}:${item.item_key}`;
+      if (!pickerSelected.has(key)) return;
+      if (next.some(line => lineKey(line) === key)) return;
+      next.push({
+        resourceId: String(row.resource_id), priceItemKey: item.item_key, priceItemLabel: item.label,
+        modelName: row.model_name, supplierName: row.supplier_name, region: row.region,
+        coefficient: row.coefficient, currency: item.currency,
+        basePrice: item.unit_cost, margin: marginAll.value,
+        price: priceFromMargin(item.unit_cost, marginAll.value),
+      });
     });
   });
   lines.value = next;
@@ -259,8 +247,8 @@ function confirmPicker() {
 function validateBeforeSubmit() {
   if (!positiveId(form.customerId)) return "请先选择关联客户。";
   if (!lines.value.length) return "请至少添加一个模型。";
-  const bad = lines.value.find(line => !positiveId(line.skuId) || !isDecimalAmount(line.price));
-  if (bad) return `${bad.skuCode || bad.skuId} 的报价单价必须是大于 0 的普通十进制字符串。`;
+  const bad = lines.value.find(line => !positiveId(line.resourceId) || !isDecimalAmount(line.price));
+  if (bad) return `${bad.modelName} / ${bad.priceItemLabel} 的报价单价必须是大于 0 的普通十进制字符串。`;
   return "";
 }
 
@@ -272,11 +260,10 @@ async function saveDraft(exportAfter: boolean) {
   submitting.value = true;
   try {
     const validTo = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
-    const result = await customerQuotesApi.generate({
+    const result = await customerQuotesApi.generateResource({
       customerId: form.customerId,
-      quoteType: "TEMP",
       validTo,
-      items: lines.value.map(line => ({ skuId: line.skuId, unitPrice: line.price })),
+      items: lines.value.map(line => ({ resourceId: line.resourceId, priceItemKey: line.priceItemKey, unitPrice: line.price })),
     });
     form.quoteNo = `#${result.id}`;
     if (exportAfter) {
@@ -323,7 +310,7 @@ const logRows = computed(() => quoteRows.value.map(row => ({
 })));
 
 const statusText = (status: string) => ({ EFFECTIVE: "生效", DRAFT: "草稿", PENDING: "待审批", APPROVED: "已批准", EXPIRED: "已过期", REJECTED: "已驳回", FORMAL: "正式" } as Record<string, string>)[status] || status;
-const quoteTypeText = (type: string) => ({ APPLY: "套用价目表", CLONE: "克隆历史", TEMP: "临时报价", SPECIAL: "特价", CONTRACT: "合同" } as Record<string, string>)[type] || type;
+const quoteTypeText = (type: string) => ({ APPLY: "套用价目表", CLONE: "克隆历史", TEMP: "临时报价", RESOURCE: "按资源报价", SPECIAL: "特价", CONTRACT: "合同" } as Record<string, string>)[type] || type;
 const approvalStatusText = (status: string) => ({ PENDING: "待审批", APPROVED: "已通过", REJECTED: "已驳回" } as Record<string, string>)[status] || status;
 const approvalStatusType = (status: string) => status === "APPROVED" ? "success" : status === "REJECTED" ? "danger" : "warning";
 
@@ -537,24 +524,29 @@ onMounted(() => { void loadCustomers(); void loadQuotes(); });
         <div class="card">
           <div class="card-head">
             <div class="card-head-left">
-              <el-button type="primary" :disabled="!canQuote" @click="openPicker">+ 添加/选择模型</el-button>
-              <span class="muted">已选 {{ lines.length }} 个</span>
-              <span v-if="priceBookVersion" class="muted">· 基准价目表 V{{ priceBookVersion }}</span>
-              <span v-else-if="priceBookMissing" class="muted">· 该客户等级暂无生效价目表，请逐行填写单价</span>
+              <el-button type="primary" :disabled="!canQuote" @click="openPicker">+ 添加/选择资源</el-button>
+              <span class="muted">已选 {{ lines.length }} 个价项</span>
+              <span class="muted">· 候选来自已接入且可报价的资源</span>
             </div>
             <div class="card-head-right">
               <span class="muted">统一毛利率</span>
               <el-input v-model="marginAll" class="margin-input" placeholder="输入数值" />
               <span class="muted">%</span>
-              <el-button @click="applyMarginAll">统一当前全部模型</el-button>
+              <el-button @click="applyMarginAll">统一当前全部价项</el-button>
             </div>
           </div>
 
-          <el-table v-if="lines.length" :data="lines" row-key="skuId" class="grid">
-            <el-table-column label="模型" min-width="200"><template #default="{ row }">{{ row.name }}</template></el-table-column>
-            <el-table-column label="SKU" width="140"><template #default="{ row }"><span class="mono">{{ row.skuCode }}</span></template></el-table-column>
-            <el-table-column label="基准单价（价目表）" width="170" align="right">
-              <template #default="{ row }"><span class="mono">{{ row.basePrice || "—" }}</span></template>
+          <el-table v-if="lines.length" :data="lines" row-key="lineKey" class="grid">
+            <el-table-column label="模型 / 供应商" min-width="200">
+              <template #default="{ row }">
+                <div>{{ row.modelName }}</div>
+                <div class="muted">{{ row.supplierName }} · {{ regionText(row.region) }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="价项" width="130"><template #default="{ row }">{{ row.priceItemLabel }}</template></el-table-column>
+            <el-table-column label="采购系数" width="100" align="right"><template #default="{ row }"><span class="mono">{{ row.coefficient }}</span></template></el-table-column>
+            <el-table-column label="采购成本" width="140" align="right">
+              <template #default="{ row }"><span class="mono">{{ row.basePrice || "—" }} {{ row.currency }}</span></template>
             </el-table-column>
             <el-table-column label="毛利率" width="120">
               <template #default="{ row }"><el-input v-model="row.margin" size="small" @change="applyPrice(row)" /></template>
@@ -563,13 +555,13 @@ onMounted(() => { void loadCustomers(); void loadQuotes(); });
               <template #default="{ row }"><el-input v-model="row.price" size="small" placeholder="必填" /></template>
             </el-table-column>
             <el-table-column label="操作" width="80">
-              <template #default="{ row }"><el-button link type="danger" @click="removeLine(row.skuId)">移除</el-button></template>
+              <template #default="{ row }"><el-button link type="danger" @click="removeLine(row.resourceId, row.priceItemKey)">移除</el-button></template>
             </el-table-column>
           </el-table>
           <div v-else class="empty-hint">点击添加模型，在弹窗中搜索并勾选</div>
 
           <div class="card-foot">
-            <span class="foot-note">统一为一次性操作，随后可逐行修改；新增行不自动继承。毛利率按「基准单价 × (1 + 毛利率)」计算报价单价，仅用于填单辅助，最终以服务端生成结果为准。</span>
+            <span class="foot-note">统一为一次性操作，随后可逐行修改；新增行不自动继承。报价单价按「采购成本 ÷ (1 − 毛利率)」计算，与服务端最低毛利红线同一口径；仅用于填单辅助，最终以服务端生成结果为准。</span>
             <div class="foot-actions">
               <el-button :loading="submitting" :disabled="!canQuote" @click="saveDraft(false)">保存草稿</el-button>
               <el-button type="primary" :loading="submitting" :disabled="!canQuote" @click="saveDraft(true)">导出报价单</el-button>
@@ -628,22 +620,51 @@ onMounted(() => { void loadCustomers(); void loadQuotes(); });
       </template>
     </template>
 
-    <!-- 添加/选择模型 -->
-    <el-dialog v-model="pickerVisible" title="添加/选择模型" width="min(760px, 96vw)">
+    <!-- 添加/选择资源 -->
+    <el-dialog v-model="pickerVisible" title="添加/选择资源" width="min(880px, 96vw)">
       <div class="picker-bar">
-        <el-input v-model="pickerKeyword" placeholder="搜索模型 / SKU" clearable @keyup.enter="searchModels(false)" />
-        <el-button type="primary" @click="searchModels(false)">搜索</el-button>
-        <span class="muted">已勾选 {{ pickerSelected.size }} 个</span>
+        <el-input v-model="pickerKeyword" placeholder="搜索模型 / 供应商 / 官方 ID" clearable @keyup.enter="searchCandidates(false)" />
+        <el-button type="primary" @click="searchCandidates(false)">搜索</el-button>
+        <span class="muted">已勾选 {{ pickerSelected.size }} 个价项</span>
       </div>
       <el-alert v-if="pickerError" :title="pickerError" type="error" show-icon :closable="false" />
-      <el-table v-loading="pickerLoading" :data="pickerRows" row-key="id" max-height="360">
-        <el-table-column width="48">
-          <template #default="{ row }"><el-checkbox :model-value="pickerSelected.has(String(row.id))" @change="togglePick(String(row.id))" /></template>
+      <el-table v-loading="pickerLoading" :data="pickerRows" row-key="resource_id" max-height="380">
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <el-table :data="row.price_items" size="small" style="margin: 8px 0 4px 46px">
+              <el-table-column width="48">
+                <template #default="{ row: item }">
+                  <el-checkbox :model-value="pickerSelected.has(`${row.resource_id}:${item.item_key}`)" @change="togglePick(row.resource_id, item.item_key)" />
+                </template>
+              </el-table-column>
+              <el-table-column prop="label" label="价项" min-width="120" />
+              <el-table-column label="官方价" width="130" align="right"><template #default="{ row: item }"><span class="mono">{{ item.amount }}</span></template></el-table-column>
+              <el-table-column label="采购成本" width="130" align="right"><template #default="{ row: item }"><span class="mono">{{ item.unit_cost }}</span></template></el-table-column>
+              <el-table-column prop="currency" label="币种" width="80" />
+            </el-table>
+          </template>
         </el-table-column>
-        <el-table-column label="厂商 / 产品" min-width="200"><template #default="{ row }">{{ row.vendor_name }} / {{ row.family_name }}</template></el-table-column>
-        <el-table-column label="SKU" width="150"><template #default="{ row }"><span class="mono">{{ row.sku_code }}</span></template></el-table-column>
+        <el-table-column label="模型" min-width="180">
+          <template #default="{ row }">
+            <div>{{ row.model_name }}</div>
+            <div class="muted">{{ row.company }} · {{ row.official_id }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="供应商" min-width="140">
+          <template #default="{ row }">
+            <div>{{ row.supplier_name }}</div>
+            <div class="muted">{{ regionText(row.region) }} · {{ row.supplier_model_id }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="采购系数" width="100" align="right">
+          <template #default="{ row }"><span class="mono">{{ row.coefficient }}</span></template>
+        </el-table-column>
+        <el-table-column label="价项数" width="80" align="right">
+          <template #default="{ row }">{{ row.price_items.length }}</template>
+        </el-table-column>
+        <template #empty><el-empty description="没有可报价的资源（需已接入、正式配置已确认、测试证据有效）" :image-size="64" /></template>
       </el-table>
-      <el-button v-if="pickerRows.length < pickerTotal" text :loading="pickerLoading" @click="searchModels(true)">加载更多</el-button>
+      <el-button v-if="pickerRows.length < pickerTotal" text :loading="pickerLoading" @click="searchCandidates(true)">加载更多</el-button>
       <template #footer>
         <el-button @click="pickerVisible = false">取消</el-button>
         <el-button type="primary" @click="confirmPicker">加入报价（{{ pickerSelected.size }}）</el-button>

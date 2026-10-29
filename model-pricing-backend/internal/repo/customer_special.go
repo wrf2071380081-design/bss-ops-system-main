@@ -152,11 +152,14 @@ func (r *CustomerSpecialRepo) LoadQuote(ctx context.Context, quoteID int64) (*cu
 }
 
 // quoteItemDetailRow 是 customer_quote_item 的读侧。
+// sku_id 自迁移 000048 起可空（资源口径明细 sku_id 为 NULL），故用 *int64。
 type quoteItemDetailRow struct {
-	SKUID      int64  `gorm:"column:sku_id"`
-	Currency   string `gorm:"column:currency"`
-	UnitPrice  string `gorm:"column:unit_price"`
-	FloorPrice string `gorm:"column:floor_price"`
+	SKUID        *int64  `gorm:"column:sku_id"`
+	ResourceID   *int64  `gorm:"column:resource_id"`
+	PriceItemKey *string `gorm:"column:price_item_key"`
+	Currency     string  `gorm:"column:currency"`
+	UnitPrice    string  `gorm:"column:unit_price"`
+	FloorPrice   string  `gorm:"column:floor_price"`
 }
 
 func (quoteItemDetailRow) TableName() string { return "customer_quote_item" }
@@ -165,7 +168,7 @@ func (quoteItemDetailRow) TableName() string { return "customer_quote_item" }
 func (r *CustomerSpecialRepo) LoadQuoteItemsDetail(ctx context.Context, quoteID int64) ([]customer.QuoteItemDetail, error) {
 	var rows []quoteItemDetailRow
 	if err := r.txOf(ctx).Table("customer_quote_item").
-		Select("sku_id", "currency", "unit_price", "floor_price").
+		Select("sku_id", "resource_id", "price_item_key", "currency", "unit_price", "floor_price").
 		Where("customer_quote_id = ?", quoteID).
 		Order("sku_id ASC").
 		Find(&rows).Error; err != nil {
@@ -175,15 +178,23 @@ func (r *CustomerSpecialRepo) LoadQuoteItemsDetail(ctx context.Context, quoteID 
 	for _, row := range rows {
 		up, err := decimal.NewFromString(row.UnitPrice)
 		if err != nil {
-			return nil, fmt.Errorf("parse unit_price %q sku=%d: %w", row.UnitPrice, row.SKUID, err)
+			return nil, fmt.Errorf("parse unit_price %q quote=%d: %w", row.UnitPrice, quoteID, err)
 		}
 		fp, err := decimal.NewFromString(row.FloorPrice)
 		if err != nil {
-			return nil, fmt.Errorf("parse floor_price %q sku=%d: %w", row.FloorPrice, row.SKUID, err)
+			return nil, fmt.Errorf("parse floor_price %q quote=%d: %w", row.FloorPrice, quoteID, err)
 		}
-		out = append(out, customer.QuoteItemDetail{
-			SKUID: row.SKUID, Currency: row.Currency, UnitPrice: up, FloorPrice: fp,
-		})
+		item := customer.QuoteItemDetail{Currency: row.Currency, UnitPrice: up, FloorPrice: fp}
+		if row.SKUID != nil {
+			item.SKUID = *row.SKUID
+		}
+		if row.ResourceID != nil {
+			item.ResourceID = *row.ResourceID
+		}
+		if row.PriceItemKey != nil {
+			item.PriceItemKey = *row.PriceItemKey
+		}
+		out = append(out, item)
 	}
 	return out, nil
 }
@@ -523,7 +534,6 @@ func (r *CustomerSpecialRepo) RefreshTx(ctx context.Context, old customer.QuoteR
 		for _, it := range newItems {
 			row2 := customerQuoteItemRow{
 				CustomerQuoteID: newID,
-				SkuID:           it.SKUID,
 				Currency:        it.Currency,
 				UnitPrice:       it.UnitPrice.StringFixed(8),
 				FloorPrice:      it.FloorPrice.StringFixed(8),
@@ -533,8 +543,16 @@ func (r *CustomerSpecialRepo) RefreshTx(ctx context.Context, old customer.QuoteR
 				CreatedBy:       int64Ptr(operatorID),
 				UpdatedBy:       int64Ptr(operatorID),
 			}
+			if it.ResourceID > 0 {
+				resourceID, priceItemKey := it.ResourceID, it.PriceItemKey
+				row2.ResourceID = &resourceID
+				row2.PriceItemKey = &priceItemKey
+			} else {
+				skuID := it.SKUID
+				row2.SkuID = &skuID
+			}
 			if err := tx.Create(&row2).Error; err != nil {
-				return fmt.Errorf("insert item sku=%d: %w", it.SKUID, err)
+				return fmt.Errorf("insert item sku=%d resource=%d: %w", it.SKUID, it.ResourceID, err)
 			}
 		}
 

@@ -425,6 +425,21 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			ch.GenerateQuote,
 		)
+		// 资源口径报价：候选=供应域可报价资源，出单按「官方价项 × 采购系数」算 floor。
+		protected.GET("/quote-candidates",
+			middleware.RequirePerm(perm.M9View),
+			ch.ListResourceQuoteCandidates,
+		)
+		protected.POST("/customer-quotes/resource",
+			middleware.RequirePerm(perm.M9Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			ch.GenerateResourceQuote,
+		)
+		// 这条供应资源影响哪些客户（改价/上下架前的影响面）。
+		protected.GET("/resources/:id/affected-customers",
+			middleware.RequirePerm(perm.M8View),
+			ch.ListResourceAffectedCustomers,
+		)
 		// 业务接口：9b 特价审批 + 刷新 + 导出（09-customer-quote.md §3/§4/§5）。
 		// 与 9a 共用 /customer-quotes 路径前缀；/export 是 GET 直返文件流，不挂幂等。
 		if deps.CustomerSpecialSvc != nil {

@@ -221,6 +221,11 @@ type QuotePreviewItem struct {
 	SKUCode   string `json:"sku_code"`
 	Currency  string `json:"currency"`
 	UnitPrice string `json:"unit_price"`
+	// 资源口径明细（sku_id=0 时看这三个字段）。
+	ResourceID   int64  `json:"resource_id,omitempty"`
+	PriceItemKey string `json:"price_item_key,omitempty"`
+	ModelName    string `json:"model_name,omitempty"`
+	SupplierName string `json:"supplier_name,omitempty"`
 }
 
 // PriceBookPreview 是客户等级当前生效价目表的提交前预览。
@@ -355,6 +360,8 @@ type Store interface {
 	LoadMinGrossMargin(ctx context.Context) (decimal.Decimal, error)
 	// LoadSKUCode 读 sku_code（floor violation 响应构造）。
 	LoadSKUCode(ctx context.Context, skuID int64) (string, error)
+	// ListCustomersAffectedByResource 按资源查受影响客户（供应资源改价/上下架时用）。
+	ListCustomersAffectedByResource(ctx context.Context, scope OwnerScope, resourceID int64) (*AffectedCustomerResult, error)
 	// ListCustomerQuotePreviews 返回同一客户的历史报价及售价项，供 CLONE 选择和确认。
 	ListCustomerQuotePreviews(ctx context.Context, customerID int64, page, size int) (*QuoteHistoryPage, error)
 
@@ -378,6 +385,9 @@ type QuoteItemRow struct {
 	Currency   string
 	UnitPrice  decimal.Decimal
 	FloorPrice decimal.Decimal
+	// ResourceID/PriceItemKey 是资源口径明细（与 SKUID 二选一）。
+	ResourceID   int64
+	PriceItemKey string
 }
 
 // UnitCostInfo 是 cost_baseline 的 unit_cost 信息（floor 校验）。
@@ -404,6 +414,9 @@ type GenerateQuoteItemRow struct {
 	Currency   string
 	UnitPrice  decimal.Decimal
 	FloorPrice decimal.Decimal
+	// ResourceID/PriceItemKey 是资源口径明细（与 SKUID 二选一）。
+	ResourceID   int64
+	PriceItemKey string
 }
 
 // ============================================================
@@ -414,6 +427,9 @@ type GenerateQuoteItemRow struct {
 type Service struct {
 	store Store
 	now   func() time.Time
+	// resources 是资源口径报价的只读端口（供应域实现）。为 nil 时资源口径报价不可用，
+	// SKU 口径（APPLY/CLONE/TEMP）不受影响。
+	resources ResourceQuoteStore
 }
 
 // NewService 构造。now 为 nil 时用 time.Now。
@@ -422,6 +438,14 @@ func NewService(store Store, now func() time.Time) *Service {
 		now = time.Now
 	}
 	return &Service{store: store, now: now}
+}
+
+// WithResourceQuoteStore 注入资源口径端口。返回自身，便于链式装配。
+func (s *Service) WithResourceQuoteStore(resources ResourceQuoteStore) *Service {
+	if s != nil {
+		s.resources = resources
+	}
+	return s
 }
 
 // ListCustomers 客户列表（M8:V + 行级过滤）。

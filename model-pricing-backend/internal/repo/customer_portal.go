@@ -306,12 +306,14 @@ func (r *CustomerPortalRepo) LoadQuoteForAccept(ctx context.Context, quoteID int
 // loadQuoteItemsForPortal 读明细。**不 SELECT floor_price**——客户门户 DTO 物理剔除成本红线。
 func (r *CustomerPortalRepo) loadQuoteItemsForPortal(ctx context.Context, quoteID int64) ([]customer.QuoteItemDetail, error) {
 	var rows []struct {
-		SKUID     int64  `gorm:"column:sku_id"`
-		Currency  string `gorm:"column:currency"`
-		UnitPrice string `gorm:"column:unit_price"`
+		SKUID        *int64  `gorm:"column:sku_id"`
+		ResourceID   *int64  `gorm:"column:resource_id"`
+		PriceItemKey *string `gorm:"column:price_item_key"`
+		Currency     string  `gorm:"column:currency"`
+		UnitPrice    string  `gorm:"column:unit_price"`
 	}
 	if err := r.txOf(ctx).Table("customer_quote_item").
-		Select("sku_id", "currency", "unit_price").
+		Select("sku_id", "resource_id", "price_item_key", "currency", "unit_price").
 		Where("customer_quote_id = ?", quoteID).
 		Order("sku_id ASC").
 		Scan(&rows).Error; err != nil {
@@ -321,10 +323,10 @@ func (r *CustomerPortalRepo) loadQuoteItemsForPortal(ctx context.Context, quoteI
 	for _, row := range rows {
 		up, err := decimal.NewFromString(row.UnitPrice)
 		if err != nil {
-			return nil, fmt.Errorf("parse unit_price %q sku=%d: %w", row.UnitPrice, row.SKUID, err)
+			return nil, fmt.Errorf("parse unit_price %q quote=%d: %w", row.UnitPrice, quoteID, err)
 		}
 		out = append(out, customer.QuoteItemDetail{
-			SKUID: row.SKUID, Currency: row.Currency, UnitPrice: up,
+			Currency: row.Currency, UnitPrice: up,
 			// FloorPrice 留零值——portal 不读
 		})
 	}

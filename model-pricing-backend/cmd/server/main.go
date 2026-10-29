@@ -211,6 +211,8 @@ func main() {
 		log.Fatal("initialize A supply routes", zap.Error(err))
 	}
 	supplyChain := api.NewSupplyChainRuntime(rawDB, nil, supplyRoutes.F12Readiness)
+	// 客户报价的资源口径端口：候选与成本口径来自供应域资源事实（依赖在 supplyRoutes 之后注入）。
+	customerSvc.WithResourceQuoteStore(api.NewSupplyResourceQuoteAdapter(supplyRoutes.Resources))
 	planReminderStore, err := newSupplyPlanReminderStore(dbClient.DB)
 	if err != nil {
 		log.Fatal("initialize A plan reminders", zap.Error(err))
