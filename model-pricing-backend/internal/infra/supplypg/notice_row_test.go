@@ -38,6 +38,43 @@ func TestNoticePayloadRoundTripPreservesUnknownImpactAndExactCount(t *testing.T)
 		}
 	}
 }
+func TestNoticePayloadRoundTripKeepsNoticeContext(t *testing.T) {
+	n := noticeDataFixture()
+	n.Name = "上下架计划 · 资源甲"
+	n.PlanName = "来源全部下架【演示】"
+	n.SupplierName = "云桥算力"
+	n.ExecutorName = "翟龙龙"
+	n.AffectedCustomers = []string{"白鹭游戏工作室（演示）", "橙光互动（演示）"}
+	at := time.Date(2026, 10, 23, 7, 13, 0, 0, time.FixedZone("CST", 8*3600))
+	n.ScheduledAt = &at
+	raw, err := EncodeNoticePayload(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := NoticeRow{ID: n.ID, Kind: n.Kind, TargetType: "RESOURCE", ResourceID: n.ResourceID, Payload: raw, PublishedAt: n.PublishedAt}
+	got, err := row.DomainNotice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != n.Name || got.PlanName != n.PlanName || got.SupplierName != n.SupplierName || got.ExecutorName != n.ExecutorName {
+		t.Fatalf("lost notice context %+v", got)
+	}
+	if got.ScheduledAt == nil || !got.ScheduledAt.Equal(at.UTC()) {
+		t.Fatalf("scheduled_at lost: %+v", got.ScheduledAt)
+	}
+	if len(got.AffectedCustomers) != 2 || got.AffectedCustomers[0] != n.AffectedCustomers[0] {
+		t.Fatalf("affected customers lost: %+v", got.AffectedCustomers)
+	}
+	bad := strings.Replace(string(raw), `"scheduled_at":"`+at.UTC().Format(time.RFC3339Nano)+`"`, `"scheduled_at":"not-a-time"`, 1)
+	if bad == string(raw) {
+		t.Fatal("scheduled_at was not encoded")
+	}
+	row.Payload = json.RawMessage(bad)
+	if _, err := row.DomainNotice(); err == nil {
+		t.Fatal("accepted invalid scheduled_at")
+	}
+}
+
 func TestNoticePayloadRejectsAmbiguousOrIncompatibleRows(t *testing.T) {
 	n := noticeDataFixture()
 	raw, err := EncodeNoticePayload(n)

@@ -12,6 +12,7 @@ function timestamp(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
 }
 export function noticeImpactText(notice: SupplyNotice): string {
+  if (notice.affected_customers?.length) return notice.affected_customers.join("、");
   return notice.affected_status === "PENDING" ? "影响范围待计算" : `${notice.affected_customer_count} 个关联客户`;
 }
 export function validateNoticeView(value: unknown, expectedID?: string, selectedStaffID?: string): NoticeView {
@@ -22,6 +23,9 @@ export function validateNoticeView(value: unknown, expectedID?: string, selected
   for (const key of ["resource_name", "kind", "title", "content", "reason"]) if (typeof notice[key] !== "string") invalid();
   if (!String(notice.title).trim() || !String(notice.kind).trim() || typeof view.staff_name !== "string" || typeof permissions.can_mark_read !== "boolean") invalid();
   if (notice.source_event_id !== undefined) standardModelVersion(notice.source_event_id);
+  for (const key of ["name", "plan_name", "supplier_name", "executor_name"]) if (notice[key] !== undefined && typeof notice[key] !== "string") invalid();
+  if (notice.scheduled_at !== undefined && !timestamp(notice.scheduled_at)) invalid();
+  if (notice.affected_customers !== undefined && (!Array.isArray(notice.affected_customers) || notice.affected_customers.some(item => typeof item !== "string" || !item.trim()))) invalid();
   if (notice.affected_status === "PENDING") { if (notice.affected_customer_count !== undefined) invalid(); }
   else if (notice.affected_status === "READY") {
     if (typeof notice.affected_customer_count !== "string" || !/^(0|[1-9]\d*)$/.test(notice.affected_customer_count) || BigInt(notice.affected_customer_count) > 18446744073709551615n) invalid();

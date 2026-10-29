@@ -14,6 +14,7 @@ import {
 } from "../../../modules/workbench/api/workbench";
 import NoticeDetailDialog from "../resources/NoticeDetailDialog.vue";
 import SubmissionFlowDialog from "./SubmissionFlowDialog.vue";
+import { submissionFlowsApi } from "../../../api/submissionFlows";
 
 const router = useRouter();
 const route = useRoute();
@@ -127,15 +128,15 @@ async function loadInbox() {
   try {
     const todoStates = selectedStates.value.filter(state => state === "TODO" || state === "DONE");
     const readStates = selectedStates.value.filter(state => state === "READ" || state === "READ_DONE");
-    // 待办/已办按人员筛选（可多选、可全选）；待阅/已阅是全员广播，固定查当前登录人，
-    // 各自点各自的已阅，避免全选时同一条公告按人重复出现。
+    // 待办/已办与待阅/已阅都按人员筛选：待阅是全员广播但已读状态是各自的，
+    // 一条公告对应每人一条（notice + notice_read），切换人员即可看到别人的已读。
     // 「全部人员」依赖人员列表，列表还没回来时先补一次，否则会退化成只看自己。
     if (!selectedPeopleIds.value.length && !people.value.length) await loadPeople();
     const targets = selectedPeopleIds.value.length ? [...new Set(selectedPeopleIds.value)] : people.value.map(person => person.id);
-    if (todoStates.length && !targets.length) targets.push(0);
+    if ((todoStates.length || readStates.length) && !targets.length) targets.push(0);
     const combinations = [
       ...todoStates.flatMap(state => targets.map(assigneeId => ({ state, assigneeId }))),
-      ...readStates.map(state => ({ state, assigneeId: 0 })),
+      ...readStates.flatMap(state => targets.map(assigneeId => ({ state, assigneeId }))),
     ];
     if (!combinations.length) {
       total.value = 0;
@@ -252,9 +253,13 @@ function resetFilters() {
   void loadInbox();
 }
 
-// 查看：按事项类型跳到对应业务界面，或打开办理 / 公告弹窗。
-function openItem(item: InboxItemDTO) {
-  if (["SUBMISSION_APPROVAL", "SUBMISSION_HANDLING", "SUBMISSION_CONTRACT"].includes(item.biz_type)) {
+// 查看：待办直接跳到具体业务页面；公告弹详情；其余按事项类型跳转。
+async function openItem(item: InboxItemDTO) {
+  if (item.biz_type === "SUBMISSION_HANDLING") {
+    await jumpToHandling(item);
+    return;
+  }
+  if (["SUBMISSION_APPROVAL", "SUBMISSION_CONTRACT"].includes(item.biz_type)) {
     selectedFlow.value = { id: String(item.biz_id), node: item.biz_type !== "SUBMISSION_APPROVAL" };
     return;
   }
@@ -269,6 +274,21 @@ function openItem(item: InboxItemDTO) {
     return;
   }
   ElMessage.info("该事项暂无关联页面");
+}
+
+// 测试与资源配置办理：只有一条可办理资源时直接进资源详情页；多条时先列出来让人挑。
+async function jumpToHandling(item: InboxItemDTO) {
+  try {
+    const view = await submissionFlowsApi.get(String(item.biz_id), true);
+    const targets = (view.rows || []).filter(row => row.resource_id && row.status !== "CANCELED");
+    if (targets.length === 1) {
+      await router.push({ path: `/internal/model-plaza/${targets[0].resource_id}`, query: { region: view.region, tab: "operations" } });
+      return;
+    }
+  } catch {
+    // 取不到节点视图时退回办理详情弹窗，由弹窗展示错误。
+  }
+  selectedFlow.value = { id: String(item.biz_id), node: true };
 }
 
 watch(activeTab, (tab) => {

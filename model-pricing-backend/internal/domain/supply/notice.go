@@ -7,18 +7,26 @@ import (
 )
 
 type Notice struct {
-	ID                    string    `json:"id"`
-	ResourceID            string    `json:"resource_id"`
-	ResourceName          string    `json:"resource_name"`
-	Region                string    `json:"region"`
-	Kind                  string    `json:"kind"`
-	Title                 string    `json:"title"`
-	Content               string    `json:"content"`
-	Reason                string    `json:"reason"`
-	SourceEventID         string    `json:"source_event_id,omitempty"`
-	AffectedStatus        string    `json:"affected_status"`
-	AffectedCustomerCount *uint64   `json:"affected_customer_count,omitempty,string"`
-	PublishedAt           time.Time `json:"published_at"`
+	ID                    string  `json:"id"`
+	ResourceID            string  `json:"resource_id"`
+	ResourceName          string  `json:"resource_name"`
+	Region                string  `json:"region"`
+	Kind                  string  `json:"kind"`
+	Title                 string  `json:"title"`
+	Content               string  `json:"content"`
+	Reason                string  `json:"reason"`
+	SourceEventID         string  `json:"source_event_id,omitempty"`
+	AffectedStatus        string  `json:"affected_status"`
+	AffectedCustomerCount *uint64 `json:"affected_customer_count,omitempty,string"`
+	// Name 是工作台事项行的业务对象名（类型 · 对象），与公告标题分开。
+	Name string `json:"name,omitempty"`
+	// 原型「原通知」详情：计划名、供应商、预计执行时间、执行人、受影响客户名单。
+	PlanName          string     `json:"plan_name,omitempty"`
+	SupplierName      string     `json:"supplier_name,omitempty"`
+	ScheduledAt       *time.Time `json:"scheduled_at,omitempty"`
+	ExecutorName      string     `json:"executor_name,omitempty"`
+	AffectedCustomers []string   `json:"affected_customers,omitempty"`
+	PublishedAt       time.Time  `json:"published_at"`
 }
 
 func (n *Notice) Clone() *Notice {
@@ -29,6 +37,13 @@ func (n *Notice) Clone() *Notice {
 	if n.AffectedCustomerCount != nil {
 		count := *n.AffectedCustomerCount
 		copy.AffectedCustomerCount = &count
+	}
+	if n.ScheduledAt != nil {
+		at := *n.ScheduledAt
+		copy.ScheduledAt = &at
+	}
+	if n.AffectedCustomers != nil {
+		copy.AffectedCustomers = append([]string{}, n.AffectedCustomers...)
 	}
 	return &copy
 }

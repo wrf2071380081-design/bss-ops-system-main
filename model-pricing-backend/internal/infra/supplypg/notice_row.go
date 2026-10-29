@@ -18,16 +18,22 @@ type NoticeRow struct {
 }
 
 type noticePayload struct {
-	Contract              string  `json:"contract"`
-	Version               int     `json:"version"`
-	ResourceName          string  `json:"resource_name"`
-	Region                string  `json:"region"`
-	Title                 string  `json:"title"`
-	Content               string  `json:"content"`
-	Reason                string  `json:"reason"`
-	SourceEventID         string  `json:"source_event_id,omitempty"`
-	AffectedStatus        string  `json:"affected_status"`
-	AffectedCustomerCount *string `json:"affected_customer_count,omitempty"`
+	Contract              string   `json:"contract"`
+	Version               int      `json:"version"`
+	ResourceName          string   `json:"resource_name"`
+	Region                string   `json:"region"`
+	Title                 string   `json:"title"`
+	Content               string   `json:"content"`
+	Reason                string   `json:"reason"`
+	SourceEventID         string   `json:"source_event_id,omitempty"`
+	Name                  string   `json:"name,omitempty"`
+	AffectedStatus        string   `json:"affected_status"`
+	AffectedCustomerCount *string  `json:"affected_customer_count,omitempty"`
+	PlanName              string   `json:"plan_name,omitempty"`
+	SupplierName          string   `json:"supplier_name,omitempty"`
+	ScheduledAt           string   `json:"scheduled_at,omitempty"`
+	ExecutorName          string   `json:"executor_name,omitempty"`
+	AffectedCustomers     []string `json:"affected_customers,omitempty"`
 }
 
 func noticeID(id string) bool {
@@ -41,10 +47,16 @@ func EncodeNoticePayload(n *supply.Notice) (json.RawMessage, error) {
 	if !validNoticeData(n) {
 		return nil, supply.ErrReadContract
 	}
-	p := noticePayload{Contract: "supply.notice", Version: 1, ResourceName: n.ResourceName, Region: n.Region, Title: n.Title, Content: n.Content, Reason: n.Reason, SourceEventID: n.SourceEventID, AffectedStatus: n.AffectedStatus}
+	p := noticePayload{Contract: "supply.notice", Version: 1, Name: n.Name, ResourceName: n.ResourceName, Region: n.Region, Title: n.Title, Content: n.Content, Reason: n.Reason, SourceEventID: n.SourceEventID, AffectedStatus: n.AffectedStatus, PlanName: n.PlanName, SupplierName: n.SupplierName, ExecutorName: n.ExecutorName}
 	if n.AffectedCustomerCount != nil {
 		count := strconv.FormatUint(*n.AffectedCustomerCount, 10)
 		p.AffectedCustomerCount = &count
+	}
+	if n.ScheduledAt != nil {
+		p.ScheduledAt = n.ScheduledAt.UTC().Format(time.RFC3339Nano)
+	}
+	if len(n.AffectedCustomers) > 0 {
+		p.AffectedCustomers = append([]string{}, n.AffectedCustomers...)
 	}
 	return json.Marshal(p)
 }
@@ -61,7 +73,17 @@ func (row NoticeRow) DomainNotice() (*supply.Notice, error) {
 	if _, err := d.Token(); err != io.EOF {
 		return nil, supply.ErrReadContract
 	}
-	n := &supply.Notice{ID: row.ID, ResourceID: row.ResourceID, Kind: row.Kind, PublishedAt: row.PublishedAt.UTC(), ResourceName: p.ResourceName, Region: p.Region, Title: p.Title, Content: p.Content, Reason: p.Reason, SourceEventID: p.SourceEventID, AffectedStatus: p.AffectedStatus}
+	n := &supply.Notice{ID: row.ID, ResourceID: row.ResourceID, Kind: row.Kind, PublishedAt: row.PublishedAt.UTC(), Name: p.Name, ResourceName: p.ResourceName, Region: p.Region, Title: p.Title, Content: p.Content, Reason: p.Reason, SourceEventID: p.SourceEventID, AffectedStatus: p.AffectedStatus, PlanName: p.PlanName, SupplierName: p.SupplierName, ExecutorName: p.ExecutorName}
+	if p.ScheduledAt != "" {
+		at, err := time.Parse(time.RFC3339Nano, p.ScheduledAt)
+		if err != nil {
+			return nil, supply.ErrReadContract
+		}
+		n.ScheduledAt = &at
+	}
+	if len(p.AffectedCustomers) > 0 {
+		n.AffectedCustomers = append([]string{}, p.AffectedCustomers...)
+	}
 	if p.AffectedCustomerCount != nil {
 		count, err := strconv.ParseUint(*p.AffectedCustomerCount, 10, 64)
 		if err != nil || strconv.FormatUint(count, 10) != *p.AffectedCustomerCount {

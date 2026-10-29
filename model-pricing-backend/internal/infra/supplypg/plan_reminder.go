@@ -131,11 +131,20 @@ ORDER BY id DESC LIMIT 1`, plan.ID, strconv.FormatUint(plan.Revision, 10)).Scan(
 		title, kind, content = "采购系数调整计划到点提醒", "COST_CHANGE", "约定时间已到，请指定办理人核对外部执行结果并登记完成。"
 	}
 	notice := &supply.Notice{
-		ResourceID: resource.ID, ResourceName: resource.SupplierModelID, Region: resource.Region,
+		ResourceID: resource.ID, ResourceName: resource.SupplierModelID, Region: resource.Region, Name: planKindLabel(plan.Kind) + " · " + resource.SupplierModelID,
 		Kind: kind, Title: title,
 		Content: content, Reason: plan.Reason,
 		SourceEventID: eventID, AffectedStatus: "PENDING", PublishedAt: now,
 	}
+	// 原型「原通知」详情需要的上下文：供应商、预计执行时间、执行人。
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM public.supplier WHERE id=$1`, resource.SupplierID).Scan(&notice.SupplierName); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	if !plan.DueAt.IsZero() {
+		at := plan.DueAt.UTC()
+		notice.ScheduledAt = &at
+	}
+	notice.ExecutorName = plan.CreatorName
 	payload, err := EncodeNoticePayload(notice)
 	if err != nil {
 		return false, err
@@ -147,4 +156,18 @@ ORDER BY id DESC LIMIT 1`, plan.ID, strconv.FormatUint(plan.Revision, 10)).Scan(
 		return false, err
 	}
 	return true, nil
+}
+
+// planKindLabel 工作台事项行里的计划类型标签。
+func planKindLabel(kind string) string {
+	switch kind {
+	case "ONLINE":
+		return "上架计划"
+	case "OFFLINE":
+		return "下架计划"
+	case "PRICE_CHANGE":
+		return "内部改价计划"
+	default:
+		return "资源计划"
+	}
 }

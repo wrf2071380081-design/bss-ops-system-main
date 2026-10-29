@@ -10,6 +10,14 @@ export interface SupplyNotice {
   source_event_id?: string;
   affected_status: "PENDING" | "READY";
   affected_customer_count?: string;
+  /** 工作台事项行的业务对象名（类型 · 对象） */
+  name?: string;
+  /** 原型「原通知」详情：计划名、供应商、预计执行时间、执行人、受影响客户名单 */
+  plan_name?: string;
+  supplier_name?: string;
+  scheduled_at?: string;
+  executor_name?: string;
+  affected_customers?: string[];
   published_at: string;
 }
 export interface NoticeView {
