@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { formatDateTime } from "../../../domain/date";
+import { CHANGE_TYPE_LABELS, COMPONENT_TYPE_LABELS, DOC_STATUS_LABELS, ROLE_LABELS, labelOf } from "../../../domain/labels";
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
@@ -435,7 +436,7 @@ onMounted(() => { applyNewSkuGuide(); load(); });
           <el-table-column label="录入价格 / 差异明细" min-width="280"><template #default="{ row }">
             <div v-if="row.diff_detail.length" class="diff-lines">
               <div v-for="d in row.diff_detail" :key="d.component_type" class="mono">
-                {{ d.component_type }}：<span v-if="d.old_price">{{ d.old_price }} → </span>{{ d.new_price }}<span v-if="d.delta_pct" class="muted"> （{{ (Number(d.delta_pct) * 100).toFixed(2) }}%）</span>
+                {{ labelOf(COMPONENT_TYPE_LABELS, d.component_type) }}：<span v-if="d.old_price">{{ d.old_price }} → </span>{{ d.new_price }}<span v-if="d.delta_pct" class="muted"> （{{ (Number(d.delta_pct) * 100).toFixed(2) }}%）</span>
               </div>
             </div>
             <div v-else class="mono muted">{{ Object.entries(row.payload).map(([k, v]) => `${k}:${v}`).join(' · ') || '—' }}</div>
@@ -465,9 +466,9 @@ onMounted(() => { applyNewSkuGuide(); load(); });
 
   <el-drawer v-model="changeDetailOpen" title="变更单详情" size="min(720px, 96vw)" v-loading="changeDetailLoading">
     <template v-if="changeDetail">
-      <el-descriptions :column="1" border><el-descriptions-item label="变更单">#{{ changeDetail.id }}</el-descriptions-item><el-descriptions-item label="类型 / 状态">{{ changeDetail.changeType }} / {{ changeDetail.status }}</el-descriptions-item><el-descriptions-item label="SKU">{{ changeDetail.skuId || '—' }}</el-descriptions-item><el-descriptions-item label="审批进度">{{ changeDetail.stepsApproved }} / {{ changeDetail.stepsTotal }}<span v-if="changeDetail.pendingRole"> · 等待 {{ changeDetail.pendingRole }}</span></el-descriptions-item></el-descriptions>
+      <el-descriptions :column="1" border><el-descriptions-item label="变更单">#{{ changeDetail.id }}</el-descriptions-item><el-descriptions-item label="类型 / 状态">{{ labelOf(CHANGE_TYPE_LABELS, changeDetail.changeType) }} / {{ labelOf(DOC_STATUS_LABELS, changeDetail.status) }}</el-descriptions-item><el-descriptions-item label="SKU">{{ changeDetail.skuId || '—' }}</el-descriptions-item><el-descriptions-item label="审批进度">{{ changeDetail.stepsApproved }} / {{ changeDetail.stepsTotal }}<span v-if="changeDetail.pendingRole"> · 等待 {{ labelOf(ROLE_LABELS, changeDetail.pendingRole) }}</span></el-descriptions-item></el-descriptions>
       <h3>审批步骤</h3>
-      <el-timeline><el-timeline-item v-for="step in changeDetail.steps" :key="step.stepNo" :timestamp="formatTime(step.decidedAt)">第 {{ step.stepNo }} 步 · {{ step.requiredRole }} · {{ step.decision || '待审批' }}<div v-if="step.comment" class="muted">{{ step.comment }}</div></el-timeline-item></el-timeline>
+      <el-timeline><el-timeline-item v-for="step in changeDetail.steps" :key="step.stepNo" :timestamp="formatTime(step.decidedAt)">第 {{ step.stepNo }} 步 · {{ labelOf(ROLE_LABELS, step.requiredRole) }} · {{ step.decision || '待审批' }}<div v-if="step.comment" class="muted">{{ step.comment }}</div></el-timeline-item></el-timeline>
       <template v-if="marginPreviewRows.length">
         <h3>毛利预演</h3>
         <el-table :data="marginPreviewRows" size="small" border>

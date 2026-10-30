@@ -5,6 +5,7 @@ import { ElMessage } from "element-plus";
 import { auditApi } from "../../../api/audit";
 import type { AuditListParams, AuditLogDetailDTO, AuditLogSummaryDTO } from "../../../api/audit.types";
 import { ApiError } from "../../../domain/common";
+import { AUDIT_ACTION_LABELS, AUDIT_TARGET_LABELS, SOURCE_LABELS, labelOf } from "../../../domain/labels";
 
 const rows = ref<AuditLogSummaryDTO[]>([]);
 const loading = ref(false);
@@ -73,11 +74,11 @@ onMounted(load);
       <el-table v-else :data="rows" row-key="id">
         <el-table-column label="时间" min-width="170"><template #default="{ row }">{{ formatTime(row.occurredAt) }}</template></el-table-column>
         <el-table-column label="操作人" min-width="135"><template #default="{ row }"><b>{{ row.operatorName }}</b><div class="muted">{{ row.operatorType === 'SYSTEM' ? '系统任务' : '内部用户' }}</div></template></el-table-column>
-        <el-table-column prop="action" label="动作" min-width="150" />
-        <el-table-column prop="module" label="模块" min-width="110" />
-        <el-table-column label="业务对象" min-width="170"><template #default="{ row }"><span class="mono">{{ row.entityType }} · {{ row.entityId }}</span></template></el-table-column>
+        <el-table-column label="动作" min-width="170"><template #default="{ row }"><div>{{ labelOf(AUDIT_ACTION_LABELS, row.action) }}</div><div class="mono muted">{{ row.action }}</div></template></el-table-column>
+        <el-table-column label="模块" min-width="110"><template #default="{ row }">{{ labelOf(AUDIT_TARGET_LABELS, row.module) }}</template></el-table-column>
+        <el-table-column label="业务对象" min-width="170"><template #default="{ row }">{{ labelOf(AUDIT_TARGET_LABELS, row.entityType) }}<span class="mono muted"> · #{{ row.entityId }}</span></template></el-table-column>
         <el-table-column label="记录" width="85"><template #default><el-tag type="info">已记录</el-tag></template></el-table-column>
-        <el-table-column prop="source" label="来源" min-width="120" />
+        <el-table-column label="来源" min-width="120"><template #default="{ row }">{{ labelOf(SOURCE_LABELS, row.source) }}</template></el-table-column>
         <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="primary" @click="openDetail(row)">详情</el-button></template></el-table-column>
       </el-table>
     </div>
@@ -87,8 +88,9 @@ onMounted(load);
   <el-drawer v-model="detailOpen" v-loading="detailLoading" title="审计记录详情" size="min(760px, 96vw)">
     <el-alert v-if="detailError" :title="detailError" type="error" show-icon :closable="false" />
     <template v-if="detail">
-      <div class="audit-detail-head"><div><div class="eyebrow">{{ detail.module }}</div><h2>{{ detail.action }}</h2><p class="mono muted">{{ detail.entityType }} · {{ detail.entityId }}</p></div><el-tag type="info" size="large">审计记录</el-tag></div>
-      <el-descriptions :column="2" border><el-descriptions-item label="发生时间">{{ formatTime(detail.occurredAt) }}</el-descriptions-item><el-descriptions-item label="操作人">{{ detail.operatorName }}</el-descriptions-item><el-descriptions-item label="身份类型">{{ detail.operatorType === 'SYSTEM' ? '系统任务' : '内部用户' }}</el-descriptions-item><el-descriptions-item label="来源">{{ detail.source }}</el-descriptions-item><el-descriptions-item label="请求标识" :span="2"><span class="mono">{{ detail.requestId }}</span></el-descriptions-item><el-descriptions-item label="原因 / 依据" :span="2">{{ detail.reason || '未记录' }}</el-descriptions-item></el-descriptions>
+      <div class="audit-detail-head"><div><div class="eyebrow">{{ labelOf(AUDIT_TARGET_LABELS, detail.module) }}</div><h2>{{ labelOf(AUDIT_ACTION_LABELS, detail.action) }}</h2><p class="mono muted">{{ detail.action }} · {{ labelOf(AUDIT_TARGET_LABELS, detail.entityType) }} #{{ detail.entityId }}</p></div><el-tag type="info" size="large">审计记录</el-tag></div>
+      <el-descriptions :column="2" border><el-descriptions-item label="发生时间">{{ formatTime(detail.occurredAt) }}</el-descriptions-item><el-descriptions-item label="操作人">{{ detail.operatorName }}</el-descriptions-item><el-descriptions-item label="身份类型">{{ detail.operatorType === 'SYSTEM' ? '系统任务' : '内部用户' }}</el-descriptions-item><el-descriptions-item label="来源">{{ labelOf(SOURCE_LABELS, detail.source) }}</el-descriptions-item><el-descriptions-item label="请求标识" :span="2"><span class="mono">{{ detail.requestId }}</span></el-descriptions-item><el-descriptions-item label="原因 / 依据" :span="2">{{ detail.reason || '未记录' }}</el-descriptions-item></el-descriptions>
+      <p class="muted">变更前后是服务端保存的原始快照，字段名是系统标识（如 item_count、quote_type），不是业务术语。</p>
       <div class="audit-snapshots"><div><h3>变更前</h3><pre>{{ formatJson(detail.before) }}</pre></div><div><h3>变更后</h3><pre>{{ formatJson(detail.after) }}</pre></div></div>
       <h3>影响记录</h3><el-empty v-if="!detail.impact.length" description="未记录下游影响" :image-size="55" /><ul v-else class="audit-impact"><li v-for="item in detail.impact" :key="item">{{ item }}</li></ul>
       <el-alert title="审计页面只展示服务端保存的证据，不用于从日志反向重建业务状态。" type="info" show-icon :closable="false" />

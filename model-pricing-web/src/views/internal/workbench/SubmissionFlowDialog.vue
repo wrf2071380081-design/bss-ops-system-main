@@ -3,6 +3,7 @@ import {computed,onBeforeUnmount,ref,watch} from 'vue';
 import {useRouter} from 'vue-router';
 import {ElMessage} from 'element-plus';
 import {submissionFlowsApi,type SubmissionFlowView} from '../../../api/submissionFlows';
+import {DOC_STATUS_LABELS,labelOf} from '../../../domain/labels';
 import {workbenchApi,type WorkbenchPersonDTO} from '../../../modules/workbench/api/workbench';
 import F12SubjectPanel from '../subjects/F12SubjectPanel.vue';
 const props=defineProps<{id:string;node?:boolean}>();const emit=defineEmits<{close:[];changed:[]}>();const router=useRouter();
@@ -28,7 +29,7 @@ watch(()=>[props.id,props.node],()=>{contractReady.value=false;void load();},{im
 <template>
  <el-dialog :model-value="true" :title="title" :width="isContract?'min(1120px,94vw)':'min(780px,94vw)'" :close-on-click-modal="false" :show-close="!busy" @close="!busy&&emit('close')">
   <div v-loading="loading"><el-alert v-if="error" :title="error" type="error" :closable="false"><el-button text :disabled="busy" @click="load">刷新办理信息</el-button></el-alert>
-   <template v-if="data"><p>{{ data.supplier_name }} · 申报 {{ data.id }} · 修订 {{ data.revision }} · {{ data.status }}</p>
+   <template v-if="data"><p>{{ data.supplier_name }} · 申报 {{ data.id }} · 修订 {{ data.revision }} · {{ labelOf(DOC_STATUS_LABELS, data.status) }}</p>
     <el-table :data="data.rows"><el-table-column prop="model_name" label="标准模型" min-width="150"/><el-table-column prop="interface_model_id" label="供应商接口模型 ID" min-width="160"/><el-table-column prop="coefficient" label="采购系数" width="100"/><el-table-column label="办理状态" width="140"><template #default="{row}">{{row.status==='CANCELED'?'本次办理已取消':row.status==='CONFIGURED'?'配置已完成':row.status==='ADMITTED'?'已接入':row.status==='COMPLETED'?'已完成':'待办理'}}</template></el-table-column><el-table-column label="资源" width="130"><template #default="{row}"><el-button v-if="row.resource_id" link type="primary" @click="openResource(row)">{{ data.can_handle&&row.status!=='CANCELED'?'办理资源':'查看资源' }}</el-button><span v-else>批准后进入办理</span></template></el-table-column></el-table>
     <el-table v-if="data.nodes?.length" :data="data.nodes" class="flow-progress"><el-table-column label="办理事项"><template #default="{row}">{{ nodeNames[row.key] || row.key }}</template></el-table-column><el-table-column label="办理人"><template #default="{row}">{{ row.assignee_name || '未分派' }}</template></el-table-column><el-table-column label="进度"><template #default="{row}">{{ nodeStates[row.status] || row.status }}</template></el-table-column><el-table-column label="详情" width="100"><template #default="{row}"><el-button v-if="row.id!==data.selected_node_id" link @click="openNode(row.id)">查看事项</el-button></template></el-table-column></el-table>
     <el-form v-if="data.can_approve" label-position="top" :disabled="busy" class="assignment-form">

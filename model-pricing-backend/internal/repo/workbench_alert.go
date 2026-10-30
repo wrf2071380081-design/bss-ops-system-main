@@ -273,6 +273,20 @@ type auditRow struct {
 
 func (auditRow) TableName() string { return "audit_log" }
 
+// applyAuditSourceFilter 把「来源类型」筛选翻译成 SQL 条件。
+// 人工操作历史上写两种值：INTERNAL（新写入口）与 HUMAN（audit.Record 的默认值）。
+// 前端「内部人员」筛选传的是 INTERNAL，只做等值匹配会漏掉全部 HUMAN 行（2026-10-30 验收发现）。
+// 单独拎成函数是为了能对生成的 SQL 做 DryRun 断言。
+func applyAuditSourceFilter(query *gorm.DB, sourceType string) *gorm.DB {
+	if sourceType == "" {
+		return query
+	}
+	if sourceType == "INTERNAL" {
+		return query.Where("source_type IN ?", []string{"INTERNAL", "HUMAN"})
+	}
+	return query.Where("source_type = ?", sourceType)
+}
+
 // ListAuditLogs 审计日志列表（含 operator_name 解析）。
 func (r *WorkbenchAuditRepo) ListAuditLogs(ctx context.Context, q workbench.AuditQuery) ([]workbench.AuditItem, int64, error) {
 	tx := r.txOf(ctx)
@@ -294,9 +308,7 @@ func (r *WorkbenchAuditRepo) ListAuditLogs(ctx context.Context, q workbench.Audi
 	if q.OperatorRole != "" {
 		query = query.Where("operator_role = ?", q.OperatorRole)
 	}
-	if q.SourceType != "" {
-		query = query.Where("source_type = ?", q.SourceType)
-	}
+	query = applyAuditSourceFilter(query, q.SourceType)
 	if q.From != nil {
 		query = query.Where("created_at >= ?", *q.From)
 	}
