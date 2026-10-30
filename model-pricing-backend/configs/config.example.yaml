@@ -51,19 +51,27 @@ docs:
 # ============================================================
 # 模块开关（重构收敛用）
 #   true  = 对外保留；false = 路由返回 404（只隐藏入口，代码与表都还在）。
-#   代码里的默认值见 internal/infra/config/env.go：原型 v0.19 用不到的模块默认 false。
+#   ⚠️ 缺整段 features 不等于「全开」：viper 把 9 个开关都取零值 = 全部关闭，
+#      46 条模块路由会静默 404（2026-10-30 验收踩过：线上配置没有这一段）。
+#      启动日志会打印 module features 生效清单，全关时额外打一条 warn。
 #   可用环境变量覆盖：MODEL_BSS_FEATURES_COST=true 等。
+#   改这里要跟着看前端：页面还在、接口被拦 = 点进去只能看到报错。
 # ============================================================
 features:
-  approval: false                # 审批/变更单/model-application 决策
+  # 以下三项按原型 v0.19 演示口径打开：官方报价同步页要读变更单（approval）、
+  # 采集批次与暂存价（legacy_price_sync），客户报价页要发起特价（special_price）。
+  approval: true                 # 审批/变更单/model-application 决策
+  legacy_price_sync: true        # 旧官方价同步（官方报价同步页：批次与暂存价）
+  special_price: true            # 客户特价审批/刷新
+  # 以下模块原型用不到，保持关闭；对应前端页面已不在菜单里（meta.menu=false）。
   cost: false                    # 成本四因子/基线/机会/对比/锁主供
-  legacy_price_sync: false       # 旧官方价同步（新方案是人工核验+自动拉取）
   pricing_policy: false          # 定价策略
   price_upconduction: false      # 涨价传导
-  supplier_quote_approval: false # 供应商报价的审批/异常/追溯动作
-  special_price: false           # 客户特价/刷新
+  supplier_quote_approval: false # 供应商报价的审批/异常/追溯动作（页面仍可从工作台待办跳入）
   finance_legacy: false          # 汇率/账户/汇率锁
-  customer_portal: false         # 客户自助门户（登录接口保留）
+  # 客户自助门户：平台不提供客户登录。下线三处一致（账号 SUSPENDED / 本开关 false /
+  # 前端摘掉 /customer 路由），详见 scripts/suspend_customer_portal_20261030.sql 头部说明。
+  customer_portal: false
 
 # ============================================================
 # 测试平台（open-api v1）—— B 线对接

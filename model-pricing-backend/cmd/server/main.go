@@ -67,6 +67,15 @@ func main() {
 		_ = log.Sync()
 	}()
 
+	// 模块开关：false 的模块其路由统一返回 404（middleware.FeatureGate）。
+	// 配置文件缺 features 段时 viper 不报错，9 个开关全部取零值，46 条路由会静默 404，
+	// 所以这里把生效清单打出来，全关时额外告警（2026-10-30 验收踩过一次）。
+	enabledFeatures := cfg.Features.EnabledNames()
+	log.Info("module features", zap.Strings("enabled", enabledFeatures))
+	if !cfg.Features.AnyEnabled() {
+		log.Warn("features 全部关闭：审批/成本/价格同步/定价策略/涨价传导/供应商报价审批/特价/财务/客户门户共 46 条路由会返回 404；请检查配置文件是否有 features 段")
+	}
+
 	dbClient, err := db.New(cfg.Database)
 	if err != nil {
 		log.Fatal("connect database", zap.Error(err))

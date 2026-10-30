@@ -6,7 +6,6 @@ import {
 } from "vue-router";
 import ModulePlaceholderView from "../views/ModulePlaceholderView.vue";
 import LoginView from "../views/LoginView.vue";
-import { customerRoutes } from "./customer";
 import { installRouterGuards } from "./guards";
 import { internalRoutes } from "./internal";
 import { supplierRoutes } from "./supplier";
@@ -32,7 +31,10 @@ const routes: RouteRecordRaw[] = [
   { path: "/", redirect: "/internal/workbench" },
   { path: "/models", redirect: "/internal/models" },
   { path: "/sync", redirect: "/internal/official-prices" },
-  ...([internalRoutes, supplierRoutes, customerRoutes] as RouteRecordRaw[]),
+  // 客户自助门户已下线（2026-10-30 产品裁决：平台不提供客户登录）。
+  // 账号置 SUSPENDED + features.customer_portal=false + 前端不挂 /customer 路由，三处一致。
+  // 要恢复：这里加回 customerRoutes，后端 features.customer_portal 置 true，账号改回 ACTIVE。
+  ...([internalRoutes, supplierRoutes] as RouteRecordRaw[]),
   {
     path: "/internal/login",
     component: LoginView,

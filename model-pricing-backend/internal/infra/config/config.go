@@ -95,6 +95,37 @@ func (f Features) IsEnabled(name string) bool {
 	}
 }
 
+// EnabledNames 返回已打开的模块名（按声明顺序）。
+// 用途只有一个：启动日志把「到底开了哪些模块」打出来，避免线上配置缺段时无声无息。
+func (f Features) EnabledNames() []string {
+	items := []struct {
+		name string
+		on   bool
+	}{
+		{"approval", f.Approval},
+		{"cost", f.Cost},
+		{"legacy_price_sync", f.LegacyPriceSync},
+		{"pricing_policy", f.PricingPolicy},
+		{"price_upconduction", f.PriceUpconduction},
+		{"supplier_quote_approval", f.SupplierQuoteApproval},
+		{"special_price", f.SpecialPrice},
+		{"finance_legacy", f.FinanceLegacy},
+		{"customer_portal", f.CustomerPortal},
+	}
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.on {
+			names = append(names, item.name)
+		}
+	}
+	return names
+}
+
+// AnyEnabled 是否至少打开一个模块。
+// 全部关闭通常意味着配置文件里没有 features 段（缺段等价于全关，viper 不会报错），
+// 这时 46 条模块路由会统一返回 404 —— 启动时要显式告警，别等到验收才排查。
+func (f Features) AnyEnabled() bool { return len(f.EnabledNames()) > 0 }
+
 // Docs 在线接口调试页（Swagger UI）配置。
 // 默认开启（见 env.go 的 viper.SetDefault）：这是个内部 BSS 系统，联调期前后端都要用。
 // 生产部署请显式置 false（docs.enable=false 或 MODEL_BSS_DOCS_ENABLE=false）。
