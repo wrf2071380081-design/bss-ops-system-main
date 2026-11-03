@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -32,10 +31,7 @@ import (
 
 func openLinkTestStore(t *testing.T) (*CustomerResourceLinkStore, *sql.DB) {
 	t.Helper()
-	dsn := os.Getenv("CUSTOMER_RESOURCE_LINK_TEST_DSN")
-	if dsn == "" {
-		t.Skip("set CUSTOMER_RESOURCE_LINK_TEST_DSN to run customer resource link integration tests")
-	}
+	dsn := integrationTestDSN(t, "CUSTOMER_RESOURCE_LINK_TEST_DSN")
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open db: %v", err)

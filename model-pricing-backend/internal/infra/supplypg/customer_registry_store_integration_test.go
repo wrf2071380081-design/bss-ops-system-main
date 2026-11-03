@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,12 +29,18 @@ import (
 //
 // 隔离纪律：每次运行用带纳秒时间戳的客户名做前缀，清理按该前缀扫，绝不批量删真实客户。
 
+// 客户名称长度边界（与 domain/customer/registry.go 的 customerNameMaxLen 对应；
+// 这里独立写成常量是为了让「边界值」在测试里一眼可见）。
+const (
+	customerNameBoundaryOK      = 128
+	customerNameBoundaryTooLong = 129
+)
+
+func runeLen(value string) int { return len([]rune(value)) }
+
 func openRegistryTestStore(t *testing.T) (*CustomerRegistryStore, *sql.DB) {
 	t.Helper()
-	dsn := os.Getenv("CUSTOMER_REGISTRY_TEST_DSN")
-	if dsn == "" {
-		t.Skip("set CUSTOMER_REGISTRY_TEST_DSN to run customer registry integration tests")
-	}
+	dsn := integrationTestDSN(t, "CUSTOMER_REGISTRY_TEST_DSN")
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -286,5 +292,141 @@ func TestCustomerRegistryStoreDuplicateUSCC(t *testing.T) {
 	}
 	if got := countSubjects(t, db, first.LegalName); got != 1 {
 		t.Fatalf("首个客户不应受影响，期望 1 行，got %d", got)
+	}
+}
+
+// padToRunes 把名字补齐到恰好 n 个「字符」（rune），用中文填充。
+// 刻意用中文：将来谁把 utf8.RuneCountInString 换成 len()，128/129 边界会立刻红
+// （一个中文字 3 字节，len() 会把 43 个中文字就判成超长）。
+func padToRunes(prefix string, n int) string {
+	runes := []rune(prefix)
+	if len(runes) >= n {
+		return string(runes[:n])
+	}
+	return prefix + strings.Repeat("客", n-len(runes))
+}
+
+// TestCustomerRegistryStoreNameRuneBoundary 128/129 字符边界（中文造数据）。
+func TestCustomerRegistryStoreNameRuneBoundary(t *testing.T) {
+	store, db := openRegistryTestStore(t)
+	f := newRegistryFixture(t, db)
+	ctx := context.Background()
+	svc := customer.NewRegistryService(store)
+
+	base := customer.CreateCustomerInput{
+		Region: "CN", SettlementCurrency: "CNY", OwnerSalesOperatorID: f.ownerID,
+	}
+
+	okName := padToRunes(f.prefix, customerNameBoundaryOK)
+	if runeLen(okName) != customerNameBoundaryOK {
+		t.Fatalf("构造的边界名字长度不对：%d", runeLen(okName))
+	}
+	in := base
+	in.LegalName = okName
+	profile, err := svc.Create(ctx, in, f.ownerID, "qa-rune-128")
+	if err != nil {
+		t.Fatalf("恰好 %d 个字符应能创建：%v", customerNameBoundaryOK, err)
+	}
+	if runeLen(profile.LegalName) != customerNameBoundaryOK {
+		t.Fatalf("落库后的名字长度应为 %d，got %d", customerNameBoundaryOK, runeLen(profile.LegalName))
+	}
+
+	tooLongName := padToRunes(f.prefix, customerNameBoundaryTooLong)
+	bad := base
+	bad.LegalName = tooLongName
+	if _, err := svc.Create(ctx, bad, f.ownerID, "qa-rune-129"); !errors.Is(err, customer.ErrCustomerNameTooLong) {
+		t.Fatalf("超长一个字符必须 400 语义（ErrCustomerNameTooLong），got %v", err)
+	}
+	if got := countSubjects(t, db, tooLongName); got != 0 {
+		t.Fatalf("超长名字不应落库，got %d 行", got)
+	}
+}
+
+// TestCustomerRegistryStoreConcurrentSameNameNoDirtyData 并发同名：可以都成功，但不许出现脏数据。
+//
+// 这是把「查询判重而非唯一索引」这个**已知取舍的后果**钉住：
+//   - 允许两个同名客户同时建成（团队已确认接受）；
+//   - 但不允许共享 subject（两个客户其实是同一个人）、不允许孤儿主体
+//     （profile 与 subject 数量必须一一对应）。
+//
+// 将来谁想"顺手加个唯一索引更安全"，这条测试会先把数据现状摆在他面前
+// （历史数据可能已经重名，直接加索引会让迁移失败）。
+func TestCustomerRegistryStoreConcurrentSameNameNoDirtyData(t *testing.T) {
+	store, db := openRegistryTestStore(t)
+	f := newRegistryFixture(t, db)
+	ctx := context.Background()
+	svc := customer.NewRegistryService(store)
+
+	name := f.name("concurrent-same")
+	base := customer.CreateCustomerInput{
+		LegalName: name, Region: "CN", SettlementCurrency: "CNY", OwnerSalesOperatorID: f.ownerID,
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, errs[idx] = svc.Create(ctx, base, f.ownerID, fmt.Sprintf("qa-concurrent-%d", idx))
+		}(i)
+	}
+	wg.Wait()
+
+	successes := 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, customer.ErrCustomerNameDuplicate):
+			// 也允许（两个请求被串行化，后到者被查重拦下）。
+		default:
+			t.Fatalf("并发建客户出现意外错误：%v", err)
+		}
+	}
+	if successes == 0 {
+		t.Fatal("两个并发同名请求至少应该成功一个")
+	}
+
+	// 不许共享 subject：数量必须与 profile 一致（既没有孤儿主体，也没有共用主体）。
+	var profiles, distinctSubjects int
+	if err := db.QueryRowContext(ctx, `
+SELECT count(*), count(DISTINCT cp.subject_id)
+  FROM public.customer_profile cp JOIN public.legal_subject ls ON ls.id = cp.subject_id
+ WHERE lower(btrim(ls.legal_name)) = lower(btrim($1))`, name).Scan(&profiles, &distinctSubjects); err != nil {
+		t.Fatalf("count profiles: %v", err)
+	}
+	if profiles != successes {
+		t.Fatalf("成功 %d 次却落了 %d 条 profile", successes, profiles)
+	}
+	if distinctSubjects != profiles {
+		t.Fatalf("存在共享 subject：profile=%d distinct_subject=%d", profiles, distinctSubjects)
+	}
+	if got := countSubjects(t, db, name); got != profiles {
+		t.Fatalf("存在孤儿主体：subject=%d profile=%d", got, profiles)
+	}
+
+	// 每条都要能读回（不是只插进去就算）。
+	rows, err := db.QueryContext(ctx, `
+SELECT cp.id FROM public.customer_profile cp JOIN public.legal_subject ls ON ls.id = cp.subject_id
+ WHERE lower(btrim(ls.legal_name)) = lower(btrim($1))`, name)
+	if err != nil {
+		t.Fatalf("load profile ids: %v", err)
+	}
+	ids := make([]int64, 0, 2)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			t.Fatalf("scan profile id: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	_ = rows.Close()
+	for _, id := range ids {
+		got, found, inScope, err := store.GetCustomerProfile(ctx, id, customer.OwnerScope{DataScope: auth.ScopeALL})
+		if err != nil || !found || !inScope || got == nil || got.ID != id {
+			t.Fatalf("profile %d 读不回：err=%v found=%v inScope=%v", id, err, found, inScope)
+		}
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -39,10 +38,7 @@ func timeNow() time.Time { return time.Now().UTC() }
 
 func openOnboardingTestStore(t *testing.T) (*CustomerResourceLinkStore, *CustomerOnboardingStore, *sql.DB) {
 	t.Helper()
-	dsn := os.Getenv("CUSTOMER_ONBOARDING_TEST_DSN")
-	if dsn == "" {
-		t.Skip("set CUSTOMER_ONBOARDING_TEST_DSN to run customer onboarding integration tests")
-	}
+	dsn := integrationTestDSN(t, "CUSTOMER_ONBOARDING_TEST_DSN")
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
