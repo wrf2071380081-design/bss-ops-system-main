@@ -323,15 +323,25 @@ func supplierWorkspaceListQuery(aliasTableAvailable bool) string {
 	return `SELECT s.id,s.name,` + aliases + `,s.region,COALESCE(s.phone,''),
        (SELECT count(*) FROM public.resource res WHERE res.supplier_id=s.id),
        COALESCE(current_credit.amount,''),current_credit.status,COALESCE(s.settlement_currency,''),COALESCE(s.tax_rate::text,''),
-       -- 合同状态判据（优先级从高到低，不要随意调换）：
-       --   1) 存在 enabled 且未完成的 CONTRACT 节点（IN_PROGRESS/WAITING_PREDECESSOR）→ 办理中
-       --   2) 存在 contract 记录且状态 PROCESSING → 办理中
-       --   3) 存在 enabled 且已完成的 CONTRACT 节点（COMPLETED，历史词 DONE）→ 已归档
-       --   4) 存在 contract 记录且状态 ARCHIVED → 已归档
-       --   5) 都没有 → 未登记
-       -- 为什么"办理中"优先于"已归档"：同一供应商可能有多条历史 flow，
-       -- 只要还有一条合同节点在办，列表就应以"办理中"为准；只有全部办完才显示"已归档"。
+       -- 合同状态三档优先级（从高到低，不要随意调换）：
+       --   1) 「办理中」：存在 enabled 且未完成的 CONTRACT 节点（IN_PROGRESS / WAITING_PREDECESSOR），
+       --      或 contract 表里有 PROCESSING 记录
+       --   2) 「已归档」：没有在办的，且存在 enabled 且已完成的 CONTRACT 节点
+       --      （COMPLETED；历史词 DONE 由 000051 一并兼容），或 contract 表里有 ARCHIVED 记录
+       --   3) 「未登记」：以上都没有
+       --
+       -- 为什么「办理中」必须压过「已归档」：
+       -- 「已归档」是个"结案"信号，运营看到会以为这单已经结束、不再推进；
+       -- 只要还有流程在办却显示「已归档」，事情就会卡在那里没人管。
+       -- 显示「办理中」才能驱动"还有事要做"的正确行为——这不是技术偏好，是行为引导。
        -- 因此判据不是"任意一条已完成即已归档"，而是"没有在办的 + 至少一条已完成的"。
+       --
+       -- 已知边界（刻意接受，不做特判）：
+       -- 同一供应商有多条历史 flow 时，只要**任意一条** enabled 的 CONTRACT 节点已完成，
+       -- 即使最新一单的 CONTRACT 节点被 CANCELED（enabled=false，整单取消那支），
+       -- 也会显示「已归档」——因为老单确实办过合同，这个结论不算错。
+       -- 若将来要求"以最新流程为准"，需要加 ORDER BY flow.id DESC LIMIT 1 的相关子查询，
+       -- 那就不再是一行修复，需单独立项并单独验证。
        CASE
          WHEN EXISTS (SELECT 1 FROM public.onboarding_flow f JOIN public.onboarding_node n ON n.flow_id=f.id
                       WHERE f.kind='SUPPLIER' AND f.owner_id=s.id AND n.node_key='CONTRACT' AND n.enabled
