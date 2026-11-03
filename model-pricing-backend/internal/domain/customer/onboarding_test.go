@@ -101,6 +101,9 @@ func (f *fakeResourceFacts) RebindLink(context.Context, RebindRecord) (*Resource
 func (f *fakeResourceFacts) ListCustomerModelServices(context.Context, int64) ([]CustomerModelServiceRow, error) {
 	return nil, errors.New("not used")
 }
+func (f *fakeResourceFacts) ListCustomerLinkDetails(context.Context, int64) ([]CustomerLinkDetail, error) {
+	return nil, errors.New("not used")
+}
 func (f *fakeResourceFacts) ListLinksByResource(context.Context, int64) ([]ResourceLink, error) {
 	return nil, errors.New("not used")
 }

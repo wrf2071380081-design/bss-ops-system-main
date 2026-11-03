@@ -451,6 +451,70 @@ SELECT b.standard_model_id,
 	return out, nil
 }
 
+// ListCustomerLinkDetails 列出某客户**未归档**的绑定明细（「接入模型」展开区）。
+//
+// 约束只有一条：**只看绑定表本身**。不 join 开通流程 / 不改用 onboarding 投影，
+// 因为库里的绑定可能来自历史登记或供应域联动，不一定有对应的开通流程；
+// 用流程去反查会让"没有流程的绑定"在界面上永远展不开。
+//
+// 资源/供应商用 LEFT JOIN：绑定的资源理论上不会丢（有外键），但供应商被删的情况下
+// 这里退化成空名字，好过整页报错。
+func (s *CustomerResourceLinkStore) ListCustomerLinkDetails(ctx context.Context, customerProfileID int64) ([]customer.CustomerLinkDetail, error) {
+	if s == nil || s.db == nil || customerProfileID <= 0 {
+		return nil, customer.ErrLinkCustomerIDOutOfRange
+	}
+	query := fmt.Sprintf(`
+SELECT l.id,
+       l.standard_model_id,
+       l.resource_id,
+       COALESCE(r.supplier_id, 0)  AS supplier_id,
+       COALESCE(sp.name, '')       AS supplier_name,
+       COALESCE(r.region, '')      AS region,
+       COALESCE(r.state, '')       AS resource_state,
+       l.state,
+       l.revision,
+       l.activated_at,
+       l.created_at,
+       l.updated_at
+  FROM %s l
+  LEFT JOIN %s r  ON r.id  = l.resource_id
+  LEFT JOIN %s sp ON sp.id = r.supplier_id
+ WHERE l.customer_profile_id = $1
+   AND l.archived = FALSE
+ ORDER BY l.standard_model_id ASC, l.id ASC`,
+		s.table("customer_resource_link"), s.table("resource"), s.table("supplier"))
+
+	rows, err := s.db.QueryContext(ctx, query, customerProfileID)
+	if err != nil {
+		return nil, mapLinkStorageError(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]customer.CustomerLinkDetail, 0, 8)
+	for rows.Next() {
+		var (
+			item      customer.CustomerLinkDetail
+			activated sql.NullTime
+		)
+		if err := rows.Scan(
+			&item.LinkID, &item.StandardModelID, &item.ResourceID,
+			&item.SupplierID, &item.SupplierName, &item.Region, &item.ResourceState,
+			&item.State, &item.Revision, &activated, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil, mapLinkStorageError(err)
+		}
+		if activated.Valid {
+			at := activated.Time
+			item.ActivatedAt = &at
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapLinkStorageError(err)
+	}
+	return out, nil
+}
+
 // nullableLinkInt64 / nullableLinkTime 把 Go 指针转成 SQL NULL 友好的参数。
 // （database/sql 不接受 *int64 直接作为参数，必须解引用或给 nil。）
 func nullableLinkInt64(value *int64) any {

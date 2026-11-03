@@ -64,7 +64,53 @@ export interface CustomerModelServiceRow {
   bound_count: number;
   available_count: number;
   risk_flags: string[];
+  /**
+   * 该模型下的**未归档绑定明细**（A2，2026-11-03）。
+   *
+   * 只依赖绑定表：库里可能存在「没有开通流程」的历史绑定，
+   * 所以展开区不能用 `GET /customers/:id/onboarding` 的 links 兜底（没流程时那接口 404）。
+   * 后端保证是数组（无绑定时为空数组），前端不必判空。
+   */
+  links: CustomerLinkDetailDTO[];
 }
+
+/**
+ * 绑定明细（「接入模型」展开区一行）。
+ *
+ * `available_actions` 由后端按状态机（`linkTransitions`）推导，**前端不要自己按 state 硬编码**：
+ * 状态机是唯一真相来源，前端复制一份必然漂移。空数组 = 该状态没有可提交的动作
+ * （例如 SUPPLY_OFFLINE / 已归档），此时只展示不可操作。
+ */
+export interface CustomerLinkDetailDTO {
+  id: number;
+  standard_model_id: number;
+  resource_id: number;
+  supplier_id: number;
+  supplier_name: string;
+  region: string;
+  /** 资源当前状态（ADMITTED / OFFLINE / …），用于展示「来源已下架」。 */
+  resource_state: string;
+  state: string;
+  /** 服务端翻译好的中文状态名，前端直接用。 */
+  state_label: string;
+  revision: number;
+  activated_at?: string;
+  created_at: string;
+  updated_at: string;
+  available_actions: string[];
+}
+
+/**
+ * 绑定动作的中文名。与后端 `LinkActionLabel` 同词表（后端也会回 label，
+ * 这里只是给按钮取名字，避免为了一个按钮文案多打一次请求）。
+ */
+export const CUSTOMER_LINK_ACTION_LABELS: Record<string, string> = {
+  DISABLE_REQUEST: "禁用",
+  DISABLE_CONFIRM: "确认停用",
+  RESTORE_REQUEST: "恢复",
+  RESTORE_CONFIRM: "确认恢复",
+  OFFLINE_CONFIRM: "确认停用",
+};
 
 export interface OnboardingNodeDTO {
   id: number;
@@ -188,6 +234,19 @@ export const customerDetailApi = {
     apiRequest<{ list: CustomerOperationLogDTO[]; total: number; page: number; size: number }>({
       url: `${basePath}/${customerIdParam(customerId)}/operation-logs`, method: "GET",
       params: { page, size }, signal,
+    }),
+
+  /**
+   * 客户绑定动作（A2）：禁用 / 确认停用 / 恢复 / 确认恢复 / 下架后确认停用。
+   *
+   * `expected_revision` 是乐观锁，**必须**带上；冲突时后端返回 409 且文案已是人话
+   * （「客户绑定已被其他人修改，请刷新后重试」），调用方直接展示即可，不要拼 SQL 错误。
+   * `reason` 后端按必填校验（会落审计），调用方必须先收齐再调。
+   */
+  actLink: (linkId: number, payload: { action: string; reason: string; expected_revision: number }) =>
+    apiRequest<unknown>({
+      url: `/internal/resource-links/${idParam(linkId, "绑定 ID ")}/actions`, method: "POST", data: payload,
+      idempotency: { scope: `customer:link:${linkId}:${payload.action}`, payload },
     }),
 
   createCustomer: (payload: CreateCustomerPayload) =>

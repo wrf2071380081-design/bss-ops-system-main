@@ -20,6 +20,7 @@ type fakeLinkStore struct {
 	getErr    error
 	createErr error
 	rows      []CustomerModelServiceRow
+	details   []CustomerLinkDetail
 
 	created      []CreateLinkRecord
 	applied      []TransitionRecord
@@ -90,6 +91,11 @@ func (f *fakeLinkStore) ListLinksByResource(_ context.Context, resourceID int64)
 
 func (f *fakeLinkStore) ListCustomerModelServices(_ context.Context, _ int64) ([]CustomerModelServiceRow, error) {
 	return f.rows, nil
+}
+
+// ListCustomerLinkDetails 测试桩：默认没有明细；需要展开区的用例自己设 details。
+func (f *fakeLinkStore) ListCustomerLinkDetails(_ context.Context, _ int64) ([]CustomerLinkDetail, error) {
+	return f.details, nil
 }
 
 // ---- 状态机 ----

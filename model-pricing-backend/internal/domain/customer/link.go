@@ -326,6 +326,48 @@ type CustomerModelService struct {
 	BoundCount      int64    `json:"bound_count"`
 	AvailableCount  int64    `json:"available_count"`
 	RiskFlags       []string `json:"risk_flags"`
+	// Links 是该模型下的**未归档绑定明细**（A2，2026-11-03）。
+	//
+	// 为什么放在这个接口里而不是让前端去读开通流程：库里的绑定不一定由开通流程
+	// 产生（历史登记/补录/由供应域联动推进的），`GET /customers/:id/onboarding`
+	// 在没有流程时是空的 → 展开区会空。绑定明细必须只依赖绑定表本身。
+	// 无绑定时是空数组（不是 null），前端可直接 v-for。
+	Links []CustomerLinkDetail `json:"links"`
+}
+
+// CustomerLinkDetail 是「接入模型」展开区的一行绑定明细。
+//
+// AvailableActions 由状态机推导（见 AllowedActions），前端**不要**自己按 state
+// 硬编码按钮：状态机是唯一真相来源，前端复制一份必然漂移。
+type CustomerLinkDetail struct {
+	LinkID           int64      `json:"id"`
+	StandardModelID  int64      `json:"standard_model_id"`
+	ResourceID       int64      `json:"resource_id"`
+	SupplierID       int64      `json:"supplier_id"`
+	SupplierName     string     `json:"supplier_name"`
+	Region           string     `json:"region"`
+	ResourceState    string     `json:"resource_state"`
+	State            string     `json:"state"`
+	StateLabel       string     `json:"state_label"`
+	Revision         int        `json:"revision"`
+	ActivatedAt      *time.Time `json:"activated_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	AvailableActions []string   `json:"available_actions"`
+}
+
+// AllowedActions 返回某状态下**外部可提交**的动作（按 linkTransitions 推导）。
+//
+// 系统动作（SUPPLY_OFFLINE / SUPPLY_RESTORED）只能由供应域事件驱动，
+// 不计入可提交动作，否则前端会给出一个必然 400 的按钮。
+func AllowedActions(state string) []string {
+	out := make([]string, 0, 2)
+	for _, t := range linkTransitions {
+		if t.from == state && IsLinkActionAllowed(t.action) {
+			out = append(out, t.action)
+		}
+	}
+	return out
 }
 
 // Project 把聚合行解释成客户可见的服务状态与风险标记。

@@ -12,9 +12,11 @@
  */
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import {
+  CUSTOMER_LINK_ACTION_LABELS,
   customerDetailApi,
+  type CustomerLinkDetailDTO,
   type CustomerModelServiceRow,
   type CustomerOperationLogDTO,
   type CustomerProfileDTO,
@@ -102,7 +104,8 @@ const modelLoading = ref(false);
 const modelError = ref("");
 const modelLoaded = ref(false);
 
-async function loadModels() {
+async function loadModels(force = false) {
+  if (force) modelLoaded.value = false;
   if (modelLoaded.value || modelLoading.value) return;
   modelLoading.value = true;
   modelError.value = "";
@@ -114,6 +117,65 @@ async function loadModels() {
     modelError.value = message(value);
   } finally {
     modelLoading.value = false;
+  }
+}
+
+/**
+ * 绑定动作（A2）。动作清单来自后端的 `available_actions`（状态机推导），
+ * 这里只做三件事：收原因 → 带上 expected_revision 提交 → 成功后强制重拉投影。
+ *
+ * 为什么成功后必须强制重拉：`modelRows` 是**聚合投影**（服务状态/已绑定数），
+ * 只把展开区那一行改掉会让外层行显示旧值，用户会以为动作没生效。
+ */
+const linkActionSubmitting = ref<string>("");
+
+function linkActionLabel(action: string) {
+  return CUSTOMER_LINK_ACTION_LABELS[action] ?? action;
+}
+
+function linkActionTagType(action: string): "primary" | "danger" | "warning" | "success" {
+  if (action === "DISABLE_REQUEST" || action === "OFFLINE_CONFIRM" || action === "DISABLE_CONFIRM") return "danger";
+  if (action === "RESTORE_CONFIRM") return "success";
+  return "warning";
+}
+
+async function runLinkAction(link: CustomerLinkDetailDTO, action: string) {
+  if (!canEdit.value || linkActionSubmitting.value) return;
+  const label = linkActionLabel(action);
+  let reason = "";
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `来源：${link.supplier_name || "—"} / 资源 #${link.resource_id}｜当前状态：${link.state_label}`,
+      `${label}（必填原因）`,
+      {
+        inputPlaceholder: "请填写本次操作原因，会写入审计",
+        inputValidator: (value: string) => Boolean(value?.trim()) || "请填写原因",
+        confirmButtonText: label,
+        cancelButtonText: "取消",
+        type: action === "RESTORE_REQUEST" || action === "RESTORE_CONFIRM" ? "info" : "warning",
+      },
+    );
+    reason = String(value ?? "").trim();
+  } catch {
+    return; // 用户取消
+  }
+  const key = `${link.id}:${action}`;
+  linkActionSubmitting.value = key;
+  try {
+    await customerDetailApi.actLink(link.id, { action, reason, expected_revision: link.revision });
+    ElMessage.success(`${label}成功`);
+    await loadModels(true);
+    void loadProfile();
+  } catch (value) {
+    // 409 = 乐观锁冲突（别人刚改过）。后端文案已是人话，直接展示并重拉最新版本。
+    if (value instanceof ApiError && value.httpStatus === 409) {
+      ElMessage.warning(message(value));
+      await loadModels(true);
+    } else {
+      ElMessage.error(message(value));
+    }
+  } finally {
+    linkActionSubmitting.value = "";
   }
 }
 
@@ -341,6 +403,60 @@ function backToList() {
         :row-class-name="({ row }: { row: CustomerModelServiceRow }) => row.service_state === '无可用来源' ? 'row-muted' : ''"
         empty-text="该客户还没有接入任何模型"
       >
+        <!-- 展开区：该模型下的绑定明细 + 按状态机给出的动作（A2） -->
+        <el-table-column type="expand">
+          <template #default="{ row }: { row: CustomerModelServiceRow }">
+            <div class="link-detail">
+              <el-table :data="row.links" size="small" class="grid" empty-text="该模型暂无未归档的绑定">
+                <el-table-column label="供应商" min-width="160">
+                  <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
+                    <div class="cell-main">{{ link.supplier_name || "—" }}</div>
+                    <div class="cell-sub">部署节点 {{ link.region }}</div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="供应资源" width="150">
+                  <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
+                    <div class="mono">#{{ link.resource_id }}</div>
+                    <div class="cell-sub">资源状态 {{ link.resource_state || "—" }}</div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="绑定状态" width="130">
+                  <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
+                    <el-tag
+                      size="small"
+                      :type="link.state === 'ACTIVE' ? 'success' : link.state === 'SUPPLY_OFFLINE_PENDING' ? 'danger' : 'info'"
+                    >
+                      {{ link.state_label }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="生效时间" width="170">
+                  <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
+                    <span class="mono">{{ link.activated_at ? formatDateTime(link.activated_at) : "—" }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="150">
+                  <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
+                    <template v-if="canEdit && link.available_actions.length">
+                      <el-button
+                        v-for="action in link.available_actions"
+                        :key="action"
+                        size="small"
+                        :type="linkActionTagType(action)"
+                        :loading="linkActionSubmitting === `${link.id}:${action}`"
+                        :disabled="Boolean(linkActionSubmitting) && linkActionSubmitting !== `${link.id}:${action}`"
+                        @click="runLinkAction(link, action)"
+                      >
+                        {{ linkActionLabel(action) }}
+                      </el-button>
+                    </template>
+                    <span v-else class="hint">{{ link.available_actions.length ? "无编辑权限" : "无可用动作" }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="模型" min-width="200">
           <template #default="{ row }">
             <div class="cell-main">{{ row.model_name || `标准模型 #${row.standard_model_id}` }}</div>
@@ -614,5 +730,8 @@ function backToList() {
 .json-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .json { margin: 0; max-height: 240px; overflow: auto; background: var(--el-fill-color-light); border-radius: 8px; padding: 10px 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 .mono { font-variant-numeric: tabular-nums; }
+/* 展开区：与外层表格拉开层级，避免两条表线糊在一起 */
+.link-detail { padding: 8px 12px 8px 48px; background: var(--el-fill-color-lighter); border-radius: 8px; }
+.link-detail :deep(.el-table) { background: transparent; }
 :deep(.row-muted) { color: var(--app-text-muted); }
 </style>

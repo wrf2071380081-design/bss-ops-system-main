@@ -32,6 +32,9 @@ type ResourceLinkStore interface {
 	LoadResourceFacts(ctx context.Context, resourceID int64) (*ResourceFacts, error)
 	// ListCustomerModelServices 按客户聚合出「接入模型」投影原始行。
 	ListCustomerModelServices(ctx context.Context, customerProfileID int64) ([]CustomerModelServiceRow, error)
+	// ListCustomerLinkDetails 按客户列出**未归档**的绑定明细（「接入模型」展开区用）。
+	// 只依赖绑定表本身：不要求该绑定由开通流程产生（历史登记/补录的绑定也要能展开）。
+	ListCustomerLinkDetails(ctx context.Context, customerProfileID int64) ([]CustomerLinkDetail, error)
 	// ListLinksByResource 按资源列出未归档的绑定（供应域下架/上架事件驱动联动用）。
 	// 返回带 revision 的快照：联动逐条迁移时要用它做乐观锁，冲突就跳过这一条。
 	ListLinksByResource(ctx context.Context, resourceID int64) ([]ResourceLink, error)
@@ -325,9 +328,26 @@ func (s *ResourceLinkService) ListCustomerModels(ctx context.Context, customerPr
 	if err != nil {
 		return nil, err
 	}
+	details, err := s.store.ListCustomerLinkDetails(ctx, customerProfileID)
+	if err != nil {
+		return nil, err
+	}
+	// 按模型分组，避免逐行查库（N+1）。绑定表规模天然很小（一个客户几十条）。
+	byModel := make(map[int64][]CustomerLinkDetail, len(details))
+	for _, d := range details {
+		d.StateLabel = StateLabel(d.State)
+		d.AvailableActions = AllowedActions(d.State)
+		byModel[d.StandardModelID] = append(byModel[d.StandardModelID], d)
+	}
 	out := make([]CustomerModelService, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, row.Project())
+		item := row.Project()
+		if links, ok := byModel[item.StandardModelID]; ok {
+			item.Links = links
+		} else {
+			item.Links = make([]CustomerLinkDetail, 0)
+		}
+		out = append(out, item)
 	}
 	return out, nil
 }
