@@ -163,11 +163,14 @@ func (h *CustomerOnboardingHandler) GetOnboarding(c *gin.Context) {
 
 // completeNodeBody 节点完成请求体。
 //
-// expected_flow_revision 目前接收但不参与校验：onboarding_flow 没有 revision 列，
-// 并发保护靠节点状态的 FOR UPDATE 行锁 + 部分唯一索引。保留字段是为了后续加版本时不用改契约。
+// 这里**没有** expected_flow_revision，是刻意的：onboarding_flow 没有 revision 列，
+// 没有东西可校验；并发保护由 CompleteContract / CompleteConfig 第一句的
+// `SELECT ... FROM onboarding_flow WHERE id=$1 FOR UPDATE` 行锁保证
+// （后到的请求读到节点已 COMPLETED，直接返回「该节点已完成」，审计也不会重复写）。
+// 留一个"收但不校验"的字段比删掉更危险：前端会以为传了有用，后人可能据此去写
+// "乐观锁失败重试"逻辑，纯属对着空气。
 type completeNodeBody struct {
-	ExpectedFlowRevision *int64 `json:"expected_flow_revision"`
-	Reason               string `json:"reason"`
+	Reason string `json:"reason"`
 	// F12Reference：可选的外部凭据（合同号 / F12 记录号），原样写进审计。
 	// 客户侧不走 F12 就绪校验，所以凭据由办理人手填以提高可追溯性。
 	F12Reference string `json:"f12_reference"`
@@ -183,7 +186,7 @@ type completeNodeBody struct {
 // @Security BearerAuth
 // @Param id path int64 true "onboarding_node.id"
 // @Param Idempotency-Key header string true "幂等键"
-// @Param body body completeNodeBody true "reason 必填；f12_reference 可选（合同号/F12 记录号，落审计）"
+// @Param body body completeNodeBody true "reason 必填；f12_reference 可选（合同号/F12 记录号，落审计）。无 expected_flow_revision：并发由 flow 行锁保证"
 // @Success 200 {object} api.APIResponse "code=0；data=OnboardingFlow"
 // @Failure 400 {object} api.APIResponse "code=10001 缺少说明"
 // @Failure 401 {object} api.APIResponse "code=10002 未认证"

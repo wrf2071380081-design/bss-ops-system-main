@@ -61,7 +61,6 @@ var (
 	ErrOnboardingNodeNotFound        = errors.New("开通节点不存在")
 	ErrOnboardingNodeCompleted       = errors.New("该开通节点已完成，不能重复提交")
 	ErrOnboardingNodeNotReady        = errors.New("前序节点尚未完成，暂不能办理该节点")
-	ErrOnboardingContractNotReady    = errors.New("合同与授信资料尚未齐备，不能完成该节点")
 	ErrOnboardingReasonRequired      = errors.New("请填写本次操作说明")
 )
 
