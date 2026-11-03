@@ -34,6 +34,7 @@ func TestCustomerRegistryErrorMapping(t *testing.T) {
 		{"名称必填 400", customer.ErrCustomerNameRequired, apperr.ErrInvalidParams.Code, 400},
 		{"名称超长 400", customer.ErrCustomerNameTooLong, apperr.ErrInvalidParams.Code, 400},
 		{"主体类型 400", customer.ErrCustomerSubjectType, apperr.ErrInvalidParams.Code, 400},
+		{"个人主体 v1 不支持 400", customer.ErrCustomerIndividualUnsupported, apperr.ErrInvalidParams.Code, 400},
 		{"USCC 格式 400", customer.ErrCustomerUSCCInvalid, apperr.ErrInvalidParams.Code, 400},
 		{"区域 400", customer.ErrCustomerRegionInvalid, apperr.ErrInvalidParams.Code, 400},
 		{"币种 400", customer.ErrCustomerCurrencyInvalid, apperr.ErrInvalidParams.Code, 400},

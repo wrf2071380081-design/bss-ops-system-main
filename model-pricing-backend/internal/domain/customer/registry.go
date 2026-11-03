@@ -43,17 +43,21 @@ var (
 	ErrCustomerNameRequired      = errors.New("请填写客户名称")
 	ErrCustomerNameTooLong       = errors.New("客户名称不能超过 128 个字符")
 	ErrCustomerSubjectType       = errors.New("主体类型只能是 COMPANY 或 INDIVIDUAL")
-	ErrCustomerUSCCInvalid       = errors.New("统一社会信用代码必须是 18 位大写字母或数字")
-	ErrCustomerUSCCDuplicate     = errors.New("该统一社会信用代码已被其他主体占用")
-	ErrCustomerRegionInvalid     = errors.New("请选择国内或海外主体")
-	ErrCustomerCurrencyInvalid   = errors.New("结算币种仅支持 CNY 或 USD")
-	ErrCustomerTaxRateInvalid    = errors.New("税率必须是 0 到 1 之间、最多 4 位小数的数字")
-	ErrCustomerOwnerRequired     = errors.New("请选择归属销售")
-	ErrCustomerOwnerNotFound     = errors.New("指定的归属销售不存在")
-	ErrCustomerPaymentType       = errors.New("结算方式只能是 PREPAID / MONTHLY / PAYG")
-	ErrCustomerBillingCycle      = errors.New("账期天数必须在 1 到 365 之间")
-	ErrCustomerNameDuplicate     = errors.New("该客户名称已存在")
-	ErrCustomerProfileNotFound   = errors.New("客户不存在")
+	// ErrCustomerIndividualUnsupported：v1 只支持企业主体。
+	// 个人主体需要 mobile / real_name 才能落库（uk_subject_mobile 是按手机号建的唯一索引），
+	// 当前入参没有这两个字段，宁可明确拒绝，也不要建出一个没有联系方式的半成品主体。
+	ErrCustomerIndividualUnsupported = errors.New("暂不支持个人客户，请按企业主体创建")
+	ErrCustomerUSCCInvalid           = errors.New("统一社会信用代码必须是 18 位大写字母或数字")
+	ErrCustomerUSCCDuplicate         = errors.New("该统一社会信用代码已被其他主体占用")
+	ErrCustomerRegionInvalid         = errors.New("请选择国内或海外主体")
+	ErrCustomerCurrencyInvalid       = errors.New("结算币种仅支持 CNY 或 USD")
+	ErrCustomerTaxRateInvalid        = errors.New("税率必须是 0 到 1 之间、最多 4 位小数的数字")
+	ErrCustomerOwnerRequired         = errors.New("请选择归属销售")
+	ErrCustomerOwnerNotFound         = errors.New("指定的归属销售不存在")
+	ErrCustomerPaymentType           = errors.New("结算方式只能是 PREPAID / MONTHLY / PAYG")
+	ErrCustomerBillingCycle          = errors.New("账期天数必须在 1 到 365 之间")
+	ErrCustomerNameDuplicate         = errors.New("该客户名称已存在")
+	ErrCustomerProfileNotFound       = errors.New("客户不存在")
 )
 
 const (
@@ -221,6 +225,11 @@ func normalizeCreateInput(in CreateCustomerInput, operatorID int64, requestID st
 	}
 	if subjectType != SubjectTypeCompany && subjectType != SubjectTypeIndividual {
 		return nil, ErrCustomerSubjectType
+	}
+	// v1 只放行企业主体（口径已定）：INDIVIDUAL 缺 mobile/real_name 入参，
+	// 建出来就是个没有联系方式的孤儿主体，等需求真的出现再把字段补齐一起开放。
+	if subjectType != SubjectTypeCompany {
+		return nil, ErrCustomerIndividualUnsupported
 	}
 
 	var uscc *string

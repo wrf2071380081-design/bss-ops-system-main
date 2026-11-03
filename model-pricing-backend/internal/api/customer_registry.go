@@ -50,6 +50,7 @@ func customerRegistryErrToAppErr(err error) apperr.Error {
 	case errors.Is(err, customer.ErrCustomerNameRequired),
 		errors.Is(err, customer.ErrCustomerNameTooLong),
 		errors.Is(err, customer.ErrCustomerSubjectType),
+		errors.Is(err, customer.ErrCustomerIndividualUnsupported),
 		errors.Is(err, customer.ErrCustomerUSCCInvalid),
 		errors.Is(err, customer.ErrCustomerRegionInvalid),
 		errors.Is(err, customer.ErrCustomerCurrencyInvalid),

@@ -120,6 +120,7 @@ func TestRegistryCreateValidationMatrix(t *testing.T) {
 		{"名称为空", func(in *CreateCustomerInput) { in.LegalName = "   " }, ErrCustomerNameRequired},
 		{"名称超 128", func(in *CreateCustomerInput) { in.LegalName = strings.Repeat("名", 129) }, ErrCustomerNameTooLong},
 		{"主体类型非法", func(in *CreateCustomerInput) { in.SubjectType = "GOV" }, ErrCustomerSubjectType},
+		{"个人主体 v1 不支持", func(in *CreateCustomerInput) { in.SubjectType = "INDIVIDUAL" }, ErrCustomerIndividualUnsupported},
 		{"USCC 17 位", func(in *CreateCustomerInput) { in.USCC = "91310000TEST001XY" }, ErrCustomerUSCCInvalid},
 		{"USCC 含小写以外的非法字符", func(in *CreateCustomerInput) { in.USCC = "91310000TEST001-X" }, ErrCustomerUSCCInvalid},
 		{"区域缺失", func(in *CreateCustomerInput) { in.Region = "" }, ErrCustomerRegionInvalid},
