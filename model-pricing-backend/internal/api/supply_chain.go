@@ -329,7 +329,7 @@ func supplierWorkspaceListQuery(aliasTableAvailable bool) string {
                         AND n.status IN ('IN_PROGRESS','WAITING_PREDECESSOR')) THEN '办理中'
          WHEN EXISTS (SELECT 1 FROM public.contract c WHERE c.subject_type='SUPPLIER' AND c.subject_id=s.id AND c.status='PROCESSING') THEN '办理中'
          WHEN EXISTS (SELECT 1 FROM public.onboarding_flow f JOIN public.onboarding_node n ON n.flow_id=f.id
-                      WHERE f.kind='SUPPLIER' AND f.owner_id=s.id AND n.node_key='CONTRACT' AND n.enabled AND n.status='DONE') THEN '已归档'
+                      WHERE f.kind='SUPPLIER' AND f.owner_id=s.id AND n.node_key='CONTRACT' AND n.enabled AND n.status IN ('DONE','COMPLETED')) THEN '已归档'
          WHEN EXISTS (SELECT 1 FROM public.contract c WHERE c.subject_type='SUPPLIER' AND c.subject_id=s.id AND c.status='ARCHIVED') THEN '已归档'
          ELSE '未登记'
        END,
