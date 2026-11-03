@@ -96,8 +96,19 @@ func mapLinkStorageError(err error) error {
 		case "40001":
 			return customer.ErrLinkRevisionConflict
 		case "23503":
-			// 外键失败：客户/模型/资源不存在。
-			return customer.ErrLinkCustomerNotFound
+			// 外键失败：按**约束名**区分到底是谁不存在。
+			// 统一报「客户不存在」会把人往错的方向带（资源或模型被并发删掉时尤其误导）。
+			switch pgErr.ConstraintName {
+			case "customer_resource_link_customer_profile_id_fkey":
+				return customer.ErrLinkCustomerNotFound
+			case "customer_resource_link_standard_model_id_fkey":
+				return customer.ErrLinkStandardModelNotFound
+			case "customer_resource_link_resource_id_fkey":
+				return customer.ErrLinkResourceNotFound
+			default:
+				// 约束名识别不出来（比如以后加了新外键）：回落到通用文案，不再猜具体对象。
+				return customer.ErrLinkReferenceMissing
+			}
 		case "23514":
 			// CHECK 约束（状态枚举 / revision / 报价 ID）失败：说明上层绕过状态机直写了非法值。
 			return customer.ErrLinkTransitionInvalid

@@ -59,6 +59,9 @@ func (f *fakeLinkStore) ApplyTransition(_ context.Context, in TransitionRecord) 
 	next.Revision = current.Revision + 1
 	next.Archived = in.Archived
 	next.StateBeforeOffline = in.StateBeforeOffline
+	// 与真实仓储一致：迁移成功后读模型也要跟着变，
+	// 否则「同一请求重复提交」这类顺序场景在桩上无从复现。
+	f.link = &next
 	return &next, nil
 }
 
@@ -272,6 +275,68 @@ func TestResourceLinkActRejectsRevisionMismatch(t *testing.T) {
 	}
 	if len(store.applied) != 0 {
 		t.Fatal("版本冲突不应写库")
+	}
+}
+
+// TestResourceLinkActSequentialReplayReturnsConflict 钉住判断顺序：revision 必须先于状态机。
+//
+// 确定性复现（不是并发）：第一次「请求禁用」成功后状态已变成 DISABLE_PENDING、revision+1；
+// 客户端用同一个旧 revision 再提交一次。若先跑状态机，就会命中
+// 「禁用待确认 不允许执行『请求禁用』」→ 400，让人以为按钮点错了；
+// 正确结果必须是 409（他人已修改，请刷新后重试），且库里状态不能被二次改动。
+func TestResourceLinkActSequentialReplayReturnsConflict(t *testing.T) {
+	store := &fakeLinkStore{link: activeLink()} // ACTIVE, revision = 3
+	svc := NewResourceLinkService(store)
+	ctx := context.Background()
+
+	first, err := svc.Act(ctx, LinkActionInput{ID: 5, Action: LinkActionDisableRequest, ExpectedRevision: 3}, 1, "req-1")
+	if err != nil {
+		t.Fatalf("首次提交应成功：%v", err)
+	}
+	if first.State != LinkStateDisablePending || first.Revision != 4 {
+		t.Fatalf("首次迁移结果不符：state=%s revision=%d", first.State, first.Revision)
+	}
+
+	// 同一 revision 重放：必须 409 语义，而不是「非法迁移」。
+	_, err = svc.Act(ctx, LinkActionInput{ID: 5, Action: LinkActionDisableRequest, ExpectedRevision: 3}, 1, "req-1")
+	if errors.Is(err, ErrLinkTransitionInvalid) {
+		t.Fatalf("重复提交被误判成非法迁移（会被映射成 400）：%v", err)
+	}
+	if !errors.Is(err, ErrLinkRevisionConflict) {
+		t.Fatalf("重复提交必须返回版本冲突（409），got %v", err)
+	}
+	if len(store.applied) != 1 {
+		t.Fatalf("冲突不得写库：期望 1 次迁移，got %d", len(store.applied))
+	}
+	reloaded, err := store.GetLink(ctx, 5)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.State != LinkStateDisablePending || reloaded.Revision != 4 {
+		t.Fatalf("冲突后库里状态不应变化：state=%s revision=%d", reloaded.State, reloaded.Revision)
+	}
+
+	// 用最新 revision 继续操作必须成功（证明只是并发保护，不是把人锁死）。
+	if _, err := svc.Act(ctx, LinkActionInput{ID: 5, Action: LinkActionDisableConfirm, ExpectedRevision: 4}, 1, "req-2"); err != nil {
+		t.Fatalf("用最新 revision 继续操作应成功：%v", err)
+	}
+}
+
+// TestSystemEventsPreferRevisionConflict 系统事件同样要先判 revision，避免并发事件被误报成非法迁移。
+func TestSystemEventsPreferRevisionConflict(t *testing.T) {
+	store := &fakeLinkStore{link: &ResourceLink{ID: 9, State: LinkStateActive, Revision: 5}}
+	svc := NewResourceLinkService(store)
+	if _, err := svc.MarkSupplyOffline(context.Background(), 9, 4, "", "req"); !errors.Is(err, ErrLinkRevisionConflict) {
+		t.Fatalf("下架事件旧 revision 应返回冲突，got %v", err)
+	}
+	store.link.State = LinkStateSupplyOfflinePending
+	store.link.StateBeforeOffline = LinkStateActive
+	store.link.Revision = 7
+	if _, err := svc.MarkSupplyRestored(context.Background(), 9, 6, "req"); !errors.Is(err, ErrLinkRevisionConflict) {
+		t.Fatalf("上架事件旧 revision 应返回冲突，got %v", err)
+	}
+	if len(store.applied) != 0 {
+		t.Fatal("冲突不得写库")
 	}
 }
 

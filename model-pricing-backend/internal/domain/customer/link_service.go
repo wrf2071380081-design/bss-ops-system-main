@@ -99,8 +99,10 @@ func (s *ResourceLinkService) Create(ctx context.Context, in CreateLinkInput, op
 
 // Act 执行客户/内部可提交的状态动作（禁用、恢复、确认停用）。
 //
-// 乐观锁：请求必须带 expected_revision；先本地比对（省一次写库），再由 SQL 的
-// WHERE revision = $2 兜住并发。
+// 判断顺序很关键：archived → **revision** → 状态机。
+// 反过来的话，同一请求重复提交（携带已过期的 revision）会读到别人改过之后的新状态，
+// 先撞状态机、返回「禁用待确认 不允许执行『请求禁用』」(400)，让前端以为按钮点错了，
+// 而真实原因是并发/重复提交——这类必须返回 409 让前端提示「刷新后重试」。
 func (s *ResourceLinkService) Act(ctx context.Context, in LinkActionInput, operatorID int64, requestID string) (*ResourceLink, error) {
 	if err := s.available(); err != nil {
 		return nil, err
@@ -121,12 +123,12 @@ func (s *ResourceLinkService) Act(ctx context.Context, in LinkActionInput, opera
 	if current.Archived {
 		return nil, ErrLinkArchived
 	}
+	if current.Revision != in.ExpectedRevision {
+		return nil, ErrLinkRevisionConflict
+	}
 	to, err := NextState(current.State, in.Action, current.StateBeforeOffline)
 	if err != nil {
 		return nil, err
-	}
-	if current.Revision != in.ExpectedRevision {
-		return nil, ErrLinkRevisionConflict
 	}
 	note := actionNote(in.Action, strings.TrimSpace(in.Reason))
 	record := TransitionRecord{
@@ -162,12 +164,13 @@ func (s *ResourceLinkService) MarkSupplyOffline(ctx context.Context, id int64, e
 	if current.Archived {
 		return nil, ErrLinkArchived
 	}
+	// 与 Act 同一顺序纪律：先判 revision 再跑状态机，避免并发/重复事件被误报成「非法迁移」。
+	if current.Revision != expectedRevision {
+		return nil, ErrLinkRevisionConflict
+	}
 	to, err := NextState(current.State, LinkActionSupplyOffline, current.StateBeforeOffline)
 	if err != nil {
 		return nil, err
-	}
-	if current.Revision != expectedRevision {
-		return nil, ErrLinkRevisionConflict
 	}
 	trace := "供应资源下架，标记为来源待处理（客户暂仍可用，待人工确认停用）"
 	if trimmed := strings.TrimSpace(reason); trimmed != "" {
@@ -200,12 +203,12 @@ func (s *ResourceLinkService) MarkSupplyRestored(ctx context.Context, id int64, 
 	if current.Archived {
 		return nil, ErrLinkArchived
 	}
+	if current.Revision != expectedRevision {
+		return nil, ErrLinkRevisionConflict
+	}
 	to, err := NextState(current.State, LinkActionSupplyRestored, current.StateBeforeOffline)
 	if err != nil {
 		return nil, err
-	}
-	if current.Revision != expectedRevision {
-		return nil, ErrLinkRevisionConflict
 	}
 	return s.store.ApplyTransition(ctx, TransitionRecord{
 		ID:                 id,
@@ -241,11 +244,11 @@ func (s *ResourceLinkService) Rebind(ctx context.Context, in RebindInput, operat
 	if current.Archived {
 		return nil, ErrLinkArchived
 	}
-	if current.State != LinkStateActive {
-		return nil, ErrLinkRebindOnlyActive
-	}
 	if current.Revision != in.ExpectedRevision {
 		return nil, ErrLinkRevisionConflict
+	}
+	if current.State != LinkStateActive {
+		return nil, ErrLinkRebindOnlyActive
 	}
 	if current.ResourceID == in.ResourceID {
 		return nil, ErrLinkDuplicateResource

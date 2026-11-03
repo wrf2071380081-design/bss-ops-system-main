@@ -43,7 +43,9 @@ func resourceLinkErrToAppErr(err error) apperr.Error {
 	switch {
 	case errors.Is(err, customer.ErrLinkNotFound),
 		errors.Is(err, customer.ErrLinkCustomerNotFound),
-		errors.Is(err, customer.ErrLinkResourceNotFound):
+		errors.Is(err, customer.ErrLinkStandardModelNotFound),
+		errors.Is(err, customer.ErrLinkResourceNotFound),
+		errors.Is(err, customer.ErrLinkReferenceMissing):
 		return apperr.New(apperr.ErrNotFound.Code, err.Error(), apperr.ErrNotFound.Status) // 404
 	case errors.Is(err, customer.ErrLinkDuplicateResource),
 		errors.Is(err, customer.ErrLinkModelAlreadyActive):

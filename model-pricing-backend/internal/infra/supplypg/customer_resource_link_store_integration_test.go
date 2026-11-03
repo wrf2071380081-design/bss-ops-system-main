@@ -268,6 +268,42 @@ func TestCustomerResourceLinkStoreRebind(t *testing.T) {
 	}
 }
 
+// TestCustomerResourceLinkStoreForeignKeyMapping 23503 必须按约束名指向真正缺失的对象。
+//
+// 这条只能靠真实 PG 证明：外键约束名是 PostgreSQL 自动生成的
+// （customer_resource_link_{customer_profile_id,standard_model_id,resource_id}_fkey），
+// 靠读代码猜不出来；一旦名字对不上，就会静默退化成「客户绑定引用的对象不存在」兜底文案。
+func TestCustomerResourceLinkStoreForeignKeyMapping(t *testing.T) {
+	store, db := openLinkTestStore(t)
+	f := newLinkFixture(t, db)
+	ctx := context.Background()
+
+	// 一个几乎不可能存在的 bigint（bigint 上限 - 1）。
+	const ghost int64 = 9223372036854775806
+	base := customer.CreateLinkRecord{
+		CustomerProfileID: f.customerID, StandardModelID: f.modelID, ResourceID: f.cnResA,
+		State: customer.LinkStateActive, ActivationNote: "外键映射测试",
+	}
+
+	missingCustomer := base
+	missingCustomer.CustomerProfileID = ghost
+	if _, err := store.CreateLink(ctx, missingCustomer); !errors.Is(err, customer.ErrLinkCustomerNotFound) {
+		t.Fatalf("客户缺失：期望 ErrLinkCustomerNotFound，got %v", err)
+	}
+
+	missingModel := base
+	missingModel.StandardModelID = ghost
+	if _, err := store.CreateLink(ctx, missingModel); !errors.Is(err, customer.ErrLinkStandardModelNotFound) {
+		t.Fatalf("模型缺失：期望 ErrLinkStandardModelNotFound（不能报成客户不存在），got %v", err)
+	}
+
+	missingResource := base
+	missingResource.ResourceID = ghost
+	if _, err := store.CreateLink(ctx, missingResource); !errors.Is(err, customer.ErrLinkResourceNotFound) {
+		t.Fatalf("资源缺失：期望 ErrLinkResourceNotFound（不能报成客户不存在），got %v", err)
+	}
+}
+
 // TestCustomerResourceLinkStoreProjection 投影：available_count 只统计同模型同 region 且已准入。
 func TestCustomerResourceLinkStoreProjection(t *testing.T) {
 	store, db := openLinkTestStore(t)

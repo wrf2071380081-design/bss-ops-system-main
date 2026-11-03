@@ -77,10 +77,14 @@ const resourceStateAdmitted = "ADMITTED"
 
 // 绑定领域错误。HTTP 层据此映射 400/403/404/409（见 api/customer_resource_link.go）。
 var (
-	ErrLinkNotFound             = errors.New("客户绑定不存在")
-	ErrLinkStoreUnavailable     = errors.New("客户绑定存储不可用")
-	ErrLinkCustomerNotFound     = errors.New("客户不存在")
-	ErrLinkResourceNotFound     = errors.New("供应资源不存在")
+	ErrLinkNotFound              = errors.New("客户绑定不存在")
+	ErrLinkStoreUnavailable      = errors.New("客户绑定存储不可用")
+	ErrLinkCustomerNotFound      = errors.New("客户不存在")
+	ErrLinkStandardModelNotFound = errors.New("标准模型不存在")
+	ErrLinkResourceNotFound      = errors.New("供应资源不存在")
+	// ErrLinkReferenceMissing 是外键冲突无法定位到具体约束时的兜底文案：
+	// 宁可说「引用的对象不存在」，也不要把资源/模型缺失误报成「客户不存在」。
+	ErrLinkReferenceMissing     = errors.New("客户绑定引用的对象不存在（客户 / 标准模型 / 供应资源已被删除）")
 	ErrLinkResourceNotAdmitted  = errors.New("供应资源当前不是已准入状态，不能作为客户来源")
 	ErrLinkModelMismatch        = errors.New("供应资源与标准模型不匹配")
 	ErrLinkDuplicateResource    = errors.New("该客户已绑定此供应资源")
