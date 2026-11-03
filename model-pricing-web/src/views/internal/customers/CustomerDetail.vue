@@ -129,6 +129,34 @@ async function loadModels(force = false) {
  */
 const linkActionSubmitting = ref<string>("");
 
+/**
+ * 本会话内是否刚做过「归档类」动作（确认停用 / 确认禁用）。
+ *
+ * 为什么需要它：投影是按「未归档绑定」驱动的，确认停用会把绑定归档、该模型不再产生行，
+ * 于是整行从「接入模型」里消失、表格变空。用户第一反应是「我把模型删了」，
+ * 而实际上他只是停用了一个来源。
+ *
+ * 这里只改**空表文案**（前端表达层），不去改 `ListCustomerModels` 的投影：
+ * 让「有归档绑定但无未归档」的模型也出一行，会把所有客户的历史归档模型
+ * （373 就有 3 条归档）全部翻出来，回归面太大，属新需求。
+ */
+const justArchivedModel = ref(false);
+
+/**
+ * 会真正**归档**绑定的动作。
+ *
+ * 与后端 `customer.ArchivedAfter` 保持一致：只有 `OFFLINE_CONFIRM`（确认停用）会归档。
+ * `DISABLE_CONFIRM`（确认禁用）只把状态改成 DISABLED、**不归档**，列表里那行仍在，
+ * 所以不置位——否则一旦以后有别的路径让表格变空，会给出「已归档」的错误解释。
+ */
+const ARCHIVING_ACTIONS = new Set(["OFFLINE_CONFIRM"]);
+
+const modelEmptyText = computed(() =>
+  justArchivedModel.value
+    ? "该模型来源已停用并归档，可到「操作记录」查看本次操作"
+    : "该客户还没有接入任何模型",
+);
+
 function linkActionLabel(action: string) {
   return CUSTOMER_LINK_ACTION_LABELS[action] ?? action;
 }
@@ -164,6 +192,9 @@ async function runLinkAction(link: CustomerLinkDetailDTO, action: string) {
   try {
     await customerDetailApi.actLink(link.id, { action, reason, expected_revision: link.revision });
     ElMessage.success(`${label}成功`);
+    // 归档类动作做完，该模型的行会从投影里消失（绑定已归档）；
+    // 用会话内标记把空表文案换成「已停用并归档」，避免用户以为模型被删了。
+    justArchivedModel.value = ARCHIVING_ACTIONS.has(action);
     await loadModels(true);
     void loadProfile();
   } catch (value) {
@@ -401,7 +432,7 @@ function backToList() {
         row-key="standard_model_id"
         class="grid"
         :row-class-name="({ row }: { row: CustomerModelServiceRow }) => row.service_state === '无可用来源' ? 'row-muted' : ''"
-        empty-text="该客户还没有接入任何模型"
+        :empty-text="modelEmptyText"
       >
         <!-- 展开区：该模型下的绑定明细 + 按状态机给出的动作（A2） -->
         <el-table-column type="expand">
