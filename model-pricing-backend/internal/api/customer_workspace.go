@@ -53,6 +53,11 @@ type CustomerWorkspaceRow struct {
 	CreditUsed         string `json:"credit_used"`
 	ActiveQuotes       int    `json:"active_quotes"`
 	PendingQuotes      int    `json:"pending_quotes"`
+	// OpenedModelCount 已开通模型数：按 standard_model_id 去重，只算当前生效（ACTIVE）的绑定。
+	// 与原型一致（proto-app.js 的「已开通模型数」= 未归档且 state='已开通' 的模型去重计数）；
+	// 禁用/禁用待确认/恢复待确认/来源待处理/停供**都不计入**——「已开通」表示"现在能用"，
+	// 不是"曾经有过关系"。这些状态在客户详情「接入模型」Tab 里仍然可见，只是不进这个计数。
+	OpenedModelCount int64 `json:"opened_model_count"`
 }
 
 // CustomerQuoteRow 客户报价行。
@@ -130,7 +135,17 @@ func (rt *CustomerWorkspaceRuntime) ListCustomers(ctx context.Context, op *middl
 		SELECT cp.id, ls.legal_name, cp.level_code, st.name, cp.owner_sales_operator_id, cp.status,
 		       cp.credit_limit::text, cp.credit_used::text,
 		       cp.region, cp.settlement_currency, COALESCE(cp.tax_rate::text, ''), cp.contract_status,
-		       COALESCE(q.active_cnt, 0), COALESCE(q.pending_cnt, 0)
+		       COALESCE(q.active_cnt, 0), COALESCE(q.pending_cnt, 0),
+		       -- 已开通模型数：与原型一致；禁用/待处理/停供不计入（只算 archived=FALSE AND state='ACTIVE'）。
+		       -- 用 count(DISTINCT standard_model_id) 而不是数绑定行：与原型 new Set(...).size 同语义。
+		       -- 说明：当前的 state='ACTIVE' 过滤 + 部分唯一索引 uk_crl_customer_model 已保证
+		       -- 「同客户同模型最多一条 ACTIVE」，所以 DISTINCT 目前是防御性写法（实测去掉它结果不变）；
+		       -- 保留它是为了让口径与原型逐字对应，且万一将来放宽索引/加状态时不会静默变错。
+		       (SELECT count(DISTINCT l.standard_model_id)
+		          FROM customer_resource_link l
+		         WHERE l.customer_profile_id = cp.id
+		           AND l.archived = FALSE
+		           AND l.state = 'ACTIVE')
 		  FROM customer_profile cp
 		  JOIN legal_subject ls ON ls.id = cp.subject_id
 		  JOIN internal_staff st ON st.id = cp.owner_sales_operator_id
@@ -156,7 +171,7 @@ func (rt *CustomerWorkspaceRuntime) ListCustomers(ctx context.Context, op *middl
 		if err := rows.Scan(&row.ID, &row.Name, &row.LevelCode, &row.OwnerName, &row.OwnerSalesOperator,
 			&row.Status, &row.CreditLimit, &row.CreditUsed,
 			&row.Region, &row.SettlementCurrency, &row.TaxRate, &row.ContractStatus,
-			&row.ActiveQuotes, &row.PendingQuotes); err != nil {
+			&row.ActiveQuotes, &row.PendingQuotes, &row.OpenedModelCount); err != nil {
 			return nil, 0, err
 		}
 		row.Source = ""
