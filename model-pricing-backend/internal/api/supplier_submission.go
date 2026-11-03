@@ -1013,13 +1013,16 @@ func checkSubmissionCoverage(list []supplypg.SubmissionRowRecord, groups map[int
 		}
 	}
 
-	// 按卡片顺序逐个校验（组信息取自 groups，拿不到就按「未知组」报，避免静默放过）。
-	index := 0
-	for _, group := range groupGateOrder(groups) {
+	// 按**卡片顺序**逐个校验。
+	//
+	// 序号口径（2026-11-03 修正）：用下标 i+1，即「该组在全部组里是第几张卡片」，
+	// 而不是"第几个用到的组"。原因：页面上卡片是按全部组编号展示的（第 1/2/3 组），
+	// 若这里按"用到的组"重新计数，会出现「第 1 组「华南通道」」这种
+	// **文案对、指向错**的提示——用户会去数第一张卡片（华东）。停用组、未被使用的组照样占号。
+	for i, group := range groupGateOrder(groups) {
 		if _, used := coverage[group.ID]; !used {
-			continue // 未被本次申报使用的组不参与校验
+			continue // 未被本次申报使用的组不参与校验（但仍占用卡片序号）
 		}
-		index++
 		if coverage[group.ID].passed {
 			continue
 		}
@@ -1028,7 +1031,7 @@ func checkSubmissionCoverage(list []supplypg.SubmissionRowRecord, groups map[int
 			note = "（该组已停用，可改挂其它组）"
 		}
 		return apperr.New(apperr.ErrIdempotency.Code, fmt.Sprintf(
-			"第 %d 组「%s」还没有连通成功的模型，请先在该组发起连通性测试%s", index, group.Name, note), 409)
+			"第 %d 组「%s」还没有连通成功的模型，请先在该组发起连通性测试%s", i+1, group.Name, note), 409)
 	}
 
 	// ② 整批至少一个压测模型，且勾选的行要有压测结果。

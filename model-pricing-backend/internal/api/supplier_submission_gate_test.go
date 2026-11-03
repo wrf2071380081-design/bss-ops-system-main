@@ -212,3 +212,61 @@ func TestSubmissionRowApplyConfigGroupInvalidatesOnGroupSwitch(t *testing.T) {
 		}
 	})
 }
+
+// 组序号必须按**卡片位置**编号（2026-11-03 自查发现的两端不一致）。
+//
+// 页面上卡片是按全部组编号展示的（第 1/2/3 组）。如果后端按"第几个**用到的**组"
+// 重新计数，就会出现「第 1 组「华南通道」」——组名对、序号错，用户会去数第一张卡片。
+// 这两条把"序号 = 在全部组里的位置"钉死。
+func TestCheckSubmissionCoverageGroupOrdinalFollowsCardOrder(t *testing.T) {
+	status := func(value string) *string { return &value }
+	verdict := func(value string) *string { return &value }
+	groups := map[int64]supplypg.TestConfigGroupCredential{
+		1: {TestConfigGroup: supplypg.TestConfigGroup{ID: 1, Name: "华东通道", Enabled: true, SortOrder: 0}},
+		2: {TestConfigGroup: supplypg.TestConfigGroup{ID: 2, Name: "华南通道", Enabled: true, SortOrder: 1}},
+		3: {TestConfigGroup: supplypg.TestConfigGroup{ID: 3, Name: "备援通道", Enabled: true, SortOrder: 2}},
+	}
+	groupPtr := func(id int64) *int64 { return &id }
+	row := func(groupID int64, pass bool, stress bool) supplypg.SubmissionRowRecord {
+		verdictValue := "fail"
+		if pass {
+			verdictValue = "pass"
+		}
+		item := supplypg.SubmissionRowRecord{
+			TestConfigGroupID:   groupPtr(groupID),
+			ConnectivityStatus:  status("SUCCEEDED"),
+			ConnectivityVerdict: verdict(verdictValue),
+		}
+		if stress {
+			item.ParticipateTest = true
+			item.StressStatus = status("SUCCEEDED")
+			item.StressVerdict = verdict("")
+		}
+		return item
+	}
+
+	t.Run("只有第 2 组挂模型且不通：报第 2 组（不是第 1 组）", func(t *testing.T) {
+		err := checkSubmissionCoverage([]supplypg.SubmissionRowRecord{row(2, false, true)}, groups)
+		if err == nil {
+			t.Fatal("期望被拒绝")
+		}
+		if !strings.Contains(err.Error(), "第 2 组「华南通道」") {
+			t.Fatalf("序号应按卡片位置（第 2 组），实际 %q", err.Error())
+		}
+		if strings.Contains(err.Error(), "第 1 组") {
+			t.Fatalf("不该按「用到的组」重新计数：%q", err.Error())
+		}
+	})
+
+	t.Run("第 1 组空、第 2 组通、第 3 组不通：报第 3 组", func(t *testing.T) {
+		err := checkSubmissionCoverage([]supplypg.SubmissionRowRecord{
+			row(2, true, true), row(3, false, false),
+		}, groups)
+		if err == nil {
+			t.Fatal("期望被拒绝")
+		}
+		if !strings.Contains(err.Error(), "第 3 组「备援通道」") {
+			t.Fatalf("序号应按卡片位置（第 3 组），实际 %q", err.Error())
+		}
+	})
+}
