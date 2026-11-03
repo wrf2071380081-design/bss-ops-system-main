@@ -5,10 +5,11 @@
 package main
 
 import (
+	"gorm.io/gorm"
+
+	"model_bss/internal/api"
 	"model_bss/internal/domain/customer"
 	"model_bss/internal/infra/supplypg"
-
-	"gorm.io/gorm"
 )
 
 // newCustomerResourceLinkService 构造客户绑定服务。
@@ -26,6 +27,29 @@ func newCustomerResourceLinkService(db *gorm.DB) (*customer.ResourceLinkService,
 		return nil, err
 	}
 	return customer.NewResourceLinkService(store), nil
+}
+
+// newCustomerOnboardingService 构造客户开通流程服务（G4-B2）。
+//
+// readiness 来自 supply runtime 的 F12 就绪读取端口；nil 时合同授信节点一律不可完成
+// （明确报「能力未装配」，不伪造就绪数据）。
+func newCustomerOnboardingService(db *gorm.DB, readiness api.SupplyF12ReadinessReader) (*customer.OnboardingService, error) {
+	if db == nil {
+		return nil, nil
+	}
+	raw, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	links, err := supplypg.NewCustomerResourceLinkStore(raw, "public")
+	if err != nil {
+		return nil, err
+	}
+	store, err := supplypg.NewCustomerOnboardingStore(raw, "public", links)
+	if err != nil {
+		return nil, err
+	}
+	return customer.NewOnboardingService(store, links, api.NewCustomerContractReadiness(readiness)), nil
 }
 
 // newCustomerRegistryService 构造客户创建/基础档案服务（G4-B1）。

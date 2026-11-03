@@ -81,6 +81,9 @@ type Deps struct {
 	// G4-B1：客户创建与基础档案（POST /customers、GET /customers/:id）。
 	// nil 时两条路由不注册（同一条纪律）。
 	CustomerRegistrySvc *customer.RegistryService
+	// G4-B2：客户开通流程（发起 / 读进度 / 完成节点）。
+	// nil 时 /customers/:id/onboarding 与 /customer-nodes/:id/complete 不注册。
+	CustomerOnboardingSvc *customer.OnboardingService
 	// 阶段 9b：特价审批 + 刷新 + 导出（09-customer-quote.md §3/§4/§5）。
 	CustomerSpecialSvc *customer.SpecialPriceService
 	CustomerRefreshSvc *customer.RefreshService

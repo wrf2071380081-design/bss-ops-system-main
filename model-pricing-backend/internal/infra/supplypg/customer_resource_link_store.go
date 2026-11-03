@@ -119,14 +119,26 @@ func mapLinkStorageError(err error) error {
 	return err
 }
 
+// linkQueryer 让插入语句既能在 *sql.DB 上跑，也能在 *sql.Tx 上跑。
+// 客户开通流程（内部 infra/supplypg/customer_onboarding_store.go）要在**同一个事务**里
+// 一次性写多条绑定，所以插入逻辑必须能接受 tx，而不是只能走 *sql.DB。
+type linkQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // CreateLink 插入一条绑定。
 func (s *CustomerResourceLinkStore) CreateLink(ctx context.Context, in customer.CreateLinkRecord) (*customer.ResourceLink, error) {
+	return s.createLinkWith(ctx, s.db, in)
+}
+
+// createLinkWith 是插入绑定的唯一实现（*sql.DB / *sql.Tx 共用）。
+func (s *CustomerResourceLinkStore) createLinkWith(ctx context.Context, q linkQueryer, in customer.CreateLinkRecord) (*customer.ResourceLink, error) {
 	query := fmt.Sprintf(`
 INSERT INTO %s (customer_profile_id, standard_model_id, resource_id, quote_id, state,
                 activation_note, activated_at, created_by, request_id)
 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, NULLIF($9, ''))
 RETURNING %s`, s.table("customer_resource_link"), linkColumns)
-	row := s.db.QueryRowContext(ctx, query,
+	row := q.QueryRowContext(ctx, query,
 		in.CustomerProfileID, in.StandardModelID, in.ResourceID, nullableLinkInt64(in.QuoteID),
 		in.State, in.ActivationNote, nullableLinkTime(in.ActivatedAt), in.CreatedBy, in.RequestID,
 	)

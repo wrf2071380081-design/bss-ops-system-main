@@ -72,5 +72,26 @@ func registerTradeRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, portal 
 		)
 	}
 
+	// 客户开通流程（G4-B2）：发起开通 / 读进度 / 完成节点。
+	// 客户侧独立实现（路线 B）：只共用 onboarding_flow / onboarding_node 表结构与审计写法，
+	// 供应商流程代码一行不动。
+	if deps.CustomerOnboardingSvc != nil {
+		coh := NewCustomerOnboardingHandler(deps.CustomerOnboardingSvc)
+		protected.POST("/customers/:id/onboarding",
+			middleware.RequirePerm(perm.M8Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			coh.StartOnboarding,
+		)
+		protected.GET("/customers/:id/onboarding",
+			middleware.RequirePerm(perm.M8View),
+			coh.GetOnboarding,
+		)
+		protected.POST("/customer-nodes/:id/complete",
+			middleware.RequirePerm(perm.M8Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			coh.CompleteCustomerNode,
+		)
+	}
+
 	// 新路由加在这里。
 }

@@ -264,6 +264,12 @@ func main() {
 		log.Warn("initialize customer registry service", zap.Error(err))
 		customerRegistrySvc = nil
 	}
+	// G4-B2：客户开通流程（合同授信就绪复用 F12 读取端口）。
+	customerOnboardingSvc, err := newCustomerOnboardingService(dbClient.DB, supplyRoutes.F12Readiness)
+	if err != nil {
+		log.Warn("initialize customer onboarding service", zap.Error(err))
+		customerOnboardingSvc = nil
+	}
 	router := api.New(api.Deps{
 		Config:              cfg,
 		Log:                 log,
@@ -303,6 +309,7 @@ func main() {
 		CustomerSvc:              customerSvc,
 		CustomerResourceLinkSvc:  customerResourceLinkSvc,
 		CustomerRegistrySvc:      customerRegistrySvc,
+		CustomerOnboardingSvc:    customerOnboardingSvc,
 		CustomerSpecialSvc:       customerSpecialSvc,
 		CustomerRefreshSvc:       customerRefreshSvc,
 		CustomerExportSvc:        customerExportSvc,
