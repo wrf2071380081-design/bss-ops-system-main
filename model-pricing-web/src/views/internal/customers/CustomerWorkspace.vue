@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage } from "element-plus";
 import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow, type CustomerWorkspaceRow } from "../../../api/customerWorkspace";
-import { customersApi } from "../../../api/customers";
-import type { CustomerTransferImpactDTO } from "../../../api/customers.types";
 import { customerQuotesApi } from "../../../api/customerQuotes";
 import { quoteCandidatesApi, type ResourceQuoteCandidate } from "../../../api/quoteCandidates";
 import { ApiError } from "../../../domain/common";
@@ -13,6 +11,7 @@ import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
 import { useSessionStore } from "../../../stores/session";
 import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
+import CustomerTransferDialog from "./CustomerTransferDialog.vue";
 
 const permissions = usePermissionStore();
 const session = useSessionStore();
@@ -335,61 +334,12 @@ const detailRow = ref<CustomerWorkspaceRow>();
 const canManageF12 = computed(() => Boolean(detailRow.value && session.user?.staffId && String(detailRow.value.owner_sales_operator_id) === String(session.user.staffId)));
 function openDetail(row: CustomerWorkspaceRow) { detailRow.value = row; detailVisible.value = true; }
 
+// 移交：逻辑全部收进 CustomerTransferDialog（B3b 第 4 项），这里只负责"对谁移交"与刷新。
 const transferVisible = ref(false);
-const transferSubmitting = ref(false);
 const transferTarget = ref<CustomerWorkspaceRow>();
-const transferForm = reactive({ toOperatorId: "", reason: "" });
-const transferImpact = ref<CustomerTransferImpactDTO>();
-const transferError = ref("");
-let transferSequence = 0;
-
 function openTransfer(row: CustomerWorkspaceRow) {
-  ++transferSequence;
   transferTarget.value = row;
-  transferSubmitting.value = false;
-  Object.assign(transferForm, { toOperatorId: "", reason: "" });
-  transferImpact.value = undefined;
-  transferError.value = "";
   transferVisible.value = true;
-}
-function invalidateTransferPreview() { ++transferSequence; transferImpact.value = undefined; transferError.value = ""; }
-async function previewTransfer() {
-  if (!transferTarget.value || transferSubmitting.value) return;
-  if (!positiveId(transferForm.toOperatorId)) { transferError.value = "请输入有效的目标销售人员 ID。"; return; }
-  const sequence = ++transferSequence;
-  const customerId = String(transferTarget.value.id);
-  const draft = { toOperatorId: transferForm.toOperatorId.trim(), reason: transferForm.reason.trim() };
-  transferSubmitting.value = true;
-  transferError.value = "";
-  try {
-    const impact = await customersApi.transferPreview(customerId, draft);
-    if (sequence === transferSequence) transferImpact.value = impact;
-  } catch (error) {
-    if (sequence === transferSequence) { transferImpact.value = undefined; transferError.value = message(error); }
-  } finally {
-    if (sequence === transferSequence) transferSubmitting.value = false;
-  }
-}
-async function confirmTransfer() {
-  if (!transferTarget.value || !transferImpact.value || transferSubmitting.value) return;
-  const customerId = String(transferTarget.value.id);
-  const impact = transferImpact.value;
-  const draft = { toOperatorId: transferForm.toOperatorId.trim(), reason: transferForm.reason.trim() };
-  transferSubmitting.value = true;
-  try {
-    await ElMessageBox.confirm(`确认将客户从“${impact.fromOperatorName}”移交给“${impact.toOperatorName}”？${impact.quoteCount} 份报价将随迁。`, "确认客户移交", { type: "warning" });
-  } catch { transferSubmitting.value = false; return; }
-  transferError.value = "";
-  try {
-    const result = await customersApi.transferConfirm(customerId, draft);
-    transferVisible.value = false;
-    ElMessage.success(`客户移交完成，已迁移 ${result.quotesMigrated} 份报价。`);
-    await loadCustomers();
-  } catch (error) {
-    transferError.value = message(error);
-  } finally {
-    transferSubmitting.value = false;
-  }
 }
 
 onMounted(() => { void loadCustomers(); void loadQuotes(); });
@@ -699,26 +649,14 @@ onMounted(() => { void loadCustomers(); void loadQuotes(); });
       </template>
     </el-dialog>
 
-    <!-- 移交客户 -->
-    <el-dialog v-model="transferVisible" title="移交客户" width="min(680px, 96vw)" :close-on-click-modal="false" :close-on-press-escape="!transferSubmitting" :show-close="!transferSubmitting">
-      <p v-if="transferTarget">客户：<b>{{ transferTarget.name }}</b> · 当前销售 {{ transferTarget.owner_name }}</p>
-      <el-form class="dialog-form" label-position="top" :disabled="transferSubmitting">
-        <el-form-item label="目标销售人员 ID *"><el-input v-model="transferForm.toOperatorId" inputmode="numeric" @input="invalidateTransferPreview" /></el-form-item>
-        <el-form-item label="移交原因"><el-input v-model="transferForm.reason" type="textarea" :rows="3" maxlength="200" show-word-limit @input="invalidateTransferPreview" /></el-form-item>
-      </el-form>
-      <el-descriptions v-if="transferImpact" :column="2" border>
-        <el-descriptions-item label="原归属">{{ transferImpact.fromOperatorName }}（{{ transferImpact.fromOperatorId }}）</el-descriptions-item>
-        <el-descriptions-item label="新归属">{{ transferImpact.toOperatorName }}（{{ transferImpact.toOperatorId }}）</el-descriptions-item>
-        <el-descriptions-item label="随迁报价">{{ transferImpact.quoteCount }} 份</el-descriptions-item>
-        <el-descriptions-item label="关联价目表">{{ transferImpact.priceBookCount }} 条</el-descriptions-item>
-      </el-descriptions>
-      <el-alert v-if="transferError" class="form-error" :title="transferError" type="error" show-icon :closable="false" />
-      <template #footer>
-        <el-button :disabled="transferSubmitting" @click="transferVisible = false">取消</el-button>
-        <el-button v-if="!transferImpact" type="primary" :loading="transferSubmitting" @click="previewTransfer">检查影响</el-button>
-        <el-button v-else type="danger" :loading="transferSubmitting" @click="confirmTransfer">确认移交</el-button>
-      </template>
-    </el-dialog>
+    <!-- 移交客户（共用弹窗组件） -->
+    <CustomerTransferDialog
+      v-model:visible="transferVisible"
+      :customer-id="transferTarget ? String(transferTarget.id) : ''"
+      :customer-name="transferTarget?.name || ''"
+      :owner-name="transferTarget?.owner_name || ''"
+      @transferred="loadCustomers"
+    />
   </section>
 </template>
 
