@@ -182,6 +182,12 @@ func (rt *CustomerWorkspaceRuntime) ListCustomers(ctx context.Context, op *middl
 		// 这里复用同一行已经算好的 opened_model_count（archived=FALSE AND state='ACTIVE'
 		// 的绑定数）作为第二个判据：既不新增 join / 子查询（避免行数膨胀与 N+1），
 		// 也保证「有生效报价的老客户」不会掉回潜在客户（无回归）。
+		//
+		// 注意（刻意保留的副作用，不要「优化」成只改 ServiceStatus）：
+		// 这个 case **同时决定合作阶段与服务状态**——有生效绑定即视为「已有合作」，
+		// 有未完成报价视为「接入中」，两者都没有才是「潜在」。
+		// 理由：客户已经有在跑的服务绑定，还标「潜在」自相矛盾；
+		// 若只给 ServiceStatus 赋值，会出现「合作阶段=潜在 + 服务状态=服务中」这种更难看的分叉。
 		switch {
 		case row.ActiveQuotes > 0 || row.OpenedModelCount > 0:
 			row.CooperationStage = "已有"
