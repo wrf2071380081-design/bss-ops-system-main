@@ -27,6 +27,12 @@ export interface CustomerWorkspaceRow {
   credit_used: string;
   active_quotes: number;
   pending_quotes: number;
+  /**
+   * 已开通模型数：后端按 standard_model_id 去重、且只算当前生效（state='ACTIVE'）的绑定。
+   * 口径 = 原型「已开通模型数」：禁用/待处理/停供不计入（"现在能用"而不是"曾经有过关系"）。
+   * 无绑定是合法值 `0`（不是 null），展示时不要用 `?? "—"`。
+   */
+  opened_model_count: number;
 }
 
 export interface CustomerQuoteRow {

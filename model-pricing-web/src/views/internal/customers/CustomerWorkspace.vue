@@ -400,6 +400,11 @@ onMounted(() => { void loadCustomers(); void loadQuotes(); });
         <el-table-column label="国内/海外" width="100">
           <template #default="{ row }">{{ regionText(row.region) }}</template>
         </el-table-column>
+        <el-table-column label="已开通模型数" width="120" align="right">
+          <template #default="{ row }">
+            <span class="mono">{{ row.opened_model_count }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="授信额度" width="150" align="right">
           <template #default="{ row }">
             <div class="cell-main mono">{{ amountText(row.settlement_currency, row.credit_limit) }}</div>
