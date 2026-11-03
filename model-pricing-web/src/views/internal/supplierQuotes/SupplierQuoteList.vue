@@ -16,6 +16,9 @@ import { usePermissionStore } from "../../../stores/permission";
 
 const permissions = usePermissionStore();
 const route = useRoute();
+// embedded：内嵌到「供应商管理 · 供应商报价 · 价格报价」时隐藏自带页头，其余逻辑不变。
+const props = defineProps<{ embedded?: boolean }>();
+const embedded = computed(() => props.embedded === true);
 const tab = ref("pending"), loading = ref(false), error = ref("");
 const pending = ref<QuotePendingDTO[]>([]), expiring = ref<ExpiringQuoteDTO[]>([]), anomalies = ref<QuoteAnomalyDTO[]>([]);
 const page = reactive({ current: 1, size: 10, total: 0 });
@@ -129,10 +132,10 @@ onMounted(async () => {
 </script>
 
 <template>
-<section class="page-heading"><div><div class="eyebrow">SUPPLIER QUOTES</div><h1>供应商报价管理</h1><p>审批普通报价，查看到期风险与异常，并处理特权补录。</p></div><el-button v-if="canRetro" type="danger" @click="openRetro">特权补录</el-button></section>
+<section v-if="!embedded" class="page-heading"><div><div class="eyebrow">SUPPLIER QUOTES</div><h1>供应商报价管理</h1><p>审批普通报价，查看到期风险与异常，并处理特权补录。</p></div><el-button v-if="canRetro" type="danger" @click="openRetro">特权补录</el-button></section>
 <section class="panel quote-panel">
   <el-tabs v-model="tab" @tab-change="switchTab"><el-tab-pane label="待审批" name="pending"/><el-tab-pane label="到期管理" name="expiring"/><el-tab-pane label="异常报价" name="anomalies"/></el-tabs>
-  <div class="filters"><el-input v-if="tab==='pending'" v-model="supplierId" placeholder="供应商ID" clearable/><template v-else><el-input-number v-model="days" :min="1" :max="365"/><span>统计天数</span></template><el-checkbox v-if="tab==='expiring'" v-model="onlySingle">仅单点供应</el-checkbox><el-button type="primary" @click="page.current=1;load()">查询</el-button><el-button v-if="tab==='pending'" @click="supplierId='';page.current=1;load()">重置</el-button><el-button @click="load">刷新</el-button></div>
+  <div class="filters"><el-input v-if="tab==='pending'" v-model="supplierId" placeholder="供应商ID" clearable/><template v-else><el-input-number v-model="days" :min="1" :max="365"/><span>统计天数</span></template><el-checkbox v-if="tab==='expiring'" v-model="onlySingle">仅单点供应</el-checkbox><el-button type="primary" @click="page.current=1;load()">查询</el-button><el-button v-if="tab==='pending'" @click="supplierId='';page.current=1;load()">重置</el-button><el-button @click="load">刷新</el-button><el-button v-if="embedded && canRetro" type="danger" @click="openRetro">特权补录</el-button></div>
   <el-alert v-if="error" :title="error" type="error" :closable="false"/>
   <el-table v-if="tab==='pending'" v-loading="loading" :data="pending" :empty-text="error ? '加载失败' : '暂无待审批报价'"><el-table-column label="供应商 / 版本"><template #default="{row}"><b>{{row.supplier_name}}</b><div>V{{row.version_no}} · {{row.item_count}}个SKU</div></template></el-table-column><el-table-column label="来源"><template #default="{row}">{{row.source}} <el-tag v-if="row.retroactive" type="warning">补录</el-tag></template></el-table-column><el-table-column label="有效期"><template #default="{row}">{{formatDateTime(row.valid_from)}}<div>{{formatDateTime(row.valid_to)}}</div></template></el-table-column><el-table-column label="已等待"><template #default="{row}">{{row.wait_hours}}小时</template></el-table-column><el-table-column label="操作"><template #default="{row}"><el-button @click="openDetail(row)">查看并审批</el-button></template></el-table-column></el-table>
   <el-table v-else-if="tab==='expiring'" v-loading="loading" :data="expiring" :empty-text="error ? '加载失败' : '暂无到期报价'"><el-table-column prop="supplier_name" label="供应商"/><el-table-column prop="version_no" label="版本"/><el-table-column label="到期"><template #default="{row}">{{formatDateTime(row.valid_to)}}<div>{{row.days_left}}天</div></template></el-table-column><el-table-column label="风险"><template #default="{row}"><el-tag :type="row.alert_level==='URGENT'?'danger':row.alert_level==='HIGH'?'warning':'info'">{{row.alert_level}}</el-tag> <el-tag v-if="row.single_point" type="danger">单点</el-tag></template></el-table-column><el-table-column label="状态"><template #default="{row}">{{row.in_grace?'宽限期内':'宽限期结束'}}</template></el-table-column><el-table-column label="操作"><template #default="{row}"><el-button v-if="row.pending_remove&&canRemove" type="danger" :loading="busy" :disabled="busy" @click="remove(row)">确认移除</el-button><span v-else>{{row.remove_confirmed?'已移除':'无需操作'}}</span></template></el-table-column></el-table>

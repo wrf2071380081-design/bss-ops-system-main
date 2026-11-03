@@ -1,18 +1,42 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { supplyChainApi, type SupplierWorkspaceRow } from "../../../api/supplyChain";
 import { formatSupplierTaxRate } from "../../../domain/supplierTax";
+import { PERMISSIONS } from "../../../domain/permissions";
+import { usePermissionStore } from "../../../stores/permission";
+import SupplierQuoteWorkspace from "./SupplierQuoteWorkspace.vue";
 
 const route = useRoute();
 const router = useRouter();
+const permissions = usePermissionStore();
 const routeFilter = (key: string) => typeof route.query[key] === "string" ? route.query[key] : "";
 const routePage = Number(routeFilter("page"));
 const routeSize = Number(routeFilter("size"));
 const supplierSortFields = ["id", "name", "region", "resource_count", "contract_status", "cooperation_stage", "handling_status"] as const;
 type SupplierSortField = (typeof supplierSortFields)[number];
-const activeTab = ref("suppliers");
+// 二级 Tab：供应商列表 / 供应商报价。没有报价查看权限时「供应商报价」不渲染，深链回落列表。
+type WorkspaceTab = "list" | "quote";
+const canViewQuotes = computed(() => permissions.canAction(PERMISSIONS.SUPPLIER_QUOTE_VIEW));
+const activeTab = ref<WorkspaceTab>(routeFilter("tab") === "quote" && canViewQuotes.value ? "quote" : "list");
+
+/** 只改 query，不 push，避免污染浏览器历史。 */
+function stringQuery() {
+  const query: Record<string, string> = {};
+  for (const [key, value] of Object.entries(route.query)) if (typeof value === "string") query[key] = value;
+  return query;
+}
+function syncTabQuery(tab: WorkspaceTab) {
+  const current = stringQuery();
+  const next: Record<string, string> = { ...current };
+  if (tab === "quote") next.tab = "quote";
+  else { delete next.tab; delete next.sub; delete next.approval; }
+  const keys = new Set([...Object.keys(current), ...Object.keys(next)]);
+  for (const key of keys) if ((current[key] ?? "") !== (next[key] ?? "")) { void router.replace({ path: route.path, query: next }); return; }
+}
+watch(activeTab, tab => syncTabQuery(tab));
+watch(() => route.query.tab, value => { const next: WorkspaceTab = value === "quote" && canViewQuotes.value ? "quote" : "list"; if (next !== activeTab.value) activeTab.value = next; });
 
 const suppliers = ref<SupplierWorkspaceRow[]>([]);
 const supplierLoading = ref(false);
@@ -110,7 +134,11 @@ function openSupplierEntities() {
 
 function openWorkbenchTodos() { void router.push({ path: "/internal/workbench" }); }
 function resetFilters() { Object.assign(filters, { keyword: "", region: "", contract: "", stage: "", handling: "" }); searchSuppliers(); }
-onMounted(() => { void loadSuppliers(); });
+onMounted(() => {
+  // 无报价权限时把 ?tab=quote 回落到列表 Tab 并清掉参数，避免刷新后停在空白页。
+  if (routeFilter("tab") || routeFilter("sub") || routeFilter("approval")) syncTabQuery(activeTab.value);
+  void loadSuppliers();
+});
 onBeforeUnmount(() => { supplierLoadRevision += 1; });
 </script>
 
@@ -126,7 +154,7 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
 
   <section class="panel supplier-workspace">
     <el-tabs v-model="activeTab">
-      <el-tab-pane label="供应商列表" name="suppliers">
+      <el-tab-pane label="供应商列表" name="list">
         <el-alert v-if="supplierError" :title="supplierError" type="error" show-icon :closable="false" />
         <div class="filters">
           <el-input v-model="filters.keyword" placeholder="搜索供应商名称 / 曾用名" clearable style="width: 220px" />
@@ -167,6 +195,9 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
         <el-pagination v-if="supplierTotal > 0" class="supplier-pagination" :current-page="supplierPage" :page-size="supplierPageSize" :page-sizes="[10, 20, 50, 100]" :total="supplierTotal" layout="total, sizes, prev, pager, next" @current-change="changeSupplierPage" @size-change="changeSupplierPageSize" />
       </el-tab-pane>
 
+      <el-tab-pane v-if="canViewQuotes" label="供应商报价" name="quote" lazy>
+        <SupplierQuoteWorkspace />
+      </el-tab-pane>
     </el-tabs>
   </section>
 

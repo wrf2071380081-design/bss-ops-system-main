@@ -6,7 +6,6 @@ import ModelPlazaDetail from "../views/internal/resources/ModelPlazaDetail.vue";
 import ModelApplicationReview from "../views/internal/models/ModelApplicationReview.vue";
 import Sync from "../modules/pricing/views/OfficialPriceSync.vue";
 import ModulePlaceholderView from "../views/ModulePlaceholderView.vue";
-import SupplierQuoteList from "../views/internal/supplierQuotes/SupplierQuoteList.vue";
 import AlertList from "../views/internal/alerts/AlertList.vue";
 import AuditLogList from "../views/internal/audit/AuditLogList.vue";
 import CurrentCostBaselineList from "../views/internal/cost/CurrentCostBaselineList.vue";
@@ -140,9 +139,10 @@ export const internalRoutes: RouteRecordRaw = {
         order: 52,
       },
     },
+    // 供应商报价已并入「供应商管理 · 供应商报价」Tab，保留路由兼容旧链接（含 quote_id 深链）。
     {
       path: "supplier-quotes",
-      component: SupplierQuoteList,
+      redirect: to => ({ path: "/internal/suppliers", query: { ...to.query, tab: "quote", sub: "price" } }),
       meta: {
         requiresAuth: true,
         portal: "internal",
