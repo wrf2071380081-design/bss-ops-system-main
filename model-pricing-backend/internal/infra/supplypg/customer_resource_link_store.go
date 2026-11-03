@@ -128,6 +128,11 @@ type linkQueryer interface {
 }
 
 // CreateLink 插入一条绑定。
+//
+// **本条不写 operation_log**（不是漏了）：建绑定永远发生在某个流程动作里
+// （B2 的 CONFIG 完成写一批、或客户发起开通），由那个流程动作的审计覆盖
+// （如 `COMPLETE_CONFIG` 里已含模型与来源明细）。逐条再写会把真正的动作淹掉，
+// 追溯"这条绑定哪来的"用 `created_by + request_id + quote_id` 足够。
 func (s *CustomerResourceLinkStore) CreateLink(ctx context.Context, in customer.CreateLinkRecord) (*customer.ResourceLink, error) {
 	return s.createLinkWith(ctx, s.db, in)
 }
@@ -297,9 +302,11 @@ UPDATE %s
        updated_at = now(),
        request_id = COALESCE(NULLIF($4, ''), request_id)
  WHERE id = $1 AND revision = $2 AND archived = FALSE
-RETURNING id`, s.table("customer_resource_link"))
-	var archivedID int64
-	if err := tx.QueryRowContext(ctx, archiveQuery, in.ArchiveID, in.ExpectedRevision, in.Note, in.RequestID).Scan(&archivedID); err != nil {
+RETURNING id, resource_id, state`, s.table("customer_resource_link"))
+	var archivedID, oldResourceID int64
+	var oldState string
+	if err := tx.QueryRowContext(ctx, archiveQuery, in.ArchiveID, in.ExpectedRevision, in.Note, in.RequestID).
+		Scan(&archivedID, &oldResourceID, &oldState); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, s.diagnoseTransition(ctx, in.ArchiveID, in.ExpectedRevision)
 		}
@@ -318,10 +325,53 @@ RETURNING %s`, s.table("customer_resource_link"), linkColumns)
 	if err != nil {
 		return nil, mapLinkStorageError(err)
 	}
+	// 「重新配置来源」换的是"这个客户的这个模型由哪个货源供给"——比禁用/恢复更实质
+	// （后者只是开关，前者换了供应商），所以必须留审计，且与两条写入同事务。
+	// entity_id 记**新** link：审计要能顺着新绑定反查到这次换源的来源。
+	if err := s.appendRebindAudit(ctx, tx, archivedID, oldResourceID, oldState, link, in); err != nil {
+		return nil, mapLinkStorageError(err)
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, mapLinkStorageError(err)
 	}
 	return link, nil
+}
+
+// appendRebindAudit 写一条「重新配置来源」审计（与归档旧的 + 插入新的同事务）。
+//
+// before/after 同时带两个 link id，才能看出"从哪条换到哪条"；
+// 只记新 id 的话，事后无法证明旧绑定是被这次操作归档的。
+func (s *CustomerResourceLinkStore) appendRebindAudit(
+	ctx context.Context, tx *sql.Tx,
+	oldLinkID, oldResourceID int64, oldState string,
+	link *customer.ResourceLink, in customer.RebindRecord,
+) error {
+	before, err := json.Marshal(map[string]any{
+		"old_link_id":     oldLinkID,
+		"old_resource_id": oldResourceID,
+		"old_state":       oldState,
+	})
+	if err != nil {
+		return err
+	}
+	after, err := json.Marshal(map[string]any{
+		"new_link_id":       link.ID,
+		"new_resource_id":   link.ResourceID,
+		"standard_model_id": link.StandardModelID,
+		"archived_old":      true,
+	})
+	if err != nil {
+		return err
+	}
+	actor := in.Next.CreatedBy
+	query := fmt.Sprintf(`
+INSERT INTO %s (entity_type, entity_id, action, operator_id, operator_name_snapshot,
+                "before", "after", reason, request_id, created_at)
+VALUES ('customer_resource_link', $1, 'REBIND', $2,
+        (SELECT name FROM %s WHERE id = $2), $3::jsonb, $4::jsonb, NULLIF($5, ''), NULLIF($6, ''), now())`,
+		s.table("operation_log"), s.table("internal_staff"))
+	_, err = tx.ExecContext(ctx, query, link.ID, actor, string(before), string(after), in.Note, in.RequestID)
+	return err
 }
 
 // LoadResourceFacts 取资源事实（模型、部署节点、准入状态）。

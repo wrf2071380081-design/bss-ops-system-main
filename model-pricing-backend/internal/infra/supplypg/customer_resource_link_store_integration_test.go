@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -267,6 +268,38 @@ func TestCustomerResourceLinkStoreRebind(t *testing.T) {
 	}
 	if !reloaded.Archived {
 		t.Fatal("旧绑定必须被归档，否则 uk_crl_customer_model 会挡住新绑定")
+	}
+
+	// 审计：换源是"这个客户的这个模型改由哪个货源供给"，比禁用/恢复更实质，必须留痕。
+	// 断言三条：恰好 1 条、entity_id 指向新绑定、before/after 里两个 link id 都在（能看出从哪换到哪）。
+	var auditCount int
+	if err := db.QueryRowContext(ctx, `
+SELECT count(*) FROM public.operation_log
+ WHERE entity_type='customer_resource_link' AND action='REBIND' AND entity_id=$1`, fresh.ID).Scan(&auditCount); err != nil {
+		t.Fatalf("count rebind audit: %v", err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("换源审计应恰好 1 条，got %d", auditCount)
+	}
+	var before, after, requestID, operator string
+	if err := db.QueryRowContext(ctx, `
+SELECT "before"::text, "after"::text, COALESCE(request_id,''), COALESCE(operator_id::text,'')
+  FROM public.operation_log
+ WHERE entity_type='customer_resource_link' AND action='REBIND' AND entity_id=$1`, fresh.ID).
+		Scan(&before, &after, &requestID, &operator); err != nil {
+		t.Fatalf("load rebind audit: %v", err)
+	}
+	if !strings.Contains(before, fmt.Sprintf(`"old_link_id": %d`, old.ID)) ||
+		!strings.Contains(before, fmt.Sprintf(`"old_resource_id": %d`, f.cnResA)) {
+		t.Fatalf("before 应记录被归档的旧绑定与旧货源：%s", before)
+	}
+	if !strings.Contains(after, fmt.Sprintf(`"new_link_id": %d`, fresh.ID)) ||
+		!strings.Contains(after, fmt.Sprintf(`"new_resource_id": %d`, f.cnResB)) ||
+		!strings.Contains(after, `"archived_old": true`) {
+		t.Fatalf("after 应记录新绑定、新货源与归档标记：%s", after)
+	}
+	if requestID != "it-rebind" || operator == "" {
+		t.Fatalf("审计应带请求号与操作人：request=%q operator=%q", requestID, operator)
 	}
 }
 
