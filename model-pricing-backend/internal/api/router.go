@@ -47,9 +47,13 @@ type Deps struct {
 	TestCallbacks TestCallbackReceiver
 	// SupplierSubmissions 是供应商申报（B-1）服务；未配置时申报路由不注册。
 	SupplierSubmissions *SupplierSubmissionService
-	// SupplierCredentials 是供应商**主体级**准入测试凭据（000046，原型对齐）。
-	// nil 时 /supplier/test-credential 不注册（同一条纪律：没接仓储就不暴露能力）。
+	// SupplierCredentials 是供应商**主体级**准入测试凭据（000046）。
+	// ⚠️ 000052 起由 SupplierTestConfigGroups（多组）取代，本字段仅为兼容旧路由保留；
+	// 新代码不要再按 supplier_id 取凭据，否则多组会被压回一组。
 	SupplierCredentials *SupplierCredentialService
+	// SupplierTestConfigGroups 是供应商准入测试**配置组**（000052，原型对齐）。
+	// nil 时 /supplier/test-config-groups 不注册（同一条纪律：没接仓储就不暴露能力）。
+	SupplierTestConfigGroups *SupplierTestConfigGroupService
 	// SupplierModels 是供应商门户「模型管理」列表（2026-10-28）。
 	// nil 时 /supplier/models 不注册（同一条纪律：没接仓储就不暴露能力）。
 	SupplierModels *SupplierModelService

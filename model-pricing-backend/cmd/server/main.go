@@ -246,11 +246,17 @@ func main() {
 		log.Warn("initialize supplier model service", zap.Error(err))
 		supplierModelSvc = nil
 	}
-	// 供应商主体级测试凭据（000046，原型对齐）。
+	// 供应商主体级测试凭据（000046）：已被 000052 的多配置组取代，仅为兼容旧路由保留。
 	credentialSvc, err := newSupplierCredentialService(dbClient.DB)
 	if err != nil {
 		log.Warn("initialize supplier credential service", zap.Error(err))
 		credentialSvc = nil
+	}
+	// 供应商准入测试配置组（000052，原型对齐：一个主体多组 URL/Key）。
+	testConfigGroupSvc, err := newSupplierTestConfigGroupService(dbClient.DB)
+	if err != nil {
+		log.Warn("initialize supplier test config group service", zap.Error(err))
+		testConfigGroupSvc = nil
 	}
 	// G4 地基（000049）：客户「接入模型」绑定（状态机 + 投影 + 动作接口）。
 	customerResourceLinkSvc, err := newCustomerResourceLinkService(dbClient.DB)
@@ -282,7 +288,8 @@ func main() {
 		ResourceTestTargets: testTargets(testPlatform),
 		SupplyRoutes:        &supplyRoutes,
 		SupplierSubmissions: submissionSvc,
-		SupplierCredentials: credentialSvc,
+		SupplierCredentials:      credentialSvc,
+		SupplierTestConfigGroups: testConfigGroupSvc,
 		SupplierModels:      supplierModelSvc,
 		SupplierAccount:     accountSvc,
 		UploadDir:           cfg.Uploads.Dir,
