@@ -5,7 +5,7 @@ import { useRoute, useRouter } from "vue-router";
 import { supplierEntitiesApi } from "../../../api/supplierEntities";
 import type { SupplierEntityDTO, SupplierEntityForm, SupplierQualificationDTO } from "../../../api/supplierEntities.contract";
 import { resourcesApi } from "../../../api/resources";
-import { buildResourceQuery, resourceRegionLabels, resourceStateLabels } from "../../../api/resources.contract";
+import { buildResourceQuery, resourceCacheDisplay, resourceMetricDisplay, resourceRegionLabels, resourceStateLabels } from "../../../api/resources.contract";
 import {submissionFlowsApi,type SubmissionFlowView,type SupplierProgressNode} from '../../../api/submissionFlows';
 import SubmissionFlowDialog from '../workbench/SubmissionFlowDialog.vue';
 import { supplierSourceOperationsApi } from "../../../api/supplierSourceOperations";
@@ -16,6 +16,7 @@ import type { ResourceRow } from "../../../api/resources.types";
 import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
 import ResourceDetailDrawer from "../resources/ResourceDetailDrawer.vue";
+import ResourceReportsPanel from "../resources/ResourceReportsPanel.vue";
 import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
 import SupplierProfileForm from "./SupplierProfileForm.vue";
 import SupplierAccessBatchPanel from './SupplierAccessBatchPanel.vue';
@@ -30,6 +31,9 @@ const selectedID = ref("");
 const loading = ref(false);
 const error = ref("");
 const activeTab = ref("models");
+// 测试列表弹窗：每次测试单独留档，仅在打开时按资源 ID 拉取报告。
+const reportsVisible = ref(false), reportsRow = ref<ResourceRow>();
+function openReports(row: ResourceRow) { reportsRow.value = row; reportsVisible.value = true; }
 const profile = ref<SupplierEntityDTO>();
 const profileFormOpen = ref(false), profileSaving = ref(false), reloadingProfileConflict = ref(false), profileSaveError = ref(""), profileSaveConflict = ref(false), profileReloadKey = ref(0);
 const profileLoading = ref(false), profileError = ref("");
@@ -454,7 +458,13 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-table-column label="供应商接口模型 ID" min-width="180"><template #default="{ row }"><code>{{ row.supplier_model_id }}</code></template></el-table-column>
             <el-table-column label="部署节点" width="100"><template #default="{ row }">{{ regionLabel(row.region) }}</template></el-table-column>
             <el-table-column prop="coefficient" label="采购系数" width="110" />
+            <el-table-column label="连通耗时(ms)" width="120"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.connection_ms, row.test.status) }}</template></el-table-column>
+            <el-table-column label="RPS" width="100"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.rps, row.test.status) }}</template></el-table-column>
+            <el-table-column label="TPS" width="100"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.tps, row.test.status) }}</template></el-table-column>
+            <el-table-column label="输入缓存命中率" width="130"><template #default="{ row }">{{ resourceCacheDisplay(row.test.cache_stats, row.test.status) }}</template></el-table-column>
+            <el-table-column label="最近上架时间" width="170"><template #default="{ row }">{{ row.admitted_at ? formatDateTime(row.admitted_at) : "未记录" }}</template></el-table-column>
             <el-table-column label="状态" min-width="150"><template #default="{ row }"><el-tag :type="row.state === 'ADMITTED' ? 'success' : 'info'" size="small">{{ stateLabel(row.state) }}</el-tag><span class="muted">{{rowHandling(row.id)}}</span></template></el-table-column>
+            <el-table-column label="测试与报告" width="100"><template #default="{ row }"><el-button size="small" text type="primary" @click="openReports(row)">测试列表</el-button></template></el-table-column>
             <el-table-column label="操作" width="110"><template #default="{ row }"><el-button size="small" @click="focus(row)">{{ row.id === selectedID ? "当前详情" : "查看详情" }}</el-button></template></el-table-column>
             <template #empty><el-empty description="该供应商暂无接入模型" :image-size="64" /></template>
           </el-table>
@@ -491,6 +501,14 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <div ref="f12Anchor"><F12SubjectPanel v-if="profile" subject-type="SUPPLIER" :subject-id="profile.id" :can-manage="profile.can_edit" @changed="loadProfile" /></div>
           </div>
         </el-tab-pane>
+        <el-tab-pane label="申报与审批记录" name="quotes" lazy>
+          <div v-loading="quoteLoading" class="supplier-tab-content">
+            <p class="muted">当前主体的全部模型申报与改价记录，包含草稿、待审批、驳回、办理及已完成状态。</p>
+            <el-alert v-if="quoteError" :title="quoteError" type="error" :closable="false"><el-button text @click="loadQuotes">重试</el-button></el-alert>
+            <el-table v-else :data="pendingQuotes" empty-text="暂无报价申报历史"><el-table-column prop="id" label="申报单" width="110"/><el-table-column label="类型" width="120"><template #default="{row}">{{row.kind==='PRICE_CHANGE'?'价格变更':'模型申报'}}</template></el-table-column><el-table-column prop="revision" label="版本" width="80"/><el-table-column label="模型及采购系数" min-width="220"><template #default="{row}"><div v-for="item in row.rows" :key="item.id">{{item.model_name}} · {{item.coefficient}}</div></template></el-table-column><el-table-column label="提交时间" min-width="180"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column><el-table-column label="状态" width="110"><template #default="{row}">{{submissionStatusLabels[row.status]||row.status}}</template></el-table-column><el-table-column label="详情" width="100"><template #default="{ row }"><el-button link type="primary" @click="openQuote(row)">查看报价</el-button></template></el-table-column></el-table>
+            <el-pagination v-if="quoteTotal" v-model:current-page="quotePage" :page-size="20" :total="quoteTotal" layout="total, prev, pager, next" @current-change="loadQuotes" />
+          </div>
+        </el-tab-pane>
         <el-tab-pane label="操作记录" name="operations" lazy>
           <div v-loading="operationLoading" class="supplier-tab-content">
             <p class="muted">汇总主体、资质、正式配置、合同、授信、资源及计划的操作摘要。</p>
@@ -498,14 +516,6 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-alert v-if="operationError" :title="operationError" type="error" :closable="false"><el-button text @click="loadOperations">重试</el-button></el-alert>
             <el-table v-else :data="operationRows" empty-text="暂无操作记录"><el-table-column label="操作" min-width="170"><template #default="{ row }">{{ operationLabel(row) }}</template></el-table-column><el-table-column label="关联对象" min-width="210"><template #default="{ row }"><template v-if="row.resource_id"><strong>{{ row.supplier_model_id }}</strong><div class="muted">资源 {{ row.resource_id }} · {{ regionLabel(row.region) }}</div></template><template v-else><strong>{{ supplierOperationCategoryLabels[row.entity_type as SourceOperationType] }}</strong><div class="muted">对象 {{ row.entity_id }} · {{ row.supplier_name }}</div></template></template></el-table-column><el-table-column prop="operator_name" label="操作人" min-width="120"><template #default="{ row }">{{ row.operator_name || '未记录姓名' }}</template></el-table-column><el-table-column label="时间" min-width="170"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column><el-table-column prop="reason" label="说明" min-width="180"/><el-table-column label="详情" width="90"><template #default="{ row }"><el-button link type="primary" @click="openOperation(row)">查看</el-button></template></el-table-column></el-table>
             <el-pagination v-if="operationTotal" v-model:current-page="operationPage" :page-size="20" :total="operationTotal" layout="total, prev, pager, next" @current-change="loadOperations" />
-          </div>
-        </el-tab-pane>
-        <el-tab-pane label="该供应商报价" name="quotes" lazy>
-          <div v-loading="quoteLoading" class="supplier-tab-content">
-            <p class="muted">当前主体的全部模型申报与改价记录，包含草稿、待审批、驳回、办理及已完成状态。</p>
-            <el-alert v-if="quoteError" :title="quoteError" type="error" :closable="false"><el-button text @click="loadQuotes">重试</el-button></el-alert>
-            <el-table v-else :data="pendingQuotes" empty-text="暂无报价申报历史"><el-table-column prop="id" label="申报单" width="110"/><el-table-column label="类型" width="120"><template #default="{row}">{{row.kind==='PRICE_CHANGE'?'价格变更':'模型申报'}}</template></el-table-column><el-table-column prop="revision" label="版本" width="80"/><el-table-column label="模型及采购系数" min-width="220"><template #default="{row}"><div v-for="item in row.rows" :key="item.id">{{item.model_name}} · {{item.coefficient}}</div></template></el-table-column><el-table-column label="提交时间" min-width="180"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column><el-table-column label="状态" width="110"><template #default="{row}">{{submissionStatusLabels[row.status]||row.status}}</template></el-table-column><el-table-column label="详情" width="100"><template #default="{ row }"><el-button link type="primary" @click="openQuote(row)">查看报价</el-button></template></el-table-column></el-table>
-            <el-pagination v-if="quoteTotal" v-model:current-page="quotePage" :page-size="20" :total="quoteTotal" layout="total, prev, pager, next" @current-change="loadQuotes" />
           </div>
         </el-tab-pane>
       </el-tabs>
@@ -541,6 +551,11 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
     <template #footer><el-button :disabled="qualificationSaving || qualificationReloading" @click="qualificationDialogOpen = false">取消</el-button><el-button type="primary" :loading="qualificationSaving" :disabled="qualificationSaving || qualificationReloading || qualificationConflict && !qualificationConflictReady" @click="saveQualification">{{ qualificationConflictReady ? '按最新修订重试' : '保存资质' }}</el-button></template>
   </el-dialog>
     <SubmissionFlowDialog v-if="flowDetail" :id="flowDetail" @close="flowDetail=''" @changed="loadQuotes();loadProgress()" />
+    <el-dialog v-if="reportsVisible && reportsRow" v-model="reportsVisible" :title="`${reportsRow.model_name} · 测试列表`" width="min(1120px, 96vw)" append-to-body>
+      <p class="muted">{{ reportsRow.supplier_model_id }} · 每次测试单独留档</p>
+      <ResourceReportsPanel :resource-i-d="reportsRow.id" :current-report-i-d="reportsRow.test.report_id" />
+      <template #footer><el-button @click="reportsVisible = false">关闭测试列表</el-button></template>
+    </el-dialog>
     <ResourceDetailDrawer v-if="selected && activeTab === 'models'" :key="`${selected.id}:${selected.region}`" :id="selected.id" :region="selected.region" presentation="page" :expected-supplier-i-d="selected.supplier_id" :expected-model-i-d="selected.standard_model_id" initial-tab="profile" @close="clearSelected" @changed="load" />
   </section>
 </template>
