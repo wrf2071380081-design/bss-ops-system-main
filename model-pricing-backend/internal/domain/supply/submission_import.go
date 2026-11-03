@@ -27,6 +27,8 @@ type ImportRow struct {
 	InterfaceModelID string   `json:"interface_model_id"`
 	Coefficient      string   `json:"coefficient"`
 	ParticipateTest  bool     `json:"participate_test"`
+	// ConfigGroupName 是「准入配置组」列（000052）：填组名，由调用方换算成 group id。
+	ConfigGroupName  string   `json:"test_config_group_name"`
 	StandardModelID  int64    `json:"standard_model_id,omitempty"`
 	StandardModelName string  `json:"standard_model_name,omitempty"`
 	OfficialID       string   `json:"official_id,omitempty"`
@@ -38,14 +40,15 @@ const (
 	importSheetData  = "申报导入"
 	importSheetModel = "标准模型"
 	importSheetHelp  = "填写说明"
+	// 说明：准入配置组按**组名**匹配；组名必须先在申报页的「准入测试配置」里存在。
 	// MaxImportRows 防止一次导入过大的文件。
 	MaxImportRows = 200
 )
 
-var templateHeader = []string{"对应标准模型", "接口模型 ID", "采购系数", "压力测试"}
+var templateHeader = []string{"对应标准模型", "接口模型 ID", "采购系数", "压力测试", "准入配置组"}
 
 // BuildSubmissionTemplate 生成导入模板：数据表 + 标准模型目录 + 填写说明。
-func BuildSubmissionTemplate(models []ImportModel) ([]byte, error) {
+func BuildSubmissionTemplate(models []ImportModel, groupNames []string) ([]byte, error) {
 	f := excelize.NewFile()
 	defer func() { _ = f.Close() }()
 
@@ -66,7 +69,10 @@ func BuildSubmissionTemplate(models []ImportModel) ([]byte, error) {
 			return nil, err
 		}
 	}
-	example := []any{"deepseek-chat", "my-deepseek", "0.6800", "否"}
+	example := []any{"deepseek-chat", "my-deepseek", "0.6800", "否", "原单组配置"}
+	if len(groupNames) > 0 && strings.TrimSpace(groupNames[0]) != "" {
+		example[4] = groupNames[0]
+	}
 	if len(models) > 0 && strings.TrimSpace(models[0].OfficialID) != "" {
 		example[0] = models[0].OfficialID
 	}
@@ -76,7 +82,7 @@ func BuildSubmissionTemplate(models []ImportModel) ([]byte, error) {
 			return nil, err
 		}
 	}
-	_ = f.SetColWidth(importSheetData, "A", "D", 24)
+	_ = f.SetColWidth(importSheetData, "A", "E", 24)
 
 	modelHeader := []string{"标准模型名称", "官方 ID", "模型公司", "模型类型"}
 	for i, title := range modelHeader {
@@ -122,7 +128,7 @@ func BuildSubmissionTemplate(models []ImportModel) ([]byte, error) {
 
 // ParseSubmissionSheet 解析导入文件并逐行校验。
 // 只解析不落库：前端拿预览结果确认后再走保存草稿。
-func ParseSubmissionSheet(data []byte, models []ImportModel) ([]ImportRow, error) {
+func ParseSubmissionSheet(data []byte, models []ImportModel, groupNames []string) ([]ImportRow, error) {
 	f, err := excelize.OpenReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("文件不是有效的 xlsx：%w", err)
@@ -168,6 +174,8 @@ func ParseSubmissionSheet(data []byte, models []ImportModel) ([]ImportRow, error
 		item.InterfaceModelID = cellAt(raw, 1)
 		item.Coefficient = cellAt(raw, 2)
 		participate, participateErr := parseYesNo(cellAt(raw, 3))
+		// 「准入配置组」：必填，且必须是本主体已存在的组名（000052）。
+		item.ConfigGroupName = strings.TrimSpace(cellAt(raw, 4))
 
 		fail := func(msg string) {
 			item.OK = false
@@ -201,6 +209,11 @@ func ParseSubmissionSheet(data []byte, models []ImportModel) ([]ImportRow, error
 		}
 		if participateErr != nil {
 			fail("压力测试列只能填 是/否")
+		}
+		if item.ConfigGroupName == "" {
+			fail("请填写准入配置组")
+		} else if !containsString(groupNames, item.ConfigGroupName) {
+			fail(fmt.Sprintf("准入配置组「%s」不存在，请先在页面上新增该组", item.ConfigGroupName))
 		}
 		item.ParticipateTest = participate
 		result = append(result, item)
