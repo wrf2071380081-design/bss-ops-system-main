@@ -93,5 +93,16 @@ func registerTradeRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, portal 
 		)
 	}
 
+	// 客户操作记录（B3a）：operation_log 的双实体时间线（customer_profile + onboarding_flow）。
+	// 需要两个依赖：RegistryService 做 404/403 判定（与客户档案同口径），
+	// CustomerWorkspaceRuntime 做只读查询。任一为 nil 就不挂载。
+	if deps.CustomerRegistrySvc != nil && deps.CustomerWorkspace != nil {
+		olh := NewCustomerOperationLogHandler(deps.CustomerRegistrySvc, deps.CustomerWorkspace)
+		protected.GET("/customers/:id/operation-logs",
+			middleware.RequirePerm(perm.M8View),
+			olh.ListCustomerOperationLogs,
+		)
+	}
+
 	// 新路由加在这里。
 }
