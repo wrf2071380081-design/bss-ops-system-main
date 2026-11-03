@@ -499,8 +499,15 @@ onMounted(async () => {
         <el-table-column label="办理状态" width="140">
           <template #default="{ row }">{{ row.handling_status }}</template>
         </el-table-column>
-        <el-table-column label="详情" width="80" fixed="right">
-          <template #default="{ row }"><el-button link type="primary" @click="openDetail(row)">详情</el-button></template>
+        <!-- 行操作：详情（独立页）+ 移交（共用弹窗）。
+             移交必须留在列表里：它是"看谁名下、当场调整"的操作，
+             进详情再移交会把用户原来的路径变远——技术重构不该改用户的习惯。
+             权限沿用 M8:E（CUSTOMER_EDIT），无权限不显示。 -->
+        <el-table-column label="操作" width="130" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+            <el-button v-if="canTransfer" link type="primary" @click="openTransfer(row)">移交</el-button>
+          </template>
         </el-table-column>
         <template #empty><el-empty description="没有符合条件的客户" :image-size="64" /></template>
       </el-table>
