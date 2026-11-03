@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -379,7 +380,8 @@ func TestCustomerOnboardingStoreCompleteContractPromotesConfig(t *testing.T) {
 	}
 	contract := findNode(flow, "CONTRACT")
 	updated, err := svc.CompleteNode(ctx, customer.CompleteNodeInput{
-		NodeID: contract.ID, Reason: "合同与授信已归档（纸质已入档）", Operator: f.staffA, Request: "qa-onboarding-contract-done",
+		NodeID: contract.ID, Reason: "合同与授信已归档（纸质已入档）", F12Reference: "HT-QA-001",
+		Operator: f.staffA, Request: "qa-onboarding-contract-done",
 	})
 	if err != nil {
 		t.Fatalf("complete contract: %v", err)
@@ -392,6 +394,14 @@ func TestCustomerOnboardingStoreCompleteContractPromotesConfig(t *testing.T) {
 	}
 	if updated.CurrentNode != customer.OnboardingNodeConfig {
 		t.Fatalf("current_node 应变为 CONFIG，got %q", updated.CurrentNode)
+	}
+	// 节点 note 必须留下「客户版 F12 provider 未实现」的痕迹，避免后来人以为漏了就绪校验。
+	contractNode := findNode(updated, "CONTRACT")
+	if !strings.Contains(contractNode.Note, "F12 就绪能力待客户版 provider 就绪后启用") {
+		t.Fatalf("节点 note 缺少 F12 未接的说明：%q", contractNode.Note)
+	}
+	if !strings.Contains(contractNode.Note, "纸质已入档") {
+		t.Fatalf("节点 note 应保留办理人说明：%q", contractNode.Note)
 	}
 }
 
@@ -443,7 +453,8 @@ func TestCustomerOnboardingStoreAuditRows(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	if _, err := svc.CompleteNode(ctx, customer.CompleteNodeInput{
-		NodeID: findNode(flow, "CONTRACT").ID, Reason: "合同与授信已归档", Operator: f.staffA, Request: "qa-audit-contract",
+		NodeID: findNode(flow, "CONTRACT").ID, Reason: "合同与授信已归档", F12Reference: "HT-AUDIT-9",
+		Operator: f.staffA, Request: "qa-audit-contract",
 	}); err != nil {
 		t.Fatalf("complete contract: %v", err)
 	}
@@ -468,6 +479,17 @@ SELECT count(*) FROM public.operation_log
 	assertAudit("START", 1)
 	assertAudit("COMPLETE_CONTRACT", 1)
 	assertAudit("COMPLETE_CONFIG", 1)
+
+	// CONTRACT 审计必须记下可选凭据（合同号 / F12 记录号）。
+	var reference string
+	if err := db.QueryRowContext(ctx, `
+SELECT COALESCE("after"->>'f12_reference','') FROM public.operation_log
+ WHERE entity_type='onboarding_flow' AND entity_id=$1 AND action='COMPLETE_CONTRACT'`, flow.ID).Scan(&reference); err != nil {
+		t.Fatalf("load contract audit: %v", err)
+	}
+	if reference != "HT-AUDIT-9" {
+		t.Fatalf("审计未记录 F12 凭据，got %q", reference)
+	}
 
 	// before/after 与 request_id 必须落上（可追溯）。
 	var hasBefore, hasAfter, requestID string

@@ -294,7 +294,9 @@ func TestOnboardingCompleteContractUsesOperatorConfirmation(t *testing.T) {
 	}}
 	svc := newOnboardingServiceWith(store, nil)
 
-	if _, err := svc.CompleteNode(context.Background(), CompleteNodeInput{NodeID: 30, Reason: "合同与授信已归档", Operator: 42, Request: "req"}); err != nil {
+	if _, err := svc.CompleteNode(context.Background(), CompleteNodeInput{
+		NodeID: 30, Reason: "合同与授信已归档", F12Reference: " HT-2026-001 ", Operator: 42, Request: "req",
+	}); err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
 	if len(store.contractCalls) != 1 || len(store.configCalls) != 0 {
@@ -303,6 +305,10 @@ func TestOnboardingCompleteContractUsesOperatorConfirmation(t *testing.T) {
 	call := store.contractCalls[0]
 	if call.Reason != "合同与授信已归档" || call.OperatorID != 42 || call.RequestID != "req" {
 		t.Fatalf("确认说明/操作员/请求号未透传：%+v", call)
+	}
+	// 可选凭据（合同号 / F12 记录号）应去空格后原样带给仓储（写审计用）。
+	if call.F12Reference != "HT-2026-001" {
+		t.Fatalf("F12 凭据未透传：%+v", call)
 	}
 
 	// 没写说明就不许确认（这是唯一的"资料已归档"依据）。

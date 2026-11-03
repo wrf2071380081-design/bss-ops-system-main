@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -375,9 +376,12 @@ SELECT status FROM %s WHERE id = $1 AND flow_id = $2 AND node_key = 'CONTRACT' A
 	}
 
 	now := time.Now().UTC()
+	// 节点 note 同时记录「当前是按办理人确认完成的」这件事：
+	// 客户版 F12 provider 尚未实现，若不写清楚，后来人会以为这里漏了就绪校验。
+	note := strings.TrimSpace(in.Reason) + "\nF12 就绪能力待客户版 provider 就绪后启用（当前按办理人确认完成）"
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 UPDATE %s SET status = 'COMPLETED', completed_at = $2, note = $3 WHERE id = $1`,
-		s.table("onboarding_node")), in.NodeID, now, in.Reason); err != nil {
+		s.table("onboarding_node")), in.NodeID, now, note); err != nil {
 		return nil, mapOnboardingError(err)
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
@@ -390,9 +394,16 @@ UPDATE %s SET current_node = 'CONFIG', updated_at = $2 WHERE id = $1`,
 		s.table("onboarding_flow")), in.FlowID, now); err != nil {
 		return nil, mapOnboardingError(err)
 	}
+	after := map[string]any{
+		"node_key": "CONTRACT", "node_status": "COMPLETED", "current_node": "CONFIG",
+		"confirmation": "合同与授信已归档（办理人确认，客户侧不走 F12 就绪快照）",
+	}
+	if in.F12Reference != "" {
+		after["f12_reference"] = in.F12Reference
+	}
 	if err := s.auditFlow(ctx, tx, in.FlowID, in.OperatorID, "COMPLETE_CONTRACT",
 		map[string]any{"node_key": "CONTRACT", "node_status": status, "current_node": "CONTRACT"},
-		map[string]any{"node_key": "CONTRACT", "node_status": "COMPLETED", "current_node": "CONFIG", "confirmation": "合同与授信已归档（办理人确认，客户侧不走 F12 就绪快照）"},
+		after,
 		in.Reason, in.RequestID); err != nil {
 		return nil, mapOnboardingError(err)
 	}

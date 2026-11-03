@@ -82,11 +82,16 @@ type StartOnboardingInput struct {
 }
 
 // CompleteNodeInput 是节点完成的入参。
+//
+// F12Reference 是可选的外部凭据（合同号 / F12 记录号）：客户侧不走 F12 就绪校验
+// （该能力目前只有供应商 provider），所以把办理人手里的凭据原样留痕到审计，
+// 便于日后审计追溯「凭什么说合同与授信已归档」。
 type CompleteNodeInput struct {
-	NodeID   int64  `json:"-"`
-	Reason   string `json:"reason"`
-	Operator int64  `json:"-"`
-	Request  string `json:"-"`
+	NodeID       int64  `json:"-"`
+	Reason       string `json:"reason"`
+	F12Reference string `json:"f12_reference"`
+	Operator     int64  `json:"-"`
+	Request      string `json:"-"`
 }
 
 // OnboardingNode 是节点投影。
@@ -146,13 +151,15 @@ type CompleteConfigRecord struct {
 }
 
 // CompleteContractRecord 是 CONTRACT 节点完成的落库参数。
-// 没有就绪摘要：客户侧不走 F12 就绪（只覆盖供应商），办理人说明即确认依据。
+// 没有就绪摘要：客户侧不走 F12 就绪（只覆盖供应商），办理人说明即确认依据；
+// F12Reference 是可选的外部凭据，原样写进审计 after。
 type CompleteContractRecord struct {
-	FlowID     int64
-	NodeID     int64
-	OperatorID int64
-	RequestID  string
-	Reason     string
+	FlowID       int64
+	NodeID       int64
+	OperatorID   int64
+	RequestID    string
+	Reason       string
+	F12Reference string
 }
 
 // OnboardingNodeContext 是完成节点前需要读到的上下文。
@@ -304,6 +311,7 @@ func (s *OnboardingService) CompleteNode(ctx context.Context, in CompleteNodeInp
 		return s.store.CompleteContract(ctx, CompleteContractRecord{
 			FlowID: node.FlowID, NodeID: node.NodeID, OperatorID: in.Operator,
 			RequestID: in.Request, Reason: reason,
+			F12Reference: strings.TrimSpace(in.F12Reference),
 		})
 	default:
 		return nil, ErrOnboardingNodeNotFound

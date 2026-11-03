@@ -168,6 +168,9 @@ func (h *CustomerOnboardingHandler) GetOnboarding(c *gin.Context) {
 type completeNodeBody struct {
 	ExpectedFlowRevision *int64 `json:"expected_flow_revision"`
 	Reason               string `json:"reason"`
+	// F12Reference：可选的外部凭据（合同号 / F12 记录号），原样写进审计。
+	// 客户侧不走 F12 就绪校验，所以凭据由办理人手填以提高可追溯性。
+	F12Reference string `json:"f12_reference"`
 }
 
 // CompleteCustomerNode 完成开通节点（M8:E + 幂等）。
@@ -180,7 +183,7 @@ type completeNodeBody struct {
 // @Security BearerAuth
 // @Param id path int64 true "onboarding_node.id"
 // @Param Idempotency-Key header string true "幂等键"
-// @Param body body completeNodeBody true "reason 必填"
+// @Param body body completeNodeBody true "reason 必填；f12_reference 可选（合同号/F12 记录号，落审计）"
 // @Success 200 {object} api.APIResponse "code=0；data=OnboardingFlow"
 // @Failure 400 {object} api.APIResponse "code=10001 缺少说明"
 // @Failure 401 {object} api.APIResponse "code=10002 未认证"
@@ -205,10 +208,11 @@ func (h *CustomerOnboardingHandler) CompleteCustomerNode(c *gin.Context) {
 		return
 	}
 	flow, err := h.svc.CompleteNode(c.Request.Context(), customer.CompleteNodeInput{
-		NodeID:   id,
-		Reason:   body.Reason,
-		Operator: op.StaffID,
-		Request:  requestIDOf(c),
+		NodeID:       id,
+		Reason:       body.Reason,
+		F12Reference: body.F12Reference,
+		Operator:     op.StaffID,
+		Request:      requestIDOf(c),
 	})
 	if err != nil {
 		response.Error(c, customerOnboardingErrToAppErr(err))
