@@ -334,7 +334,7 @@ func main() {
 		loc = time.FixedZone("CST", 8*3600) // Asia/Shanghai 兜底
 	}
 	sched := worker.NewScheduler(worker.NewCronLocker(dbClient.DB), log, loc)
-	nJobs := worker.RegisterJobs(sched, cfg.Worker, approveSvc, lifecycleSvc, costSvc, costJobs, eventJobs)
+	nJobs := worker.RegisterJobs(sched, cfg.Worker, approveSvc, lifecycleSvc, costSvc, costJobs, eventJobs, customerResourceLinkSvc)
 	nJobs += worker.RegisterPlanReminderJob(sched, cfg.Worker, planReminderStore, log)
 	if testPlatform != nil && testPlatform.Service != nil {
 		nJobs += worker.RegisterTestPlatformPollJob(sched, cfg.Worker, cfg.TestPlatform, testPlatform.Service, log)
