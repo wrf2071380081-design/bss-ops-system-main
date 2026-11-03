@@ -105,3 +105,46 @@ func TestSupplierContractStatusCountsCompletedContractNode(t *testing.T) {
 		t.Fatalf("历史词 DONE 也应显示「已归档」，got %q", got)
 	}
 }
+
+// TestSupplierContractStatusPrioritizesInProgress 钉住 CASE 的**优先级**（QA 实测发现的实现事实）：
+// 「办理中」优先于「已归档」，即判据不是"任意一条已完成即已归档"，
+// 而是"没有在办的 + 至少一条已完成的"。
+//
+// 这条很重要：如果有人为了"任意一条完成即已归档"去调换分支顺序，
+// 那么"老单已归档 + 新单在办"的供应商会在列表上显示已归档，掩盖正在办的事。
+func TestSupplierContractStatusPrioritizesInProgress(t *testing.T) {
+	db := openB3ATestDB(t)
+	rt := NewSupplyChainRuntime(db, nil)
+	ctx := context.Background()
+
+	// ---- 供应商 A：一条已完成 + 一条在办 → 办理中 ----
+	nameA := fmt.Sprintf("QA-合同优先级-%d", time.Now().UnixNano())
+	supplierA := createTestSupplier(t, db, nameA)
+	createContractNode(t, db, supplierA, "COMPLETED")
+	inProgressNode := createContractNode(t, db, supplierA, "IN_PROGRESS")
+	if got := supplierContractStatus(t, rt, nameA); got != "办理中" {
+		t.Fatalf("老单已完成 + 新单在办 → 应显示「办理中」（办理中优先于已归档），got %q", got)
+	}
+	// 把在办的那条也办完 → 才变已归档
+	if _, err := db.ExecContext(ctx,
+		`UPDATE public.onboarding_node SET status='COMPLETED', completed_at=now() WHERE id=$1`, inProgressNode); err != nil {
+		t.Fatalf("update node: %v", err)
+	}
+	if got := supplierContractStatus(t, rt, nameA); got != "已归档" {
+		t.Fatalf("全部办完后应显示「已归档」，got %q", got)
+	}
+
+	// ---- 供应商 B：一条已完成 + 一条已取消（enabled=false）→ 已归档 ----
+	// CANCELED 节点 enabled=false，不参与"办理中"判断（那单已经整单取消），所以落到已归档。
+	nameB := fmt.Sprintf("QA-合同取消-%d", time.Now().UnixNano())
+	supplierB := createTestSupplier(t, db, nameB)
+	createContractNode(t, db, supplierB, "COMPLETED")
+	canceledNode := createContractNode(t, db, supplierB, "CANCELED")
+	if _, err := db.ExecContext(ctx,
+		`UPDATE public.onboarding_node SET enabled=FALSE WHERE id=$1`, canceledNode); err != nil {
+		t.Fatalf("disable canceled node: %v", err)
+	}
+	if got := supplierContractStatus(t, rt, nameB); got != "已归档" {
+		t.Fatalf("已完成的 + 已取消（enabled=false）应显示「已归档」，got %q", got)
+	}
+}

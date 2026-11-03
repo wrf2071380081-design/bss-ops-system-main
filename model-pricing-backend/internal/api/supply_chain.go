@@ -323,6 +323,15 @@ func supplierWorkspaceListQuery(aliasTableAvailable bool) string {
 	return `SELECT s.id,s.name,` + aliases + `,s.region,COALESCE(s.phone,''),
        (SELECT count(*) FROM public.resource res WHERE res.supplier_id=s.id),
        COALESCE(current_credit.amount,''),current_credit.status,COALESCE(s.settlement_currency,''),COALESCE(s.tax_rate::text,''),
+       -- 合同状态判据（优先级从高到低，不要随意调换）：
+       --   1) 存在 enabled 且未完成的 CONTRACT 节点（IN_PROGRESS/WAITING_PREDECESSOR）→ 办理中
+       --   2) 存在 contract 记录且状态 PROCESSING → 办理中
+       --   3) 存在 enabled 且已完成的 CONTRACT 节点（COMPLETED，历史词 DONE）→ 已归档
+       --   4) 存在 contract 记录且状态 ARCHIVED → 已归档
+       --   5) 都没有 → 未登记
+       -- 为什么"办理中"优先于"已归档"：同一供应商可能有多条历史 flow，
+       -- 只要还有一条合同节点在办，列表就应以"办理中"为准；只有全部办完才显示"已归档"。
+       -- 因此判据不是"任意一条已完成即已归档"，而是"没有在办的 + 至少一条已完成的"。
        CASE
          WHEN EXISTS (SELECT 1 FROM public.onboarding_flow f JOIN public.onboarding_node n ON n.flow_id=f.id
                       WHERE f.kind='SUPPLIER' AND f.owner_id=s.id AND n.node_key='CONTRACT' AND n.enabled
