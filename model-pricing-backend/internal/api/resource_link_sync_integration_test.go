@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -175,13 +176,34 @@ ON CONFLICT (config_key) DO UPDATE SET config_value=''`); err != nil {
 	}
 }
 
+// insertTestEvent 往 outbox 里插一条**与真实生产方同形**的资源状态事件。
+//
+// ⚠️ 这里曾经是 G3-0 的假绿灯来源：旧版本用 `json.Marshal(map{"resource_id": int64})`
+// 手搓 payload，写进库里的是 JSON **数字**，而真实生产方
+// （internal/infra/supplypg/plan_execution.go 的 payloadValues）发的是 **字符串**
+// （领域 ID 一律 string，见 flexID 注释）。于是单测绿、线上联动 100% 失败。
+//
+// 现在字段集合与类型逐字对齐生产方那一段（含 plan_id/resource_revision 等字符串字段），
+// 生产方改契约时这里必须同步，否则又会变成假绿灯。
+// 消费端的兼容性另有单测钉住（resource_link_sync_test.go 的 flexID 用例）。
 func insertTestEvent(t *testing.T, db *sql.DB, eventType string, resourceID int64) int64 {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{
-		"contract": "supply.resource_state_changed", "schema_version": 1,
-		"resource_id": resourceID, "region": "CN",
-		"state":           map[string]string{"RESOURCE_OFFLINED": "OFFLINE", "RESOURCE_ONLINED": "ADMITTED"}[eventType],
-		"affected_status": "PENDING", "occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"contract":           "supply.resource_state_changed",
+		"schema_version":     1,
+		"plan_id":            "1",
+		"plan_revision":      "1",
+		"resource_id":        strconv.FormatInt(resourceID, 10), // ← 字符串，与生产方一致
+		"resource_revision":  "2",
+		"region":             "CN",
+		"state":              map[string]string{"RESOURCE_OFFLINED": "OFFLINE", "RESOURCE_ONLINED": "ADMITTED"}[eventType],
+		"previous_state":     map[string]string{"RESOURCE_OFFLINED": "ADMITTED", "RESOURCE_ONLINED": "OFFLINE"}[eventType],
+		"actor_id":           "3",
+		"reason":             "集成测试：模拟供应域事件",
+		"completion_note":    "集成测试",
+		"request_id":         "qa-link-sync-request",
+		"affected_status":    "PENDING",
+		"occurred_at":        time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
 		t.Fatalf("marshal event payload: %v", err)

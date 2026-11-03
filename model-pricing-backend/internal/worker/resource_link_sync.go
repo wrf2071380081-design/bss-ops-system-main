@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -37,9 +39,44 @@ func isResourceStateEvent(eventType string) bool {
 	return eventType == "RESOURCE_OFFLINED" || eventType == "RESOURCE_ONLINED"
 }
 
+// flexID 兼容「事件里 ID 是 JSON 字符串」与「裸数字」两种形态。
+//
+// 为什么必须是自定义类型：
+//   - 供应域写 outbox 时 ID 一律走 `strconv.FormatUint` / 领域 string ID
+//     （`plan_execution.go` 的 payloadValues），即 **JSON 字符串** `"1550"`；
+//     原因是 19 位量级的 ID 用 JSON number 会让 JS 消费端丢精度，这是对外 webhook 的既定契约。
+//   - 声明成 `int64` → `json: cannot unmarshal string into Go struct field ... of type int64`（G3-0 真实线上表现：联动 100% 失败）。
+//   - 声明成 `json.Number` **也不行**：json.Number 只接受裸数字字面量，遇到带引号的 `"1550"` 依然报错。
+//   - 所以这里两种形态都收：先去掉可能的引号，再 ParseInt。
+//
+// 空值（null / ""）解析失败 → 交由上层按「事件缺 resource_id」报错，不静默当 0 处理。
+type flexID int64
+
+// UnmarshalJSON 实现 json.Unmarshaler：接受 "1550" 与 1550 两种写法。
+func (f *flexID) UnmarshalJSON(raw []byte) error {
+	text := strings.TrimSpace(string(raw))
+	if text == "null" {
+		return fmt.Errorf("flexID: null")
+	}
+	text = strings.Trim(text, `"`)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("flexID: empty")
+	}
+	value, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return fmt.Errorf("flexID: %w", err)
+	}
+	*f = flexID(value)
+	return nil
+}
+
 // resourceStatePayload 是 event_outbox.payload 里联动需要的字段（其余字段忽略）。
+//
+// ResourceID 用 flexID：生产方（供应域 plan 执行）发的是 JSON 字符串，
+// 见 flexID 注释——这里**不能**改成 int64，否则整条联动会静默失败。
 type resourceStatePayload struct {
-	ResourceID   int64  `json:"resource_id"`
+	ResourceID   flexID `json:"resource_id"`
 	Region       string `json:"region"`
 	State        string `json:"state"`
 	PreviousStat string `json:"previous_state"`
@@ -74,25 +111,26 @@ func SyncResourceLinks(
 	if err := json.Unmarshal(rawPayload, &payload); err != nil {
 		return fmt.Errorf("resource link sync: decode payload of event %d: %w", eventID, err)
 	}
-	if payload.ResourceID <= 0 {
+	resourceID := int64(payload.ResourceID)
+	if resourceID <= 0 {
 		return fmt.Errorf("resource link sync: event %d has no resource_id", eventID)
 	}
 
 	// request_id 用事件 id：从审计行能反查是哪一次下架/上架引发的迁移。
 	requestID := fmt.Sprintf("event:%d", eventID)
-	affected, err := links.ListLinksByResource(ctx, payload.ResourceID)
+	affected, err := links.ListLinksByResource(ctx, resourceID)
 	if err != nil {
-		return fmt.Errorf("resource link sync: list links of resource %d: %w", payload.ResourceID, err)
+		return fmt.Errorf("resource link sync: list links of resource %d: %w", resourceID, err)
 	}
 	if len(affected) == 0 {
 		log.Info("resource link sync: no active customer link",
-			zap.String("event_type", eventType), zap.Int64("event_id", eventID), zap.Int64("resource_id", payload.ResourceID))
+			zap.String("event_type", eventType), zap.Int64("event_id", eventID), zap.Int64("resource_id", resourceID))
 		return nil
 	}
 
 	log.Info("resource link sync: start",
 		zap.String("event_type", eventType), zap.Int64("event_id", eventID),
-		zap.Int64("resource_id", payload.ResourceID), zap.Int("links", len(affected)))
+		zap.Int64("resource_id", resourceID), zap.Int("links", len(affected)))
 
 	for index := range affected {
 		link := affected[index]
