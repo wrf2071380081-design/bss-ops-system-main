@@ -100,6 +100,12 @@ VALUES ('QA', 'TEXT', 'QA-客户绑定集成', $1) RETURNING id`, officialID).Sc
 			sql  string
 			args []any
 		}{
+			// 先删审计再删绑定：绑定迁移现在与审计同事务写入（operation_log.entity_type='customer_resource_link'），
+			// 只删绑定会在库里留下指向已删除 link 的孤儿审计——QA 就撞到过这种残留。
+			// 用子查询在一次 Exec 里完成，避免"先查 id 再删"的两步窗口。
+			{`DELETE FROM public.operation_log
+			   WHERE entity_type = 'customer_resource_link'
+			     AND entity_id IN (SELECT id FROM public.customer_resource_link WHERE standard_model_id = $1)`, []any{f.modelID}},
 			{`DELETE FROM public.customer_resource_link WHERE standard_model_id = $1`, []any{f.modelID}},
 			{`DELETE FROM public.resource WHERE standard_model_id = $1`, []any{f.modelID}},
 			{`DELETE FROM public.standard_model WHERE id = $1`, []any{f.modelID}},
