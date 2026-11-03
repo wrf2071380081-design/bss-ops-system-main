@@ -213,6 +213,34 @@ func (r *WorkbenchInboxRepo) ListPeople(ctx context.Context) ([]workbench.Person
 	return list, nil
 }
 
+// flowOwnerRow 是 onboarding_flow 的主体投影（只为拼 deeplink）。
+type flowOwnerRow struct {
+	ID      int64  `gorm:"column:id"`
+	Kind    string `gorm:"column:kind"`
+	OwnerID int64  `gorm:"column:owner_id"`
+}
+
+// FlowOwners 批量取「流程 → 主体类型 + 主体 id」。
+//
+// 只被 ONBOARDING_NODE 行用到；一次查询覆盖整页，避免 N+1。
+func (r *WorkbenchInboxRepo) FlowOwners(ctx context.Context, flowIDs []int64) (map[int64]workbench.FlowOwner, error) {
+	out := make(map[int64]workbench.FlowOwner, len(flowIDs))
+	if len(flowIDs) == 0 {
+		return out, nil
+	}
+	var rows []flowOwnerRow
+	if err := r.txOf(ctx).Table("onboarding_flow").
+		Select("id, kind, owner_id").
+		Where("id IN ?", flowIDs).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.ID] = workbench.FlowOwner{Kind: row.Kind, OwnerID: row.OwnerID}
+	}
+	return out, nil
+}
+
 type operationRow struct {
 	ID           int64     `gorm:"column:id"`
 	Action       string    `gorm:"column:action"`
