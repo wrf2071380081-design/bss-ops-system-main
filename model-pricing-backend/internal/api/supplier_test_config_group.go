@@ -107,33 +107,30 @@ func (s *SupplierTestConfigGroupService) Create(ctx context.Context, supplierID 
 	return &dto, nil
 }
 
-// Update 改名 / 换 URL / 换 Key / 启停；改完只刷新该组上的未提交行。
+// Update 局部更新：name / base_url / api_key / enabled **传哪个改哪个**。
+//
+// 这是真正的 PATCH 语义（000052 契约）：只传 base_url 时不能因为"没传 name"就 400，
+// 否则前端将来只改 Key（最常见操作）会直接撞墙。四个字段都不传 = 空操作，
+// 原样返回当前组（不报错、不写库）。
+//
+// 改完只在 URL/Key 变化时刷新**该组**上的未提交行（改名不改指纹，不需要刷）。
 func (s *SupplierTestConfigGroupService) Update(ctx context.Context, supplierID, id int64, patch supplypg.TestConfigGroupPatch, updatedBy int64) (*TestConfigGroupDTO, error) {
-	if patch.Name != nil || patch.BaseURL != nil || patch.APIKey != nil {
-		name := ""
-		if patch.Name != nil {
-			name = *patch.Name
-		}
-		baseURL := ""
-		if patch.BaseURL != nil {
-			baseURL = *patch.BaseURL
-		}
-		trimmedName, trimmedURL, err := validateGroupInput(name, baseURL, patch.APIKey)
+	if err := validateTestConfigGroupPatch(&patch); err != nil {
+		return nil, err
+	}
+	if patch.Name == nil && patch.BaseURL == nil && patch.APIKey == nil && patch.Enabled == nil {
+		// 空操作：读当前状态返回，不写库。
+		current, err := s.store.GetForTest(ctx, supplierID, id)
 		if err != nil {
 			return nil, err
 		}
-		if patch.Name != nil {
-			patch.Name = &trimmedName
-		}
-		if patch.BaseURL != nil {
-			patch.BaseURL = &trimmedURL
-		}
+		dto := buildTestConfigGroupDTO(current.TestConfigGroup)
+		return &dto, nil
 	}
 	group, err := s.store.Update(ctx, supplierID, id, patch, updatedBy)
 	if err != nil {
 		return nil, err
 	}
-	// 只有「会影响发单目标」的字段（URL/Key）才需要刷快照；改名不改指纹。
 	if patch.BaseURL != nil || patch.APIKey != nil {
 		if err := s.store.RefreshOpenRowSnapshotsByGroup(ctx, supplierID, id); err != nil {
 			return nil, err
@@ -141,6 +138,46 @@ func (s *SupplierTestConfigGroupService) Update(ctx context.Context, supplierID,
 	}
 	dto := buildTestConfigGroupDTO(*group)
 	return &dto, nil
+}
+
+// validateTestConfigGroupPatch 只校验**传了的**字段，并顺手把值 trim 干净。
+//
+// 与 Create 的差别：Create 必须同时有 name 与 base_url，PATCH 只要校验出现的那几个。
+func validateTestConfigGroupPatch(patch *supplypg.TestConfigGroupPatch) error {
+	if patch == nil {
+		return nil
+	}
+	if patch.Name != nil {
+		name := strings.TrimSpace(*patch.Name)
+		if name == "" {
+			return errTestConfigGroupNameRequired
+		}
+		if len([]rune(name)) > testConfigGroupNameMaxLen {
+			return errTestConfigGroupNameTooLong
+		}
+		patch.Name = &name
+	}
+	if patch.BaseURL != nil {
+		baseURL := strings.TrimSpace(*patch.BaseURL)
+		if baseURL == "" {
+			return errTestConfigGroupURLRequired
+		}
+		if len(baseURL) > testConfigGroupURLMaxLen {
+			return errTestConfigGroupURLTooLong
+		}
+		if !validTestBaseURL(baseURL) {
+			return errTestConfigGroupURLInvalid
+		}
+		patch.BaseURL = &baseURL
+	}
+	if patch.APIKey != nil {
+		key := strings.TrimSpace(*patch.APIKey)
+		if len(key) > credentialKeyMaxLen {
+			return errTestConfigGroupKeyTooLong
+		}
+		patch.APIKey = &key
+	}
+	return nil
 }
 
 // Disable 停用一组（不删）。
@@ -295,10 +332,7 @@ func (h *SupplierTestConfigGroupHandler) update(c *gin.Context) {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "请求体格式不正确", 400))
 		return
 	}
-	if req.Name == nil && req.BaseURL == nil && req.APIKey == nil && req.Enabled == nil {
-		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "没有需要修改的字段", 400))
-		return
-	}
+	// 空 body 是合法的空操作（PATCH 语义），不再 400。
 	dto, err := h.svc.Update(c.Request.Context(), supplierID, id, supplypg.TestConfigGroupPatch{
 		Name: req.Name, BaseURL: req.BaseURL, APIKey: req.APIKey, Enabled: req.Enabled,
 	}, accountID)

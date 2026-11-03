@@ -1200,6 +1200,17 @@ func applyConfigGroups(rows []supplypg.SubmissionRowRecord, groups map[int64]sup
 	return rows
 }
 
+// formatOptionalID 把可空 ID 转成 DTO 的字符串（nil → 空串，不 panic）。
+//
+// 行的 test_config_group_id 历史上可能为空（000052 之前的行未被回填覆盖到、
+// 或组被物理删除），所以这里必须容忍 nil。
+func formatOptionalID(value *int64) string {
+	if value == nil {
+		return ""
+	}
+	return strconv.FormatInt(*value, 10)
+}
+
 // buildSubmissionDTO 组装前端契约；顺带推导测试状态与权限。
 func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.SubmissionRowRecord) submissionDTO {
 	submitted := header.Status == submissionPendingTest || header.Status == submissionPending || header.Status == submissionApproved
@@ -1220,6 +1231,12 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			StandardModelID: strconv.FormatInt(row.StandardModelID, 10), StandardModelName: row.StandardModelName,
 			OfficialID: row.OfficialID, Coefficient: row.Coefficient, TestBaseURL: row.TestBaseURL,
 			ParticipateTest: row.ParticipateTest,
+			// 000052：这三列仓储已经 SELECT+Scan 进来了，这里必须**搬进 DTO**。
+			// 漏搬不会编译报错、不会类型报错，但会让前端「准入配置组」下拉全空、
+			// rowsWithoutGroup 恒真 → 提交按钮永久禁用（QA 报的 P0 就是这个）。
+			TestConfigGroupID:      formatOptionalID(row.TestConfigGroupID),
+			TestConfigGroupName:    row.TestConfigGroupName,
+			TestConfigGroupEnabled: row.TestConfigGroupEnabled,
 		}
 		dto.ModelNames = append(dto.ModelNames, row.StandardModelName)
 		if row.ConnectivityStatus != nil {
