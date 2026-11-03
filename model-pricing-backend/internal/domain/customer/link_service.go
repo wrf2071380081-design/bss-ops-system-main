@@ -32,6 +32,9 @@ type ResourceLinkStore interface {
 	LoadResourceFacts(ctx context.Context, resourceID int64) (*ResourceFacts, error)
 	// ListCustomerModelServices 按客户聚合出「接入模型」投影原始行。
 	ListCustomerModelServices(ctx context.Context, customerProfileID int64) ([]CustomerModelServiceRow, error)
+	// ListLinksByResource 按资源列出未归档的绑定（供应域下架/上架事件驱动联动用）。
+	// 返回带 revision 的快照：联动逐条迁移时要用它做乐观锁，冲突就跳过这一条。
+	ListLinksByResource(ctx context.Context, resourceID int64) ([]ResourceLink, error)
 }
 
 // ResourceLinkService 客户接入模型绑定服务。
@@ -131,6 +134,7 @@ func (s *ResourceLinkService) Act(ctx context.Context, in LinkActionInput, opera
 		return nil, err
 	}
 	note := actionNote(in.Action, strings.TrimSpace(in.Reason))
+	actor := operatorID
 	record := TransitionRecord{
 		ID:               in.ID,
 		ExpectedRevision: in.ExpectedRevision,
@@ -138,6 +142,9 @@ func (s *ResourceLinkService) Act(ctx context.Context, in LinkActionInput, opera
 		Archived:         ArchivedAfter(in.Action),
 		Note:             note,
 		RequestID:        requestID,
+		Action:           in.Action,
+		FromState:        current.State,
+		ActorID:          &actor,
 	}
 	// 确认停用后绑定归档，state_before_offline 已无意义，清空以免误导后续读取。
 	if record.Archived {
@@ -183,6 +190,10 @@ func (s *ResourceLinkService) MarkSupplyOffline(ctx context.Context, id int64, e
 		StateBeforeOffline: current.State,
 		Note:               trace,
 		RequestID:          requestID,
+		Action:             LinkActionSupplyOffline,
+		FromState:          current.State,
+		// 系统事件触发：没有内部员工操作者，审计里 operator_id 留 NULL。
+		ActorID: nil,
 	})
 }
 
@@ -217,7 +228,24 @@ func (s *ResourceLinkService) MarkSupplyRestored(ctx context.Context, id int64, 
 		StateBeforeOffline: "", // 离开待处理态后清空留痕列
 		Note:               "供应资源重新上架，恢复到原状态（" + StateLabel(to) + "）",
 		RequestID:          requestID,
+		Action:             LinkActionSupplyRestored,
+		FromState:          current.State,
+		ActorID:            nil, // 系统事件触发
 	})
+}
+
+// ListLinksByResource 列出某条资源上未归档的客户绑定。
+//
+// 供应域「资源下架/上架」事件驱动联动用：一条资源可能被 N 个客户绑定，
+// 联动按返回的 revision 逐条做乐观锁迁移（冲突就跳过该条）。
+func (s *ResourceLinkService) ListLinksByResource(ctx context.Context, resourceID int64) ([]ResourceLink, error) {
+	if err := s.available(); err != nil {
+		return nil, err
+	}
+	if resourceID <= 0 {
+		return nil, ErrLinkNotFound
+	}
+	return s.store.ListLinksByResource(ctx, resourceID)
 }
 
 // Rebind 重新配置来源：归档旧绑定 + 在同一事务内新建一条 ACTIVE。

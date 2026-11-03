@@ -3,6 +3,7 @@ package supplypg
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -167,7 +168,20 @@ func (s *CustomerResourceLinkStore) GetLink(ctx context.Context, id int64) (*cus
 //
 // WHERE archived = FALSE 让「已归档的绑定不能再被系统事件改动」由 SQL 兜住；
 // 更新 0 行时再查一次以便区分「不存在 / 已归档 / 版本冲突」。
+// ApplyTransition 带 revision 乐观锁的状态迁移，**并在同一事务里写审计**。
+//
+// 为什么审计放在仓储而不是领域服务：状态迁移与审计必须同生共死——
+// 服务层没有事务，先 UPDATE 再 INSERT 审计中间失败，会留下"状态变了但没有留痕"，
+// 而下架/确认停用这类动作正是要追责的场景。放这里还有一个好处：
+// Act（人工动作）与 MarkSupplyOffline/MarkSupplyRestored（事件驱动）**三条路径自动全覆盖**，
+// 不会出现"HTTP 有审计、事件触发没有"的两套逻辑。
 func (s *CustomerResourceLinkStore) ApplyTransition(ctx context.Context, in customer.TransitionRecord) (*customer.ResourceLink, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, mapLinkStorageError(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	query := fmt.Sprintf(`
 UPDATE %s
    SET state = $3::varchar(24),
@@ -180,7 +194,7 @@ UPDATE %s
        request_id = COALESCE(NULLIF($7, ''), request_id)
  WHERE id = $1 AND revision = $2 AND archived = FALSE
 RETURNING %s`, s.table("customer_resource_link"), linkColumns)
-	link, err := scanLink(s.db.QueryRowContext(ctx, query,
+	link, err := scanLink(tx.QueryRowContext(ctx, query,
 		in.ID, in.ExpectedRevision, in.To, in.StateBeforeOffline, in.Archived, in.Note, in.RequestID,
 	))
 	if err != nil {
@@ -189,7 +203,63 @@ RETURNING %s`, s.table("customer_resource_link"), linkColumns)
 		}
 		return nil, mapLinkStorageError(err)
 	}
+	if err := s.appendTransitionAudit(ctx, tx, link, in); err != nil {
+		return nil, mapLinkStorageError(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, mapLinkStorageError(err)
+	}
 	return link, nil
+}
+
+// appendTransitionAudit 写一条绑定迁移审计（与状态变更同事务）。
+//
+// operator_id 允许 NULL：事件驱动的迁移没有内部员工操作者（in.ActorID == nil），
+// 而 operation_log.operator_id 有指向 internal_staff 的外键，写 0 会直接违反约束。
+// 事件来源靠 request_id 前缀 "event:<id>" 反查，人工动作则是对应请求的 request_id。
+func (s *CustomerResourceLinkStore) appendTransitionAudit(ctx context.Context, tx *sql.Tx, link *customer.ResourceLink, in customer.TransitionRecord) error {
+	before, err := json.Marshal(map[string]any{"state": in.FromState})
+	if err != nil {
+		return err
+	}
+	after, err := json.Marshal(map[string]any{
+		"state":                link.State,
+		"archived":             link.Archived,
+		"state_before_offline": link.StateBeforeOffline,
+		"revision":             link.Revision,
+	})
+	if err != nil {
+		return err
+	}
+	query := fmt.Sprintf(`
+INSERT INTO %s (entity_type, entity_id, action, operator_id, operator_name_snapshot,
+                "before", "after", reason, request_id, created_at)
+VALUES ('customer_resource_link', $1, $2, $3,
+        (SELECT name FROM %s WHERE id = $3), $4::jsonb, $5::jsonb, NULLIF($6, ''), NULLIF($7, ''), now())`,
+		s.table("operation_log"), s.table("internal_staff"))
+	_, err = tx.ExecContext(ctx, query, link.ID, in.Action, in.ActorID, string(before), string(after), in.Note, in.RequestID)
+	return err
+}
+
+// ListLinksByResource 列出某条资源上未归档的客户绑定（供应域下架/上架事件联动用）。
+// 只取未归档的：已归档意味着客户已经不用这个来源了，下架事件与它无关。
+func (s *CustomerResourceLinkStore) ListLinksByResource(ctx context.Context, resourceID int64) ([]customer.ResourceLink, error) {
+	query := fmt.Sprintf(`SELECT %s FROM %s WHERE resource_id = $1 AND archived = FALSE ORDER BY id`,
+		linkColumns, s.table("customer_resource_link"))
+	rows, err := s.db.QueryContext(ctx, query, resourceID)
+	if err != nil {
+		return nil, mapLinkStorageError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]customer.ResourceLink, 0, 4)
+	for rows.Next() {
+		link, err := scanLink(rows)
+		if err != nil {
+			return nil, mapLinkStorageError(err)
+		}
+		out = append(out, *link)
+	}
+	return out, rows.Err()
 }
 
 // diagnoseTransition 在 UPDATE 影响 0 行后判断真实原因。

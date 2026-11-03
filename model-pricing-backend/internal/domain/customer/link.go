@@ -275,6 +275,15 @@ type TransitionRecord struct {
 	Archived           bool
 	Note               string
 	RequestID          string
+	// 以下是审计（operation_log）需要的三个字段，由服务层填：
+	//   Action    —— 动作码（ENABLE/DISABLE/... /SUPPLY_OFFLINE/SUPPLY_RESTORED）；
+	//                不要用 To（状态）代替，动作与状态不是一一对应；
+	//   FromState —— 迁移前状态，写进 before 快照；
+	//   ActorID   —— nil 表示系统事件驱动（事件触发），非 nil 才写 operator_id
+	//                （operation_log.operator_id 有指向 internal_staff 的外键，0 会违反约束）。
+	Action    string
+	FromState string
+	ActorID   *int64
 }
 
 type RebindRecord struct {

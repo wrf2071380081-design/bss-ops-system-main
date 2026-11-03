@@ -77,6 +77,17 @@ func (f *fakeLinkStore) LoadResourceFacts(_ context.Context, _ int64) (*Resource
 	return f.facts, nil
 }
 
+// ListLinksByResource 供供应域联动测试使用：fake 只持有一条 link，按 resource 命中才返回。
+func (f *fakeLinkStore) ListLinksByResource(_ context.Context, resourceID int64) ([]ResourceLink, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if f.link == nil || f.link.ResourceID != resourceID || f.link.Archived {
+		return []ResourceLink{}, nil
+	}
+	return []ResourceLink{*f.link}, nil
+}
+
 func (f *fakeLinkStore) ListCustomerModelServices(_ context.Context, _ int64) ([]CustomerModelServiceRow, error) {
 	return f.rows, nil
 }
