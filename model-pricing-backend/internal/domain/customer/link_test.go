@@ -728,3 +728,40 @@ func hasFlag(flags []string, want string) bool {
 	}
 	return false
 }
+
+// ---- 展开区可执行动作（A2） ----
+
+// TestAllowedActionsFollowsStateMachine 展开区按钮必须由状态机推导，不能前端硬编码。
+//
+// 重点钉住 SUPPLY_OFFLINE_PENDING：它是"资源下架后人工确认停用"的唯一出口
+// （G3-0 引入该状态时前端没有入口，绑定会永久卡在「来源待处理」）。
+// 同时钉住「系统动作不可提交」：SUPPLY_OFFLINE / SUPPLY_RESTORED 只能由供应域事件驱动，
+// 若出现在 available_actions 里，前端会给出一个必然 400 的按钮。
+func TestAllowedActionsFollowsStateMachine(t *testing.T) {
+	cases := []struct {
+		state string
+		want  []string
+	}{
+		{LinkStateActive, []string{LinkActionDisableRequest}},
+		{LinkStateDisablePending, []string{LinkActionDisableConfirm}},
+		{LinkStateDisabled, []string{LinkActionRestoreRequest}},
+		{LinkStateRestorePending, []string{LinkActionRestoreConfirm}},
+		{LinkStateSupplyOfflinePending, []string{LinkActionOfflineConfirm}},
+		{LinkStateSupplyOffline, []string{}},
+		{"WHATEVER", []string{}},
+	}
+	for _, c := range cases {
+		got := AllowedActions(c.state)
+		if len(got) != len(c.want) {
+			t.Fatalf("%s：got %v want %v", c.state, got, c.want)
+		}
+		for i := range c.want {
+			if got[i] != c.want[i] {
+				t.Fatalf("%s：got %v want %v", c.state, got, c.want)
+			}
+			if !IsLinkActionAllowed(got[i]) {
+				t.Fatalf("%s：可提交动作里混入系统动作 %s", c.state, got[i])
+			}
+		}
+	}
+}
