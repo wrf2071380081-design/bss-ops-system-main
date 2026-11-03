@@ -25,7 +25,8 @@ import (
 //   - 国内/海外、结算币种、税率、合同状态：000037 已落库（原型列），直接读
 //   - 客户来源：customer_profile 无来源列 → 返回空串，前端显示「—」
 //   - 合作阶段：存在任意报价 → 已有；否则 潜在
-//   - 服务状态：有 EFFECTIVE 报价 → 服务中；仅有未完成报价 → 接入中；否则 潜在客户
+//   - 服务状态：有 EFFECTIVE 报价 **或** 存在未归档且 ACTIVE 的客户资源绑定 → 服务中；
+//     仅有未完成报价 → 接入中；否则 潜在客户（A1：2026-11-03 加绑定口径，见 ListCustomers 注释）
 //   - 办理状态：存在 DRAFT/PENDING/APPROVED 报价 → 有未完成事项；否则 无未完成事项
 type CustomerWorkspaceRuntime struct{ raw *sql.DB }
 
@@ -175,8 +176,14 @@ func (rt *CustomerWorkspaceRuntime) ListCustomers(ctx context.Context, op *middl
 			return nil, 0, err
 		}
 		row.Source = ""
+		// 服务状态口径（A1，2026-11-03）：**在原口径上加 OR，不推翻**。
+		// 原口径只有「有生效报价才服务中」，导致客户开通全流程走完、绑定已 ACTIVE
+		// 的客户在列表里仍显示「潜在客户」——用户点完会以为流程没生效。
+		// 这里复用同一行已经算好的 opened_model_count（archived=FALSE AND state='ACTIVE'
+		// 的绑定数）作为第二个判据：既不新增 join / 子查询（避免行数膨胀与 N+1），
+		// 也保证「有生效报价的老客户」不会掉回潜在客户（无回归）。
 		switch {
-		case row.ActiveQuotes > 0:
+		case row.ActiveQuotes > 0 || row.OpenedModelCount > 0:
 			row.CooperationStage = "已有"
 			row.ServiceStatus = "服务中"
 		case row.PendingQuotes > 0:
