@@ -57,5 +57,20 @@ func registerTradeRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, portal 
 		)
 	}
 
+	// 客户创建与基础档案（G4-B1）：此前 customer_profile / legal_subject 只有读路径，
+	// 「完整开通」没有对象可挂。写接口必须幂等；读接口走数据域过滤。
+	if deps.CustomerRegistrySvc != nil {
+		crh := NewCustomerRegistryHandler(deps.CustomerRegistrySvc)
+		protected.POST("/customers",
+			middleware.RequirePerm(perm.M8Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			crh.CreateCustomer,
+		)
+		protected.GET("/customers/:id",
+			middleware.RequirePerm(perm.M8View),
+			crh.GetCustomerProfile,
+		)
+	}
+
 	// 新路由加在这里。
 }

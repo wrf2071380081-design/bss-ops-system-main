@@ -258,6 +258,12 @@ func main() {
 		log.Warn("initialize customer resource link service", zap.Error(err))
 		customerResourceLinkSvc = nil
 	}
+	// G4-B1：客户创建与基础档案。
+	customerRegistrySvc, err := newCustomerRegistryService(dbClient.DB)
+	if err != nil {
+		log.Warn("initialize customer registry service", zap.Error(err))
+		customerRegistrySvc = nil
+	}
 	router := api.New(api.Deps{
 		Config:              cfg,
 		Log:                 log,
@@ -296,6 +302,7 @@ func main() {
 		PricingUpconductionSvc:   pricingUpconductionSvc,
 		CustomerSvc:              customerSvc,
 		CustomerResourceLinkSvc:  customerResourceLinkSvc,
+		CustomerRegistrySvc:      customerRegistrySvc,
 		CustomerSpecialSvc:       customerSpecialSvc,
 		CustomerRefreshSvc:       customerRefreshSvc,
 		CustomerExportSvc:        customerExportSvc,

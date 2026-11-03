@@ -27,3 +27,20 @@ func newCustomerResourceLinkService(db *gorm.DB) (*customer.ResourceLinkService,
 	}
 	return customer.NewResourceLinkService(store), nil
 }
+
+// newCustomerRegistryService 构造客户创建/基础档案服务（G4-B1）。
+// 返回 nil 表示未装配（POST /customers、GET /customers/:id 不注册）。
+func newCustomerRegistryService(db *gorm.DB) (*customer.RegistryService, error) {
+	if db == nil {
+		return nil, nil
+	}
+	raw, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	store, err := supplypg.NewCustomerRegistryStore(raw, "public")
+	if err != nil {
+		return nil, err
+	}
+	return customer.NewRegistryService(store), nil
+}

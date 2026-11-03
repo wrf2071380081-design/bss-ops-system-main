@@ -78,6 +78,9 @@ type Deps struct {
 	// nil 时 /customers/:id/resource-links 与 /resource-links* 不注册
 	// （同既有纪律：没接仓储就不暴露能力）。
 	CustomerResourceLinkSvc *customer.ResourceLinkService
+	// G4-B1：客户创建与基础档案（POST /customers、GET /customers/:id）。
+	// nil 时两条路由不注册（同一条纪律）。
+	CustomerRegistrySvc *customer.RegistryService
 	// 阶段 9b：特价审批 + 刷新 + 导出（09-customer-quote.md §3/§4/§5）。
 	CustomerSpecialSvc *customer.SpecialPriceService
 	CustomerRefreshSvc *customer.RefreshService
