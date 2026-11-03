@@ -6,6 +6,7 @@ import ModelPlazaDetail from "../views/internal/resources/ModelPlazaDetail.vue";
 import ModelApplicationReview from "../views/internal/models/ModelApplicationReview.vue";
 import Sync from "../modules/pricing/views/OfficialPriceSync.vue";
 import ModulePlaceholderView from "../views/ModulePlaceholderView.vue";
+import SupplierQuoteList from "../views/internal/supplierQuotes/SupplierQuoteList.vue";
 import AlertList from "../views/internal/alerts/AlertList.vue";
 import AuditLogList from "../views/internal/audit/AuditLogList.vue";
 import CurrentCostBaselineList from "../views/internal/cost/CurrentCostBaselineList.vue";
@@ -139,10 +140,11 @@ export const internalRoutes: RouteRecordRaw = {
         order: 52,
       },
     },
-    // 供应商报价已并入「供应商管理 · 供应商报价」Tab，保留路由兼容旧链接（含 quote_id 深链）。
+    // 供应商报价：独立入口保留（只要求 M4:V，持有 M4:P 的补录账号也走这里）。
+    // 有 M3:V 的账号另可从「供应商管理 · 供应商报价」Tab 进入嵌入版；两条路径共用 SupplierQuoteList。
     {
       path: "supplier-quotes",
-      redirect: to => ({ path: "/internal/suppliers", query: { ...to.query, tab: "quote", sub: "price" } }),
+      component: SupplierQuoteList,
       meta: {
         requiresAuth: true,
         portal: "internal",

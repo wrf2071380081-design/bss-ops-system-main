@@ -46,9 +46,13 @@ function currentStringQuery() {
   for (const [key, value] of Object.entries(route.query)) if (typeof value === "string") query[key] = value;
   return query;
 }
+/** 把 `sub` 深链写回 URL，避免刷新丢失当前子 Tab。
+ *  只在确实处于「供应商报价」Tab 时才写 query：父组件切回列表会删掉 tab，
+ *  若无条件写回 tab=quote，会与父组件的 watch(route.query.tab) 形成回弹。 */
 function replaceQuery(patch: Record<string, string>) {
   const current = currentStringQuery();
-  const next: Record<string, string> = { ...current, tab: "quote" };
+  if (current.tab !== "quote") return;
+  const next: Record<string, string> = { ...current };
   for (const [key, value] of Object.entries(patch)) { if (value) next[key] = value; else delete next[key]; }
   const keys = new Set([...Object.keys(current), ...Object.keys(next)]);
   for (const key of keys) if ((current[key] ?? "") !== (next[key] ?? "")) { void router.replace({ path: route.path, query: next }); return; }
@@ -95,8 +99,23 @@ function reloadAfterChange() {
 }
 function openFlow(row: { id: number }) { flowID.value = String(row.id); }
 
-watch(sub, value => replaceQuery({ sub: value === "price" ? "price" : "" }));
-watch(() => route.query.sub, value => { const next: QuoteSubTab = value === "price" ? "price" : "submission"; if (next !== sub.value) sub.value = next; });
+// 两个 watch 会互相触发：父组件删掉 tab 回到列表时，这里必须直接返回，
+// 否则「sub 重置为 submission」→「写回 tab=quote」→ 父组件切回报价 Tab，表现为点一次列表被弹回。
+watch(sub, value => {
+  if (route.query.tab !== "quote") return;
+  replaceQuery({ sub: value === "price" ? "price" : "" });
+});
+watch(() => route.query.sub, value => {
+  if (route.query.tab !== "quote") return;
+  const next: QuoteSubTab = value === "price" ? "price" : "submission";
+  if (next !== sub.value) sub.value = next;
+});
+// 从「供应商列表」切回报价 Tab 时，把当前子 Tab 重新写回 URL，
+// 保证「看到的是价格报价 ⟺ URL 带 sub=price」，刷新后不会掉回接入申报。
+watch(() => route.query.tab, value => {
+  if (value !== "quote") return;
+  replaceQuery({ sub: sub.value === "price" ? "price" : "" });
+});
 watch(approvalTab, value => { if (value === "history" && !historyLoaded && !historyLoading.value) void loadHistory(); });
 
 onMounted(() => {
