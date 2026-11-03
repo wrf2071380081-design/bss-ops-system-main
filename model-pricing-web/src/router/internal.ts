@@ -16,6 +16,7 @@ import SupplierWorkspace from "../views/internal/suppliers/SupplierWorkspace.vue
 import SupplierAccessModels from "../views/internal/suppliers/SupplierAccessModels.vue";
 import SupplierEntityList from "../views/internal/suppliers/SupplierEntityList.vue";
 import CustomerWorkspace from "../views/internal/customers/CustomerWorkspace.vue";
+import CustomerDetail from "../views/internal/customers/CustomerDetail.vue";
 import FinanceCenter from "../views/internal/finance/FinanceCenter.vue";
 import InternalWorkbench from "../views/internal/workbench/InternalWorkbench.vue";
 import OrgPermissionCenter from "../views/internal/orgPermissions/OrgPermissionCenter.vue";
@@ -209,6 +210,20 @@ export const internalRoutes: RouteRecordRaw = {
         title: "客户管理",
         menu: true,
         order: 70,
+      },
+    },
+    {
+      // 客户详情整页（B3b）：routeKey **复用 internal.customers**（M8:V），
+      // 不新增 routeKey —— 新增要同步 ROUTE_REQUIREMENTS，漏配会变成"无权限直接 403"。
+      path: "customers/:id",
+      component: CustomerDetail,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.customers",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.customers"],
+        title: "客户详情",
+        menu: false,
       },
     },
     {

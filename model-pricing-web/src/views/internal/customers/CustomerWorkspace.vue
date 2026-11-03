@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow, type CustomerWorkspaceRow } from "../../../api/customerWorkspace";
 import { customerQuotesApi } from "../../../api/customerQuotes";
@@ -10,9 +11,10 @@ import { isDecimalAmount } from "../../../domain/money";
 import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
 import { useSessionStore } from "../../../stores/session";
-import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
 import CustomerTransferDialog from "./CustomerTransferDialog.vue";
 
+const route = useRoute();
+const router = useRouter();
 const permissions = usePermissionStore();
 const session = useSessionStore();
 const canTransfer = computed(() => permissions.canAction(PERMISSIONS.CUSTOMER_EDIT));
@@ -41,10 +43,43 @@ const rows = ref<CustomerWorkspaceRow[]>([]);
 const loading = ref(false);
 const loadError = ref("");
 
-const filters = reactive<{
+/**
+ * 列表筛选（B3b 坑 2）：做成独立详情路由后，从详情返回列表会重新 onMounted，
+ * 纯内存态会让 7 个筛选条件全部丢失，用户会当 bug 报。
+ * 这里落 sessionStorage（不用 query：避免 URL 变脏、分享链接语义变化；不用全局 store：页面级状态不该跨页面共享）。
+ */
+const FILTERS_STORAGE_KEY = "customer-workspace:filters";
+type CustomerFilters = {
   names: string[]; owners: string[]; regions: string[]; contracts: string[];
   services: string[]; currencies: string[]; stages: string[]; handlings: string[];
-}>({ names: [], owners: [], regions: [], contracts: [], services: [], currencies: [], stages: [], handlings: [] });
+};
+const emptyFilters = (): CustomerFilters => ({
+  names: [], owners: [], regions: [], contracts: [], services: [], currencies: [], stages: [], handlings: [],
+});
+function readFilters(): CustomerFilters {
+  const base = emptyFilters();
+  try {
+    const raw = sessionStorage.getItem(FILTERS_STORAGE_KEY);
+    if (!raw) return base;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return base;
+    for (const key of Object.keys(base) as (keyof CustomerFilters)[]) {
+      const value = (parsed as Record<string, unknown>)[key];
+      if (Array.isArray(value)) base[key] = value.filter((item): item is string => typeof item === "string");
+    }
+  } catch {
+    // 存储损坏就当没存过：筛选丢失比整页报错好。
+  }
+  return base;
+}
+const filters = reactive<CustomerFilters>(readFilters());
+watch(filters, value => {
+  try {
+    sessionStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // 隐私模式/配额满：静默忽略，不影响筛选本身可用。
+  }
+}, { deep: true });
 
 const options = computed(() => ({
   names: unique(rows.value.map(row => row.name)),
@@ -84,7 +119,12 @@ async function loadCustomers() {
   }
 }
 function resetFilters() {
-  Object.assign(filters, { names: [], owners: [], regions: [], contracts: [], services: [], currencies: [], stages: [], handlings: [] });
+  Object.assign(filters, emptyFilters());
+  try {
+    sessionStorage.removeItem(FILTERS_STORAGE_KEY);
+  } catch {
+    // 同上，忽略存储异常。
+  }
 }
 
 // ---------------- 报价单 ----------------
@@ -329,10 +369,10 @@ function openRowQuote(row: CustomerQuoteRow) {
 }
 
 // ---------------- 详情与移交 ----------------
-const detailVisible = ref(false);
-const detailRow = ref<CustomerWorkspaceRow>();
-const canManageF12 = computed(() => Boolean(detailRow.value && session.user?.staffId && String(detailRow.value.owner_sales_operator_id) === String(session.user.staffId)));
-function openDetail(row: CustomerWorkspaceRow) { detailRow.value = row; detailVisible.value = true; }
+// 详情已改成独立路由页（B3b 第 1 项）：这里只负责跳转，原弹窗与 F12 面板都搬到详情页。
+function openDetail(row: CustomerWorkspaceRow) {
+  void router.push({ path: `/internal/customers/${row.id}`, query: { tab: "models" } });
+}
 
 // 移交：逻辑全部收进 CustomerTransferDialog（B3b 第 4 项），这里只负责"对谁移交"与刷新。
 const transferVisible = ref(false);
@@ -342,7 +382,21 @@ function openTransfer(row: CustomerWorkspaceRow) {
   transferVisible.value = true;
 }
 
-onMounted(() => { void loadCustomers(); void loadQuotes(); });
+onMounted(async () => {
+  await loadCustomers();
+  void loadQuotes();
+  // 详情页「新建报价」会带 ?tab=quote&customer_id= 过来：预选关联客户，
+  // 复用本页的编辑器（不把 380 行编辑器搬进详情页）。
+  const preset = typeof route.query.customer_id === "string" ? route.query.customer_id : "";
+  if (route.query.tab === "quote") {
+    activeTab.value = "quote";
+    quoteView.value = "edit";
+    if (positiveId(preset)) {
+      const row = rows.value.find(item => String(item.id) === preset);
+      startNewQuote(row);
+    }
+  }
+});
 </script>
 
 <template>
@@ -623,34 +677,6 @@ onMounted(() => { void loadCustomers(); void loadQuotes(); });
       <template #footer>
         <el-button @click="pickerVisible = false">取消</el-button>
         <el-button type="primary" @click="confirmPicker">加入报价（{{ pickerSelected.size }}）</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 客户详情 -->
-    <el-dialog v-model="detailVisible" title="客户详情" width="min(980px, 96vw)">
-      <el-descriptions v-if="detailRow" :column="2" border>
-        <el-descriptions-item label="客户名称">{{ detailRow.name }}</el-descriptions-item>
-        <el-descriptions-item label="客户 ID">{{ detailRow.id }}</el-descriptions-item>
-        <el-descriptions-item label="销售">{{ detailRow.owner_name }}</el-descriptions-item>
-        <el-descriptions-item label="客户等级">{{ detailRow.level_code }}</el-descriptions-item>
-        <el-descriptions-item label="国内/海外">{{ regionText(detailRow.region) }}</el-descriptions-item>
-        <el-descriptions-item label="结算币种">{{ currencyText(detailRow.settlement_currency) }}</el-descriptions-item>
-        <el-descriptions-item label="授信额度 / 已用">
-          <span class="mono">{{ amountText(detailRow.settlement_currency, detailRow.credit_limit) }} / {{ detailRow.credit_used }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="税率">{{ detailRow.tax_rate ? `${detailRow.tax_rate}%` : "未填写" }}</el-descriptions-item>
-        <el-descriptions-item label="合同状态">{{ detailRow.contract_status }}</el-descriptions-item>
-        <el-descriptions-item label="服务状态">{{ detailRow.service_status }}</el-descriptions-item>
-        <el-descriptions-item label="合作阶段">{{ detailRow.cooperation_stage }}</el-descriptions-item>
-        <el-descriptions-item label="办理状态">{{ detailRow.handling_status }}</el-descriptions-item>
-        <el-descriptions-item label="生效报价">{{ detailRow.active_quotes }} 份</el-descriptions-item>
-        <el-descriptions-item label="未完成报价">{{ detailRow.pending_quotes }} 份</el-descriptions-item>
-      </el-descriptions>
-      <F12SubjectPanel v-if="detailRow" subject-type="CUSTOMER" :subject-id="String(detailRow.id)" :can-manage="canManageF12" @changed="loadCustomers" />
-      <template #footer>
-        <el-button @click="detailVisible = false">关闭</el-button>
-        <el-button v-if="canTransfer" @click="detailVisible = false; detailRow && openTransfer(detailRow)">移交客户</el-button>
-        <el-button v-if="canQuote" type="primary" @click="detailVisible = false; startNewQuote(detailRow)">新建报价</el-button>
       </template>
     </el-dialog>
 
