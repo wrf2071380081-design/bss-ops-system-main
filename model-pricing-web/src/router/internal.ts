@@ -140,7 +140,11 @@ export const internalRoutes: RouteRecordRaw = {
         order: 52,
       },
     },
-    // 供应商报价：独立入口保留（只要求 M4:V，持有 M4:P 的补录账号也走这里）。
+    // 说明：该路由必须保持为独立入口，不要合并进 /internal/suppliers 的 Tab（不要再改成 redirect）。
+    // 理由：本路由只要 M4:V，而 /internal/suppliers 要求 M3:V；补录员（RETRO_OP: M4:V + M4:P）
+    // 没有 M3:V，合并后会被路由守卫打到 /403，「特权补录」对该角色直接不可达（G1 曾因此回归）。
+    // 工作台待办也统一落到这里：待办卡的 routeKey 是 internal.supplierQuotes（M4:V），
+    // 若指向供应商管理 Tab，只有 M4:V 的账号点开同样 403。
     // 有 M3:V 的账号另可从「供应商管理 · 供应商报价」Tab 进入嵌入版；两条路径共用 SupplierQuoteList。
     {
       path: "supplier-quotes",
