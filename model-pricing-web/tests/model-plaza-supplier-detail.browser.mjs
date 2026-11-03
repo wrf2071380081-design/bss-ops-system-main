@@ -102,7 +102,7 @@ try {
   await page.getByRole("tab", { name: "操作记录", exact: true }).click();
   await page.getByText("汇总主体、资质、正式配置、合同、授信、资源及计划的操作摘要。", { exact: true }).waitFor();
   await page.getByText("暂无操作记录", { exact: true }).waitFor();
-  await page.getByRole("tab", { name: "该供应商报价", exact: true }).click();
+  await page.getByRole("tab", { name: "申报与审批记录", exact: true }).click();
   await page.getByText("当前主体的全部模型申报与改价记录，包含草稿、待审批、驳回、办理及已完成状态。", { exact: true }).waitFor();
   await page.getByText("暂无报价申报历史", { exact: true }).waitFor();
   await page.getByRole("button", { name: "← 返回模型详情", exact: true }).click();

@@ -464,8 +464,8 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-table-column label="输入缓存命中率" width="130"><template #default="{ row }">{{ resourceCacheDisplay(row.test.cache_stats, row.test.status) }}</template></el-table-column>
             <el-table-column label="最近上架时间" width="170"><template #default="{ row }">{{ row.admitted_at ? formatDateTime(row.admitted_at) : "未记录" }}</template></el-table-column>
             <el-table-column label="状态" min-width="150"><template #default="{ row }"><el-tag :type="row.state === 'ADMITTED' ? 'success' : 'info'" size="small">{{ stateLabel(row.state) }}</el-tag><span class="muted">{{rowHandling(row.id)}}</span></template></el-table-column>
-            <el-table-column label="测试与报告" width="100"><template #default="{ row }"><el-button size="small" text type="primary" @click="openReports(row)">测试列表</el-button></template></el-table-column>
-            <el-table-column label="操作" width="110"><template #default="{ row }"><el-button size="small" @click="focus(row)">{{ row.id === selectedID ? "当前详情" : "查看详情" }}</el-button></template></el-table-column>
+            <el-table-column label="测试与报告" width="100" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click="openReports(row)">测试列表</el-button></template></el-table-column>
+            <el-table-column label="操作" width="110" fixed="right"><template #default="{ row }"><el-button size="small" @click="focus(row)">{{ row.id === selectedID ? "当前详情" : "查看详情" }}</el-button></template></el-table-column>
             <template #empty><el-empty description="该供应商暂无接入模型" :image-size="64" /></template>
           </el-table>
         </el-tab-pane>
