@@ -74,6 +74,10 @@ type Deps struct {
 	PricingUpconductionSvc *pricing.UpconductionService
 	// 阶段 9a：客户域（09-customer-quote.md §1/§2）。
 	CustomerSvc *customer.Service
+	// G4 地基（000049）：客户「接入模型」绑定（状态机 + 投影 + 动作接口）。
+	// nil 时 /customers/:id/resource-links 与 /resource-links* 不注册
+	// （同既有纪律：没接仓储就不暴露能力）。
+	CustomerResourceLinkSvc *customer.ResourceLinkService
 	// 阶段 9b：特价审批 + 刷新 + 导出（09-customer-quote.md §3/§4/§5）。
 	CustomerSpecialSvc *customer.SpecialPriceService
 	CustomerRefreshSvc *customer.RefreshService

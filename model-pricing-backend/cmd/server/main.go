@@ -252,6 +252,12 @@ func main() {
 		log.Warn("initialize supplier credential service", zap.Error(err))
 		credentialSvc = nil
 	}
+	// G4 地基（000049）：客户「接入模型」绑定（状态机 + 投影 + 动作接口）。
+	customerResourceLinkSvc, err := newCustomerResourceLinkService(dbClient.DB)
+	if err != nil {
+		log.Warn("initialize customer resource link service", zap.Error(err))
+		customerResourceLinkSvc = nil
+	}
 	router := api.New(api.Deps{
 		Config:              cfg,
 		Log:                 log,
@@ -289,6 +295,7 @@ func main() {
 		PricingPublishSvc:        pricingPublishSvc,
 		PricingUpconductionSvc:   pricingUpconductionSvc,
 		CustomerSvc:              customerSvc,
+		CustomerResourceLinkSvc:  customerResourceLinkSvc,
 		CustomerSpecialSvc:       customerSpecialSvc,
 		CustomerRefreshSvc:       customerRefreshSvc,
 		CustomerExportSvc:        customerExportSvc,

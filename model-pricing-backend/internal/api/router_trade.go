@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"model_bss/internal/api/middleware"
+	"model_bss/pkg/perm"
 )
 
 // registerTradeRoutes 注册 C（客户 / 报价 / 留痕）的路由。
@@ -30,6 +31,29 @@ func registerTradeRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, portal 
 		protected.POST("/workbench/notices/:id/read",
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			wh.MarkNoticeRead,
+		)
+	}
+
+	// 客户「接入模型」绑定（G4 地基，迁移 000049）：
+	//   - 读投影给客户详情「接入模型」Tab；
+	//   - 建绑定在开通完成时被内部调用，同时也开放手工登记（排障/补录）；
+	//   - 状态动作（禁用/恢复/确认停用）必须带 expected_revision。
+	// 权限沿用客户域口径：读 M8:V、写 M8:E，不新造权限码。
+	if deps.CustomerResourceLinkSvc != nil {
+		rlh := NewCustomerResourceLinkHandler(deps.CustomerResourceLinkSvc)
+		protected.GET("/customers/:id/resource-links",
+			middleware.RequirePerm(perm.M8View),
+			rlh.ListCustomerResourceLinks,
+		)
+		protected.POST("/resource-links",
+			middleware.RequirePerm(perm.M8Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			rlh.CreateResourceLink,
+		)
+		protected.POST("/resource-links/:id/actions",
+			middleware.RequirePerm(perm.M8Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			rlh.ActResourceLink,
 		)
 	}
 
