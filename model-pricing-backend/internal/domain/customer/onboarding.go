@@ -22,9 +22,15 @@ import (
 //   非首单：CONFIG
 // CONFIG 完成 = 真正给客户开通服务：按流程里保存的模型写 customer_resource_link（ACTIVE）。
 //
-// 与 F12 的关系：CONTRACT 完成必须「F12 合同与授信资料齐备」，通过
-// CustomerContractReadiness 端口读取就绪快照——**不伪造数据**；
-// 快照不支持客户主体时该端口会返回不可就绪并给出可读原因。
+// 与 F12 的关系（重要，别当成漏了）：
+// **F12 就绪快照目前只覆盖供应商**。类型层允许 subject_type=CUSTOMER
+// （internal/domain/supply/f12_read.go:105），但唯一实现
+// internal/infra/supplypg/f12_native_flow.go:54 对非 SUPPLIER 直接返回
+// ErrDependencyUnavailable——它的 SQL 要 join submission/operation_log 的供应商审批留痕，
+// 而客户没有 submission。所以客户侧的 CONTRACT 完成**不走就绪快照**，改成
+// 「办理人确认合同与授信已归档 + 必填说明」，也不去伪造 F12 数据、不建
+// customer_profile→customer 的映射（那会把废弃的 000033 表拖回主链路）。
+// 等以后真的做客户侧 F12 就绪（需要先有那层映射），再把这一段换成就绪校验。
 
 // 流程与节点词表（与 000033 DDL / 现有代码保持一致）。
 const (
@@ -140,13 +146,13 @@ type CompleteConfigRecord struct {
 }
 
 // CompleteContractRecord 是 CONTRACT 节点完成的落库参数。
+// 没有就绪摘要：客户侧不走 F12 就绪（只覆盖供应商），办理人说明即确认依据。
 type CompleteContractRecord struct {
-	FlowID       int64
-	NodeID       int64
-	OperatorID   int64
-	RequestID    string
-	Reason       string
-	ReadinessSum string // 就绪摘要（写审计 after 用，便于追溯当时依据）
+	FlowID     int64
+	NodeID     int64
+	OperatorID int64
+	RequestID  string
+	Reason     string
 }
 
 // OnboardingNodeContext 是完成节点前需要读到的上下文。
@@ -178,24 +184,15 @@ type OnboardingStore interface {
 	GetFlow(ctx context.Context, customerProfileID int64) (*OnboardingFlow, error)
 }
 
-// CustomerContractReadiness 判断「该客户该流程的合同与授信资料是否齐备」。
-//
-// 由 api 层用 F12 就绪快照实现（subject_type=CUSTOMER）。刻意做成端口而不是直接依赖
-// supply 包：领域层不该知道 F12 的 SQL 细节，也便于单测打桩。
-type CustomerContractReadiness interface {
-	Ready(ctx context.Context, customerProfileID, flowID int64) (ready bool, summary string, err error)
-}
-
 // OnboardingService 客户开通流程服务。
 type OnboardingService struct {
 	store     OnboardingStore
 	resources ResourceLinkStore
-	readiness CustomerContractReadiness
 }
 
 // NewOnboardingService 构造。resources 复用绑定仓储的资源事实读取，避免第二份口径。
-func NewOnboardingService(store OnboardingStore, resources ResourceLinkStore, readiness CustomerContractReadiness) *OnboardingService {
-	return &OnboardingService{store: store, resources: resources, readiness: readiness}
+func NewOnboardingService(store OnboardingStore, resources ResourceLinkStore) *OnboardingService {
+	return &OnboardingService{store: store, resources: resources}
 }
 
 func (s *OnboardingService) available() error {
@@ -303,32 +300,14 @@ func (s *OnboardingService) CompleteNode(ctx context.Context, in CompleteNodeInp
 			// 还在 WAITING_PREDECESSOR：说明前序（理论上无）没完成，或节点未启用。
 			return nil, ErrOnboardingNodeNotReady
 		}
-		ready, summary, err := s.contractReadiness(ctx, node.CustomerProfileID, node.FlowID)
-		if err != nil {
-			return nil, err
-		}
-		if !ready {
-			return nil, fmt.Errorf("%w：%s", ErrOnboardingContractNotReady, summary)
-		}
+		// 不走 F12 就绪（只覆盖供应商，见文件头说明）：办理人填写的说明就是确认依据。
 		return s.store.CompleteContract(ctx, CompleteContractRecord{
 			FlowID: node.FlowID, NodeID: node.NodeID, OperatorID: in.Operator,
-			RequestID: in.Request, Reason: reason, ReadinessSum: summary,
+			RequestID: in.Request, Reason: reason,
 		})
 	default:
 		return nil, ErrOnboardingNodeNotFound
 	}
-}
-
-// contractReadiness 读 F12 就绪；未装配时明确不可完成（不伪造数据）。
-func (s *OnboardingService) contractReadiness(ctx context.Context, customerProfileID, flowID int64) (bool, string, error) {
-	if s.readiness == nil {
-		return false, "合同与授信就绪校验能力未装配，请联系技术人员", nil
-	}
-	ready, summary, err := s.readiness.Ready(ctx, customerProfileID, flowID)
-	if err != nil {
-		return false, "", err
-	}
-	return ready, summary, nil
 }
 
 // Get 读该客户最近一条开通流程。

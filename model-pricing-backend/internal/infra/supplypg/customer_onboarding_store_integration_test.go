@@ -164,7 +164,7 @@ func findNode(flow *customer.OnboardingFlow, key string) *customer.OnboardingNod
 func TestCustomerOnboardingStoreFirstOrder(t *testing.T) {
 	links, store, db := openOnboardingTestStore(t)
 	f := newOnboardingFixture(t, db)
-	svc := customer.NewOnboardingService(store, links, nil)
+	svc := customer.NewOnboardingService(store, links)
 
 	flow, err := svc.Start(context.Background(), customer.StartOnboardingInput{
 		CustomerProfileID: f.customerID, FirstOrder: true,
@@ -199,7 +199,7 @@ func TestCustomerOnboardingStoreFirstOrder(t *testing.T) {
 func TestCustomerOnboardingStoreNonFirstOrder(t *testing.T) {
 	links, store, db := openOnboardingTestStore(t)
 	f := newOnboardingFixture(t, db)
-	svc := customer.NewOnboardingService(store, links, nil)
+	svc := customer.NewOnboardingService(store, links)
 
 	flow, err := svc.Start(context.Background(), customer.StartOnboardingInput{
 		CustomerProfileID: f.customerID, FirstOrder: false,
@@ -224,7 +224,7 @@ func TestCustomerOnboardingStoreNonFirstOrder(t *testing.T) {
 func TestCustomerOnboardingStoreProcessingBlockedByIndex(t *testing.T) {
 	links, store, db := openOnboardingTestStore(t)
 	f := newOnboardingFixture(t, db)
-	svc := customer.NewOnboardingService(store, links, nil)
+	svc := customer.NewOnboardingService(store, links)
 	ctx := context.Background()
 
 	if _, err := svc.Start(ctx, customer.StartOnboardingInput{
@@ -256,7 +256,7 @@ VALUES ('CUSTOMER', $1, 'PROCESSING', 'CONFIG')`, f.customerID)
 func TestCustomerOnboardingStoreCompleteConfigWritesLinks(t *testing.T) {
 	links, store, db := openOnboardingTestStore(t)
 	f := newOnboardingFixture(t, db)
-	svc := customer.NewOnboardingService(store, links, nil)
+	svc := customer.NewOnboardingService(store, links)
 	ctx := context.Background()
 
 	flow, err := svc.Start(ctx, customer.StartOnboardingInput{
@@ -312,7 +312,7 @@ SELECT state, standard_model_id FROM public.customer_resource_link
 func TestCustomerOnboardingStoreCompleteConfigRollsBackOnConflict(t *testing.T) {
 	links, store, db := openOnboardingTestStore(t)
 	f := newOnboardingFixture(t, db)
-	svc := customer.NewOnboardingService(store, links, nil)
+	svc := customer.NewOnboardingService(store, links)
 	ctx := context.Background()
 
 	// 先给「模型甲 + 资源 A」建一条 ACTIVE 绑定：
@@ -365,13 +365,12 @@ SELECT count(*) FROM public.customer_resource_link WHERE customer_profile_id=$1 
 
 // TestCustomerOnboardingStoreCompleteContractPromotesConfig CONTRACT 完成把 CONFIG 推到 IN_PROGRESS。
 //
-// 这里直接打仓储（绕过领域层的 F12 就绪校验）：就绪门禁在 service 层，已由
-// domain 单测 TestOnboardingCompleteContractRequiresReadiness 覆盖；真库没有客户的
-// 合同/授信数据，不为了这条测试去伪造 F12 记录。
+// 客户侧 CONTRACT 完成是「办理人确认」而非 F12 就绪（该快照只覆盖供应商），
+// 所以这条走完整的 service 路径，不绕过任何校验。
 func TestCustomerOnboardingStoreCompleteContractPromotesConfig(t *testing.T) {
 	links, store, db := openOnboardingTestStore(t)
 	f := newOnboardingFixture(t, db)
-	svc := customer.NewOnboardingService(store, links, nil)
+	svc := customer.NewOnboardingService(store, links)
 	ctx := context.Background()
 
 	flow, err := svc.Start(ctx, customer.StartOnboardingInput{
@@ -383,9 +382,8 @@ func TestCustomerOnboardingStoreCompleteContractPromotesConfig(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	contract := findNode(flow, "CONTRACT")
-	updated, err := store.CompleteContract(ctx, customer.CompleteContractRecord{
-		FlowID: flow.ID, NodeID: contract.ID, OperatorID: f.staffA,
-		RequestID: "qa-onboarding-contract-done", Reason: "合同与授信已归档", ReadinessSum: "合同 1 份 / 授信 1 条",
+	updated, err := svc.CompleteNode(ctx, customer.CompleteNodeInput{
+		NodeID: contract.ID, Reason: "合同与授信已归档（纸质已入档）", Operator: f.staffA, Request: "qa-onboarding-contract-done",
 	})
 	if err != nil {
 		t.Fatalf("complete contract: %v", err)
@@ -405,7 +403,7 @@ func TestCustomerOnboardingStoreCompleteContractPromotesConfig(t *testing.T) {
 func TestCustomerOnboardingStoreCompleteTwiceRejected(t *testing.T) {
 	links, store, db := openOnboardingTestStore(t)
 	f := newOnboardingFixture(t, db)
-	svc := customer.NewOnboardingService(store, links, nil)
+	svc := customer.NewOnboardingService(store, links)
 	ctx := context.Background()
 
 	flow, err := svc.Start(ctx, customer.StartOnboardingInput{
@@ -437,7 +435,7 @@ SELECT count(*) FROM public.customer_resource_link WHERE customer_profile_id=$1 
 func TestCustomerOnboardingStoreAuditRows(t *testing.T) {
 	links, store, db := openOnboardingTestStore(t)
 	f := newOnboardingFixture(t, db)
-	svc := customer.NewOnboardingService(store, links, nil)
+	svc := customer.NewOnboardingService(store, links)
 	ctx := context.Background()
 
 	flow, err := svc.Start(ctx, customer.StartOnboardingInput{
@@ -448,9 +446,8 @@ func TestCustomerOnboardingStoreAuditRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if _, err := store.CompleteContract(ctx, customer.CompleteContractRecord{
-		FlowID: flow.ID, NodeID: findNode(flow, "CONTRACT").ID, OperatorID: f.staffA,
-		RequestID: "qa-audit-contract", Reason: "合同已归档", ReadinessSum: "合同 1 / 授信 1",
+	if _, err := svc.CompleteNode(ctx, customer.CompleteNodeInput{
+		NodeID: findNode(flow, "CONTRACT").ID, Reason: "合同与授信已归档", Operator: f.staffA, Request: "qa-audit-contract",
 	}); err != nil {
 		t.Fatalf("complete contract: %v", err)
 	}
@@ -494,7 +491,7 @@ SELECT COALESCE("before"->>'node_key',''), COALESCE("after"->>'flow_status',''),
 func TestCustomerOnboardingViewShowsCustomerNode(t *testing.T) {
 	links, store, db := openOnboardingTestStore(t)
 	f := newOnboardingFixture(t, db)
-	svc := customer.NewOnboardingService(store, links, nil)
+	svc := customer.NewOnboardingService(store, links)
 	ctx := context.Background()
 
 	flow, err := svc.Start(ctx, customer.StartOnboardingInput{

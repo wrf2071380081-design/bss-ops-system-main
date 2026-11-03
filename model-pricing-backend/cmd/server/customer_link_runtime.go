@@ -7,7 +7,6 @@ package main
 import (
 	"gorm.io/gorm"
 
-	"model_bss/internal/api"
 	"model_bss/internal/domain/customer"
 	"model_bss/internal/infra/supplypg"
 )
@@ -31,9 +30,9 @@ func newCustomerResourceLinkService(db *gorm.DB) (*customer.ResourceLinkService,
 
 // newCustomerOnboardingService 构造客户开通流程服务（G4-B2）。
 //
-// readiness 来自 supply runtime 的 F12 就绪读取端口；nil 时合同授信节点一律不可完成
-// （明确报「能力未装配」，不伪造就绪数据）。
-func newCustomerOnboardingService(db *gorm.DB, readiness api.SupplyF12ReadinessReader) (*customer.OnboardingService, error) {
+// 不接 F12 就绪端口：该快照目前只覆盖供应商（唯一实现要求 supplier + submission 审批留痕），
+// 客户侧 CONTRACT 完成由办理人填写说明确认。详见 domain/customer/onboarding.go 文件头注释。
+func newCustomerOnboardingService(db *gorm.DB) (*customer.OnboardingService, error) {
 	if db == nil {
 		return nil, nil
 	}
@@ -49,7 +48,7 @@ func newCustomerOnboardingService(db *gorm.DB, readiness api.SupplyF12ReadinessR
 	if err != nil {
 		return nil, err
 	}
-	return customer.NewOnboardingService(store, links, api.NewCustomerContractReadiness(readiness)), nil
+	return customer.NewOnboardingService(store, links), nil
 }
 
 // newCustomerRegistryService 构造客户创建/基础档案服务（G4-B1）。

@@ -392,7 +392,7 @@ UPDATE %s SET current_node = 'CONFIG', updated_at = $2 WHERE id = $1`,
 	}
 	if err := s.auditFlow(ctx, tx, in.FlowID, in.OperatorID, "COMPLETE_CONTRACT",
 		map[string]any{"node_key": "CONTRACT", "node_status": status, "current_node": "CONTRACT"},
-		map[string]any{"node_key": "CONTRACT", "node_status": "COMPLETED", "current_node": "CONFIG", "readiness": in.ReadinessSum},
+		map[string]any{"node_key": "CONTRACT", "node_status": "COMPLETED", "current_node": "CONFIG", "confirmation": "合同与授信已归档（办理人确认，客户侧不走 F12 就绪快照）"},
 		in.Reason, in.RequestID); err != nil {
 		return nil, mapOnboardingError(err)
 	}

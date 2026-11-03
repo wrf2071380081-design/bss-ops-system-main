@@ -11,17 +11,14 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"model_bss/internal/api/middleware"
 	"model_bss/internal/domain/customer"
-	"model_bss/internal/domain/supply"
 	"model_bss/pkg/apperr"
 	"model_bss/pkg/response"
 )
@@ -41,13 +38,12 @@ func NewCustomerOnboardingHandler(svc *customer.OnboardingService) *CustomerOnbo
 // 409 的三种都要能指导操作：
 //   - 已有进行中流程 → 先完成再发起
 //   - 节点已完成 → 不能重复提交
-//   - 合同授信未齐备 / 前序未完成 → 先去补资料
+//   - 前序未完成 → 先去办前一个节点
 func customerOnboardingErrToAppErr(err error) apperr.Error {
 	switch {
 	case errors.Is(err, customer.ErrOnboardingInProgress),
 		errors.Is(err, customer.ErrOnboardingNodeCompleted),
-		errors.Is(err, customer.ErrOnboardingNodeNotReady),
-		errors.Is(err, customer.ErrOnboardingContractNotReady):
+		errors.Is(err, customer.ErrOnboardingNodeNotReady):
 		return apperr.New(apperr.ErrConflict.Code, err.Error(), apperr.ErrConflict.Status) // 409
 	case errors.Is(err, customer.ErrOnboardingFlowNotFound),
 		errors.Is(err, customer.ErrOnboardingNodeNotFound),
@@ -177,7 +173,7 @@ type completeNodeBody struct {
 // CompleteCustomerNode 完成开通节点（M8:E + 幂等）。
 //
 // @Summary 完成客户开通节点（M8:E）
-// @Description CONFIG 节点完成 = 按流程里的模型逐条写 customer_resource_link（全部成功才提交，任何冲突整批回滚；冲突返回 409 可读文案）；随后流程 COMPLETED。CONTRACT 节点完成需要 F12 合同与授信就绪，完成后把 CONFIG 推到 IN_PROGRESS。
+// @Description CONFIG 节点完成 = 按流程里的模型逐条写 customer_resource_link（全部成功才提交，任何冲突整批回滚；冲突返回 409 可读文案）；随后流程 COMPLETED。CONTRACT 节点完成由办理人填写说明确认「合同与授信已归档」（客户侧不走 F12 就绪快照），完成后把 CONFIG 推到 IN_PROGRESS。
 // @Tags 客户报价
 // @Accept json
 // @Produce json
@@ -190,7 +186,7 @@ type completeNodeBody struct {
 // @Failure 401 {object} api.APIResponse "code=10002 未认证"
 // @Failure 403 {object} api.APIResponse "code=10003 无 M8:E"
 // @Failure 404 {object} api.APIResponse "code=10004 节点不存在"
-// @Failure 409 {object} api.APIResponse "code=10008 节点已完成 / 前序未完成 / 合同授信未齐备 / 绑定冲突"
+// @Failure 409 {object} api.APIResponse "code=10008 节点已完成 / 前序未完成 / 绑定冲突"
 // @Router /api/internal/customer-nodes/{id}/complete [post]
 func (h *CustomerOnboardingHandler) CompleteCustomerNode(c *gin.Context) {
 	op := middleware.OperatorFrom(c)
@@ -220,53 +216,4 @@ func (h *CustomerOnboardingHandler) CompleteCustomerNode(c *gin.Context) {
 	}
 	middleware.SetIdempotencyResult(c, flow)
 	response.Success(c, flow)
-}
-
-// ---- F12 就绪端口（客户版） ----
-
-// CustomerContractReadiness 用 F12 就绪快照实现客户合同授信判断。
-//
-// F12 侧对 CUSTOMER 是**原生支持**的：f12_read.go 的 ListF12ReadinessEvidence 允许
-// subject_type ∈ {SUPPLIER, CUSTOMER}，f12_record_store.go 对 CUSTOMER 强制方向
-// US_TO_CUSTOMER。所以这里不需要任何伪造数据，也没有走"人工确认"的降级路径。
-type CustomerContractReadiness struct {
-	reader SupplyF12ReadinessReader
-}
-
-// NewCustomerContractReadiness 构造。reader 为 nil 时一律返回不可就绪（能力未装配）。
-func NewCustomerContractReadiness(reader SupplyF12ReadinessReader) *CustomerContractReadiness {
-	return &CustomerContractReadiness{reader: reader}
-}
-
-var _ customer.CustomerContractReadiness = (*CustomerContractReadiness)(nil)
-
-// Ready 读取该客户该流程的合同与授信就绪快照。
-func (r *CustomerContractReadiness) Ready(ctx context.Context, customerProfileID, flowID int64) (bool, string, error) {
-	if r == nil || r.reader == nil {
-		return false, "合同与授信就绪校验能力未装配，请联系技术人员", nil
-	}
-	snapshot, err := r.reader.Get(ctx, supply.F12ReadinessRequest{
-		SubjectType: "CUSTOMER",
-		SubjectID:   strconv.FormatInt(customerProfileID, 10),
-		FlowID:      strconv.FormatInt(flowID, 10),
-		ModuleKey:   "CONTRACT",
-	})
-	if err != nil {
-		if errors.Is(err, supply.ErrDependencyUnavailable) {
-			return false, "合同与授信能力尚未就绪（F12 表结构或依赖缺失）", nil
-		}
-		return false, "", err
-	}
-	if snapshot == nil {
-		return false, "尚未归档合同与授信资料", nil
-	}
-	if !snapshot.Ready || len(snapshot.Contracts) == 0 || len(snapshot.Credits) == 0 {
-		reason := strings.Join(snapshot.MissingReasons, "；")
-		if strings.TrimSpace(reason) == "" {
-			reason = "合同或授信记录缺失（需要在客户档案里归档本次流程的合同与授信文件）"
-		}
-		return false, reason, nil
-	}
-	return true, fmt.Sprintf("合同 %d 份 / 授信 %d 条（flow_revision=%d）",
-		len(snapshot.Contracts), len(snapshot.Credits), snapshot.FlowRevision), nil
 }

@@ -27,7 +27,6 @@ func TestCustomerOnboardingErrorMapping(t *testing.T) {
 		{"已有进行中流程 409", customer.ErrOnboardingInProgress, apperr.ErrConflict.Code, 409},
 		{"节点已完成 409", customer.ErrOnboardingNodeCompleted, apperr.ErrConflict.Code, 409},
 		{"前序未完成 409", customer.ErrOnboardingNodeNotReady, apperr.ErrConflict.Code, 409},
-		{"合同授信未齐备 409", customer.ErrOnboardingContractNotReady, apperr.ErrConflict.Code, 409},
 		{"绑定撞唯一索引 409", customer.ErrLinkModelAlreadyActive, apperr.ErrConflict.Code, 409},
 		{"同资源已绑定 409", customer.ErrLinkDuplicateResource, apperr.ErrConflict.Code, 409},
 		{"流程不存在 404", customer.ErrOnboardingFlowNotFound, apperr.ErrNotFound.Code, 404},
@@ -100,7 +99,7 @@ func TestRegisterTradeRoutesWithOnboardingDoesNotConflict(t *testing.T) {
 
 	require.NotPanics(t, func() {
 		registerTradeRoutes(root, protected, "internal", Deps{
-			CustomerOnboardingSvc: customer.NewOnboardingService(nil, nil, nil),
+			CustomerOnboardingSvc: customer.NewOnboardingService(nil, nil),
 		})
 	}, "客户开通三条路由不能与既有客户路由冲突")
 
