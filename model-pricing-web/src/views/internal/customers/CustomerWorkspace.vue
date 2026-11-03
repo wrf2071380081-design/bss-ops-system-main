@@ -74,9 +74,17 @@ function readFilters(): CustomerFilters {
   return base;
 }
 const filters = reactive<CustomerFilters>(readFilters());
+// 持久化只由这个 watch 负责（resetFilters 不再单独 removeItem）：
+// 全部为空时**移除** key 而不是写回 `{"names":[],...}`——
+// 否则「重置」之后 storage 里仍有一条"看起来有筛选"的空记录，排查时会被误判成没清干净。
 watch(filters, value => {
+  const empty = Object.values(value).every(list => list.length === 0);
   try {
-    sessionStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(value));
+    if (empty) {
+      sessionStorage.removeItem(FILTERS_STORAGE_KEY);
+    } else {
+      sessionStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(value));
+    }
   } catch {
     // 隐私模式/配额满：静默忽略，不影响筛选本身可用。
   }
@@ -120,12 +128,9 @@ async function loadCustomers() {
   }
 }
 function resetFilters() {
+  // 只清内存态：storage 的清理由上面的 watch 统一负责（全空即 removeItem），
+  // 两处都写会出现"先 remove 再被 watch 回写"的竞态——QA 实测过这个现象。
   Object.assign(filters, emptyFilters());
-  try {
-    sessionStorage.removeItem(FILTERS_STORAGE_KEY);
-  } catch {
-    // 同上，忽略存储异常。
-  }
 }
 
 // ---------------- 报价单 ----------------

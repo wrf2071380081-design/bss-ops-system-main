@@ -276,7 +276,8 @@ const transferVisible = ref(false);
 
 // ---------------- 首屏与 Tab 切换加载 ----------------
 void loadProfile();
-void loadModels();
+// 不在这里无条件 loadModels()：直接落在 `?tab=onboarding` 时不该打 resource-links。
+// 懒加载统一由下面的 watch(immediate) 驱动 —— 初始 Tab 是 models 时它会在首帧就触发。
 watch(activeTab, tab => {
   if (tab === "models") void loadModels();
   if (tab === "onboarding") void loadFlow();
@@ -312,6 +313,11 @@ function backToList() {
     <el-alert v-if="profileError" :title="profileError" type="error" show-icon :closable="false" class="block-gap" />
 
     <div class="tabbar">
+      <!--
+        注意：这里用 v-show（不是 v-if）——Tab 按钮始终在 DOM 里，只是不可见。
+        写自动化用例时必须断言**可见性**（isVisible / offsetParent），不能数元素个数，
+        否则纯 M8 角色下也会数到 4 个 Tab 而误判"有权限"。
+      -->
       <button
         v-for="tab in TABS"
         :key="tab"

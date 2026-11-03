@@ -61,10 +61,17 @@ function reset() {
 }
 
 watch(() => props.visible, value => {
-  if (value) {
+  if (!value) return;
+  // 重开时**不能**无条件 reset：Step2 失败后用户关掉再打开是"继续"，不是"重新开始"。
+  // 一旦清空 created，就只能重填客户名并撞后端 409「该客户名称已存在」——
+  // 提示语承诺的"可直接在本页重试"就成了空话。
+  // 想换一个客户建，走 Step2 的「放弃本次，重新建客户」出口（会显式 reset）。
+  if (!created.value) {
     reset();
-    void loadPeople();
+  } else {
+    step.value = 2;
   }
+  void loadPeople();
 });
 
 async function loadPeople() {
@@ -127,6 +134,13 @@ async function submitStep1() {
 
 function goStep2() {
   if (created.value) step.value = 2;
+}
+
+// 明确出口：用户确实想放弃这个已创建的客户、重新建一个新的时才清空。
+// 没有这个出口，重开后会一直停在 Step2，用户被锁在"只能重试当前客户"里，同样是死路。
+function abandonAndRestart() {
+  reset();
+  ElMessage.info("已清空本次填写，可以重新创建客户。");
 }
 
 function gotoDetailLater() {
@@ -229,6 +243,7 @@ onMounted(() => { void loadPeople(); });
         @started="onStarted"
       />
       <div class="step-actions">
+        <el-button text @click="abandonAndRestart">放弃本次，重新建客户</el-button>
         <el-button text @click="gotoDetailLater">稍后在客户详情处理</el-button>
       </div>
     </template>
