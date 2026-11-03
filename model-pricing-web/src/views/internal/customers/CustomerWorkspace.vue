@@ -12,6 +12,7 @@ import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
 import { useSessionStore } from "../../../stores/session";
 import CustomerTransferDialog from "./CustomerTransferDialog.vue";
+import CustomerCreateWizard from "./CustomerCreateWizard.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -374,6 +375,13 @@ function openDetail(row: CustomerWorkspaceRow) {
   void router.push({ path: `/internal/customers/${row.id}`, query: { tab: "models" } });
 }
 
+// 建客户向导（B3b 第 2 项）：建客户 + 发起开通两步，组件内部处理失败恢复。
+const createVisible = ref(false);
+function onCustomerCreated() {
+  // 建完刷新列表（新客户排在最前）；向导自己会跳到 Step2 发起开通。
+  void loadCustomers();
+}
+
 // 移交：逻辑全部收进 CustomerTransferDialog（B3b 第 4 项），这里只负责"对谁移交"与刷新。
 const transferVisible = ref(false);
 const transferTarget = ref<CustomerWorkspaceRow>();
@@ -406,7 +414,10 @@ onMounted(async () => {
         <button class="tab" :class="{ active: activeTab === 'list' }" @click="activeTab = 'list'">客户列表</button>
         <button class="tab" :class="{ active: activeTab === 'quote' }" @click="activeTab = 'quote'">客户报价单</button>
       </div>
-      <el-button v-if="activeTab === 'list' && canQuote" type="primary" @click="startNewQuote()">新建报价</el-button>
+      <div class="tabbar-actions">
+        <el-button v-if="activeTab === 'list' && canTransfer" @click="createVisible = true">新建客户</el-button>
+        <el-button v-if="activeTab === 'list' && canQuote" type="primary" @click="startNewQuote()">新建报价</el-button>
+      </div>
     </div>
 
     <!-- ================= 客户列表 ================= -->
@@ -680,6 +691,9 @@ onMounted(async () => {
       </template>
     </el-dialog>
 
+    <!-- 新建客户向导（建客户 + 发起开通两步） -->
+    <CustomerCreateWizard v-model:visible="createVisible" @created="onCustomerCreated" />
+
     <!-- 移交客户（共用弹窗组件） -->
     <CustomerTransferDialog
       v-model:visible="transferVisible"
@@ -696,6 +710,7 @@ onMounted(async () => {
 .tabbar, .subtabbar { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--el-border-color-light); margin-bottom: 16px; }
 .subtabbar { margin-top: 4px; }
 .tabbar-left { display: flex; gap: 24px; }
+.tabbar-actions { display: flex; gap: 10px; }
 .tab { background: none; border: none; padding: 10px 2px; cursor: pointer; font-size: 14px; color: var(--app-text-secondary); border-bottom: 2px solid transparent; }
 .tab.active { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); font-weight: 600; }
 .filterbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
