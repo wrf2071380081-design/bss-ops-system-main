@@ -78,23 +78,11 @@ VALUES ($1,$2,$3,$4,'CN',0.5000,'ADMITTED',TRUE) RETURNING id`,
 	}
 
 	t.Cleanup(func() {
-		c := context.Background()
-		// 顺序：绑定 → 档案 → 主体 → 资源 → 模型 → 供应商
-		if _, err := db.ExecContext(c, `
-DELETE FROM public.customer_resource_link
- WHERE customer_profile_id IN (
-   SELECT cp.id FROM public.customer_profile cp JOIN public.legal_subject ls ON ls.id=cp.subject_id
-    WHERE ls.legal_name LIKE $1)`, f.prefix+"%"); err != nil {
-			t.Logf("cleanup links: %v", err)
-		}
-		_, _ = db.ExecContext(c, `
-DELETE FROM public.customer_profile
- WHERE id IN (SELECT cp.id FROM public.customer_profile cp JOIN public.legal_subject ls ON ls.id=cp.subject_id
-               WHERE ls.legal_name LIKE $1)`, f.prefix+"%")
-		_, _ = db.ExecContext(c, `DELETE FROM public.legal_subject WHERE legal_name LIKE $1`, f.prefix+"%")
-		_, _ = db.ExecContext(c, `DELETE FROM public.resource WHERE standard_model_id=$1`, f.modelID)
-		_, _ = db.ExecContext(c, `DELETE FROM public.standard_model WHERE id=$1`, f.modelID)
-		_, _ = db.ExecContext(c, `DELETE FROM public.supplier WHERE id = ANY($1)`, supplierIDs)
+		// 顺序很重要，而且每一步都要把错误打出来：
+		// 之前这里用了 `_, _ =` 静默忽略，结果 resource 删不掉 → supplier 也删不掉，
+		// 库里留了 6 个 QA 供应商 / 3 个模型；另外 onboarding_flow.owner_id 是**普通 bigint**
+		// （没有 FK 指向 customer_profile），删档案不会带走它，必须显式删，否则留下孤儿流程。
+		cleanupCustomerFixtures(t, db, f.prefix, f.modelID, supplierIDs)
 	})
 	return f
 }
@@ -194,4 +182,67 @@ func TestCustomerWorkspaceOpenedModelCount(t *testing.T) {
 	assertCount("ACTIVE+未归档DISABLED 同模型", both, 1)
 	assertCount("只有 DISABLED", disabledOnly, 0)
 	assertCount("无绑定", noLinks, 0)
+}
+
+// cleanupCustomerFixtures 按「测试前缀 + 已知 id」精确清理，且每步都记录错误。
+//
+// 关键点（踩过一次的坑）：
+//   - `onboarding_flow.owner_id` 是普通 bigint，没有指向 customer_profile 的外键，
+//     删档案**不会**级联带走流程 → 必须先按 owner 删流程（节点与模型明细随 CASCADE 走）
+//   - 先删 operation_log（它没有外键，但删完流程就查不到 entity_id 了）
+//   - resource → standard_model → supplier 是链式外键，任何一步失败后续都会失败，
+//     所以错误必须打出来，不能静默
+func cleanupCustomerFixtures(t *testing.T, db *sql.DB, prefix string, modelID int64, supplierIDs []int64) {
+	t.Helper()
+	ctx := context.Background()
+	exec := func(label, query string, args ...any) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, query, args...); err != nil {
+			t.Logf("cleanup %s failed: %v", label, err)
+		}
+	}
+	like := prefix + "%"
+
+	profileIDs := queryIDList(t, db, `
+SELECT cp.id FROM public.customer_profile cp JOIN public.legal_subject ls ON ls.id = cp.subject_id
+ WHERE ls.legal_name LIKE $1`, like)
+	if len(profileIDs) > 0 {
+		flowIDs := queryIDList(t, db,
+			`SELECT id FROM public.onboarding_flow WHERE kind='CUSTOMER' AND owner_id = ANY($1)`, profileIDs)
+		if len(flowIDs) > 0 {
+			exec("operation_log(flow)", `DELETE FROM public.operation_log WHERE entity_type='onboarding_flow' AND entity_id = ANY($1)`, flowIDs)
+		}
+		exec("operation_log(profile)", `DELETE FROM public.operation_log WHERE entity_type='customer_profile' AND entity_id = ANY($1)`, profileIDs)
+		// 流程先删：节点与 customer_onboarding_model 通过 ON DELETE CASCADE 一起走。
+		exec("onboarding_flow", `DELETE FROM public.onboarding_flow WHERE kind='CUSTOMER' AND owner_id = ANY($1)`, profileIDs)
+		exec("customer_resource_link", `DELETE FROM public.customer_resource_link WHERE customer_profile_id = ANY($1)`, profileIDs)
+	}
+	exec("customer_profile", `
+DELETE FROM public.customer_profile
+ WHERE id IN (SELECT cp.id FROM public.customer_profile cp JOIN public.legal_subject ls ON ls.id = cp.subject_id
+               WHERE ls.legal_name LIKE $1)`, like)
+	exec("legal_subject", `DELETE FROM public.legal_subject WHERE legal_name LIKE $1`, like)
+	exec("resource", `DELETE FROM public.resource WHERE standard_model_id = $1`, modelID)
+	exec("standard_model", `DELETE FROM public.standard_model WHERE id = $1`, modelID)
+	exec("supplier", `DELETE FROM public.supplier WHERE id = ANY($1)`, supplierIDs)
+}
+
+func queryIDList(t *testing.T, db *sql.DB, query string, args ...any) []int64 {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), query, args...)
+	if err != nil {
+		t.Logf("cleanup query failed: %v", err)
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make([]int64, 0, 4)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Logf("cleanup scan failed: %v", err)
+			return ids
+		}
+		ids = append(ids, id)
+	}
+	return ids
 }
