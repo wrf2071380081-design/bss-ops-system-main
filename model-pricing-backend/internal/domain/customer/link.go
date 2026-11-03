@@ -59,9 +59,14 @@ const (
 )
 
 // 客户侧看到的服务状态（投影 service_state）。
+//
+// 约定：Project() 在任何输入下都必须落在一个确定值上，**绝不返回空字符串**——
+// 前端拿 service_state 做分支判断，空串会掉进「未知状态」分支且不会报错。
+// 「接入中」本轮没有数据源（开通流程在 G4-B），常量先留着避免前端枚举漂移；
+// 它的产出时机是：客户已发起开通但绑定尚未建立（下一轮由流程投影补充）。
 const (
 	ServiceStateServing        = "服务中"
-	ServiceStateAccessing      = "接入中" // 保留给下一轮开通流程（本轮无数据源，见 link_service.go 注释）
+	ServiceStateAccessing      = "接入中" // G4-B 才产出，本轮不会出现
 	ServiceStateDisabled       = "已禁用"
 	ServiceStateOfflinePending = "来源待处理"
 	ServiceStateNoSource       = "无可用来源"
@@ -291,8 +296,15 @@ type CustomerModelServiceRow struct {
 
 // CustomerModelService 是客户详情「接入模型」Tab 的投影行。
 //
-// region 不在原始需求列表里，但 available_count 的口径是「同模型 + 同部署节点 + 已准入」，
-// 没有 region 就无法解释这个数字，所以随行返回（口径见 link_service.go）。
+// 字段约定：
+//   - service_state：**必定是非空枚举值**（服务中/接入中/已禁用/来源待处理/无可用来源），
+//     由 Project() 兜底，不会出现空串。
+//   - region：可用资源统计的部署节点。取法优先级 = **ACTIVE 绑定的那条资源的 region
+//     → 没有 ACTIVE 时取最早一条绑定的 region**。因为 uk_crl_customer_model 保证
+//     同一客户同一模型最多一条 ACTIVE，有 ACTIVE 时 region 唯一不含糊。
+//     没有未归档绑定时为**空串**（不是 null），此时 service_state = 无可用来源、
+//     available_count = 0，前端可据此直接显示「未接入」。
+//   - available_count：同 standard_model_id + **同 region** + resource.state='ADMITTED' 的资源数。
 type CustomerModelService struct {
 	StandardModelID int64    `json:"standard_model_id"`
 	ModelName       string   `json:"model_name"`
@@ -310,11 +322,14 @@ type CustomerModelService struct {
 //     介入的状态，埋在别的状态里会让客服漏处理。
 //   - DISABLE_PENDING 仍然算「服务中」：客户可用性还没被收回（禁用是两步确认）。
 //   - 没有未归档绑定时才是「无可用来源」。
+//
+// 兜底约定：任何输入（空状态、脏数据里的未知状态、甚至未来新增的状态）都必须落在一个
+// 确定的枚举值上；末尾还有一道空串断言，避免以后有人加分支时漏掉 default。
 func (r CustomerModelServiceRow) Project() CustomerModelService {
 	out := CustomerModelService{
 		StandardModelID: r.StandardModelID,
 		ModelName:       r.ModelName,
-		Region:          r.Region,
+		Region:          r.Region, // 无绑定时为 ""（不是 null），见 CustomerModelService 注释
 		BoundCount:      r.BoundCount,
 		AvailableCount:  r.AvailableCount,
 		RiskFlags:       make([]string, 0, 3),
@@ -326,7 +341,14 @@ func (r CustomerModelServiceRow) Project() CustomerModelService {
 		out.ServiceState = ServiceStateServing
 	case r.PrimaryState == LinkStateDisabled, r.PrimaryState == LinkStateRestorePending:
 		out.ServiceState = ServiceStateDisabled
+	case r.PrimaryState == LinkStateSupplyOffline, r.PrimaryState == LinkStateSupplyOfflinePending:
+		// 正常流程里 SUPPLY_OFFLINE 一定伴随 archived=true、不会进入投影；
+		// 真出现只可能是脏数据，按「已禁用」处理比「无可用来源」更接近事实。
+		out.ServiceState = ServiceStateDisabled
 	default:
+		out.ServiceState = ServiceStateNoSource
+	}
+	if out.ServiceState == "" {
 		out.ServiceState = ServiceStateNoSource
 	}
 	if r.OfflinePendingCount > 0 {

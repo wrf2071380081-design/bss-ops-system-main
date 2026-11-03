@@ -128,6 +128,10 @@ func TestLinkStateMachineRejectsIllegalTransitions(t *testing.T) {
 		{"未知状态被拒", "WHATEVER", LinkActionDisableRequest, "", ErrLinkTransitionInvalid},
 		{"缺下架前状态时不能自动恢复", LinkStateSupplyOfflinePending, LinkActionSupplyRestored, "", ErrLinkStateTraceMissing},
 		{"下架前状态非法时不能恢复", LinkStateSupplyOfflinePending, LinkActionSupplyRestored, LinkStateSupplyOffline, ErrLinkStateTraceMissing},
+		// 已人工确认停用（SUPPLY_OFFLINE）的绑定不能被「资源重新上架」事件悄悄复活，
+		// 恢复必须走人工重新配置来源。
+		{"已停用不能被上架事件复活", LinkStateSupplyOffline, LinkActionSupplyRestored, LinkStateActive, ErrLinkTransitionInvalid},
+		{"已停用不能被上架事件复活（无留痕）", LinkStateSupplyOffline, LinkActionSupplyRestored, "", ErrLinkTransitionInvalid},
 	}
 	for _, c := range cases {
 		if _, err := NextState(c.from, c.action, c.stateBeforeOffline); !errors.Is(err, c.want) {
@@ -406,6 +410,32 @@ func TestMarkSupplyRestoredRequiresTrace(t *testing.T) {
 	}
 }
 
+// TestMarkSupplyRestoredRejectsArchivedLink 钉住口径分叉：只有「未人工确认的待处理」才随上架自动回原状态。
+// 已经人工确认停用并归档的绑定（SUPPLY_OFFLINE + archived=true）**不得**被上架事件复活，
+// 恢复必须走人工重新配置来源——否则等于绕过人工确认，把刚归档的来源悄悄打开。
+func TestMarkSupplyRestoredRejectsArchivedLink(t *testing.T) {
+	cases := []struct {
+		name string
+		link *ResourceLink
+	}{
+		{"已确认停用的归档绑定", &ResourceLink{ID: 9, State: LinkStateSupplyOffline, Archived: true, Revision: 3}},
+		{"归档后即便原状态是 ACTIVE 也不许", &ResourceLink{ID: 9, State: LinkStateActive, Archived: true, Revision: 3}},
+		{"归档的待处理绑定", &ResourceLink{
+			ID: 9, State: LinkStateSupplyOfflinePending, StateBeforeOffline: LinkStateActive, Archived: true, Revision: 3,
+		}},
+	}
+	for _, c := range cases {
+		store := &fakeLinkStore{link: c.link}
+		svc := NewResourceLinkService(store)
+		if _, err := svc.MarkSupplyRestored(context.Background(), 9, 3, "req"); !errors.Is(err, ErrLinkArchived) {
+			t.Fatalf("%s：期望 ErrLinkArchived，got %v", c.name, err)
+		}
+		if len(store.applied) != 0 {
+			t.Fatalf("%s：已归档绑定不得写库", c.name)
+		}
+	}
+}
+
 // ---- 重新配置来源 ----
 
 func TestRebindArchivesOldAndCreatesActive(t *testing.T) {
@@ -516,6 +546,59 @@ func TestProjectMapsServiceStateAndRiskFlags(t *testing.T) {
 				t.Fatalf("%s：不应出现风险标记 %s", c.name, flag)
 			}
 		}
+	}
+}
+
+// TestProjectNeverReturnsEmptyServiceState service_state 必须始终是确定的枚举值。
+// 前端按 service_state 分支渲染，空串会掉进「未知」分支且不报错，所以在领域层就兜住。
+func TestProjectNeverReturnsEmptyServiceState(t *testing.T) {
+	known := map[string]bool{
+		ServiceStateServing:        true,
+		ServiceStateAccessing:      true,
+		ServiceStateDisabled:       true,
+		ServiceStateOfflinePending: true,
+		ServiceStateNoSource:       true,
+	}
+	rows := []CustomerModelServiceRow{
+		{},                                     // 空行（无绑定）
+		{PrimaryState: ""},                     // 显式空状态
+		{PrimaryState: "WHATEVER"},             // 脏数据：未知状态
+		{PrimaryState: LinkStateSupplyOffline}, // 正常流程不会出现（已归档不进投影）
+		{PrimaryState: LinkStateSupplyOfflinePending},
+		{PrimaryState: LinkStateActive},
+		{PrimaryState: LinkStateDisablePending},
+		{PrimaryState: LinkStateDisabled},
+		{PrimaryState: LinkStateRestorePending},
+		{OfflinePendingCount: 1}, // 只有计数、没有主状态
+	}
+	for i, row := range rows {
+		got := row.Project()
+		if got.ServiceState == "" {
+			t.Fatalf("第 %d 行（%+v）service_state 为空串", i, row)
+		}
+		if !known[got.ServiceState] {
+			t.Fatalf("第 %d 行产出了未登记的 service_state=%q", i, got.ServiceState)
+		}
+	}
+	if (CustomerModelServiceRow{}).Project().ServiceState != ServiceStateNoSource {
+		t.Fatal("没有任何绑定时必须落到「无可用来源」")
+	}
+	if (CustomerModelServiceRow{PrimaryState: "WHATEVER"}).Project().ServiceState != ServiceStateNoSource {
+		t.Fatal("未知状态必须有确定兜底值")
+	}
+	if (CustomerModelServiceRow{PrimaryState: LinkStateSupplyOffline}).Project().ServiceState != ServiceStateDisabled {
+		t.Fatal("未归档的 SUPPLY_OFFLINE 脏数据应读作「已禁用」而不是「无可用来源」")
+	}
+}
+
+// TestProjectRegionConvention region 的空值约定：没有未归档绑定时是空串（不是 null）。
+func TestProjectRegionConvention(t *testing.T) {
+	if got := (CustomerModelServiceRow{}).Project(); got.Region != "" {
+		t.Fatalf("无绑定时 region 约定为空串，got %q", got.Region)
+	}
+	row := CustomerModelServiceRow{PrimaryState: LinkStateActive, Region: "OVERSEAS", BoundCount: 1, AvailableCount: 2}
+	if got := row.Project(); got.Region != "OVERSEAS" {
+		t.Fatalf("有绑定时 region 必须透传仓库聚合结果，got %q", got.Region)
 	}
 }
 
