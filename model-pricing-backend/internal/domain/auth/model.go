@@ -36,6 +36,7 @@ func (a *Account) IsSubjectFrozen() bool {
 type RoleRow struct {
 	ID           int64
 	Code         string
+	Name         string // 角色显示名（领导 / 员工 / 模型运营…），仅用于前端展示
 	DataScope    DataScope
 	FieldMask    []string // field_mask 的 hide 列表展开后的 jsonb
 	IsFunctional bool
@@ -56,6 +57,7 @@ type OrgNode struct {
 type StaffRow struct {
 	ID                 int64
 	OrgUnitID          int64
+	Name               string
 	CanApproveSupplier bool
 }
 
@@ -70,6 +72,7 @@ type Snapshot struct {
 	MyOrgID      int64  `json:"my_org_id,omitempty"` // operator_type=STAFF 时
 	// CanApproveSupplier 供应商审批权（2026-10-21）：领导 true，普通员工 false。
 	CanApproveSupplier bool       `json:"can_approve_supplier"`
+	StaffName          string     `json:"staff_name,omitempty"` // 内部人员姓名（顶栏展示用）
 	SupplierName       string     `json:"supplier_name,omitempty"`
 	SupplierRegion     string     `json:"supplier_region,omitempty"`
 	Roles              []RoleSnap `json:"roles"`
@@ -81,6 +84,7 @@ type Snapshot struct {
 // RoleSnap 是快照内的单个角色信息。
 type RoleSnap struct {
 	Code         string    `json:"code"`
+	Name         string    `json:"name,omitempty"`
 	IsFunctional bool      `json:"is_functional"`
 	DataScope    DataScope `json:"data_scope"`
 	FieldMask    []string  `json:"field_mask,omitempty"`

@@ -45,6 +45,17 @@ const demoSuppliers = [
   { name: "星河算力", phone: "13800000004", region: "海外" },
 ];
 
+// 演示人员（迁移 000053 种下）：只有「领导 / 员工」两级。
+// 领导 = LEADER 角色 + can_approve_supplier=true；员工 = STAFF 角色（无审批权）。
+const demoStaff = [
+  { name: "林舟", role: "领导", login: "linzhou" },
+  { name: "许澄", role: "领导", login: "xucheng" },
+  { name: "陈乐", role: "员工", login: "chenle" },
+  { name: "周宁", role: "员工", login: "zhouning" },
+  { name: "沈安", role: "员工", login: "shenan" },
+];
+const DEMO_STAFF_PASSWORD = "Test@1234";
+
 watch(portal, () => {
   password.value = "";
   error.value = "";
@@ -100,6 +111,14 @@ async function submitInternal() {
     password.value = "";
     busy.value = false;
   }
+}
+
+/** 演示人员一键登录：填入账号与统一口令后直接提交，等同原型顶栏「切换成员」。 */
+async function loginAsStaff(item: { name: string; role: string; login: string }) {
+  if (busy.value) return;
+  account.value = item.login;
+  password.value = DEMO_STAFF_PASSWORD;
+  await submitInternal();
 }
 
 async function submitSupplierLogin() {
@@ -180,6 +199,13 @@ async function submitSupplierRegister() {
         <p v-if="error" role="alert" class="login-error">{{ error }}</p>
         <el-button type="primary" native-type="submit" :loading="busy">登录</el-button>
       </form>
+
+      <div v-if="isInternal" class="demo-accounts">
+        <span>演示人员（点击直接登录）：</span>
+        <button v-for="item in demoStaff" :key="item.login" type="button" :disabled="busy" @click="loginAsStaff(item)">
+          {{ item.name }} · {{ item.role }}
+        </button>
+      </div>
 
       <div v-else class="supplier-panel">
         <el-tabs v-model="supplierTab">

@@ -8,10 +8,12 @@ export interface LoginResult {
     portal_type: string;
     operator_id: number | string;
     can_approve_supplier?: boolean;
+    /** 内部人员姓名（顶栏展示用，如「林舟」）。 */
+    staff_name?: string;
     supplier_name?: string;
     supplier_region?: string;
     staff_id?: number | string;
-    roles: { code: string }[] | null;
+    roles: { code: string; name?: string }[] | null;
     perms: string[] | null;
   };
 }

@@ -298,12 +298,14 @@ export const useSessionStore = defineStore("session", () => {
     token.value = result.token;
     portal.value = targetPortal;
     const roleCodes = snapshot.roles?.map(r => r.code) || [];
-    user.value = { id: String(snapshot.account_id), name: loginID, roleCodes,
+    // 角色显示名优先取服务端 role.name（领导 / 员工 / 模型运营…），旧服务端没有该字段时退回角色码。
+    const roleNames = (snapshot.roles || []).map(r => r.name || r.code).filter(Boolean);
+    user.value = { id: String(snapshot.account_id), name: snapshot.staff_name || loginID, roleCodes,
       canApproveSupplier: Boolean(snapshot.can_approve_supplier),
       supplierName: snapshot.supplier_name,
       supplierRegion: snapshot.supplier_region,
       staffId: snapshot.staff_id ? Number(snapshot.staff_id) : undefined,
-      roleLabel: roleCodes.join(" / ") || (targetPortal === "internal" ? "内部用户" : targetPortal === "supplier" ? "供应商" : "客户") };
+      roleLabel: roleNames.join(" / ") || (targetPortal === "internal" ? "内部用户" : targetPortal === "supplier" ? "供应商" : "客户") };
     permissionCodes.value = [...(snapshot.perms || [])];
     legacyRole.value = "VIEWER";
     usePermissionStore().rebuild(permissionCodes.value, roleCodes);

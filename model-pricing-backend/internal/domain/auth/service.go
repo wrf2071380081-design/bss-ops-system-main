@@ -233,6 +233,7 @@ func (s *Service) buildSnapshot(ctx context.Context, acct *Account) (*Snapshot, 
 		})
 		snap.Roles = append(snap.Roles, RoleSnap{
 			Code:         role.Code,
+			Name:         role.Name,
 			IsFunctional: role.IsFunctional,
 			DataScope:    role.DataScope,
 			FieldMask:    role.FieldMask,
@@ -257,6 +258,7 @@ func (s *Service) buildSnapshot(ctx context.Context, acct *Account) (*Snapshot, 
 		if staff != nil {
 			snap.StaffID = staff.ID
 			snap.MyOrgID = staff.OrgUnitID
+			snap.StaffName = staff.Name
 			snap.CanApproveSupplier = staff.CanApproveSupplier
 		}
 	}
