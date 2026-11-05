@@ -21,7 +21,7 @@ const emit = defineEmits<{
 }>();
 
 const emptyForm = (): SupplierEntityForm => ({
-  name: "", region: "CN", registration_no: "", contact: "", phone: "", tax_rate_percent: "", settlement_currency: "CNY",
+  name: "", region: "CN", registration_no: "", contact: "", phone: "", tax_rate_percent: "", settlement_currency: "CNY", remark: "",
 });
 const form = reactive<SupplierEntityForm>(emptyForm());
 const reason = ref("");
@@ -74,6 +74,7 @@ function submit() {
         <el-form-item label="联系电话"><el-input v-model="form.phone" maxlength="32" /></el-form-item>
         <el-form-item label="税率（百分比）"><el-input v-model="form.tax_rate_percent" inputmode="decimal" placeholder="可留空；例如 6 或 6.25" /></el-form-item>
         <el-form-item label="结算币种" required><el-select v-model="form.settlement_currency"><el-option label="人民币 CNY" value="CNY" /><el-option label="美元 USD" value="USD" /></el-select></el-form-item>
+        <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="2" maxlength="500" placeholder="选填，例如合作背景或特殊约定" /></el-form-item>
         <el-form-item label="操作说明" required><el-input v-model="reason" maxlength="500" placeholder="说明建档或资料调整原因" /></el-form-item>
       </div>
       <el-alert v-if="!profile" title="初始归属采购人自动绑定当前登录员工；首次办理完成前，主体状态为“尚未完成首次接入”。" type="info" :closable="false" />

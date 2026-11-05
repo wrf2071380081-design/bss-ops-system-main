@@ -55,6 +55,7 @@ type supplySupplierDTO struct {
 	Phone              string    `json:"phone"`
 	TaxRate            *string   `json:"tax_rate"`
 	SettlementCurrency string    `json:"settlement_currency"`
+	Remark             string    `json:"remark"`
 	Established        bool      `json:"established"`
 	Status             string    `json:"status"`
 	Revision           uint64    `json:"revision,string"`
@@ -79,13 +80,14 @@ type supplySupplierRequest struct {
 	Phone              string  `json:"phone"`
 	TaxRate            *string `json:"tax_rate"`
 	SettlementCurrency string  `json:"settlement_currency"`
+	Remark             string  `json:"remark"`
 	ExpectedRevision   string  `json:"expected_revision"`
 	Reason             string  `json:"reason"`
 }
 
 func supplierDTO(profile *supply.Supplier, actor string, aliasesSupported bool) supplySupplierDTO {
 	aliases := append([]string{}, profile.Aliases...)
-	return supplySupplierDTO{ID: profile.ID, BuyerID: profile.BuyerID, Name: profile.Data.Name, Aliases: aliases, AliasesSupported: aliasesSupported, Region: profile.Data.Region, RegistrationNo: profile.Data.RegistrationNo, Contact: profile.Data.Contact, Phone: profile.Data.Phone, TaxRate: profile.Data.TaxRate, SettlementCurrency: profile.Data.SettlementCurrency, Established: profile.Established, Status: profile.Status, Revision: profile.Revision, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, CanEdit: actor == profile.BuyerID}
+	return supplySupplierDTO{ID: profile.ID, BuyerID: profile.BuyerID, Name: profile.Data.Name, Aliases: aliases, AliasesSupported: aliasesSupported, Region: profile.Data.Region, RegistrationNo: profile.Data.RegistrationNo, Contact: profile.Data.Contact, Phone: profile.Data.Phone, TaxRate: profile.Data.TaxRate, SettlementCurrency: profile.Data.SettlementCurrency, Remark: profile.Data.Remark, Established: profile.Established, Status: profile.Status, Revision: profile.Revision, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, CanEdit: actor == profile.BuyerID}
 }
 
 func (h *supplySupplierHandler) list(c *gin.Context) {
@@ -440,7 +442,7 @@ func (h *supplySupplierHandler) update(c *gin.Context) {
 }
 
 func supplierData(req supplySupplierRequest) supply.SupplierData {
-	return supply.SupplierData{Name: req.Name, Region: req.Region, RegistrationNo: req.RegistrationNo, Contact: req.Contact, Phone: req.Phone, TaxRate: req.TaxRate, SettlementCurrency: req.SettlementCurrency}
+	return supply.SupplierData{Name: req.Name, Region: req.Region, RegistrationNo: req.RegistrationNo, Contact: req.Contact, Phone: req.Phone, TaxRate: req.TaxRate, SettlementCurrency: req.SettlementCurrency, Remark: req.Remark}
 }
 
 func (h *supplySupplierHandler) result(c *gin.Context, profile *supply.Supplier) {

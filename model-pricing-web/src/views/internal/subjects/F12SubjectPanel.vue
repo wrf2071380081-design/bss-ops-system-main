@@ -10,7 +10,7 @@ import { ApiError } from "../../../domain/common";
 import { f12ErrorMessage } from "../../../domain/f12Errors";
 import { canManageF12Subject } from "../../../domain/f12Permissions";
 
-const props = defineProps<{ subjectType: F12SubjectType; subjectId: string; canManage: boolean; flowContext?: F12FlowWriteContext; flowCanManage?: boolean }>();
+const props = defineProps<{ subjectType: F12SubjectType; subjectId: string; canManage: boolean; flowContext?: F12FlowWriteContext; flowCanManage?: boolean; layout?: "full" | "merged" }>();
 const emit = defineEmits<{ (event: "refresh-flow-context"): void; (event: "changed"): void; (event: "readiness-change", ready: boolean): void }>();
 // These flags only control the UI. Every write and attachment read is authorized again by the server.
 const canManage = computed(() => canManageF12Subject(props.canManage, Boolean(props.flowContext), props.flowCanManage));
@@ -358,6 +358,54 @@ function creditStatusLabel(status: F12CurrentCredit["status"]) {
   return "历史金额无效，需核对";
 }
 function creditAmount(record?: F12CreditRecord) { return record ? `${record.amount} ${record.currency}` : "不可确认"; }
+
+// ---- 合并视图（原型「档案与办理 → 合同与授信」是一张表）----
+// 默认 full 布局给客户详情用；供应商档案页传 layout="merged"。
+const isMerged = computed(() => props.layout === "merged");
+type MergedRow = {
+  key: string; kind: "CONTRACT" | "CREDIT"; name: string; documentName: string; documentNo: string;
+  quota: string; createdAt: string; operator: string; note: string; fileID?: string;
+  version: number; latest: boolean; versions: number;
+  contract?: F12ContractRecord; credit?: F12CreditRecord;
+};
+const latestCreditVersion = (currency: string) => Math.max(0, ...credits.value.filter(row => row.currency === currency).map(row => row.version));
+const mergedRows = computed<MergedRow[]>(() => {
+  const rows: MergedRow[] = [];
+  for (const row of contracts.value) {
+    rows.push({
+      key: `contract-${row.id}`, kind: "CONTRACT", name: `合同 · ${row.document_name || "未记录名称"}`,
+      documentName: row.document_name || "contract.pdf", documentNo: row.document_no || "—", quota: "—",
+      createdAt: row.created_at, operator: row.created_by || "—", note: row.reason || "未记录",
+      fileID: row.file_id, version: row.version, latest: row.is_latest === true,
+      versions: contracts.value.filter(item => (item.document_no || item.id) === (row.document_no || row.id)).length,
+      contract: row,
+    });
+  }
+  for (const row of credits.value) {
+    rows.push({
+      key: `credit-${row.id}`, kind: "CREDIT", name: `授信 · ${row.currency}`,
+      documentName: row.document_name || "credit.pdf", documentNo: row.document_no || "—",
+      quota: creditAmount(row), createdAt: row.created_at, operator: row.created_by || "—",
+      note: row.reason || "未记录", fileID: row.file_id, version: row.version,
+      latest: row.version === latestCreditVersion(row.currency),
+      versions: credits.value.filter(item => item.currency === row.currency).length,
+      credit: row,
+    });
+  }
+  return rows.sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+});
+const historyTarget = ref<MergedRow | null>(null);
+const historyRows = computed(() => {
+  const target = historyTarget.value;
+  if (!target) return [] as MergedRow[];
+  return mergedRows.value.filter(row => row.kind === target.kind &&
+    (target.kind === "CONTRACT" ? (row.contract?.document_no || row.contract?.id) === (target.contract?.document_no || target.contract?.id) : row.credit?.currency === target.credit?.currency));
+});
+function openHistory(row: MergedRow) { historyTarget.value = row; }
+function createFromMenu(command: string) {
+  if (command === "contract") openCreateContract();
+  else openCreditDialog();
+}
 function readinessReasonLabel(reason: string) {
   if (reason === "CONTRACT_REQUIRED") return "缺少有效合同资料";
   if (reason === "CREDIT_REQUIRED") return "缺少有效授信资料";
@@ -479,8 +527,19 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
 <template>
   <section class="f12-subject-panel" :data-subject-type="subjectType" :data-subject-id="subjectId">
     <div class="panel-heading">
-      <div><h3>合同与授信</h3><p>主体 {{ subjectId }} · {{ subjectType === "SUPPLIER" ? "供应商" : "客户" }}</p></div>
-      <div class="heading-actions"><el-button v-if="canManage" size="small" :disabled="loading || saving || !!error" @click="openCreateContract">新增合同</el-button><el-button v-if="canManage" size="small" type="primary" :disabled="loading || saving || !!error" @click="openCreditDialog">新增 / 调整授信</el-button><el-button size="small" :loading="loading" :disabled="saving" @click="load">刷新</el-button></div>
+      <div><h3>合同与授信</h3><p v-if="!isMerged">主体 {{ subjectId }} · {{ subjectType === "SUPPLIER" ? "供应商" : "客户" }}</p></div>
+      <div class="heading-actions">
+      <template v-if="isMerged">
+        <el-dropdown v-if="canManage" trigger="click" :disabled="loading || saving || !!error" @command="createFromMenu">
+          <el-button size="small" :disabled="loading || saving || !!error">新增</el-button>
+          <template #dropdown><el-dropdown-menu><el-dropdown-item command="contract">合同</el-dropdown-item><el-dropdown-item command="credit">授信</el-dropdown-item></el-dropdown-menu></template>
+        </el-dropdown>
+      </template>
+      <template v-else>
+        <el-button v-if="canManage" size="small" :disabled="loading || saving || !!error" @click="openCreateContract">新增合同</el-button><el-button v-if="canManage" size="small" type="primary" :disabled="loading || saving || !!error" @click="openCreditDialog">新增 / 调整授信</el-button>
+      </template>
+      <el-button v-if="!isMerged" size="small" :loading="loading" :disabled="saving" @click="load">刷新</el-button>
+    </div>
     </div>
     <el-alert v-if="error" type="error" :title="error" :closable="false" show-icon />
     <el-alert v-if="!canManage" type="info" title="当前为只读查看；合同/授信维护及附件下载仅向主体责任人或当前办理人开放。" :closable="false" />
@@ -490,6 +549,33 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
       <span v-else>合同版本 {{ readiness.contracts.map(row => `V${row.version}`).join("、") || "—" }}；授信版本 {{ readiness.credits.map(row => `${row.currency} V${row.version}`).join("、") || "—" }}</span>
     </el-alert>
     <div v-loading="loading" class="panel-body">
+      <!-- 供应商档案页：合同与授信合成一张表（原型「类型/名称｜资料编号｜授信额度｜时间｜操作人｜备注｜附件｜操作」）。 -->
+      <template v-if="isMerged">
+        <el-table :data="mergedRows" row-key="key" size="small" empty-text="暂无合同或授信记录">
+          <el-table-column label="类型／名称" min-width="180"><template #default="{ row }">{{ row.name }}<span v-if="row.version > 1" class="merged-version">V{{ row.version }}</span></template></el-table-column>
+          <el-table-column label="资料编号" min-width="170"><template #default="{ row }">{{ row.documentNo }}</template></el-table-column>
+          <el-table-column label="授信额度" min-width="120"><template #default="{ row }">{{ row.quota }}</template></el-table-column>
+          <el-table-column label="时间" min-width="150"><template #default="{ row }">{{ formatDate(row.createdAt) }}</template></el-table-column>
+          <el-table-column label="操作人" min-width="100"><template #default="{ row }">{{ row.operator }}</template></el-table-column>
+          <el-table-column label="备注" min-width="140" show-overflow-tooltip><template #default="{ row }">{{ row.note }}</template></el-table-column>
+          <el-table-column label="附件" min-width="100">
+            <template #default="{ row }">
+              <el-button v-if="canManage && row.fileID" link type="primary" :loading="downloading === row.fileID" @click="downloadFile(row.fileID, row.kind, row.documentName)">下载</el-button>
+              <span v-else-if="row.fileID">需责任人下载</span>
+              <span v-else>未关联</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="170">
+            <template #default="{ row }">
+              <el-button v-if="row.kind === 'CONTRACT' && row.latest && row.contract && row.contract.status !== 'ARCHIVED'" link type="primary" :disabled="loading || saving" @click="openReviseContract(row.contract)">编辑</el-button>
+              <el-button v-if="row.kind === 'CREDIT' && row.latest" link type="primary" :disabled="loading || saving" @click="openCreditDialog">调整</el-button>
+              <el-button link type="primary" @click="openHistory(row)">版本历史</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <p class="merged-count">共 {{ mergedRows.length }} 条<span v-if="contractTotal + creditTotal > mergedRows.length">（合同与授信各取最近 {{ historyPageSize }} 条，可在客户/供应商维护中查看更早版本）</span></p>
+      </template>
+      <template v-else>
       <h4>合同资料</h4>
       <el-table :data="contracts" row-key="id" size="small" empty-text="暂无合同记录">
         <el-table-column prop="document_name" label="合同名称" min-width="150"><template #default="{ row }">{{ row.document_name || "旧结构未记录名称" }}</template></el-table-column>
@@ -531,7 +617,21 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
       </el-table>
       <el-pagination v-if="creditTotal > historyPageSize" class="history-pagination credit-history-pagination" :current-page="creditPage" :page-size="historyPageSize" :total="creditTotal" layout="total, prev, pager, next" :disabled="loading" @current-change="changeCreditPage" />
       <p class="read-only-note">合同与授信分别登记；当前额度取对应币种的最新有效版本，不累加历史。旧记录未关联可下载附件时显示不可下载。保存冲突时保留表单，请刷新核对后再提交。</p>
+      </template>
     </div>
+
+    <el-dialog :model-value="!!historyTarget" append-to-body title="版本历史" width="min(680px, 94vw)" @close="historyTarget = null">
+      <p class="muted">{{ historyTarget?.name }} · 已加载 {{ historyRows.length }} 个版本</p>
+      <el-table :data="historyRows" size="small" empty-text="暂无历史版本">
+        <el-table-column label="版本" width="80"><template #default="{ row }">V{{ row.version }}</template></el-table-column>
+        <el-table-column label="资料编号" min-width="170"><template #default="{ row }">{{ row.documentNo }}</template></el-table-column>
+        <el-table-column label="授信额度" min-width="110"><template #default="{ row }">{{ row.quota }}</template></el-table-column>
+        <el-table-column label="备注" min-width="150" show-overflow-tooltip><template #default="{ row }">{{ row.note }}</template></el-table-column>
+        <el-table-column label="保存时间" min-width="150"><template #default="{ row }">{{ formatDate(row.createdAt) }}</template></el-table-column>
+        <el-table-column label="操作" width="90"><template #default="{ row }"><el-tag v-if="row.latest" size="small" type="success">当前</el-tag><span v-else class="muted">历史</span></template></el-table-column>
+      </el-table>
+      <template #footer><el-button @click="historyTarget = null">关闭</el-button></template>
+    </el-dialog>
 
     <el-dialog v-model="contractDialog" append-to-body :title="editingContract ? '修订合同资料' : '新增合同资料'" width="min(560px, 94vw)" destroy-on-close :close-on-click-modal="false" :close-on-press-escape="!saving && !loading" :show-close="!saving && !loading">
       <el-alert v-if="contractError" :type="contractConflict ? 'warning' : 'error'" :title="contractError" :closable="false">

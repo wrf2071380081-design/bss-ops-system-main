@@ -208,7 +208,7 @@ func (t *supplierTransaction) CreateSupplier(ctx context.Context, input *supply.
 	if err != nil {
 		return err
 	}
-	_, err = t.tx.ExecContext(ctx, `INSERT INTO `+t.store.table("supplier")+` (id,name,region,registration_no,contact,phone,established,tax_rate,settlement_currency,status,created_at,updated_at,created_by,updated_by) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4,$5,$6,false,$7,$8,'ACTIVE',$9,$9,$10,$10)`, profile.ID, profile.Data.Name, profile.Data.Region, nullableSupplierText(profile.Data.RegistrationNo), nullableSupplierText(profile.Data.Contact), nullableSupplierText(profile.Data.Phone), taxRate, profile.Data.SettlementCurrency, profile.CreatedAt, profile.BuyerID)
+	_, err = t.tx.ExecContext(ctx, `INSERT INTO `+t.store.table("supplier")+` (id,name,region,registration_no,contact,phone,established,tax_rate,settlement_currency,remark,status,created_at,updated_at,created_by,updated_by) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4,$5,$6,false,$7,$8,$9,'ACTIVE',$10,$10,$11,$11)`, profile.ID, profile.Data.Name, profile.Data.Region, nullableSupplierText(profile.Data.RegistrationNo), nullableSupplierText(profile.Data.Contact), nullableSupplierText(profile.Data.Phone), taxRate, profile.Data.SettlementCurrency, nullableSupplierText(profile.Data.Remark), profile.CreatedAt, profile.BuyerID)
 	if err != nil {
 		return supplierUniqueError(err)
 	}
@@ -267,7 +267,7 @@ func (t *supplierTransaction) UpdateSupplier(ctx context.Context, input *supply.
 	if err != nil {
 		return err
 	}
-	result, err := t.tx.ExecContext(ctx, `UPDATE `+t.store.table("supplier")+` SET name=$2,region=$3,registration_no=$4,contact=$5,phone=$6,tax_rate=$7,settlement_currency=$8,updated_at=$9,updated_by=$10 WHERE id=$1 AND updated_at=$11`, input.ID, input.Data.Name, input.Data.Region, nullableSupplierText(input.Data.RegistrationNo), nullableSupplierText(input.Data.Contact), nullableSupplierText(input.Data.Phone), taxRate, input.Data.SettlementCurrency, input.UpdatedAt, input.BuyerID, t.current.UpdatedAt)
+	result, err := t.tx.ExecContext(ctx, `UPDATE `+t.store.table("supplier")+` SET name=$2,region=$3,registration_no=$4,contact=$5,phone=$6,tax_rate=$7,settlement_currency=$8,remark=$9,updated_at=$10,updated_by=$11 WHERE id=$1 AND updated_at=$12`, input.ID, input.Data.Name, input.Data.Region, nullableSupplierText(input.Data.RegistrationNo), nullableSupplierText(input.Data.Contact), nullableSupplierText(input.Data.Phone), taxRate, input.Data.SettlementCurrency, nullableSupplierText(input.Data.Remark), input.UpdatedAt, input.BuyerID, t.current.UpdatedAt)
 	if err != nil {
 		return supplierUniqueError(err)
 	}
@@ -510,14 +510,14 @@ func (s *SupplierStore) loadSupplier(ctx context.Context, tx *sql.Tx, id string,
 	if s == nil || tx == nil || !modelIdentity(id) {
 		return nil, supply.ErrDependencyUnavailable
 	}
-	query := `SELECT id::text,name,region,registration_no,contact,phone,established,tax_rate::text,settlement_currency,status,created_at,updated_at FROM ` + s.table("supplier") + ` WHERE id=$1`
+	query := `SELECT id::text,name,region,registration_no,contact,phone,established,tax_rate::text,settlement_currency,remark,status,created_at,updated_at FROM ` + s.table("supplier") + ` WHERE id=$1`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var profile supply.Supplier
-	var registration, contact, phone, taxRate, currency sql.NullString
+	var registration, contact, phone, taxRate, currency, remark sql.NullString
 	var createdAt, updatedAt time.Time
-	err := tx.QueryRowContext(ctx, query, id).Scan(&profile.ID, &profile.Data.Name, &profile.Data.Region, &registration, &contact, &phone, &profile.Established, &taxRate, &currency, &profile.Status, &createdAt, &updatedAt)
+	err := tx.QueryRowContext(ctx, query, id).Scan(&profile.ID, &profile.Data.Name, &profile.Data.Region, &registration, &contact, &phone, &profile.Established, &taxRate, &currency, &remark, &profile.Status, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
@@ -528,6 +528,7 @@ func (s *SupplierStore) loadSupplier(ctx context.Context, tx *sql.Tx, id string,
 		return nil, supply.ErrReadContract
 	}
 	profile.Data.RegistrationNo, profile.Data.Contact, profile.Data.Phone = registration.String, contact.String, phone.String
+	profile.Data.Remark = remark.String
 	if taxRate.Valid {
 		profile.Data.TaxRate, err = supplierTaxRateFromDB(taxRate.String)
 		if err != nil {

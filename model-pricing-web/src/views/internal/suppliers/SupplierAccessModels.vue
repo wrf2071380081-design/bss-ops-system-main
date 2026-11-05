@@ -44,7 +44,7 @@ function openReports(row: ResourceRow) { reportsRow.value = row; reportsVisible.
 const profile = ref<SupplierEntityDTO>();
 const profileFormOpen = ref(false), profileSaving = ref(false), reloadingProfileConflict = ref(false), profileSaveError = ref(""), profileSaveConflict = ref(false), profileReloadKey = ref(0);
 // 档案改成页面内表单（原型样式）：编辑内容先落在草稿里，点「保存修改」才入库并写审计。
-const profileDraft = ref<SupplierEntityForm>({ name: "", region: "CN", registration_no: "", contact: "", phone: "", tax_rate_percent: "", settlement_currency: "CNY" });
+const profileDraft = ref<SupplierEntityForm>({ name: "", region: "CN", registration_no: "", contact: "", phone: "", tax_rate_percent: "", settlement_currency: "CNY", remark: "" });
 watch(() => profile.value, (value) => {
   if (!value) return;
   profileDraft.value = {
@@ -57,6 +57,7 @@ watch(() => profile.value, (value) => {
     tax_rate_percent: value.tax_rate === null || value.tax_rate === undefined || value.tax_rate === ""
       ? "" : String(Number(value.tax_rate) * 100),
     settlement_currency: value.settlement_currency,
+    remark: value.remark ?? "",
   };
 }, { immediate: true, deep: true });
 const profileLoading = ref(false), profileError = ref("");
@@ -105,6 +106,17 @@ function matchQuoteFilters(row: SubmissionFlowView) {
 const pendingQuoteRows = computed(() => pendingQuotes.value.filter(matchQuoteFilters));
 const decidedQuoteRows = computed(() => quoteRows.value.filter(matchQuoteFilters));
 const quoteStatusLabel = (status: string) => submissionStatusLabels[status] || status || "未记录";
+/** 原型只展示一份企业证明：取最近上传的那条。 */
+const latestQualification = computed(() => {
+  const rows = [...qualifications.value].sort((a, b) => (Date.parse(b.uploaded_at) || 0) - (Date.parse(a.uploaded_at) || 0));
+  return rows[0];
+});
+const latestQualificationText = computed(() => {
+  const row = latestQualification.value;
+  if (!row) return "未上传企业证明";
+  const extra = qualifications.value.length > 1 ? `（共 ${qualifications.value.length} 份，仅显示最新）` : "";
+  return `${row.file_name || row.name} · ${formatDateTime(row.uploaded_at)}${extra}`;
+});
 function resetQuoteFilters() { Object.assign(quoteFilters, { kind: "", status: "", range: [] }); }
 function resourceNodes(id:string){return progress.value.filter(n=>n.resource_id===id);}
 function openInterfaceConfig(row:ResourceRow){void router.push({path:`/internal/model-plaza/${row.id}`,query:{region:row.region,tab:'operations',supplier_id:supplierID.value}});}
@@ -594,7 +606,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <template v-if="profile">
               <!-- 基础资料按原型做成两列表单：字段直接可编辑，保存时才入库（并记操作说明）。 -->
               <div ref="profileAnchor" class="supplier-profile-heading">
-                <div><h3>基础资料</h3><span class="muted">归属采购人 人员 {{ profile.buyer_id }} · 修订 {{ profile.revision }} · {{ profile.status === 'ACTIVE' ? '正常' : '冻结' }}</span></div>
+                <h3>基础资料</h3>
                 <el-button v-if="profile.can_edit" type="primary" plain size="small" :loading="profileSaving" @click="saveProfileInline">保存修改</el-button>
               </div>
               <el-form label-position="top" class="profile-grid" :disabled="!profile.can_edit || profileSaving">
@@ -605,24 +617,20 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
                 <el-form-item label="国内／海外"><el-select v-model="profileDraft.region"><el-option label="国内" value="CN" /><el-option label="海外" value="OVERSEAS" /></el-select></el-form-item>
                 <el-form-item label="税率 %"><el-input v-model="profileDraft.tax_rate_percent" inputmode="decimal" placeholder="可留空，例如 6 或 6.25" /></el-form-item>
                 <el-form-item label="结算币种"><el-select v-model="profileDraft.settlement_currency"><el-option label="人民币 CNY" value="CNY" /><el-option label="美元 USD" value="USD" /></el-select></el-form-item>
+                <el-form-item label="备注" class="span-2"><el-input v-model="profileDraft.remark" type="textarea" :rows="2" maxlength="500" placeholder="选填，例如合作背景或特殊约定" /></el-form-item>
               </el-form>
               <el-alert v-if="profileSaveError" :title="profileSaveError" type="error" :closable="false" />
-              <div ref="qualificationsAnchor" class="supplier-qualification-heading"><div><h3>营业执照／企业证明</h3><span class="muted">支持 PDF、PNG、JPEG，单文件最大 2 MiB；审核状态由审核能力提供。</span></div><el-button v-if="profile.can_edit" :disabled="qualificationLoading || qualificationMetadataSupported === null" type="primary" plain size="small" @click="openQualificationUpload">上传资质</el-button></div>
-              <el-alert v-if="qualificationMetadataSupported === false" title="当前资质元数据结构缺失或不兼容；现阶段只显示已有资料并保留基础上传，类型、有效期和修订维护暂不可用。" type="info" :closable="false" />
-              <el-alert v-if="qualificationError" :title="qualificationError" type="error" :closable="false"><el-button text @click="loadQualifications">重试</el-button></el-alert>
-              <div v-else v-loading="qualificationLoading" class="qualification-list">
-                <el-empty v-if="!qualifications.length && !qualificationLoading" description="暂无资质材料" :image-size="58" />
-                <el-table v-else :data="qualifications" size="small" row-key="id" empty-text="暂无资质材料">
-                  <el-table-column prop="name" label="资料名称" min-width="220" />
-                  <el-table-column label="附件" min-width="200"><template #default="{ row }"><el-button v-if="profile.can_edit && row.can_download" link type="primary" :loading="qualificationDownloading === row.id" @click="downloadQualification(row)">下载 {{ row.file_name }}</el-button><span v-else>{{ row.has_attachment ? (profile.can_edit ? '历史附件暂不可下载' : '需归属采购人下载') : '未上传企业证明' }}</span></template></el-table-column>
-                  <el-table-column label="上传时间" min-width="170"><template #default="{ row }">{{ formatDateTime(row.uploaded_at) }}</template></el-table-column>
-                  <el-table-column label="审核状态" min-width="140"><template #default="{ row }">{{ row.review_status || (qualificationMetadataSupported === true ? '未记录' : qualificationMetadataSupported === false ? '审核字段待交付' : '状态未知') }}</template></el-table-column>
-                  <el-table-column label="操作" width="90"><template #default="{ row }"><el-button v-if="profile.can_edit && qualificationMetadataSupported" link type="primary" :disabled="!row.revision" @click="openQualificationEdit(row)">维护</el-button></template></el-table-column>
-                </el-table>
-                <el-pagination v-if="qualificationTotal > 20" v-model:current-page="qualificationPage" :page-size="20" :total="qualificationTotal" layout="total, prev, pager, next" @current-change="loadQualifications" />
+              <!-- 营业执照／企业证明：原型就是一个文件控件 + 当前状态，不放表格。 -->
+              <div ref="qualificationsAnchor" class="supplier-qualification-heading"><h3>营业执照／企业证明</h3></div>
+              <div v-loading="qualificationLoading" class="qualification-inline">
+                <el-button v-if="profile.can_edit" size="small" :disabled="qualificationLoading" @click="openQualificationUpload">选择文件</el-button>
+                <span class="qualification-file">{{ latestQualificationText }}</span>
+                <el-button v-if="latestQualification?.can_download && profile.can_edit" link type="primary" :loading="qualificationDownloading === latestQualification.id" @click="downloadQualification(latestQualification)">下载</el-button>
+                <span v-else-if="latestQualification?.has_attachment && !profile.can_edit" class="muted">需归属采购人下载</span>
               </div>
+              <el-alert v-if="qualificationError" :title="qualificationError" type="error" :closable="false"><el-button text @click="loadQualifications">重试</el-button></el-alert>
               <!-- 合同与授信紧跟基础资料（原型顺序）；接入模型与办理状态在「接入模型」页签，这里不再重复。 -->
-              <div ref="f12Anchor"><F12SubjectPanel v-if="profile" subject-type="SUPPLIER" :subject-id="profile.id" :can-manage="profile.can_edit" @changed="loadProfile" /></div>
+              <div ref="f12Anchor"><F12SubjectPanel v-if="profile" subject-type="SUPPLIER" :subject-id="profile.id" :can-manage="profile.can_edit" layout="merged" @changed="loadProfile" /></div>
             </template>
           </div>
         </el-tab-pane>
@@ -726,7 +734,12 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
 .profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px;padding:10px 0 0}
 .profile-grid :deep(.el-form-item){margin-bottom:14px}
 .profile-grid :deep(.el-select),.profile-grid :deep(.el-input){width:100%}
+.profile-grid .span-2{grid-column:1 / -1}
 @media(max-width:820px){.profile-grid{grid-template-columns:1fr}}.qualification-validity{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .supplier-qualification-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:24px}.supplier-qualification-heading h3{margin:0 0 10px}.qualification-list{min-height:90px}
+.qualification-inline{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:44px;padding:4px 0}
+/* 合同与授信是独立区块，和上方营业执照留出间距（原型也是分开的两块）。 */
+.supplier-access-page :deep(.f12-subject-panel){margin-top:28px}
+.qualification-file{color:var(--app-text-muted);font-size:13px}
 .operation-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}.operation-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.quote-record-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}.quote-record-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.model-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}.model-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.operation-filters .el-select{max-width:220px}
 </style>
