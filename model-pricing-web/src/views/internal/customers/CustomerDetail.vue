@@ -173,6 +173,18 @@ const filteredModelRows = computed(() => {
 });
 function resetModelFilters() { Object.assign(modelFilters, { company: "", modelType: "", keyword: "" }); }
 
+/**
+ * 筛选/搜索变化时清空已勾选。
+ *
+ * `reserve-selection` 会把「被筛掉的行」留在选择集里，批量禁用它就会作用到看不见的模型上。
+ * 与其让用户在弹窗里才发现多出了几条，不如在筛选那一刻就清空——同屏所见即所选。
+ */
+watch([() => modelFilters.company, () => modelFilters.modelType, () => modelFilters.keyword], () => {
+  if (!batchSelected.value.length) return;
+  modelTable.value?.clearSelection();
+  batchSelected.value = [];
+});
+
 // 列排序：模板里的列都用了自定义 cell，没有 prop，所以显式给 sort-by。
 // 文案类统一转小写后比较；系数/计数按数值排，避免「0.9 < 0.52」这种字典序错。
 const byText = (pick: (row: CustomerModelServiceRow) => string | undefined) =>
