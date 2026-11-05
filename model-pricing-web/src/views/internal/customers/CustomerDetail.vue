@@ -221,6 +221,175 @@ async function runLinkAction(link: CustomerLinkDetailDTO, action: string) {
   }
 }
 
+// ---------------- Tab1 批量操作（原型「配置资源 / 禁用 / 启用」） ----------------
+//
+// 原型这一排按钮的含义分两类，落到我们的模型上是两件事：
+//   1. 配置资源 —— 给「已申请但还没配来源」的模型登记技术配置。我们的配置是**流程级节点**
+//      （CONFIG 一次确认整单），没有行级配置接口，所以这里不另造一套只改界面的表单，
+//      而是校验完所选模型确实在本次申请内后，直接落到「开通流程 → 完成节点 · 资源配置」。
+//   2. 禁用 / 启用 —— 对已绑定的来源做状态动作。后端是两步（REQUEST → CONFIRM），
+//      这里按状态机自动连做两步；每个模型独立提交，中途失败不吞掉已成功项。
+
+const batchSelected = ref<CustomerModelServiceRow[]>([]);
+const modelTable = ref<{ clearSelection: () => void }>();
+
+/** 可批量操作的行：有可提交动作的绑定，或属于进行中的申请（待配置）。 */
+function canBatchRow(row: CustomerModelServiceRow) {
+  if (!canEdit.value) return false;
+  if (row.pending_config) return true;
+  return row.links.some(link => link.available_actions.length > 0);
+}
+
+type BatchServiceKind = "disable" | "restore";
+
+/**
+ * 两步动作的规格：from 里的状态才允许该批量动作。
+ *
+ * 顺序不能省：ACTIVE --DISABLE_REQUEST--> DISABLE_PENDING --DISABLE_CONFIRM--> DISABLED，
+ * 恢复同理。已经停在「待确认」的绑定直接做第二步就行，所以第二段的判据仍用 from。
+ */
+const BATCH_SERVICE_SPEC: Record<BatchServiceKind, { first: string; second: string; from: string[]; label: string }> = {
+  disable: { first: "DISABLE_REQUEST", second: "DISABLE_CONFIRM", from: ["ACTIVE", "DISABLE_PENDING"], label: "禁用" },
+  restore: { first: "RESTORE_REQUEST", second: "RESTORE_CONFIRM", from: ["DISABLED", "RESTORE_PENDING"], label: "启用" },
+};
+
+interface BatchServiceItem { model: string; state: string; link: CustomerLinkDetailDTO; }
+interface BatchResult { model: string; result: string; detail: string; }
+
+const batchServiceVisible = ref(false);
+const batchServiceKind = ref<BatchServiceKind>("disable");
+const batchServiceItems = ref<BatchServiceItem[]>([]);
+const batchServiceSkipped = ref<string[]>([]);
+const batchServiceReason = ref("");
+const batchServiceConfirmed = ref(false);
+const batchServiceBusy = ref(false);
+const batchServiceError = ref("");
+const batchResults = ref<BatchResult[]>([]);
+const batchResultVisible = ref(false);
+
+function openBatchService(kind: BatchServiceKind) {
+  if (!canEdit.value) return;
+  const spec = BATCH_SERVICE_SPEC[kind];
+  if (!batchSelected.value.length) {
+    ElMessage.warning("请显式勾选要批量操作的客户模型");
+    return;
+  }
+  const items: BatchServiceItem[] = [];
+  const skipped: string[] = [];
+  for (const row of batchSelected.value) {
+    const name = row.model_name || `标准模型 #${row.standard_model_id}`;
+    // 待配置行没有来源，禁用/启用对它没有意义；跳过并在弹窗里说明。
+    const links = row.links.filter(link => spec.from.includes(link.state)
+      && (link.available_actions.includes(spec.first) || link.available_actions.includes(spec.second)));
+    if (!links.length) { skipped.push(name); continue; }
+    for (const link of links) items.push({ model: name, state: link.state_label, link });
+  }
+  if (!items.length) {
+    ElMessage.warning(`所选模型当前没有可${spec.label}的来源（只有「服务中」可禁用、「已禁用」可启用）`);
+    return;
+  }
+  batchServiceKind.value = kind;
+  batchServiceItems.value = items;
+  batchServiceSkipped.value = skipped;
+  batchServiceReason.value = "";
+  batchServiceConfirmed.value = false;
+  batchServiceError.value = "";
+  batchServiceVisible.value = true;
+}
+
+/** 一个绑定走完两步；第二步必须带第一步返回的 revision（乐观锁）。 */
+async function runServiceActions(link: CustomerLinkDetailDTO, kind: BatchServiceKind, reason: string) {
+  const spec = BATCH_SERVICE_SPEC[kind];
+  let revision = link.revision;
+  let state = link.state;
+  if (state === spec.from[0] && link.available_actions.includes(spec.first)) {
+    const next = await customerDetailApi.actLink(link.id, { action: spec.first, reason, expected_revision: revision });
+    revision = next.revision;
+    state = next.state;
+  }
+  if (spec.from.includes(state)) {
+    await customerDetailApi.actLink(link.id, { action: spec.second, reason, expected_revision: revision });
+  }
+}
+
+async function submitBatchService() {
+  if (batchServiceBusy.value) return;
+  if (!batchServiceReason.value.trim()) { batchServiceError.value = "请填写原因 / 依据（会写入审计）"; return; }
+  if (!batchServiceConfirmed.value) { batchServiceError.value = "请勾选「已确认生产平台操作已完成」"; return; }
+  const kind = batchServiceKind.value;
+  const spec = BATCH_SERVICE_SPEC[kind];
+  const reason = batchServiceReason.value.trim();
+  batchServiceBusy.value = true;
+  batchServiceError.value = "";
+  const results: BatchResult[] = [];
+  for (const item of batchServiceItems.value) {
+    try {
+      await runServiceActions(item.link, kind, reason);
+      results.push({ model: item.model, result: `已${spec.label}`, detail: `绑定 #${item.link.id}` });
+    } catch (value) {
+      // 每个模型独立登记：失败只记录这一条，继续处理后面的（原型也是逐项报告）。
+      results.push({ model: item.model, result: "失败", detail: message(value) });
+    }
+  }
+  batchServiceBusy.value = false;
+  batchServiceVisible.value = false;
+  batchResults.value = results;
+  batchResultVisible.value = true;
+  justArchivedModel.value = false;
+  modelTable.value?.clearSelection();
+  batchSelected.value = [];
+  await loadModels(true);
+  if (logLoaded.value) { logLoaded.value = false; void loadLogs(true); }
+  void loadProfile();
+}
+
+/**
+ * 原型「配置资源」：勾选同一申请里的待配置模型，登记技术配置完成。
+ *
+ * 我们的 CONFIG 是**流程级节点**，一次确认覆盖整单申请的全部模型；接口没有行级配置能力。
+ * 所以这里先校验「所选模型都在当前申请内」，再打开真实的节点完成弹窗（同源、可审计），
+ * 并把所选模型写进操作说明。不要在这里造一个只改状态的前端假动作。
+ */
+async function prepareConfigAccess() {
+  if (!canEdit.value) return;
+  if (!batchSelected.value.length) {
+    ElMessage.warning("请先勾选要配置资源的模型");
+    return;
+  }
+  await loadFlow();
+  const current = flow.value;
+  if (!current) {
+    ElMessage.warning("该客户还没有开通申请，请先在「开通流程」发起开通");
+    return;
+  }
+  const config = current.nodes.find(node => node.key === "CONFIG");
+  if (!config) {
+    ElMessage.warning("当前申请没有「资源配置」节点");
+    return;
+  }
+  if (config.status !== "IN_PROGRESS") {
+    ElMessage.warning(`「资源配置」节点当前为${nodeStatusText(config.status)}，不能重复登记`);
+    return;
+  }
+  const covered = new Set(current.models.map(item => item.standard_model_id));
+  const outside = batchSelected.value.filter(row => !covered.has(row.standard_model_id));
+  if (outside.length) {
+    ElMessage.warning(`以下模型不在本次申请内：${outside.map(row => row.model_name).join("、")}`);
+    return;
+  }
+  const names = batchSelected.value.map(row => row.model_name || `标准模型 #${row.standard_model_id}`);
+  selectTab("onboarding");
+  openComplete(config);
+  completeReason.value = `配置资源：${names.join("、")}`;
+  ElMessage.info("「资源配置」是整单节点：本次确认会一并登记本申请内的全部模型。");
+}
+
+/** 行内「去配置」：等价于只勾这一行再点批量「配置资源」。 */
+function prepareConfigAccessFromRow(row: CustomerModelServiceRow) {
+  batchSelected.value = [row];
+  void prepareConfigAccess();
+}
+
 // ---------------- Tab2 开通流程 ----------------
 const flow = ref<OnboardingFlowDTO>();
 const flowLoading = ref(false);
@@ -497,14 +666,23 @@ function backToList() {
         <el-button @click="resetModelFilters">重置</el-button>
         <span v-if="modelRows.length" class="hint">共 {{ filteredModelRows.length }} / {{ modelRows.length }} 条</span>
       </div>
+      <div class="model-batchbar" aria-label="客户模型批量操作">
+        <el-button :disabled="!canEdit || !batchSelected.length" @click="prepareConfigAccess">配置资源</el-button>
+        <el-button :disabled="!canEdit || !batchSelected.length" @click="openBatchService('disable')">禁用</el-button>
+        <el-button :disabled="!canEdit || !batchSelected.length" @click="openBatchService('restore')">启用</el-button>
+        <span class="hint">{{ batchSelected.length ? `已选 ${batchSelected.length} 个模型` : "勾选后可批量配置资源 / 禁用 / 启用；待配置行需先配来源" }}</span>
+      </div>
       <el-table
+        ref="modelTable"
         v-loading="modelLoading"
         :data="filteredModelRows"
         row-key="standard_model_id"
         class="grid"
         :row-class-name="({ row }: { row: CustomerModelServiceRow }) => row.service_state === '无可用来源' ? 'row-muted' : ''"
         :empty-text="modelEmptyText"
+        @selection-change="(rows: CustomerModelServiceRow[]) => batchSelected = rows"
       >
+        <el-table-column type="selection" width="44" :selectable="canBatchRow" reserve-selection />
         <!-- 展开区：该模型下的绑定明细 + 按状态机给出的动作（A2） -->
         <el-table-column type="expand">
           <template #default="{ row }: { row: CustomerModelServiceRow }">
@@ -597,6 +775,12 @@ function backToList() {
           <template #default="{ row }">
             <el-tag v-for="flag in row.risk_flags" :key="flag" size="small" type="danger" class="stack-tag">{{ flag }}</el-tag>
             <span v-if="!row.risk_flags?.length" class="hint">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="120" fixed="right">
+          <template #default="{ row }">
+            <el-button v-if="row.pending_config" link type="primary" @click="prepareConfigAccessFromRow(row)">配置资源</el-button>
+            <span v-else class="hint">展开查看来源</span>
           </template>
         </el-table-column>
       </el-table>
@@ -794,6 +978,48 @@ function backToList() {
       <div class="hint foot" v-if="logTotal > logRows.length">仅显示最近 {{ logRows.length }} 条（共 {{ logTotal }} 条）。</div>
     </template>
 
+    <!-- 批量禁用 / 启用（原型「禁用 / 启用」） -->
+    <el-dialog v-model="batchServiceVisible" :title="`批量${BATCH_SERVICE_SPEC[batchServiceKind].label}客户模型`" width="min(680px, 94vw)" :close-on-click-modal="false">
+      <p class="hint">
+        客户：{{ profile?.legal_name || "—" }} · 本次 {{ batchServiceItems.length }} 个来源。
+        每个来源独立登记，中途失败只影响该条，已成功项保留。
+      </p>
+      <el-alert v-if="batchServiceSkipped.length" type="warning" :closable="false" show-icon class="block-gap"
+        :title="`以下模型已跳过（当前状态不可${BATCH_SERVICE_SPEC[batchServiceKind].label}）：${batchServiceSkipped.join('、')}`" />
+      <el-table :data="batchServiceItems" size="small" class="grid">
+        <el-table-column prop="model" label="模型" min-width="180" />
+        <el-table-column prop="state" label="当前状态" width="120" />
+        <el-table-column label="登记动作" width="110">
+          <template #default>{{ BATCH_SERVICE_SPEC[batchServiceKind].label }}</template>
+        </el-table-column>
+      </el-table>
+      <el-form label-position="top" class="batch-form">
+        <el-form-item label="原因 / 依据（必填）">
+          <el-input v-model="batchServiceReason" type="textarea" :rows="2" maxlength="200" aria-label="批量操作原因" placeholder="请先在外部平台完成对应操作，再在此登记；原因会写入审计" />
+        </el-form-item>
+      </el-form>
+      <el-checkbox v-model="batchServiceConfirmed">确认上述 {{ batchServiceItems.length }} 个来源的生产平台操作均已实际完成</el-checkbox>
+      <el-alert v-if="batchServiceError" :title="batchServiceError" type="error" :closable="false" class="block-gap" />
+      <template #footer>
+        <el-button :disabled="batchServiceBusy" @click="batchServiceVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="batchServiceBusy" @click="submitBatchService">逐项提交登记</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 批量登记结果 -->
+    <el-dialog v-model="batchResultVisible" title="批量登记结果" width="min(680px, 94vw)">
+      <el-table :data="batchResults" size="small" class="grid">
+        <el-table-column prop="model" label="模型" min-width="180" />
+        <el-table-column label="结果" width="110">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.result === '失败' ? 'danger' : 'success'">{{ row.result }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="detail" label="说明" min-width="240" />
+      </el-table>
+      <template #footer><el-button type="primary" @click="batchResultVisible = false">知道了</el-button></template>
+    </el-dialog>
+
     <!-- 主体资料维护 -->
     <el-dialog v-model="profileFormOpen" title="维护主体资料" width="min(620px, 94vw)" :close-on-click-modal="false">
       <el-form label-position="top" :disabled="profileSaving">
@@ -889,7 +1115,7 @@ function backToList() {
 .tab.active { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); font-weight: 600; }
 .grid { width: 100%; }
 .sub-block{margin-top:22px}
-.model-filterbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}.model-filterbar label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}
+.model-batchbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px}\n.batch-form{margin-top:14px}\n.model-filterbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}.model-filterbar label{display:inline-flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}
 .cell-main { font-weight: 600; }
 .cell-sub { color: var(--app-text-muted); font-size: 12px; margin-top: 2px; }
 .stack-tag { margin: 0 6px 4px 0; }

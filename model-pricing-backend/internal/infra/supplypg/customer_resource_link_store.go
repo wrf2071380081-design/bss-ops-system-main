@@ -394,6 +394,15 @@ func (s *CustomerResourceLinkStore) LoadResourceFacts(ctx context.Context, resou
 // 因为 uk_crl_customer_model 保证同一客户同一模型最多一条 ACTIVE，
 // 所以有 ACTIVE 时 region 是唯一的、不会含糊。
 func (s *CustomerResourceLinkStore) ListCustomerModelServices(ctx context.Context, customerProfileID int64) ([]customer.CustomerModelServiceRow, error) {
+	// 投影由两部分合成：
+	//   1. bound —— 已经落库的未归档绑定（现状，服务中/已禁用/来源待处理都从这里来）；
+	//   2. pending —— **进行中的开通申请**里还没绑来源的模型。
+	//
+	// 为什么要带 pending：原型「接入模型」把「已申请但还没配来源」的模型也列出来（资源数 0/0），
+	// 运营才能看出「还差哪个模型没配置」。只按绑定投影时，这些模型在界面上根本不存在，
+	// 批量「配置资源」也就没有可勾选的对象。
+	// pending 的口径刻意收得很紧：同客户、未归档绑定不存在的模型才补一行，
+	// 不碰历史归档（那会把客户所有用过的模型翻出来）。
 	query := fmt.Sprintf(`
 WITH bound AS (
     SELECT l.standard_model_id,
@@ -403,11 +412,34 @@ WITH bound AS (
            count(*) FILTER (WHERE l.state = 'SUPPLY_OFFLINE_PENDING')    AS offline_pending_count,
            (array_agg(l.state  ORDER BY (l.state = 'ACTIVE') DESC, l.id ASC))[1] AS primary_state,
            (array_agg(r.region ORDER BY (l.state = 'ACTIVE') DESC, l.id ASC))[1] AS region,
-           (array_agg(r.coefficient ORDER BY (l.state = 'ACTIVE') DESC, l.id ASC))[1] AS coefficient
+           (array_agg(r.coefficient::text ORDER BY (l.state = 'ACTIVE') DESC, l.id ASC))[1] AS coefficient
       FROM %s l
       JOIN %s r ON r.id = l.resource_id
      WHERE l.customer_profile_id = $1 AND l.archived = FALSE
      GROUP BY l.standard_model_id
+),
+pending AS (
+    SELECT m.standard_model_id,
+           max(COALESCE(r2.region, ''))              AS region,
+           max(COALESCE(r2.coefficient::text, ''))   AS coefficient
+      FROM %s m
+      JOIN %s f ON f.id = m.flow_id
+      LEFT JOIN %s r2 ON r2.id = m.resource_id
+     WHERE f.kind = 'CUSTOMER' AND f.owner_id = $1 AND f.status = 'PROCESSING'
+       AND NOT EXISTS (SELECT 1 FROM %s l2
+                        WHERE l2.customer_profile_id = $1
+                          AND l2.standard_model_id = m.standard_model_id
+                          AND l2.archived = FALSE)
+     GROUP BY m.standard_model_id
+),
+merged AS (
+    SELECT standard_model_id, region, coefficient, primary_state,
+           bound_count, active_count, disabled_count, offline_pending_count, FALSE AS pending_config
+      FROM bound
+    UNION ALL
+    SELECT standard_model_id, region, coefficient, NULL::text,
+           0, 0, 0, 0, TRUE
+      FROM pending
 )
 SELECT b.standard_model_id,
        COALESCE(sm.name, '')        AS model_name,
@@ -415,18 +447,21 @@ SELECT b.standard_model_id,
        COALESCE(sm.company, '')     AS company,
        COALESCE(sm.model_type, '')  AS model_type,
        COALESCE(b.region, '')       AS region,
-       COALESCE(b.coefficient::text, '') AS coefficient,
+       COALESCE(b.coefficient, '')  AS coefficient,
        b.primary_state,
        b.bound_count, b.active_count, b.disabled_count, b.offline_pending_count,
+       b.pending_config,
        (SELECT count(*)
-          FROM %s r2
-         WHERE r2.standard_model_id = b.standard_model_id
-           AND r2.region = b.region
-           AND r2.state = 'ADMITTED') AS available_count
-  FROM bound b
+          FROM %s r3
+         WHERE r3.standard_model_id = b.standard_model_id
+           AND r3.region = b.region
+           AND r3.state = 'ADMITTED') AS available_count
+  FROM merged b
   LEFT JOIN %s sm ON sm.id = b.standard_model_id
  ORDER BY COALESCE(sm.name, '') ASC, b.standard_model_id ASC`,
-		s.table("customer_resource_link"), s.table("resource"), s.table("resource"), s.table("standard_model"))
+		s.table("customer_resource_link"), s.table("resource"),
+		s.table("customer_onboarding_model"), s.table("onboarding_flow"), s.table("resource"), s.table("customer_resource_link"),
+		s.table("resource"), s.table("standard_model"))
 
 	rows, err := s.db.QueryContext(ctx, query, customerProfileID)
 	if err != nil {
@@ -443,6 +478,7 @@ SELECT b.standard_model_id,
 		if err := rows.Scan(
 			&row.StandardModelID, &row.ModelName, &row.OfficialID, &row.Company, &row.ModelType, &row.Region, &row.Coefficient, &primaryState,
 			&row.BoundCount, &row.ActiveCount, &row.DisabledCount, &row.OfflinePendingCount,
+			&row.PendingConfig,
 			&row.AvailableCount,
 		); err != nil {
 			return nil, mapLinkStorageError(err)

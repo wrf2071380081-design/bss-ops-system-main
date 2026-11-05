@@ -66,7 +66,10 @@ const (
 // 它的产出时机是：客户已发起开通但绑定尚未建立（下一轮由流程投影补充）。
 const (
 	ServiceStateServing        = "服务中"
-	ServiceStateAccessing      = "接入中" // G4-B 才产出，本轮不会出现
+	ServiceStateAccessing      = "接入中"
+	// ServiceStatePendingConfig 是「已进开通申请、还没有绑定来源」的模型。
+	// 原型把这些行也列在「接入模型」里（资源数为 0/0），否则运营看不到「还差哪个模型没配」。
+	ServiceStatePendingConfig = "待配置资源"
 	ServiceStateDisabled       = "已禁用"
 	ServiceStateOfflinePending = "来源待处理"
 	ServiceStateNoSource       = "无可用来源"
@@ -309,6 +312,8 @@ type CustomerModelServiceRow struct {
 	DisabledCount       int64
 	OfflinePendingCount int64
 	AvailableCount      int64
+	// PendingConfig 为真表示该行来自「进行中的开通申请」而非已落库的绑定。
+	PendingConfig bool
 }
 
 // CustomerModelService 是客户详情「接入模型」Tab 的投影行。
@@ -334,6 +339,9 @@ type CustomerModelService struct {
 	BoundCount      int64    `json:"bound_count"`
 	AvailableCount  int64    `json:"available_count"`
 	RiskFlags       []string `json:"risk_flags"`
+	// PendingConfig 为真表示这行来自「进行中的开通申请」：已申请、还没有绑定来源。
+	// 前端用它把「配置资源」批量入口指向该申请，而不是当成已有来源去禁用/启用。
+	PendingConfig bool `json:"pending_config"`
 	// Links 是该模型下的**未归档绑定明细**（A2，2026-11-03）。
 	//
 	// 为什么放在这个接口里而不是让前端去读开通流程：库里的绑定不一定由开通流程
@@ -400,8 +408,11 @@ func (r CustomerModelServiceRow) Project() CustomerModelService {
 		BoundCount:      r.BoundCount,
 		AvailableCount:  r.AvailableCount,
 		RiskFlags:       make([]string, 0, 3),
+		PendingConfig:   r.PendingConfig,
 	}
 	switch {
+	case r.PendingConfig:
+		out.ServiceState = ServiceStatePendingConfig
 	case r.OfflinePendingCount > 0:
 		out.ServiceState = ServiceStateOfflinePending
 	case r.PrimaryState == LinkStateActive, r.PrimaryState == LinkStateDisablePending:
@@ -427,7 +438,9 @@ func (r CustomerModelServiceRow) Project() CustomerModelService {
 	if r.DisabledCount > 0 {
 		out.RiskFlags = append(out.RiskFlags, "绑定资源已禁用")
 	}
-	if r.AvailableCount <= 0 {
+	if r.PendingConfig {
+		out.RiskFlags = append(out.RiskFlags, "尚未配置来源")
+	} else if r.AvailableCount <= 0 {
 		out.RiskFlags = append(out.RiskFlags, "无可用来源")
 	}
 	return out

@@ -70,6 +70,13 @@ export interface CustomerModelServiceRow {
   coefficient: string;
   region: string;
   service_state: string;
+  /**
+   * 该行来自「进行中的开通申请」：已申请、还没有绑定来源。
+   *
+   * 这类行没有 links，`service_state` 是「待配置资源」；
+   * 批量「配置资源」把它们指回开通流程的 CONFIG 节点，不参与禁用/启用。
+   */
+  pending_config?: boolean;
   bound_count: number;
   available_count: number;
   risk_flags: string[];
@@ -107,6 +114,18 @@ export interface CustomerLinkDetailDTO {
   created_at: string;
   updated_at: string;
   available_actions: string[];
+}
+
+/**
+ * 绑定动作的返回体（后端的 ResourceLink 子集）。
+ *
+ * 批量禁用/启用要连做两步（REQUEST → CONFIRM），第二步必须带**第一次动作后**的 revision，
+ * 所以这里必须把 revision 读回来，不能沿用传入的那份。
+ */
+export interface CustomerLinkActionDTO {
+  id: number;
+  state: string;
+  revision: number;
 }
 
 /**
@@ -262,7 +281,7 @@ export const customerDetailApi = {
    * `reason` 后端按必填校验（会落审计），调用方必须先收齐再调。
    */
   actLink: (linkId: number, payload: { action: string; reason: string; expected_revision: number }) =>
-    apiRequest<unknown>({
+    apiRequest<CustomerLinkActionDTO>({
       url: `/internal/resource-links/${idParam(linkId, "绑定 ID ")}/actions`, method: "POST", data: payload,
       idempotency: { scope: `customer:link:${linkId}:${payload.action}`, payload },
     }),
