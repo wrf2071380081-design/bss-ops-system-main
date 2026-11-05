@@ -54,7 +54,10 @@ const operationRows = ref<SourceOperation[]>([]), operationPage = ref(1), operat
 const operationCategory = ref<SourceOperationType | "">("");
 const operationDetail = ref<SourceOperation>(), operationDetailOpen = ref(false);
 const profileAnchor = ref<HTMLElement>(), qualificationsAnchor = ref<HTMLElement>(), f12Anchor = ref<HTMLElement>();
-const pendingQuotes = ref<SubmissionFlowView[]>([]), quotePage = ref(1), quoteTotal = ref(0), quoteLoading = ref(false), quoteError = ref("");
+// 两张表两份数据：待审核走单状态接口且不分页（待办必须一次看全），
+// 审批记录走分页接口并排除待审批（否则总数与每页条数都对不上）。
+const pendingQuotes = ref<SubmissionFlowView[]>([]), quoteRows = ref<SubmissionFlowView[]>([]);
+const quotePage = ref(1), quoteTotal = ref(0), quoteLoading = ref(false), quoteError = ref("");
 const progress=ref<SupplierProgressNode[]>([]),progressError=ref('');
 const nodeLabels:Record<string,string>={CONFIG:'测试与资源配置',CONTRACT:'合同与授信'};
 let progressSequence=0;
@@ -73,19 +76,20 @@ function operationRangeParams() {
 function resetOperationFilters() { operationOperator.value = ""; operationRange.value = []; operationPage.value = 1; void loadOperations(); }
 const quoteFilters = reactive({ kind: "", status: "", range: [] as string[] });
 const quoteKindLabel = (kind: string) => kind === "PRICE_CHANGE" ? "价格变更" : "模型新增";
-const quoteStatusOptions = computed(() => [...new Set(pendingQuotes.value.map(row => row.status).filter(Boolean))]);
-const filteredQuotes = computed(() => pendingQuotes.value.filter(row => {
+// 状态下拉用固定全集：拆分数据源后单看某一页会缺状态选项。
+const quoteStatusOptions = Object.keys(submissionStatusLabels);
+function matchQuoteFilters(row: SubmissionFlowView) {
   if (quoteFilters.kind && quoteKindLabel(row.kind) !== quoteFilters.kind) return false;
   if (quoteFilters.status && row.status !== quoteFilters.status) return false;
   const submitted = row.submitted_at ? row.submitted_at.slice(0, 10) : "";
   if (quoteFilters.range[0] && (!submitted || submitted < quoteFilters.range[0])) return false;
   if (quoteFilters.range[1] && (!submitted || submitted > quoteFilters.range[1])) return false;
   return true;
-}));
+}
 // 待审核只放真正等审批的；草稿与已撤回连同已出结论的一起进「审批记录」，
 // 否则草稿会把待审核列表占满（原型也是这么分的）。
-const pendingQuoteRows = computed(() => filteredQuotes.value.filter(row => row.status === "PENDING_APPROVAL"));
-const decidedQuoteRows = computed(() => filteredQuotes.value.filter(row => row.status !== "PENDING_APPROVAL"));
+const pendingQuoteRows = computed(() => pendingQuotes.value.filter(matchQuoteFilters));
+const decidedQuoteRows = computed(() => quoteRows.value.filter(matchQuoteFilters));
 const quoteStatusLabel = (status: string) => submissionStatusLabels[status] || status || "未记录";
 function resetQuoteFilters() { Object.assign(quoteFilters, { kind: "", status: "", range: [] }); }
 function resourceNodes(id:string){return progress.value.filter(n=>n.resource_id===id);}
@@ -376,12 +380,19 @@ async function loadQuotes() {
   quoteLoading.value = true; quoteError.value = "";
   try {
     const id = standardModelVersion(routeID);
-    const result = await submissionFlowsApi.supplierHistory(id,quotePage.value,20,current.signal);
+    const [decided, pending] = await Promise.all([
+      submissionFlowsApi.supplierHistory(id,quotePage.value,20,current.signal,{exclude_status:"PENDING_APPROVAL"}),
+      submissionFlowsApi.supplierHistory(id,1,20,current.signal,{status:"PENDING_APPROVAL"}),
+    ]);
     if (!isCurrentSupplier(routeID, epoch) || current.signal.aborted) return;
-    if (result.list.some(item => String(item.supplier_id) !== id)) throw new Error("报价结果包含其他供应商数据，已停止显示。");
-    pendingQuotes.value = result.list; quoteTotal.value = result.total;
+    for (const item of [...decided.list, ...pending.list]) {
+      if (String(item.supplier_id) !== id) throw new Error("报价结果包含其他供应商数据，已停止显示。");
+    }
+    quoteRows.value = decided.list; quoteTotal.value = decided.total;
+    pendingQuotes.value = pending.list;
   } catch (value) {
     if (isCurrentSupplier(routeID, epoch) && !current.signal.aborted) {
+      quoteRows.value = [];
       pendingQuotes.value = [];
       quoteTotal.value = 0;
       quoteError.value = value instanceof Error ? value.message : "该供应商报价暂时无法加载。";
@@ -472,7 +483,7 @@ function onSupplierChanged() {
   qualificationName.value = ""; qualificationType.value = ""; qualificationValidFrom.value = ""; qualificationValidTo.value = ""; qualificationFileDraft.value = undefined; qualificationReason.value = "补充供应商资质"; editingQualification.value = undefined;
   operationRows.value = []; operationPage.value = 1; operationTotal.value = 0; operationLoading.value = false; operationError.value = "";
   operationCategory.value = ""; operationDetail.value = undefined; operationDetailOpen.value = false;
-  pendingQuotes.value = []; quotePage.value = 1; quoteTotal.value = 0; quoteLoading.value = false; quoteError.value = "";
+  pendingQuotes.value = []; quoteRows.value = []; quotePage.value = 1; quoteTotal.value = 0; quoteLoading.value = false; quoteError.value = "";
   void load();
   if (activeTab.value === "profile") { void loadProfile(); void loadQualifications(1); }
   else if (activeTab.value === "operations") void loadOperations();

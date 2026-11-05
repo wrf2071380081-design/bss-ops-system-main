@@ -3,10 +3,18 @@ package api
 import (
 	"database/sql"
 	"errors"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"model_bss/internal/domain/supply"
 	"model_bss/pkg/response"
 )
+
+// submissionStatuses 是申报单的合法状态，用于校验筛选参数。
+var submissionStatuses = map[string]bool{
+	"DRAFT": true, "PENDING_APPROVAL": true, "APPROVED": true, "REJECTED": true,
+	"PROCESSING": true, "COMPLETED": true, "WITHDRAWN": true,
+}
 
 type supplierProgressNode struct {
 	ResourceID   string `json:"resource_id"`
@@ -80,13 +88,26 @@ func registerSupplierActivityRoutes(group *gin.RouterGroup, runtime *SupplyChain
 		if !ready(c) {
 			return
 		}
-		_, page, size, err := f12ReadQuery(c, "page", "size")
+		_, page, size, err := f12ReadQuery(c, "page", "size", "status", "exclude_status")
 		if err != nil {
 			supplyHTTPError(c, err)
 			return
 		}
+		// status / exclude_status：页面把「待审核」与「审批记录」拆成两张表，
+		// 各自要独立的过滤与计数，否则分页会把待审批单挤到第二页以外看不见。
+		status := strings.TrimSpace(c.Query("status"))
+		exclude := strings.TrimSpace(c.Query("exclude_status"))
+		for name, value := range map[string]string{"status": status, "exclude_status": exclude} {
+			if value != "" && !submissionStatuses[value] {
+				supplyHTTPError(c, &supply.FieldError{Path: name, Reason: "未知的申报状态"})
+				return
+			}
+		}
+		// 单状态清单（待审核）不分页：这类是待办，必须一次看全。
+		unbounded := status != ""
 		var total int
-		if err = runtime.raw.QueryRowContext(c.Request.Context(), `SELECT count(*) FROM submission WHERE supplier_id=$1`, c.Param("id")).Scan(&total); err != nil {
+		if err = runtime.raw.QueryRowContext(c.Request.Context(), `SELECT count(*) FROM submission
+ WHERE supplier_id=$1 AND ($2='' OR status=$2) AND ($3='' OR status<>$3)`, c.Param("id"), status, exclude).Scan(&total); err != nil {
 			supplyHTTPError(c, err)
 			return
 		}
@@ -95,7 +116,10 @@ func registerSupplierActivityRoutes(group *gin.RouterGroup, runtime *SupplyChain
 		rows, err := runtime.raw.QueryContext(c.Request.Context(), `SELECT s.id::text,
  (SELECT max(l.created_at) FROM operation_log l WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT')),
  COALESCE((SELECT l.operator_name_snapshot FROM operation_log l WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),'')
- FROM submission s WHERE s.supplier_id=$1 ORDER BY s.id DESC LIMIT $2 OFFSET $3`, c.Param("id"), size, (page-1)*size)
+ FROM submission s
+ WHERE s.supplier_id=$1 AND ($2='' OR s.status=$2) AND ($3='' OR s.status<>$3)
+ ORDER BY s.id DESC
+ LIMIT (CASE WHEN $6 THEN NULL ELSE $4::bigint END) OFFSET $5`, c.Param("id"), status, exclude, size, (page-1)*size, unbounded)
 		if err != nil {
 			supplyHTTPError(c, err)
 			return
