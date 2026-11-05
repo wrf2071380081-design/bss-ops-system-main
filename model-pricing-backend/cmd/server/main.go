@@ -135,6 +135,9 @@ func main() {
 	customerSpecialSvc := customer.NewSpecialPriceService(customerSpecialRepo)
 	customerRefreshSvc := customer.NewRefreshService(customerSpecialRepo, nil)
 	customerExportSvc := customer.NewExportService(customerSpecialRepo, nil, nil)
+	// 2026-11-05：报价单审批（原型「提交审批 → 超管逐模型批准」）。
+	// 复用 customerSpecialRepo：它已实现 CheckQuoteOwnerScope 与事务/审计能力。
+	customerQuoteApprovalSvc := customer.NewQuoteApprovalService(customerSpecialRepo)
 
 	// 阶段 9c：客户门户（09-customer-quote.md §6）。
 	customerPortalRepo := repo.NewCustomerPortalRepo(dbClient.DB)
@@ -320,6 +323,7 @@ func main() {
 		CustomerSpecialSvc:       customerSpecialSvc,
 		CustomerRefreshSvc:       customerRefreshSvc,
 		CustomerExportSvc:        customerExportSvc,
+		CustomerQuoteApprovalSvc: customerQuoteApprovalSvc,
 		CustomerPortalSvc:        customerPortalSvc,
 		WorkbenchSvc:             workbenchSvc,
 		WorkbenchInboxSvc:        workbenchInboxSvc,

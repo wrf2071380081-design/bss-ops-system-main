@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow, type CustomerWorkspaceRow } from "../../../api/customerWorkspace";
 import { customerQuotesApi } from "../../../api/customerQuotes";
+import { quoteApprovalApi } from "../../../api/customerQuoteApproval";
 import { quoteCandidatesApi, type ResourceQuoteCandidate } from "../../../api/quoteCandidates";
 import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
@@ -353,7 +354,7 @@ function validateBeforeSubmit() {
 }
 
 const submitting = ref(false);
-async function saveDraft(exportAfter: boolean) {
+async function saveDraft(exportAfter: boolean, submitAfter = false) {
   const invalid = validateBeforeSubmit();
   if (invalid) { ElMessage.error(invalid); return; }
   if (submitting.value) return;
@@ -366,7 +367,11 @@ async function saveDraft(exportAfter: boolean) {
       items: lines.value.map(line => ({ resourceId: line.resourceId, priceItemKey: line.priceItemKey, unitPrice: line.price })),
     });
     form.quoteNo = `#${result.id}`;
-    if (exportAfter) {
+    if (submitAfter) {
+      // 原型编辑器底部就是「提交审批」：生成报价单后立刻送审，不要求先导出。
+      await quoteApprovalApi.submit(result.id, crypto.randomUUID());
+      ElMessage.success(`报价单 #${result.id} 已提交审批，等待超管逐模型批准。`);
+    } else if (exportAfter) {
       const blob = await customerQuotesApi.exportXlsx(result.id);
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -660,6 +665,7 @@ onMounted(async () => {
             <span class="foot-note">统一为一次性操作，随后可逐行修改；新增行不自动继承。报价单价按「采购成本 ÷ (1 − 毛利率)」计算，与服务端最低毛利红线同一口径；仅用于填单辅助，最终以服务端生成结果为准。</span>
             <div class="foot-actions">
               <el-button :loading="submitting" :disabled="!canQuote" @click="saveDraft(false)">保存草稿</el-button>
+              <el-button :loading="submitting" :disabled="!canQuote" @click="saveDraft(false, true)">提交审批</el-button>
               <el-button type="primary" :loading="submitting" :disabled="!canQuote" @click="saveDraft(true)">导出报价单</el-button>
             </div>
           </div>

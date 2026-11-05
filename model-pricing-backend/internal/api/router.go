@@ -92,6 +92,8 @@ type Deps struct {
 	CustomerSpecialSvc *customer.SpecialPriceService
 	CustomerRefreshSvc *customer.RefreshService
 	CustomerExportSvc  *customer.ExportService
+	// 2026-11-05：报价单审批（原型「提交审批 → 超管逐模型批准」，迁移 000057）。
+	CustomerQuoteApprovalSvc *customer.QuoteApprovalService
 	// 阶段 9c：客户门户（09-customer-quote.md §6）。
 	CustomerPortalSvc *customer.PortalService
 	// 阶段 10a：工作台（10-workbench-audit.md §2/§3）。
@@ -598,6 +600,35 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 		protected.GET("/customer-workspace/customers", middleware.RequirePerm(perm.M8View), cwh.ListCustomers)
 		protected.GET("/customer-workspace/quotes", middleware.RequirePerm(perm.M9View), cwh.ListQuotes)
 		protected.GET("/customer-workspace/approvals", middleware.RequirePerm(perm.M9View), cwh.ListApprovals)
+	}
+
+	// 报价单审批（原型「提交审批 → 超管逐模型批准/驳回」，迁移 000057）。
+	// 与特价审批（change_request[SPECIAL_PRICE]）并存：特价批「允许破线」，这里批「这批模型可以对外」。
+	if portal == "internal" && deps.CustomerQuoteApprovalSvc != nil {
+		qah := NewQuoteApprovalHandler(deps.CustomerQuoteApprovalSvc)
+		protected.POST("/customer-quotes/:id/submit-approval",
+			middleware.RequirePerm(perm.M9Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			qah.SubmitQuoteApproval,
+		)
+		protected.GET("/customer-quote-approvals/:id",
+			middleware.RequirePerm(perm.M9View),
+			qah.GetQuoteApproval,
+		)
+		protected.POST("/customer-quote-approvals/:id/decision",
+			middleware.RequirePerm(perm.M9Approve),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			qah.DecideQuoteApproval,
+		)
+		protected.POST("/customer-quote-approvals/:id/withdraw",
+			middleware.RequirePerm(perm.M9Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			qah.WithdrawQuoteApproval,
+		)
+		protected.GET("/customer-workspace/quote-approvals",
+			middleware.RequirePerm(perm.M9View),
+			qah.ListQuoteApprovals,
+		)
 	}
 
 	// 业务接口：客户门户（09-customer-quote.md §6）。
