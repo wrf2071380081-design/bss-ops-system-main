@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { ElMessage, type UploadFile } from "element-plus";
+import { ElMessage, ElMessageBox, type UploadFile } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 import { supplierEntitiesApi } from "../../../api/supplierEntities";
 import type { SupplierEntityDTO, SupplierEntityForm, SupplierQualificationDTO } from "../../../api/supplierEntities.contract";
@@ -17,7 +17,6 @@ import { formatDateTime } from "../../../domain/date";
 import ResourceDetailDrawer from "../resources/ResourceDetailDrawer.vue";
 import ResourceReportsPanel from "../resources/ResourceReportsPanel.vue";
 import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
-import SupplierProfileForm from "./SupplierProfileForm.vue";
 import SupplierAccessBatchPanel from './SupplierAccessBatchPanel.vue';
 const batchSelected=ref<ResourceRow[]>([]);
 // 原型「接入模型」的三个筛选：模型公司 / 模型类型 / 状态。
@@ -30,7 +29,6 @@ const filteredRows=computed(()=>rows.value.filter(row=>
 function resetModelFilters(){ Object.assign(modelFilters,{company:"",modelType:"",state:""}); }
 // 系数按有效位展示（1.0000 → 1），与模型广场一致。
 const coefficientText = (raw: string) => raw && raw.includes(".") ? raw.replace(/0+$/, "").replace(/\.$/, "") : raw;
-import SupplierTestConfigPanel from "./SupplierTestConfigPanel.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -45,6 +43,22 @@ const reportsVisible = ref(false), reportsRow = ref<ResourceRow>();
 function openReports(row: ResourceRow) { reportsRow.value = row; reportsVisible.value = true; }
 const profile = ref<SupplierEntityDTO>();
 const profileFormOpen = ref(false), profileSaving = ref(false), reloadingProfileConflict = ref(false), profileSaveError = ref(""), profileSaveConflict = ref(false), profileReloadKey = ref(0);
+// 档案改成页面内表单（原型样式）：编辑内容先落在草稿里，点「保存修改」才入库并写审计。
+const profileDraft = ref<SupplierEntityForm>({ name: "", region: "CN", registration_no: "", contact: "", phone: "", tax_rate_percent: "", settlement_currency: "CNY" });
+watch(() => profile.value, (value) => {
+  if (!value) return;
+  profileDraft.value = {
+    name: value.name,
+    region: value.region,
+    registration_no: value.registration_no,
+    contact: value.contact,
+    phone: value.phone,
+    // 库里是比率（0.06），表单按百分数展示（6）。
+    tax_rate_percent: value.tax_rate === null || value.tax_rate === undefined || value.tax_rate === ""
+      ? "" : String(Number(value.tax_rate) * 100),
+    settlement_currency: value.settlement_currency,
+  };
+}, { immediate: true, deep: true });
 const profileLoading = ref(false), profileError = ref("");
 const qualifications = ref<SupplierQualificationDTO[]>([]), qualificationTotal = ref(0), qualificationPage = ref(1), qualificationLoading = ref(false), qualificationError = ref(""), qualificationMetadataSupported = ref<boolean | null>(null);
 const qualificationDialogOpen = ref(false), qualificationSaving = ref(false), qualificationSubmittingError = ref(""), qualificationDownloading = ref("");
@@ -324,6 +338,23 @@ async function downloadQualification(row: SupplierQualificationDTO) {
   }
 }
 
+/** 页面内保存：先收操作说明（审计要求），再走既有的档案保存接口。 */
+async function saveProfileInline() {
+  if (!profile.value?.can_edit || profileSaving.value) return;
+  let reason = "";
+  try {
+    const result = await ElMessageBox.prompt("说明本次档案调整原因，会写入操作记录。", "保存档案", {
+      confirmButtonText: "保存", cancelButtonText: "取消",
+      inputPlaceholder: "例如：更新联系人电话",
+      inputValidator: (value: string) => (value && value.trim() ? true : "请填写操作说明"),
+    });
+    reason = String(result.value || "").trim();
+  } catch { return; }
+  await saveProfile({ ...profileDraft.value }, reason);
+  if (profileSaveError.value) ElMessage.error(profileSaveError.value);
+  else ElMessage.success("档案已保存");
+}
+
 async function saveProfile(form: SupplierEntityForm, reason: string) {
   if (!profile.value?.can_edit || profileSaving.value || reloadingProfileConflict.value || profileSaveConflict.value) return;
   const id = supplierID.value, epoch = supplierEpoch;
@@ -561,32 +592,38 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
           <div v-loading="profileLoading" class="supplier-tab-content">
             <el-alert v-if="profileError" :title="profileError" type="error" :closable="false"><el-button text @click="loadProfile">重试</el-button></el-alert>
             <template v-if="profile">
-              <div ref="profileAnchor" class="supplier-profile-heading"><h3>主体档案</h3><el-button v-if="profile.can_edit" type="primary" plain size="small" @click="profileFormOpen = true">维护档案</el-button></div>
-              <dl class="supplier-profile"><dt>供应商名称</dt><dd>{{ profile.name }}</dd><dt>主体区域</dt><dd>{{ regionLabel(profile.region) }}</dd><dt>统一社会信用代码</dt><dd>{{ profile.registration_no || '未填写' }}</dd><dt>对接人</dt><dd>{{ profile.contact || '未填写' }}</dd><dt>联系电话</dt><dd>{{ profile.phone || '未填写' }}</dd><dt>税率</dt><dd>{{ profile.tax_rate === null ? '未填写' : `${(Number(profile.tax_rate) * 100).toFixed(2)}%` }}</dd><dt>结算币种</dt><dd>{{ profile.settlement_currency }}</dd><dt>归属采购人</dt><dd>人员 {{ profile.buyer_id }}</dd><dt>主体状态</dt><dd>{{ profile.status === 'ACTIVE' ? '正常' : '冻结' }} · 修订 {{ profile.revision }}</dd></dl>
-              <SupplierTestConfigPanel :supplier-i-d="profile.id" :can-edit="profile.can_edit" />
-              <div ref="qualificationsAnchor" class="supplier-qualification-heading"><div><h3>资质材料</h3><span class="muted">支持 PDF、PNG、JPEG，单文件最大 2 MiB；审核状态由审核能力提供。</span></div><el-button v-if="profile.can_edit" :disabled="qualificationLoading || qualificationMetadataSupported === null" type="primary" plain size="small" @click="openQualificationUpload">上传资质</el-button></div>
+              <!-- 基础资料按原型做成两列表单：字段直接可编辑，保存时才入库（并记操作说明）。 -->
+              <div ref="profileAnchor" class="supplier-profile-heading">
+                <div><h3>基础资料</h3><span class="muted">归属采购人 人员 {{ profile.buyer_id }} · 修订 {{ profile.revision }} · {{ profile.status === 'ACTIVE' ? '正常' : '冻结' }}</span></div>
+                <el-button v-if="profile.can_edit" type="primary" plain size="small" :loading="profileSaving" @click="saveProfileInline">保存修改</el-button>
+              </div>
+              <el-form label-position="top" class="profile-grid" :disabled="!profile.can_edit || profileSaving">
+                <el-form-item label="公司名称"><el-input v-model="profileDraft.name" maxlength="128" /></el-form-item>
+                <el-form-item label="统一社会信用代码"><el-input v-model="profileDraft.registration_no" maxlength="64" /></el-form-item>
+                <el-form-item label="联系人"><el-input v-model="profileDraft.contact" maxlength="64" /></el-form-item>
+                <el-form-item label="联系电话"><el-input v-model="profileDraft.phone" maxlength="32" /></el-form-item>
+                <el-form-item label="国内／海外"><el-select v-model="profileDraft.region"><el-option label="国内" value="CN" /><el-option label="海外" value="OVERSEAS" /></el-select></el-form-item>
+                <el-form-item label="税率 %"><el-input v-model="profileDraft.tax_rate_percent" inputmode="decimal" placeholder="可留空，例如 6 或 6.25" /></el-form-item>
+                <el-form-item label="结算币种"><el-select v-model="profileDraft.settlement_currency"><el-option label="人民币 CNY" value="CNY" /><el-option label="美元 USD" value="USD" /></el-select></el-form-item>
+              </el-form>
+              <el-alert v-if="profileSaveError" :title="profileSaveError" type="error" :closable="false" />
+              <div ref="qualificationsAnchor" class="supplier-qualification-heading"><div><h3>营业执照／企业证明</h3><span class="muted">支持 PDF、PNG、JPEG，单文件最大 2 MiB；审核状态由审核能力提供。</span></div><el-button v-if="profile.can_edit" :disabled="qualificationLoading || qualificationMetadataSupported === null" type="primary" plain size="small" @click="openQualificationUpload">上传资质</el-button></div>
               <el-alert v-if="qualificationMetadataSupported === false" title="当前资质元数据结构缺失或不兼容；现阶段只显示已有资料并保留基础上传，类型、有效期和修订维护暂不可用。" type="info" :closable="false" />
               <el-alert v-if="qualificationError" :title="qualificationError" type="error" :closable="false"><el-button text @click="loadQualifications">重试</el-button></el-alert>
               <div v-else v-loading="qualificationLoading" class="qualification-list">
                 <el-empty v-if="!qualifications.length && !qualificationLoading" description="暂无资质材料" :image-size="58" />
                 <el-table v-else :data="qualifications" size="small" row-key="id" empty-text="暂无资质材料">
-                  <el-table-column prop="name" label="资质名称" min-width="180" />
-                  <el-table-column label="资质类型" min-width="140"><template #default="{ row }">{{ row.qualification_type || (qualificationMetadataSupported === true ? '未填写' : qualificationMetadataSupported === false ? '结构未就绪' : '状态未知') }}</template></el-table-column>
-                  <el-table-column label="有效期" min-width="180"><template #default="{ row }">{{ row.valid_from || row.valid_to ? `${row.valid_from || '不限起始'} 至 ${row.valid_to || '长期'}` : '未记录' }}</template></el-table-column>
-                  <el-table-column label="附件" min-width="160"><template #default="{ row }"><el-button v-if="profile.can_edit && row.can_download" link type="primary" :loading="qualificationDownloading === row.id" @click="downloadQualification(row)">下载 {{ row.file_name }}</el-button><span v-else>{{ row.has_attachment ? (profile.can_edit ? '历史附件暂不可下载' : '需归属采购人下载') : '未提供附件' }}</span></template></el-table-column>
-                  <el-table-column label="上传时间" min-width="180"><template #default="{ row }">{{ formatDateTime(row.uploaded_at) }}</template></el-table-column>
-                  <el-table-column label="审核状态" width="150"><template #default="{ row }">{{ row.review_status || (qualificationMetadataSupported === true ? '未记录' : qualificationMetadataSupported === false ? '审核字段待交付' : '状态未知') }}</template></el-table-column>
-                  <el-table-column prop="revision" label="修订" width="80"><template #default="{ row }">{{ row.revision || '—' }}</template></el-table-column>
-                  <el-table-column label="登记人" width="100"><template #default="{ row }">{{ row.created_by ? `人员 ${row.created_by}` : '未记录' }}</template></el-table-column>
+                  <el-table-column prop="name" label="资料名称" min-width="220" />
+                  <el-table-column label="附件" min-width="200"><template #default="{ row }"><el-button v-if="profile.can_edit && row.can_download" link type="primary" :loading="qualificationDownloading === row.id" @click="downloadQualification(row)">下载 {{ row.file_name }}</el-button><span v-else>{{ row.has_attachment ? (profile.can_edit ? '历史附件暂不可下载' : '需归属采购人下载') : '未上传企业证明' }}</span></template></el-table-column>
+                  <el-table-column label="上传时间" min-width="170"><template #default="{ row }">{{ formatDateTime(row.uploaded_at) }}</template></el-table-column>
+                  <el-table-column label="审核状态" min-width="140"><template #default="{ row }">{{ row.review_status || (qualificationMetadataSupported === true ? '未记录' : qualificationMetadataSupported === false ? '审核字段待交付' : '状态未知') }}</template></el-table-column>
                   <el-table-column label="操作" width="90"><template #default="{ row }"><el-button v-if="profile.can_edit && qualificationMetadataSupported" link type="primary" :disabled="!row.revision" @click="openQualificationEdit(row)">维护</el-button></template></el-table-column>
                 </el-table>
                 <el-pagination v-if="qualificationTotal > 20" v-model:current-page="qualificationPage" :page-size="20" :total="qualificationTotal" layout="total, prev, pager, next" @current-change="loadQualifications" />
               </div>
-              <h3>接入模型与办理状态</h3>
-              <el-alert v-if="progressError" type="error" :title="progressError" :closable="false"><el-button text @click="loadProgress">重试</el-button></el-alert>
-              <el-table :data="rows" size="small" empty-text="暂无供应资源"><el-table-column prop="model_name" label="模型" min-width="160"/><el-table-column prop="supplier_model_id" label="接口模型 ID" min-width="180"/><el-table-column label="状态" width="120"><template #default="{ row }">{{ stateLabel(row.state) }}</template></el-table-column><el-table-column label="办理节点及人员" min-width="250"><template #default="{row}"><div v-for="node in resourceNodes(row.id)" :key="node.node_id"><el-button link type="primary" @click="router.push({path:'/internal/workbench',query:{node_id:node.node_id}})">{{nodeLabels[node.key]||node.key}}</el-button> · {{nodeStatusLabels[node.status]||node.status}} · {{node.assignee_name||'未分派'}}</div><span v-if="!resourceNodes(row.id).length">暂无已分派办理记录</span></template></el-table-column></el-table>
+              <!-- 合同与授信紧跟基础资料（原型顺序）；接入模型与办理状态在「接入模型」页签，这里不再重复。 -->
+              <div ref="f12Anchor"><F12SubjectPanel v-if="profile" subject-type="SUPPLIER" :subject-id="profile.id" :can-manage="profile.can_edit" @changed="loadProfile" /></div>
             </template>
-            <div ref="f12Anchor"><F12SubjectPanel v-if="profile" subject-type="SUPPLIER" :subject-id="profile.id" :can-manage="profile.can_edit" @changed="loadProfile" /></div>
           </div>
         </el-tab-pane>
         <el-tab-pane label="申报与审批记录" name="quotes" lazy>
@@ -643,7 +680,6 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
       </el-tabs>
     </section>
 
-  <SupplierProfileForm v-model="profileFormOpen" :profile="profile" :aliases-supported="profile?.aliases_supported" :saving="profileSaving" :reloading="reloadingProfileConflict" :reload-key="profileReloadKey" :conflict="profileSaveConflict" :error="profileSaveError" @save="saveProfile" @reload="reloadProfileAfterConflict" />
   <el-dialog v-model="operationDetailOpen" append-to-body title="操作记录详情" width="min(600px, 94vw)">
     <el-descriptions v-if="operationDetail" :column="1" border>
       <el-descriptions-item label="操作">{{ operationLabel(operationDetail) }}</el-descriptions-item>
@@ -685,7 +721,12 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
 <style scoped>
 .flow-summary{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 12px;padding:10px 12px;border:1px solid #e6ebee;border-radius:6px;background:#f8fafb;font-size:12px;color:#5b6270}
 .supplier-access-page{color:var(--app-text-primary)}.back-button{margin-bottom:10px}.page-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:18px}.page-heading h1{margin:7px 0;font-size:26px}.page-heading p,.muted{color:var(--app-text-muted);font-size:12px}.eyebrow{color:var(--app-text-muted);font-size:11px;letter-spacing:.14em}.supplier-model-panel{padding:18px 20px}.model-context{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 14px;margin-bottom:12px;background:#f6f8fb;border:1px solid #e6e8ed;border-radius:8px}.model-context strong,.model-context .muted{display:block}.model-context strong{margin-top:4px}.muted{display:block;margin-top:4px}.supplier-tab-content{min-height:220px;padding:12px 0}.supplier-tab-content h3{margin:20px 0 10px;font-size:16px}.supplier-tab-content h4{margin:18px 0 8px}.supplier-profile{display:grid;grid-template-columns:160px minmax(0,1fr);gap:10px 20px;padding:12px 0}.supplier-profile dt{color:var(--app-text-muted)}.supplier-profile dd{margin:0;overflow-wrap:anywhere}.el-pagination{margin-top:18px;justify-content:flex-end}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}@media(max-width:640px){.page-heading{align-items:flex-start}.supplier-model-panel{padding:12px}.supplier-profile{grid-template-columns:1fr;gap:6px}.supplier-profile dd{margin-bottom:10px}}
-.supplier-profile-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.supplier-profile-heading h3{margin:20px 0 10px}.qualification-validity{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.supplier-profile-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.supplier-profile-heading h3{margin:20px 0 2px}
+/* 基础资料：原型是两列表单，字段宽度随容器收缩。 */
+.profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px;padding:10px 0 0}
+.profile-grid :deep(.el-form-item){margin-bottom:14px}
+.profile-grid :deep(.el-select),.profile-grid :deep(.el-input){width:100%}
+@media(max-width:820px){.profile-grid{grid-template-columns:1fr}}.qualification-validity{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .supplier-qualification-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:24px}.supplier-qualification-heading h3{margin:0 0 10px}.qualification-list{min-height:90px}
 .operation-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}.operation-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.quote-record-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}.quote-record-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.model-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}.model-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.operation-filters .el-select{max-width:220px}
 </style>
