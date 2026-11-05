@@ -755,16 +755,16 @@ func (s *SupplierStore) AuthorizeSupplierQualificationUpload(ctx context.Context
 	return s.authorizeQualificationWrite(ctx, tx, meta, supplierID, false)
 }
 
-func (s *SupplierStore) authorizeQualificationOwner(ctx context.Context, tx *sql.Tx, actorID, supplierID string, lock bool) (*supply.Supplier, error) {
+func (s *SupplierStore) authorizeQualificationOwner(ctx context.Context, tx *sql.Tx, meta supply.WriteMeta, supplierID string, lock bool) (*supply.Supplier, error) {
 	profile, err := s.loadSupplier(ctx, tx, supplierID, lock)
 	if err != nil {
 		return nil, mapSupplierStorageError(err)
 	}
-	if profile.BuyerID != actorID {
+	if profile.BuyerID != meta.ActorID && !meta.CanMaintain {
 		return nil, supply.ErrForbidden
 	}
 	var active bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+s.table("internal_staff")+` WHERE id=$1 AND status='ACTIVE')`, actorID).Scan(&active); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+s.table("internal_staff")+` WHERE id=$1 AND status='ACTIVE')`, meta.ActorID).Scan(&active); err != nil {
 		return nil, mapSupplierStorageError(err)
 	}
 	if !active {
@@ -774,7 +774,7 @@ func (s *SupplierStore) authorizeQualificationOwner(ctx context.Context, tx *sql
 }
 
 func (s *SupplierStore) authorizeQualificationWrite(ctx context.Context, tx *sql.Tx, meta supply.WriteMeta, supplierID string, lock bool) error {
-	profile, err := s.authorizeQualificationOwner(ctx, tx, meta.ActorID, supplierID, lock)
+	profile, err := s.authorizeQualificationOwner(ctx, tx, meta, supplierID, lock)
 	if err != nil {
 		return err
 	}
@@ -982,7 +982,7 @@ func (s *SupplierStore) QualificationFileReference(ctx context.Context, actorID,
 		return "", "", err
 	}
 	defer tx.Rollback()
-	if _, err := s.authorizeQualificationOwner(ctx, tx, actorID, supplierID, false); err != nil {
+	if _, err := s.authorizeQualificationOwner(ctx, tx, supply.WriteMeta{ActorID: actorID}, supplierID, false); err != nil {
 		return "", "", err
 	}
 	var fileRef sql.NullString

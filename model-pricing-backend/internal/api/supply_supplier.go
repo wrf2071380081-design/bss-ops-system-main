@@ -6,6 +6,7 @@ import (
 	"math"
 	"mime"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"model_bss/internal/api/middleware"
 	"model_bss/internal/domain/supply"
+	"model_bss/pkg/perm"
 	"model_bss/pkg/response"
 )
 
@@ -85,9 +87,20 @@ type supplySupplierRequest struct {
 	Reason             string  `json:"reason"`
 }
 
-func supplierDTO(profile *supply.Supplier, actor string, aliasesSupported bool) supplySupplierDTO {
+// supplyCanEditSupplier 判定"除归属采购人之外是否另有维护授权"：
+// 持 M3:E 的内部人员可以维护任意供应商档案（与标准模型的 supplyCanMaintain 同一套思路）。
+// 只放开基础资料/资质的编辑，不放开归属变更与建档。
+func supplyCanEditSupplier(c *gin.Context) bool {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		return false
+	}
+	return slices.Contains(op.Perms, perm.M3Edit)
+}
+
+func supplierDTO(profile *supply.Supplier, actor string, canMaintain bool, aliasesSupported bool) supplySupplierDTO {
 	aliases := append([]string{}, profile.Aliases...)
-	return supplySupplierDTO{ID: profile.ID, BuyerID: profile.BuyerID, Name: profile.Data.Name, Aliases: aliases, AliasesSupported: aliasesSupported, Region: profile.Data.Region, RegistrationNo: profile.Data.RegistrationNo, Contact: profile.Data.Contact, Phone: profile.Data.Phone, TaxRate: profile.Data.TaxRate, SettlementCurrency: profile.Data.SettlementCurrency, Remark: profile.Data.Remark, Established: profile.Established, Status: profile.Status, Revision: profile.Revision, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, CanEdit: actor == profile.BuyerID}
+	return supplySupplierDTO{ID: profile.ID, BuyerID: profile.BuyerID, Name: profile.Data.Name, Aliases: aliases, AliasesSupported: aliasesSupported, Region: profile.Data.Region, RegistrationNo: profile.Data.RegistrationNo, Contact: profile.Data.Contact, Phone: profile.Data.Phone, TaxRate: profile.Data.TaxRate, SettlementCurrency: profile.Data.SettlementCurrency, Remark: profile.Data.Remark, Established: profile.Established, Status: profile.Status, Revision: profile.Revision, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, CanEdit: actor == profile.BuyerID || canMaintain}
 }
 
 func (h *supplySupplierHandler) list(c *gin.Context) {
@@ -117,7 +130,7 @@ func (h *supplySupplierHandler) list(c *gin.Context) {
 	}
 	dto := supplySupplierPageDTO{List: make([]supplySupplierDTO, 0, len(result.List)), Total: result.Total, Page: result.Page, Size: result.Size, AliasesSupported: aliasesSupported}
 	for i := range result.List {
-		dto.List = append(dto.List, supplierDTO(&result.List[i], supplyActor(c), aliasesSupported))
+		dto.List = append(dto.List, supplierDTO(&result.List[i], supplyActor(c), supplyCanEditSupplier(c), aliasesSupported))
 	}
 	response.Success(c, dto)
 }
@@ -146,7 +159,7 @@ func (h *supplySupplierHandler) get(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	response.Success(c, supplierDTO(profile, supplyActor(c), aliasesSupported))
+	response.Success(c, supplierDTO(profile, supplyActor(c), supplyCanEditSupplier(c), aliasesSupported))
 }
 
 func (h *supplySupplierHandler) qualifications(c *gin.Context) {
@@ -179,7 +192,8 @@ func (h *supplySupplierHandler) qualifications(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	canDownload := profile.BuyerID == supplyActor(c)
+	// 归属采购人本人，或持 M3:E 的维护人，都可以下载资质附件。
+	canDownload := profile.BuyerID == supplyActor(c) || supplyCanEditSupplier(c)
 	for i := range result.List {
 		if result.List[i].SupplierID != id {
 			supplyHTTPError(c, supply.ErrReadContract)
@@ -226,6 +240,8 @@ func (h *supplySupplierHandler) uploadQualification(c *gin.Context) {
 		return
 	}
 	meta, err := supplyWriteMeta(c, strings.TrimSpace(req.Reason))
+	// 供应商档案的"额外维护授权"看 M3:E，而不是标准模型用的 M1:E。
+	meta.CanMaintain = supplyCanEditSupplier(c)
 	if err != nil {
 		supplyHTTPError(c, err)
 		return
@@ -304,6 +320,8 @@ func (h *supplySupplierHandler) updateQualification(c *gin.Context) {
 		return
 	}
 	meta, err := supplyWriteMeta(c, strings.TrimSpace(req.Reason))
+	// 供应商档案的"额外维护授权"看 M3:E，而不是标准模型用的 M1:E。
+	meta.CanMaintain = supplyCanEditSupplier(c)
 	if err != nil {
 		supplyHTTPError(c, err)
 		return
@@ -389,6 +407,8 @@ func (h *supplySupplierHandler) create(c *gin.Context) {
 		return
 	}
 	meta, err := supplyWriteMeta(c, strings.TrimSpace(req.Reason))
+	// 供应商档案的"额外维护授权"看 M3:E，而不是标准模型用的 M1:E。
+	meta.CanMaintain = supplyCanEditSupplier(c)
 	if err != nil {
 		supplyHTTPError(c, err)
 		return
@@ -425,6 +445,8 @@ func (h *supplySupplierHandler) update(c *gin.Context) {
 		return
 	}
 	meta, err := supplyWriteMeta(c, strings.TrimSpace(req.Reason))
+	// 供应商档案的"额外维护授权"看 M3:E，而不是标准模型用的 M1:E。
+	meta.CanMaintain = supplyCanEditSupplier(c)
 	if err != nil {
 		supplyHTTPError(c, err)
 		return
@@ -451,7 +473,7 @@ func (h *supplySupplierHandler) result(c *gin.Context, profile *supply.Supplier)
 		supplyHTTPError(c, err)
 		return
 	}
-	dto := supplierDTO(profile, supplyActor(c), aliasesSupported)
+	dto := supplierDTO(profile, supplyActor(c), supplyCanEditSupplier(c), aliasesSupported)
 	if _, err := strconv.ParseInt(dto.ID, 10, 64); err != nil {
 		supplyHTTPError(c, supply.ErrReadContract)
 		return

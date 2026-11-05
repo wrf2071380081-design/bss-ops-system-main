@@ -609,6 +609,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
                 <h3>基础资料</h3>
                 <el-button v-if="profile.can_edit" type="primary" plain size="small" :loading="profileSaving" @click="saveProfileInline">保存修改</el-button>
               </div>
+              <el-alert v-if="!profile.can_edit" type="info" :closable="false" show-icon title="当前账号不是该供应商的归属采购人，也没有供应商维护权限，档案为只读。" />
               <el-form label-position="top" class="profile-grid" :disabled="!profile.can_edit || profileSaving">
                 <el-form-item label="公司名称"><el-input v-model="profileDraft.name" maxlength="128" /></el-form-item>
                 <el-form-item label="统一社会信用代码"><el-input v-model="profileDraft.registration_no" maxlength="64" /></el-form-item>
@@ -625,8 +626,8 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
               <div v-loading="qualificationLoading" class="qualification-inline">
                 <el-button v-if="profile.can_edit" size="small" :disabled="qualificationLoading" @click="openQualificationUpload">选择文件</el-button>
                 <span class="qualification-file">{{ latestQualificationText }}</span>
-                <el-button v-if="latestQualification?.can_download && profile.can_edit" link type="primary" :loading="qualificationDownloading === latestQualification.id" @click="downloadQualification(latestQualification)">下载</el-button>
-                <span v-else-if="latestQualification?.has_attachment && !profile.can_edit" class="muted">需归属采购人下载</span>
+                <el-button v-if="latestQualification?.can_download" link type="primary" :loading="qualificationDownloading === latestQualification.id" @click="downloadQualification(latestQualification)">下载</el-button>
+                <span v-else-if="latestQualification?.has_attachment" class="muted">{{ profile.can_edit ? '附件暂不可下载（文件不可用或已归档）' : '需归属采购人或维护人下载' }}</span>
               </div>
               <el-alert v-if="qualificationError" :title="qualificationError" type="error" :closable="false"><el-button text @click="loadQualifications">重试</el-button></el-alert>
               <!-- 合同与授信紧跟基础资料（原型顺序）；接入模型与办理状态在「接入模型」页签，这里不再重复。 -->
