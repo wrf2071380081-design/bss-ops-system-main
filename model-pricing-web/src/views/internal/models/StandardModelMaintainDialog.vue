@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { ApiError } from "../../../domain/common";
@@ -13,7 +13,38 @@ import { formatDateTime } from "../../../domain/date";
 const props = defineProps<{ id?: string; initialPanel?: 'profile' | 'history' | 'records' | 'advanced' }>();
 const emit = defineEmits<{ close: []; saved: [] }>();
 const current = ref<StandardModelDTO>();
-const draft = ref(emptyStandardModel());
+
+/**
+ * 新增时的两条默认计费项（原型：输入 / 输出，适用条件「标准 API 计费」）。
+ * 只给「新增」用：维护已有模型时按服务端资料展示，不塞默认行。
+ * task_type 先按文本填，选完模型类型后由下面的 watch 跟随改写。
+ */
+const SEED_PRICE_KEYS = ["price_1", "price_2"] as const;
+function seedPriceItems() {
+  return [
+    { item_key: "price_1", label: "输入", task_type: "TEXT_INPUT", amount: "", currency: "USD", unit_code: "TOKEN", unit_quantity: "1000000", condition: "标准 API 计费", dimensions: {}, source_url: "" },
+    { item_key: "price_2", label: "输出", task_type: "TEXT_OUTPUT", amount: "", currency: "USD", unit_code: "TOKEN", unit_quantity: "1000000", condition: "标准 API 计费", dimensions: {}, source_url: "" },
+  ];
+}
+function blankDraft() {
+  const draft = emptyStandardModel();
+  if (props.id) return draft;
+  draft.checked_at = shanghaiToday();
+  draft.price_items = seedPriceItems();
+  return draft;
+}
+
+const draft = ref(blankDraft());
+// 新增时让默认两行的计费任务跟随模型类型（文本→TEXT_*，图片→IMAGE_* …），
+// 否则换成图片模型后仍挂着 TEXT_OUTPUT，资料永远补不齐。
+watch(() => draft.value.model_type, value => {
+  if (current.value || props.id) return;
+  const type = value || "TEXT";
+  for (const price of draft.value.price_items) {
+    if (!(SEED_PRICE_KEYS as readonly string[]).includes(price.item_key)) continue;
+    price.task_type = /输出/.test(price.label) ? `${type}_OUTPUT` : `${type}_INPUT`;
+  }
+});
 const notes = ref(modelNotes(draft.value));
 const initialNotes = ref(JSON.stringify(notes.value));
 const sourceURL = ref("");
@@ -28,7 +59,9 @@ const readonly = computed(() => current.value ? !current.value.permissions.can_e
 const dirty = computed(() => JSON.stringify(draft.value) !== baseline.value || JSON.stringify(notes.value) !== initialNotes.value || sourceURL.value !== (draft.value.sources[0]?.url || "") || !!priceEditor.value?.dirty || !!reason.value.trim());
 function formData() {
   const result = applyModelNotes(draft.value, notes.value);
-  result.price_items = priceEditor.value?.getRows() || result.price_items;
+  // 默认两行计费项只是"预填模板"：单价留空表示这一项还没填，
+  // 保存时整行丢弃（等价于改动前没有这一行），这样「只填名称先存草稿」仍然可用。
+  result.price_items = (priceEditor.value?.getRows() || result.price_items).filter(price => price.amount.trim() !== "");
   const primary = draft.value.sources[0];
   result.sources = [...(sourceURL.value.trim() ? [{ ...(primary || { label: "官方资料", source_kind: "OFFICIAL_DOCS" }), url: sourceURL.value.trim() }] : []), ...draft.value.sources.slice(1).map(source => ({ ...source }))];
   return result;
