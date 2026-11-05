@@ -606,7 +606,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
                 <el-table-column label="模型数量" width="100"><template #default="{ row }">{{ row.rows.length }}</template></el-table-column>
                 <el-table-column label="申请时间" width="180"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column>
                 <el-table-column label="审批时间" width="180"><template #default="{ row }">{{ row.approved_at ? formatDateTime(row.approved_at) : '未记录' }}</template></el-table-column>
-                <el-table-column label="审批结果" width="110"><template #default="{ row }">{{ row.approval_result || "—" }}</template></el-table-column>
+                <el-table-column label="审批结果" width="110"><template #default="{ row }">{{ row.approval_result || (["PROCESSING", "COMPLETED"].includes(row.status) ? "未记录" : "—") }}</template></el-table-column>
                 <el-table-column label="审批人" width="110"><template #default="{ row }">{{ row.approver || '未记录' }}</template></el-table-column>
                 <el-table-column label="详情" width="100"><template #default="{ row }"><el-button link type="primary" @click="openQuote(row)">查看报价</el-button></template></el-table-column>
               </el-table>
