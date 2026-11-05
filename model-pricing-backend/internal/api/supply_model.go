@@ -8,7 +8,9 @@ import (
 	"model_bss/internal/domain/supply"
 	infra "model_bss/internal/infra/middleware"
 	"model_bss/pkg/apperr"
+	"model_bss/pkg/perm"
 	"model_bss/pkg/response"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -51,14 +53,28 @@ type supplyModelPageDTO struct {
 func supplyActor(c *gin.Context) string {
 	return strconv.FormatInt(middleware.OperatorFrom(c).StaffID, 10)
 }
-func supplyModelResponse(model *supply.StandardModel, actor string, history bool) supplyModelDTO {
+
+// supplyCanMaintain 判定"除维护人之外是否另有维护授权"（原型：五个成员都能维护标准模型）。
+// 策略只在这里定：持 M1:E 即可维护；维护人本人不受此限（见 supplyModelResponse）。
+// 注意：这只放开"编辑"，不放开"核验"——核验仍只给绑定维护人。
+func supplyCanMaintain(c *gin.Context) bool {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		return false
+	}
+	return slices.Contains(op.Perms, perm.M1Edit)
+}
+
+func supplyModelResponse(model *supply.StandardModel, actor string, canMaintain bool, history bool) supplyModelDTO {
 	copied := model.Clone()
 	permissions := supplyModelPermissions{}
 	version := model.VersionNo
 	readiness := model.Readiness()
 	if !history {
-		permissions.CanEdit = actor == model.MaintainerID
-		permissions.CanVerify = permissions.CanEdit && model.Status == "ACTIVE" && len(model.MissingFields()) == 0 && model.VerifyStatus != "VERIFIED"
+		maintainer := actor == model.MaintainerID
+		permissions.CanEdit = maintainer || canMaintain
+		// 核验不随编辑权放开：只有绑定维护人能把资料标成 VERIFIED。
+		permissions.CanVerify = maintainer && model.Status == "ACTIVE" && len(model.MissingFields()) == 0 && model.VerifyStatus != "VERIFIED"
 	} else {
 		version = 0
 		readiness.Ready = false
@@ -139,7 +155,7 @@ func (h *supplyModelHandler) list(c *gin.Context) {
 	}
 	rows := make([]supplyModelDTO, 0, len(result.List))
 	for _, m := range result.List {
-		rows = append(rows, supplyModelResponse(m, supplyActor(c), false))
+		rows = append(rows, supplyModelResponse(m, supplyActor(c), supplyCanMaintain(c), false))
 	}
 	response.Success(c, supplyModelPageDTO{rows, result.Total, result.Page, result.Size})
 }
@@ -161,7 +177,7 @@ func (h *supplyModelHandler) get(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	response.Success(c, supplyModelResponse(model, supplyActor(c), false))
+	response.Success(c, supplyModelResponse(model, supplyActor(c), supplyCanMaintain(c), false))
 }
 
 // @Summary 标准模型不可变历史版本
@@ -191,7 +207,7 @@ func (h *supplyModelHandler) versions(c *gin.Context) {
 	}
 	rows := make([]supplyModelDTO, 0, len(result.List))
 	for _, m := range result.List {
-		rows = append(rows, supplyModelResponse(m, supplyActor(c), true))
+		rows = append(rows, supplyModelResponse(m, supplyActor(c), false, true))
 	}
 	response.Success(c, supplyModelPageDTO{rows, result.Total, result.Page, result.Size})
 }
@@ -219,7 +235,7 @@ func supplyWriteMeta(c *gin.Context, reason string) (supply.WriteMeta, error) {
 	if requestID == "" {
 		return supply.WriteMeta{}, supply.ErrDependencyUnavailable
 	}
-	return supply.WriteMeta{ActorID: supplyActor(c), Reason: reason, RequestID: requestID}, nil
+	return supply.WriteMeta{ActorID: supplyActor(c), Reason: reason, RequestID: requestID, CanMaintain: supplyCanMaintain(c)}, nil
 }
 func (h *supplyModelHandler) writeResult(c *gin.Context, model *supply.StandardModel, err error, expectedRevision uint64) {
 	if err != nil {
@@ -230,7 +246,7 @@ func (h *supplyModelHandler) writeResult(c *gin.Context, model *supply.StandardM
 		supplyHTTPError(c, supply.ErrReadContract)
 		return
 	}
-	dto := supplyModelResponse(model, supplyActor(c), false)
+	dto := supplyModelResponse(model, supplyActor(c), supplyCanMaintain(c), false)
 	if expectedRevision > 0 {
 		changed := model.Revision != expectedRevision
 		dto.Changed = &changed

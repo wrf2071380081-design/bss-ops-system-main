@@ -15,6 +15,7 @@ import (
 	"model_bss/internal/api/middleware"
 	"model_bss/internal/domain/supply"
 	infra "model_bss/internal/infra/middleware"
+	"model_bss/pkg/perm"
 )
 
 var supplyHTTPNow = time.Date(2026, 10, 20, 1, 0, 0, 0, time.UTC)
@@ -378,5 +379,52 @@ func TestSupplyHTTPHistoricalRecordsAreReadOnlyAndBadQueriesReject(t *testing.T)
 		if rec.Code != 400 {
 			t.Fatalf("bad query %s accepted: %d", query, rec.Code)
 		}
+	}
+}
+
+// 原型对齐（2026-11-05）：标准模型不再只有"绑定维护人"能改。
+// 持 M1:E 的非维护人 → can_edit=true、写请求带上 CanMaintain=true；
+// 但 can_verify 仍为 false（核验只给维护人），无 M1:E 的人仍然只读。
+// 说明：本桩模型资料未齐（缺 price_items/sources），can_verify 两种情况都是 false；
+// "改与核验分离"的语义由 domain/supply 的 TestDelegatedMaintainerCanEditButNotVerify 覆盖。
+func TestSupplyHTTPDelegatedMaintainerCanEditButNotVerify(t *testing.T) {
+	delegated := &middleware.Operator{PortalType: "INTERNAL", OperatorType: "STAFF", StaffID: 9, OperatorID: 890, AccountID: 991, Perms: []string{perm.M1Edit}}
+	writer := &supplyHTTPWriter{}
+	r := supplyHTTPRouter(delegated, writer, newSupplyHTTPIdemStore())
+
+	read := supplyHTTPCall(r, "GET", "/api/internal/standard-models", "", "", "trace-delegated-read")
+	if read.Code != 200 {
+		t.Fatal(read.Body.String())
+	}
+	row := supplyHTTPEnvelope(t, read)["data"].(map[string]any)["list"].([]any)[0].(map[string]any)
+	grants := row["permissions"].(map[string]any)
+	if grants["can_edit"] != true {
+		t.Fatalf("M1:E holder still read-only: %v", grants)
+	}
+	if grants["can_verify"] != false {
+		t.Fatalf("edit grant leaked into verify: %v", grants)
+	}
+
+	payload := struct {
+		supply.ModelData
+		ExpectedRevision uint64 `json:"expected_revision,string"`
+		Reason           string `json:"reason"`
+	}{supplyHTTPModel().Data, 1, "原型对齐：协作维护"}
+	raw, _ := json.Marshal(payload)
+	rec := supplyHTTPCall(r, "PUT", "/api/internal/standard-models/9007199254740993", string(raw), "delegated-1", "trace-delegated-write")
+	if rec.Code != 200 {
+		t.Fatalf("delegated maintainer write rejected: %d %s", rec.Code, rec.Body.String())
+	}
+	if !writer.meta.CanMaintain || writer.meta.ActorID != "9" {
+		t.Fatalf("write meta did not carry the delegation: %+v", writer.meta)
+	}
+
+	plain := &middleware.Operator{PortalType: "INTERNAL", OperatorType: "STAFF", StaffID: 9, OperatorID: 890, AccountID: 991}
+	r = supplyHTTPRouter(plain, &supplyHTTPWriter{}, newSupplyHTTPIdemStore())
+	read = supplyHTTPCall(r, "GET", "/api/internal/standard-models", "", "", "trace-plain-read")
+	row = supplyHTTPEnvelope(t, read)["data"].(map[string]any)["list"].([]any)[0].(map[string]any)
+	grants = row["permissions"].(map[string]any)
+	if grants["can_edit"] != false || grants["can_verify"] != false {
+		t.Fatalf("plain staff got write actions: %v", grants)
 	}
 }

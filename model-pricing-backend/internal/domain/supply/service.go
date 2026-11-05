@@ -161,7 +161,7 @@ func (s *ModelService) SaveManual(ctx context.Context, meta WriteMeta, id string
 		if current == nil {
 			return ErrNotFound
 		}
-		next, changed, complete, err := current.ManuallySaved(meta.ActorID, expectedRevision, canonical, now)
+		next, changed, complete, err := current.ManuallySaved(meta, expectedRevision, canonical, now)
 		if err != nil {
 			return err
 		}
@@ -209,7 +209,7 @@ func (s *ModelService) Update(ctx context.Context, meta WriteMeta, id string, ex
 		if current == nil {
 			return ErrNotFound
 		}
-		next, changed, err := current.Updated(meta.ActorID, expectedRevision, data, now)
+		next, changed, err := current.Updated(meta, expectedRevision, data, now)
 		if err != nil {
 			return err
 		}
@@ -252,7 +252,7 @@ func (s *ModelService) Verify(ctx context.Context, meta WriteMeta, id string, ex
 		if current == nil {
 			return ErrNotFound
 		}
-		next, changed, err := current.verified(meta.ActorID, expectedRevision, date, now)
+		next, changed, err := current.verified(meta, expectedRevision, date, now)
 		if err != nil {
 			return err
 		}

@@ -10,6 +10,10 @@ type WriteMeta struct {
 	ActorID   string
 	Reason    string
 	RequestID string
+	// CanMaintain 表示调用方除维护人之外另有的维护授权（当前由 API 层按 M1:E 判定）。
+	// 领域层不认识权限字符串：策略在上层决定，这里只承载结论。
+	// 维护人本人始终可维护，与 CanMaintain 无关；核验动作不看这个字段。
+	CanMaintain bool
 }
 type ModelOperation struct {
 	EntityType string
