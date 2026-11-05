@@ -89,7 +89,7 @@ try {
   await page.getByRole("button", { name: "重新加载模型广场", exact: true }).waitFor();
   await page.getByRole("textbox", { name: "搜索模型", exact: true }).fill("供应商22");
   await page.getByRole("button", { name: "重新加载模型广场", exact: true }).waitFor();
-  assert.equal(await page.getByText("当前筛选暂无供应资源", { exact: true }).count(), 0);
+  assert.equal(await page.getByText("当前筛选暂无模型", { exact: true }).count(), 0);
   failRead = false;
   await page.getByRole("button", { name: "重新加载模型广场", exact: true }).click();
   await page.locator(".plaza-table tbody tr").filter({ hasText: model.name }).waitFor();

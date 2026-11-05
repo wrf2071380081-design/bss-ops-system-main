@@ -401,11 +401,33 @@ func (s *ResourceReadStore) ListResourceRows(ctx context.Context, q supply.Resou
 }
 
 type resourceReadGroup struct {
-	id, name, company, modelType string
-	suppliers                    map[string]bool
-	entries                      []resourceReadEntry
-	available                    int
-	min, max                     *big.Rat
+	id, name, officialID, company, modelType string
+	suppliers                                map[string]bool
+	entries                                  []resourceReadEntry
+	available                                int
+	min, max                                 *big.Rat
+}
+
+// coefficientGroupCompare 让没有货源的模型（min/max 为 nil）无论升降序都排在最后，
+// 避免「—」占满首屏而把真正有几家货源的模型挤到后面。
+func coefficientGroupCompare(a, b *big.Rat, order, aID, bID string) int {
+	if (a == nil) != (b == nil) {
+		if a == nil {
+			return 1
+		}
+		return -1
+	}
+	n := 0
+	if a != nil {
+		n = a.Cmp(b)
+	}
+	if order == "desc" {
+		n = -n
+	}
+	if n == 0 {
+		return resourceIDCompare(aID, bID)
+	}
+	return n
 }
 
 func resourceGroupCompare(a, b *resourceReadGroup, q supply.ResourceListQuery) int {
@@ -435,9 +457,9 @@ func resourceGroupCompare(a, b *resourceReadGroup, q supply.ResourceListQuery) i
 	case "available_count":
 		n = cmpCount(a.available, b.available)
 	case "coefficient_min":
-		n = a.min.Cmp(b.min)
+		return coefficientGroupCompare(a.min, b.min, q.Order, a.id, b.id)
 	case "coefficient_max":
-		n = a.max.Cmp(b.max)
+		return coefficientGroupCompare(a.max, b.max, q.Order, a.id, b.id)
 	}
 	if q.Order == "desc" {
 		n = -n
@@ -447,12 +469,12 @@ func resourceGroupCompare(a, b *resourceReadGroup, q supply.ResourceListQuery) i
 	}
 	return n
 }
-func (s *ResourceReadStore) ListResourceGroups(ctx context.Context, q supply.ResourceListQuery) ([][]*supply.ResourceRecord, int64, error) {
+func (s *ResourceReadStore) ListResourceGroups(ctx context.Context, q supply.ResourceListQuery) ([]supply.ResourceGroupRows, int64, error) {
 	where, args, err := resourceReadQuery(q, "grouped")
 	if err != nil {
 		return nil, 0, err
 	}
-	result := [][]*supply.ResourceRecord{}
+	result := []supply.ResourceGroupRows{}
 	var total int64
 	err = s.within(ctx, func(tx *sql.Tx) error {
 		entries, err := s.load(ctx, tx, where, args)
@@ -484,14 +506,29 @@ func (s *ResourceReadStore) ListResourceGroups(ctx context.Context, q supply.Res
 			}
 		}
 		total = int64(len(groups))
+		// 模型广场同时是招商清单：没有任何货源的标准模型也要占一行。
+		// 只有模型维度的筛选（关键词/公司/类型）时补位；一旦带上供应商、部署节点、
+		// 状态、系数或指标筛选，用户问的是"哪些模型有这类资源"，补位会答非所问。
+		if !hasResourceDimension(q) {
+			models, err := s.unsuppliedModels(ctx, tx, q, byID)
+			if err != nil {
+				return err
+			}
+			groups = append(groups, models...)
+			total = int64(len(groups))
+		}
 		slices.SortFunc(groups, func(a, b *resourceReadGroup) int { return resourceGroupCompare(a, b, q) })
 		start, end := resourcePageRange(len(groups), q)
 		for _, g := range groups[start:end] {
+			if len(g.entries) == 0 {
+				result = append(result, supply.ResourceGroupRows{Model: &supply.ResourceGroup{ID: g.id, Name: g.name, OfficialID: g.officialID, Company: g.company, ModelType: g.modelType}})
+				continue
+			}
 			members := make([]*supply.ResourceRecord, 0, len(g.entries))
 			for _, e := range g.entries {
 				members = append(members, e.record)
 			}
-			result = append(result, members)
+			result = append(result, supply.ResourceGroupRows{Records: members})
 		}
 		return nil
 	})
@@ -499,6 +536,67 @@ func (s *ResourceReadStore) ListResourceGroups(ctx context.Context, q supply.Res
 		return nil, 0, err
 	}
 	return result, total, nil
+}
+
+// hasResourceDimension 判断查询是否落在资源维度上（供应商/节点/状态/系数/指标）。
+func hasResourceDimension(q supply.ResourceListQuery) bool {
+	return q.SupplierID != "" || len(q.SupplierIDs) > 0 || q.Region != "" || len(q.Regions) > 0 ||
+		q.State != "" || len(q.States) > 0 ||
+		q.CoefficientMin != "" || q.CoefficientMax != "" ||
+		q.ConnectionMin != "" || q.ConnectionMax != "" || q.RPSMin != "" || q.RPSMax != "" || q.TPSMin != "" || q.TPSMax != ""
+}
+
+// unsuppliedModels 返回符合条件的、当前没有任何资源的在用标准模型（按 m.id 升序）。
+// 要求至少有一个版本：还没建档的模型连详情都打不开，放进招商清单会点出一个 500。
+func (s *ResourceReadStore) unsuppliedModels(ctx context.Context, tx *sql.Tx, q supply.ResourceListQuery, known map[string]*resourceReadGroup) ([]*resourceReadGroup, error) {
+	args := []any{}
+	where := []string{"m.status='ACTIVE'"}
+	add := func(value any) string { args = append(args, value); return fmt.Sprintf("$%d", len(args)) }
+	if q.Keyword != "" {
+		p := add(q.Keyword)
+		where = append(where, `strpos(lower(m.name||' '||m.official_id),lower(`+p+`::text))>0`)
+	}
+	if q.StandardModelID != "" {
+		where = append(where, "m.id="+add(q.StandardModelID))
+	}
+	if q.Company != "" {
+		where = append(where, "m.company="+add(q.Company))
+	}
+	if len(q.Companies) > 0 {
+		params := make([]string, 0, len(q.Companies))
+		for _, value := range q.Companies {
+			params = append(params, add(value))
+		}
+		where = append(where, "m.company IN ("+strings.Join(params, ",")+")")
+	}
+	if q.ModelType != "" {
+		where = append(where, "m.model_type="+add(q.ModelType))
+	}
+	if len(q.ModelTypes) > 0 {
+		params := make([]string, 0, len(q.ModelTypes))
+		for _, value := range q.ModelTypes {
+			params = append(params, add(value))
+		}
+		where = append(where, "m.model_type IN ("+strings.Join(params, ",")+")")
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT m.id::text,m.name,m.official_id,m.company,m.model_type FROM `+s.table("standard_model")+` m WHERE `+strings.Join(where, " AND ")+` AND NOT EXISTS (SELECT 1 FROM `+s.table("resource")+` r WHERE r.standard_model_id=m.id) AND EXISTS (SELECT 1 FROM `+s.table("standard_model_version")+` v WHERE v.standard_model_id=m.id) ORDER BY m.id ASC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []*resourceReadGroup{}
+	for rows.Next() {
+		var g resourceReadGroup
+		if err = rows.Scan(&g.id, &g.name, &g.officialID, &g.company, &g.modelType); err != nil {
+			return nil, err
+		}
+		if known[g.id] != nil { // 资源在 unloadable 过滤后为空时仍以有货源为准
+			continue
+		}
+		g.suppliers = map[string]bool{}
+		result = append(result, &g)
+	}
+	return result, rows.Err()
 }
 
 func filteredResourceEntries(entries []resourceReadEntry, q supply.ResourceListQuery) []resourceReadEntry {

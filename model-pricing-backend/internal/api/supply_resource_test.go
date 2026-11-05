@@ -26,9 +26,9 @@ func (s *resourceHTTPStore) ResourceFilterOptions(_ context.Context, q supply.Re
 	return supply.ResourceFilterOptions{Companies: []string{"示例公司"}, Suppliers: []supply.ResourceSupplierOption{{ID: "21", Name: "示例供应商", Region: "CN"}}}, nil
 }
 
-func (s *resourceHTTPStore) ListResourceGroups(_ context.Context, q supply.ResourceListQuery) ([][]*supply.ResourceRecord, int64, error) {
+func (s *resourceHTTPStore) ListResourceGroups(_ context.Context, q supply.ResourceListQuery) ([]supply.ResourceGroupRows, int64, error) {
 	s.query = q
-	return [][]*supply.ResourceRecord{{s.row}}, 1, nil
+	return []supply.ResourceGroupRows{{Records: []*supply.ResourceRecord{s.row}}}, 1, nil
 }
 func (s *resourceHTTPStore) ListResourceRows(_ context.Context, q supply.ResourceListQuery) ([]*supply.ResourceRecord, int64, error) {
 	s.query = q

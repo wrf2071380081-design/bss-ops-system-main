@@ -112,9 +112,13 @@ type resourceReadMemory struct {
 	query  ResourceListQuery
 }
 
-func (s *resourceReadMemory) ListResourceGroups(_ context.Context, q ResourceListQuery) ([][]*ResourceRecord, int64, error) {
+func (s *resourceReadMemory) ListResourceGroups(_ context.Context, q ResourceListQuery) ([]ResourceGroupRows, int64, error) {
 	s.query = q
-	return s.groups, s.total, nil
+	rows := make([]ResourceGroupRows, 0, len(s.groups))
+	for _, records := range s.groups {
+		rows = append(rows, ResourceGroupRows{Records: records})
+	}
+	return rows, s.total, nil
 }
 func (s *resourceReadMemory) ListResourceRows(_ context.Context, q ResourceListQuery) ([]*ResourceRecord, int64, error) {
 	s.query = q

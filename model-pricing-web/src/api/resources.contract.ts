@@ -72,9 +72,24 @@ export function validateResourceGroup(value: unknown): ResourceGroup {
   for (const key of ["name", "official_id", "company", "model_type"]) if (typeof row[key] !== "string") invalid();
   if (row.model_type && !modelTypeLabels[String(row.model_type)]) invalid();
   for (const key of ["supplier_count", "resource_count", "available_count"]) if (!integer(row[key])) invalid();
-  if ((row.resource_count as number) < 1 || (row.supplier_count as number) > (row.resource_count as number) || (row.available_count as number) > (row.resource_count as number)) invalid();
-  if (new Decimal(coefficient(row.coefficient_min)).gt(coefficient(row.coefficient_max))) invalid();
-  if (!Array.isArray(row.regions) || !row.regions.length || row.regions.some(region => !resourceRegionLabels[region])) invalid();
+  const resourceCount = row.resource_count as number;
+  if ((row.supplier_count as number) > resourceCount || (row.available_count as number) > resourceCount) invalid();
+  if (!Array.isArray(row.regions) || row.regions.some(region => !resourceRegionLabels[region])) invalid();
+  if (!Array.isArray(row.region_coefficients)) invalid();
+  const regional = row.region_coefficients as Record<string, unknown>[];
+  for (const item of regional) {
+    const entry = object(item);
+    if (!resourceRegionLabels[String(entry.region)] || new Decimal(coefficient(entry.min)).gt(coefficient(entry.max))) invalid();
+  }
+  // 没有货源的标准模型也要出现在模型广场（招商清单）：零资源、零供应商、系数与节点全空。
+  if (resourceCount === 0) {
+    if (row.supplier_count !== 0 || row.available_count !== 0 || row.coefficient_min !== "" || row.coefficient_max !== "" || (row.regions as unknown[]).length || regional.length) invalid();
+  } else {
+    if (new Decimal(coefficient(row.coefficient_min)).gt(coefficient(row.coefficient_max))) invalid();
+    if (!(row.regions as unknown[]).length) invalid();
+    if (new Set(regional.map(entry => entry.region)).size !== regional.length || regional.length !== (row.regions as unknown[]).length) invalid();
+    if (regional.some(entry => !(row.regions as string[]).includes(String(entry.region)))) invalid();
+  }
   const states = object(row.state_counts);
   if (Object.entries(states).some(([key, count]) => !resourceStateLabels[key] || !integer(count)) || Object.values(states).reduce<number>((total, count) => total + (count as number), 0) !== row.resource_count) invalid();
   return structuredClone(row) as unknown as ResourceGroup;

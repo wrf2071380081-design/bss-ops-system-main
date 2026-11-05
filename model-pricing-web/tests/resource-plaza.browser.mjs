@@ -48,7 +48,7 @@ try {
     const pagination = { view: q.get("view"), total: q.get("view") === "flat" ? filtered.length : filtered.length ? 1 : 0, page: Number(q.get("page")), size: Number(q.get("size")) };
     if (q.get("view") === "flat") { flatQueries.push(Object.fromEntries(q)); if (failRows) { failRows = false; return send(null, 503); } return send({ ...pagination, list: filtered }); }
     const sortedCoefficients = filtered.map(row => row.coefficient).sort();
-    return send({ ...pagination, list: filtered.length ? [{ id: "11", name: "示例标准模型", official_id: "example-v1", company: "示例模型公司", model_type: "TEXT", supplier_count: filtered.length, resource_count: filtered.length, available_count: filtered.filter(row => row.quote_readiness.eligible).length, coefficient_min: sortedCoefficients[0], coefficient_max: sortedCoefficients.at(-1), regions: ["CN"], state_counts: { ADMITTED: filtered.length } }] : [] });
+    return send({ ...pagination, list: filtered.length ? [{ id: "11", name: "示例标准模型", official_id: "example-v1", company: "示例模型公司", model_type: "TEXT", supplier_count: filtered.length, resource_count: filtered.length, available_count: filtered.filter(row => row.quote_readiness.eligible).length, coefficient_min: sortedCoefficients[0], coefficient_max: sortedCoefficients.at(-1), regions: ["CN"], region_coefficients: [{ region: "CN", min: sortedCoefficients[0], max: sortedCoefficients.at(-1) }], state_counts: { ADMITTED: filtered.length } }] : [] });
   });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__resource-plaza-test`);
   await page.getByRole("heading", { name: "模型广场", exact: true }).waitFor();

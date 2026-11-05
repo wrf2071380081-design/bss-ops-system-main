@@ -116,7 +116,7 @@ try {
   result = await select("模型公司", "OpenAI", q => array(q,"companies").length === 2);
   assert.equal(result.total, 25);
   result = await select("部署节点", "海外", q => array(q,"regions").includes("OVERSEAS")); assert.equal(result.total, 0);
-  await page.getByText("当前筛选暂无供应资源", { exact: true }).waitFor();
+  await page.getByText("当前筛选暂无模型", { exact: true }).waitFor();
   result = await select("部署节点", "国内", q => array(q,"regions").length === 2); assert.equal(result.total, 25);
   wait = resourceWait(q => q.get("keyword") === "a-live-vendor-01"); await page.getByRole("textbox", { name: "搜索模型", exact: true }).fill("a-live-vendor-01"); result = await resourceResult(wait);
   assert.equal(result.total, 1); assert.equal(result.list[0].supplier_count, 1); assert.equal(result.list[0].id, manifest.main_model_id);

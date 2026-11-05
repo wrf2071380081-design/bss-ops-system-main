@@ -120,7 +120,7 @@ function restore() {
     }
     validateSourceFilters(filters.value); applied.value = JSON.parse(encodeSourceFilters(filters.value));
   } catch { filters.value = emptySourceFilters(); applied.value = emptySourceFilters(); filterError.value = "筛选参数无效，已恢复默认筛选。"; }
-  sortKey.value = sourceSortKeys.includes(routeText(route.query.source_sort_by)) ? routeText(route.query.source_sort_by) : "supplier_name";
+  sortKey.value = sourceSortKeys.includes(routeText(route.query.source_sort_by)) ? routeText(route.query.source_sort_by) : "coefficient";
   sortOrder.value = route.query.source_order === "desc" ? "desc" : "asc";
   const restoredPage = Number(routeText(route.query.source_page)), restoredSize = Number(routeText(route.query.source_size));
   page.value = Number.isSafeInteger(restoredPage) && restoredPage > 0 ? restoredPage : 1;
@@ -151,8 +151,8 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
           <p v-if="choices.has_more" class="muted">还有更多选项，请输入名称缩小搜索范围。</p>
           <el-alert v-if="filterError" :title="filterError" type="warning" :closable="false" />
           <div v-if="rows.length" class="batch-actions">
-            <el-button @click="batchRegister('down')">下架</el-button>
             <el-button @click="batchRegister('up')">上架</el-button>
+            <el-button @click="batchRegister('down')">下架</el-button>
             <span v-if="selectedRows.length" class="muted">已选 {{ selectedRows.length }} 条</span>
           </div>
           <el-table :data="sortedRows" row-key="id" style="width: 100%" @selection-change="(rows: ResourceRow[]) => selectedRows = rows">
@@ -172,7 +172,7 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
               <template #header><button type="button" class="sort-head" @click="sortBy('coefficient')">采购系数 {{ arrow('coefficient') }}</button></template>
               <template #default="{ row }">{{ coefficientText(row.coefficient) }}</template>
             </el-table-column>
-            <el-table-column label="连通耗时（ms）" width="120">
+            <el-table-column label="连通耗时（ms）" width="132">
               <template #header><button type="button" class="sort-head" @click="sortBy('connection')">连通耗时（ms） {{ arrow('connection') }}</button></template>
               <template #default="{ row }">{{ metric(row, 'connection_ms') }}<span v-if="row.test.status === 'COMPLETED'" class="muted metric-result">{{ row.test.connectivity_passed ? '通过' : '不通过' }}</span></template>
             </el-table-column>
