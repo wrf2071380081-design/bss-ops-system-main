@@ -5,10 +5,14 @@ import {ElMessage} from 'element-plus';
 import {submissionFlowsApi,type SubmissionFlowView} from '../../../api/submissionFlows';
 import {workbenchApi,type WorkbenchPersonDTO} from '../../../modules/workbench/api/workbench';
 import F12SubjectPanel from '../subjects/F12SubjectPanel.vue';
+import ResourceReportsPanel from '../resources/ResourceReportsPanel.vue';
 const props=defineProps<{id:string;node?:boolean}>();const emit=defineEmits<{close:[];changed:[]}>();const router=useRouter();
 const data=ref<SubmissionFlowView>(),people=ref<WorkbenchPersonDTO[]>([]),loading=ref(false),busy=ref(false),error=ref('');
 const test=ref(''),contract=ref(''),reason=ref(''),lifecycle=ref(crypto.randomUUID());let active=true,request:AbortController|undefined;
 const contractReady=ref(false);
+// 测试与报告：原型是在审批弹窗里直接展开测试历史，这里用嵌套弹窗复用资源报告面板。
+const reportsRow=ref<SubmissionFlowView['rows'][number]>(),reportsVisible=ref(false);
+function openReports(row:SubmissionFlowView['rows'][number]){if(!row.resource_id)return;reportsRow.value=row;reportsVisible.value=true;}
 // 逐模型决定（原型：勾=通过、不勾=不通过）。默认不勾，避免"没看就全放行"。
 const picked=ref<Record<string,boolean>>({});
 const approvedCount=computed(()=>data.value?.rows.filter(row=>picked.value[row.id]).length||0);
@@ -45,7 +49,7 @@ watch(()=>[props.id,props.node],()=>{contractReady.value=false;void load();},{im
      <el-table-column prop="interface_model_id" label="供应商接口模型 ID" min-width="150"/>
      <el-table-column prop="coefficient" label="采购系数" width="100"/>
      <el-table-column label="办理状态" width="120"><template #default="{row}">{{row.status==='CANCELED'?'本次办理已取消':row.status==='CONFIGURED'?'配置已完成':row.status==='ADMITTED'?'已接入':row.status==='COMPLETED'?'已完成':'待办理'}}</template></el-table-column>
-     <el-table-column label="测试与报告" width="110"><template #default="{row}"><el-button v-if="row.resource_id" link type="primary" :disabled="busy" @click="openResource(row)">测试与报告</el-button><span v-else class="muted">未接入</span></template></el-table-column>
+     <el-table-column label="测试与报告" width="110"><template #default="{row}"><el-button v-if="row.resource_id" link type="primary" :disabled="busy" @click="openReports(row)">测试与报告</el-button><span v-else class="muted">未接入</span></template></el-table-column>
      <el-table-column label="对比" width="80"><template #default="{row}"><el-button link type="primary" :disabled="busy" @click="openCompare(row)">对比</el-button></template></el-table-column>
      <el-table-column label="资源" width="110"><template #default="{row}"><el-button v-if="row.resource_id" link type="primary" @click="openResource(row)">{{ data.can_handle&&row.status!=='CANCELED'?'办理资源':'查看资源' }}</el-button><span v-else>{{ data.can_approve?'批准后进入办理':'未接入' }}</span></template></el-table-column>
     </el-table>
@@ -67,5 +71,12 @@ watch(()=>[props.id,props.node],()=>{contractReady.value=false;void load();},{im
   </div>
   <template #footer><el-button :disabled="busy" @click="emit('close')">关闭办理详情</el-button><template v-if="data?.can_approve"><el-button type="danger" :disabled="busy" @click="reject">驳回申报</el-button><el-button type="primary" :loading="busy" :disabled="!test||approvedCount===0||(data.first_model&&!contract)" :title="approvedCount===0?'未勾选任何模型：整单驳回请用左侧「驳回申报」':''" @click="approve">核对并提交审批</el-button></template><el-button v-if="isContract&&data?.can_handle_contract" type="primary" :loading="busy" :disabled="!data.can_complete_contract||!contractReady||!reason.trim()" @click="completeContract">登记合同授信完成</el-button></template>
  </el-dialog>
+  <el-dialog v-model="reportsVisible" title="测试与报告" width="min(1180px,96vw)" append-to-body align-center>
+    <p class="reports-head">{{ reportsRow?.model_name }} · {{ reportsRow?.interface_model_id }}</p>
+    <div class="reports-body">
+      <ResourceReportsPanel v-if="reportsRow?.resource_id" :resource-i-d="reportsRow.resource_id" />
+    </div>
+    <template #footer><el-button @click="reportsVisible=false">关闭测试报告</el-button></template>
+  </el-dialog>
 </template>
-<style scoped>.assignment-form{margin-top:18px}.el-select{width:100%}.el-alert{margin:12px 0}.decision-summary{font-size:12px;color:#6b7280;margin:0 0 10px}</style>
+<style scoped>.assignment-form{margin-top:18px}.el-select{width:100%}.el-alert{margin:12px 0}.decision-summary{font-size:12px;color:#6b7280;margin:0 0 10px}.reports-head{margin:0 0 10px;font-size:12px;color:#6b7280}.reports-body{max-height:62vh;overflow:auto}</style>
