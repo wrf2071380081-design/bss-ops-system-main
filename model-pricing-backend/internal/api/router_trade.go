@@ -70,6 +70,12 @@ func registerTradeRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, portal 
 			middleware.RequirePerm(perm.M8View),
 			crh.GetCustomerProfile,
 		)
+		// 主体资料维护（联系人 / 税率 / 网关用户名 / 备注）。
+		protected.PUT("/customers/:id/profile",
+			middleware.RequirePerm(perm.M8Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			crh.UpdateCustomerProfile,
+		)
 	}
 
 	// 客户开通流程（G4-B2）：发起开通 / 读进度 / 完成节点。

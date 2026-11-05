@@ -55,6 +55,10 @@ func customerRegistryErrToAppErr(err error) apperr.Error {
 		errors.Is(err, customer.ErrCustomerRegionInvalid),
 		errors.Is(err, customer.ErrCustomerCurrencyInvalid),
 		errors.Is(err, customer.ErrCustomerTaxRateInvalid),
+		errors.Is(err, customer.ErrCustomerReasonRequired),
+		errors.Is(err, customer.ErrCustomerContactTooLong),
+		errors.Is(err, customer.ErrCustomerGatewayTooLong),
+		errors.Is(err, customer.ErrCustomerRemarkTooLong),
 		errors.Is(err, customer.ErrCustomerOwnerRequired),
 		errors.Is(err, customer.ErrCustomerOwnerNotFound),
 		errors.Is(err, customer.ErrCustomerPaymentType),
@@ -122,6 +126,63 @@ func (h *CustomerRegistryHandler) CreateCustomer(c *gin.Context) {
 		BillingCycle:         body.BillingCycle,
 		Reason:               body.Reason,
 	}, op.StaffID, requestIDOf(c))
+	if err != nil {
+		response.Error(c, customerRegistryErrToAppErr(err))
+		return
+	}
+	middleware.SetIdempotencyResult(c, profile)
+	response.Success(c, profile)
+}
+
+// updateCustomerProfileBody 主体资料维护请求体（原型「档案与办理 → 主体资料」）。
+type updateCustomerProfileBody struct {
+	ContactName     string `json:"contact_name"`
+	TaxRate         string `json:"tax_rate"`
+	GatewayUsername string `json:"gateway_username"`
+	Remark          string `json:"remark"`
+	Reason          string `json:"reason"`
+}
+
+// UpdateCustomerProfile 维护客户主体资料（M8:E + 幂等）。
+//
+// @Summary 维护客户主体资料（M8:E）
+// @Description 更新联系人与税率、网关用户名、备注；客户名称与区域不在本接口范围。任何字段校验失败都不落库，成功后写一条 operation_log 便于「操作记录」追溯。
+// @Tags 客户报价
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param Idempotency-Key header string true "幂等键"
+// @Param id path int64 true "customer_profile.id"
+// @Param body body updateCustomerProfileBody true "reason 必填；其余字段可空（空即清空）"
+// @Success 200 {object} api.APIResponse "code=0；data=CustomerProfile"
+// @Failure 400 {object} api.APIResponse "code=10001 字段校验失败"
+// @Failure 401 {object} api.APIResponse "code=10002 未认证"
+// @Failure 403 {object} api.APIResponse "code=10003 无 M8:E 或客户超出数据域"
+// @Failure 404 {object} api.APIResponse "code=10004 客户不存在"
+// @Router /api/internal/customers/{id}/profile [put]
+func (h *CustomerRegistryHandler) UpdateCustomerProfile(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "customer id 非法", apperr.ErrInvalidParams.Status))
+		return
+	}
+	var body updateCustomerProfileBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, fmt.Sprintf("JSON 解析失败：%s", err.Error()), apperr.ErrInvalidParams.Status))
+		return
+	}
+	profile, err := h.svc.UpdateProfile(c.Request.Context(), id, customer.UpdateCustomerProfileInput{
+		ContactName:     body.ContactName,
+		TaxRate:         body.TaxRate,
+		GatewayUsername: body.GatewayUsername,
+		Remark:          body.Remark,
+		Reason:          body.Reason,
+	}, scopeOf(op), op.StaffID, requestIDOf(c))
 	if err != nil {
 		response.Error(c, customerRegistryErrToAppErr(err))
 		return

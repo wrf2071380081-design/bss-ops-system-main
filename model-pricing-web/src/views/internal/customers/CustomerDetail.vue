@@ -27,6 +27,7 @@ import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow }
 import { modelTypeLabels } from "../../../api/standardModels.contract";
 import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
+import { formatSupplierTaxRate } from "../../../domain/supplierTax";
 import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
 import { useSessionStore } from "../../../stores/session";
@@ -308,6 +309,39 @@ const nodeStatusType = (status: string) =>
   status === "COMPLETED" ? "success" : status === "IN_PROGRESS" ? "warning" : "info";
 const nodeKeyText = (key: string) => ({ CONTRACT: "合同与授信", CONFIG: "资源配置" } as Record<string, string>)[key] || key;
 
+// 原型「档案与办理 → 主体资料」的维护表单。
+const profileFormOpen = ref(false), profileSaving = ref(false), profileFormError = ref("");
+const profileForm = reactive({ contact: "", taxRate: "", gateway: "", remark: "", reason: "" });
+function openProfileForm() {
+  profileFormOpen.value = true;
+  profileFormError.value = "";
+  profileForm.contact = profile.value?.contact_name || "";
+  profileForm.taxRate = profile.value?.tax_rate ? String(Number(profile.value.tax_rate) * 100) : "";
+  profileForm.gateway = profile.value?.gateway_username || "";
+  profileForm.remark = profile.value?.remark || "";
+  profileForm.reason = "";
+}
+async function saveProfile() {
+  if (!profileForm.reason.trim()) { profileFormError.value = "请填写操作说明。"; return; }
+  if (profileSaving.value) return;
+  profileSaving.value = true; profileFormError.value = "";
+  try {
+    profile.value = await customerDetailApi.updateProfile(customerId.value, {
+      contact_name: profileForm.contact.trim(),
+      tax_rate: profileForm.taxRate.trim(),
+      gateway_username: profileForm.gateway.trim(),
+      remark: profileForm.remark.trim(),
+      reason: profileForm.reason.trim(),
+    }, crypto.randomUUID());
+    profileFormOpen.value = false;
+    ElMessage.success("主体资料已更新");
+  } catch (value) {
+    profileFormError.value = message(value);
+  } finally {
+    profileSaving.value = false;
+  }
+}
+
 // ---------------- Tab3 该客户报价 ----------------
 const quoteRows = ref<CustomerQuoteRow[]>([]);
 const approvalRows = ref<CustomerApprovalRow[]>([]);
@@ -574,6 +608,24 @@ function backToList() {
 
       <div class="card">
         <div class="card-head">
+          <div class="card-head-left"><h3 class="card-title">主体资料</h3></div>
+          <div class="card-head-right">
+            <el-button v-if="canEdit && profile" type="primary" plain size="small" @click="openProfileForm">维护主体资料</el-button>
+          </div>
+        </div>
+        <el-descriptions v-if="profile" :column="3" border size="small">
+          <el-descriptions-item label="客户名称">{{ profile.legal_name }}</el-descriptions-item>
+          <el-descriptions-item label="联系人">{{ profile.contact_name || "未填写" }}</el-descriptions-item>
+          <el-descriptions-item label="国内／海外">{{ profile.region === "OVERSEAS" ? "海外" : "国内" }}</el-descriptions-item>
+          <el-descriptions-item label="税率">{{ formatSupplierTaxRate(profile.tax_rate) }}</el-descriptions-item>
+          <el-descriptions-item label="网关用户名">{{ profile.gateway_username || "未填写" }}</el-descriptions-item>
+          <el-descriptions-item label="备注">{{ profile.remark || "未填写" }}</el-descriptions-item>
+        </el-descriptions>
+        <div v-else class="hint">加载客户档案后显示主体资料。</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
           <div class="card-head-left">
             <h3 class="card-title">开通流程</h3>
             <el-tag v-if="flow" size="small" :type="flow.status === 'COMPLETED' ? 'success' : 'warning'">
@@ -741,6 +793,22 @@ function backToList() {
       </el-table>
       <div class="hint foot" v-if="logTotal > logRows.length">仅显示最近 {{ logRows.length }} 条（共 {{ logTotal }} 条）。</div>
     </template>
+
+    <!-- 主体资料维护 -->
+    <el-dialog v-model="profileFormOpen" title="维护主体资料" width="min(620px, 94vw)" :close-on-click-modal="false">
+      <el-form label-position="top" :disabled="profileSaving">
+        <el-form-item label="联系人"><el-input v-model="profileForm.contact" maxlength="64" aria-label="联系人" placeholder="客户侧对接人" /></el-form-item>
+        <el-form-item label="税率 %"><el-input v-model="profileForm.taxRate" inputmode="decimal" aria-label="税率" placeholder="例如 6 或 6.25；留空表示未填写" /></el-form-item>
+        <el-form-item label="网关用户名"><el-input v-model="profileForm.gateway" maxlength="128" aria-label="网关用户名" placeholder="客户调用侧账号" /></el-form-item>
+        <el-form-item label="备注"><el-input v-model="profileForm.remark" type="textarea" :rows="3" maxlength="500" show-word-limit aria-label="备注" /></el-form-item>
+        <el-form-item label="操作说明 *"><el-input v-model="profileForm.reason" maxlength="200" aria-label="操作说明" placeholder="说明本次资料调整原因（落审计）" /></el-form-item>
+      </el-form>
+      <el-alert v-if="profileFormError" :title="profileFormError" type="error" :closable="false" />
+      <template #footer>
+        <el-button :disabled="profileSaving" @click="profileFormOpen = false">取消</el-button>
+        <el-button type="primary" :loading="profileSaving" @click="saveProfile">保存主体资料</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 发起开通弹窗（表单与向导 Step2 共用） -->
     <el-dialog v-model="startVisible" title="发起客户开通" width="min(980px, 96vw)" :close-on-click-modal="false">

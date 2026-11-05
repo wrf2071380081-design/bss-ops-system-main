@@ -8,6 +8,7 @@ import { quoteCandidatesApi, type ResourceQuoteCandidate } from "../../../api/qu
 import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
 import { isDecimalAmount } from "../../../domain/money";
+import { formatSupplierTaxRate } from "../../../domain/supplierTax";
 import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
 import { useSessionStore } from "../../../stores/session";
@@ -525,7 +526,7 @@ onMounted(async () => {
           <template #default="{ row }">{{ currencyText(row.settlement_currency) }}</template>
         </el-table-column>
         <el-table-column label="税率" width="100">
-          <template #default="{ row }">{{ row.tax_rate ? `${row.tax_rate}%` : "未填写" }}</template>
+          <template #default="{ row }">{{ formatSupplierTaxRate(row.tax_rate) }}</template>
         </el-table-column>
         <el-table-column label="合作阶段" width="100">
           <template #default="{ row }">{{ row.cooperation_stage }}</template>

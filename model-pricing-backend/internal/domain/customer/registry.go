@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -57,6 +58,11 @@ var (
 	ErrCustomerPaymentType           = errors.New("结算方式只能是 PREPAID / MONTHLY / PAYG")
 	ErrCustomerBillingCycle          = errors.New("账期天数必须在 1 到 365 之间")
 	ErrCustomerNameDuplicate         = errors.New("该客户名称已存在")
+	// 主体资料维护（原型「档案与办理 → 主体资料」）的字段级错误。
+	ErrCustomerReasonRequired = errors.New("请填写操作说明")
+	ErrCustomerContactTooLong = errors.New("联系人不能超过 64 个字符")
+	ErrCustomerGatewayTooLong = errors.New("网关用户名不能超过 128 个字符")
+	ErrCustomerRemarkTooLong  = errors.New("备注不能超过 500 个字符")
 	ErrCustomerProfileNotFound       = errors.New("客户不存在")
 )
 
@@ -128,6 +134,9 @@ type CustomerProfile struct {
 	Region               string    `json:"region"`
 	SettlementCurrency   string    `json:"settlement_currency"`
 	TaxRate              string    `json:"tax_rate"`
+	ContactName          string    `json:"contact_name"`
+	GatewayUsername      string    `json:"gateway_username"`
+	Remark               string    `json:"remark"`
 	ContractStatus       string    `json:"contract_status"`
 	OwnerSalesOperatorID int64     `json:"owner_sales_operator_id"`
 	OwnerSalesName       string    `json:"owner_sales_name"`
@@ -160,6 +169,29 @@ func (s OwnerScope) AllowsOwner(ownerSalesOperatorID int64) bool {
 type CustomerRegistryStore interface {
 	CreateCustomer(ctx context.Context, in CreateCustomerRecord) (*CustomerProfile, error)
 	GetCustomerProfile(ctx context.Context, customerID int64, scope OwnerScope) (*CustomerProfile, bool, bool, error)
+	UpdateCustomerProfile(ctx context.Context, in UpdateCustomerProfileRecord) error
+}
+
+// UpdateCustomerProfileInput 是「主体资料」的可编辑字段（原型档案与办理 → 主体资料）。
+// 客户名称与区域在 legal_subject 上，本轮不改名/改区域，只维护联系人、税率、网关用户名与备注。
+type UpdateCustomerProfileInput struct {
+	ContactName     string `json:"contact_name"`
+	TaxRate         string `json:"tax_rate"`
+	GatewayUsername string `json:"gateway_username"`
+	Remark          string `json:"remark"`
+	Reason          string `json:"reason"`
+}
+
+// UpdateCustomerProfileRecord 是校验后的落库参数。
+type UpdateCustomerProfileRecord struct {
+	CustomerID      int64
+	ContactName     *string // nil = 清空
+	TaxRate         *string // nil = 未填写；否则归一化到 4 位小数
+	GatewayUsername *string
+	Remark          *string
+	OperatorID      int64
+	RequestID       string
+	Reason          string
 }
 
 // RegistryService 客户创建与基础档案服务。
@@ -182,6 +214,96 @@ func (s *RegistryService) Create(ctx context.Context, in CreateCustomerInput, op
 		return nil, err
 	}
 	return s.store.CreateCustomer(ctx, *record)
+}
+
+// UpdateProfile 维护客户主体资料（联系人 / 税率 / 网关用户名 / 备注）。
+//
+// 存在性与数据域复用 Profile 的判定（404/403 语义与详情一致），
+// 校验顺序：格式 → 归一化；任何一项不合法都不落库。
+func (s *RegistryService) UpdateProfile(ctx context.Context, customerID int64, in UpdateCustomerProfileInput, scope OwnerScope, operatorID int64, requestID string) (*CustomerProfile, error) {
+	if s == nil || s.store == nil {
+		return nil, ErrCustomerCreateUnavailable
+	}
+	if _, found, inScope, err := s.store.GetCustomerProfile(ctx, customerID, scope); err != nil {
+		return nil, err
+	} else if !found {
+		return nil, ErrCustomerProfileNotFound
+	} else if !inScope {
+		return nil, ErrCustomerOutOfScope
+	}
+	record, err := normalizeProfileUpdate(customerID, in, operatorID, requestID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.UpdateCustomerProfile(ctx, *record); err != nil {
+		return nil, err
+	}
+	updated, found, _, err := s.store.GetCustomerProfile(ctx, customerID, scope)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, ErrCustomerProfileNotFound
+	}
+	return updated, nil
+}
+
+// normalizeProfileUpdate 是主体资料校验的唯一实现处（接口层不重复校验）。
+func normalizeProfileUpdate(customerID int64, in UpdateCustomerProfileInput, operatorID int64, requestID string) (*UpdateCustomerProfileRecord, error) {
+	if strings.TrimSpace(in.Reason) == "" {
+		return nil, ErrCustomerReasonRequired
+	}
+	contact := strings.TrimSpace(in.ContactName)
+	if utf8.RuneCountInString(contact) > 64 {
+		return nil, ErrCustomerContactTooLong
+	}
+	gateway := strings.TrimSpace(in.GatewayUsername)
+	if utf8.RuneCountInString(gateway) > 128 {
+		return nil, ErrCustomerGatewayTooLong
+	}
+	remark := strings.TrimSpace(in.Remark)
+	if utf8.RuneCountInString(remark) > 500 {
+		return nil, ErrCustomerRemarkTooLong
+	}
+	taxRate, err := normalizeTaxRate(in.TaxRate)
+	if err != nil {
+		return nil, err
+	}
+	return &UpdateCustomerProfileRecord{
+		CustomerID:      customerID,
+		ContactName:     emptyToNil(contact),
+		GatewayUsername: emptyToNil(gateway),
+		Remark:          emptyToNil(remark),
+		TaxRate:         taxRate,
+		OperatorID:      operatorID,
+		RequestID:       requestID,
+		Reason:          strings.TrimSpace(in.Reason),
+	}, nil
+}
+
+// emptyToNil 把空串落成 NULL：主体资料里「清空」要真的清掉，不能留空串。
+func emptyToNil(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+// normalizeTaxRate 接受 0.06 或 6 两种写法，统一按「比率、4 位小数」入库。
+func normalizeTaxRate(raw string) (*string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed < 0 || parsed > 100 {
+		return nil, ErrCustomerTaxRateInvalid
+	}
+	if parsed > 1 {
+		parsed = parsed / 100
+	}
+	normalized := strconv.FormatFloat(parsed, 'f', 4, 64)
+	return &normalized, nil
 }
 
 // Profile 读客户基础档案，带数据域校验。

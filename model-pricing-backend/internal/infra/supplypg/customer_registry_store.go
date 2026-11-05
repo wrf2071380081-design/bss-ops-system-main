@@ -202,7 +202,8 @@ func (s *CustomerRegistryStore) GetCustomerProfile(ctx context.Context, customer
 SELECT cp.id, cp.subject_id, ls.legal_name, COALESCE(ls.uscc, ''), ls.subject_type,
        cp.region, cp.settlement_currency, COALESCE(cp.tax_rate::text, ''), cp.contract_status,
        cp.owner_sales_operator_id, st.name, cp.payment_type, cp.billing_cycle,
-       cp.credit_limit::text, cp.credit_used::text, cp.status, cp.created_at, cp.updated_at
+       cp.credit_limit::text, cp.credit_used::text, cp.status, cp.created_at, cp.updated_at,
+       COALESCE(cp.contact_name, ''), COALESCE(cp.gateway_username, ''), COALESCE(cp.remark, '')
   FROM %s cp
   JOIN %s ls ON ls.id = cp.subject_id
   JOIN %s st ON st.id = cp.owner_sales_operator_id
@@ -214,6 +215,7 @@ SELECT cp.id, cp.subject_id, ls.legal_name, COALESCE(ls.uscc, ''), ls.subject_ty
 		&profile.Region, &profile.SettlementCurrency, &profile.TaxRate, &profile.ContractStatus,
 		&profile.OwnerSalesOperatorID, &profile.OwnerSalesName, &profile.PaymentType, &profile.BillingCycle,
 		&profile.CreditLimit, &profile.CreditUsed, &profile.Status, &profile.CreatedAt, &profile.UpdatedAt,
+		&profile.ContactName, &profile.GatewayUsername, &profile.Remark,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -223,6 +225,49 @@ SELECT cp.id, cp.subject_id, ls.legal_name, COALESCE(ls.uscc, ''), ls.subject_ty
 	}
 	inScope := scope.AllowsOwner(profile.OwnerSalesOperatorID)
 	return &profile, true, inScope, nil
+}
+
+// UpdateCustomerProfile 维护主体资料（联系人 / 税率 / 网关用户名 / 备注）。
+// 与创建一样落在 customer_profile 上；留痕写一条 operation_log，便于「操作记录」Tab 看到。
+func (s *CustomerRegistryStore) UpdateCustomerProfile(ctx context.Context, in customer.UpdateCustomerProfileRecord) error {
+	if s == nil || s.db == nil {
+		return customer.ErrCustomerCreateUnavailable
+	}
+	if in.CustomerID <= 0 {
+		return customer.ErrCustomerProfileNotFound
+	}
+	query := fmt.Sprintf(`UPDATE %s
+   SET contact_name=$2, tax_rate=$3::numeric, gateway_username=$4, remark=$5,
+       updated_at=now(), updated_by=$6, request_id=$7
+ WHERE id=$1`, s.table("customer_profile"))
+	result, err := s.db.ExecContext(ctx, query, in.CustomerID, in.ContactName, in.TaxRate, in.GatewayUsername, in.Remark, in.OperatorID, in.RequestID)
+	if err != nil {
+		return mapCustomerRegistryError(err)
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return customer.ErrCustomerProfileNotFound
+	}
+	after := fmt.Sprintf(`{"contact_name":%s,"gateway_username":%s,"remark":%s,"tax_rate":%s}`,
+		jsonText(in.ContactName), jsonText(in.GatewayUsername), jsonText(in.Remark), jsonText(in.TaxRate))
+	logQuery := fmt.Sprintf(`INSERT INTO %s (entity_type, entity_id, action, operator_id, operator_name_snapshot, reason, after, request_id)
+SELECT 'customer_profile', $1, 'UPDATE', $2, COALESCE(st.name, ''), $3, $4::jsonb, $5
+  FROM (SELECT 1) seed LEFT JOIN %s st ON st.id = $2`, s.table("operation_log"), s.table("internal_staff"))
+	if _, err := s.db.ExecContext(ctx, logQuery, in.CustomerID, in.OperatorID, in.Reason, after, in.RequestID); err != nil {
+		return mapCustomerRegistryError(err)
+	}
+	return nil
+}
+
+// jsonText 把可空字符串转成 JSON 字面量（nil → null）。
+func jsonText(value *string) string {
+	if value == nil {
+		return "null"
+	}
+	raw, err := json.Marshal(*value)
+	if err != nil {
+		return "null"
+	}
+	return string(raw)
 }
 
 // nullableString 把 *string 转成 SQL 友好参数（nil → NULL）。

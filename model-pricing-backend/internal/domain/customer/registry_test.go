@@ -26,6 +26,14 @@ type fakeRegistryStore struct {
 	inScope   bool
 	getErr    error
 	scopeSeen OwnerScope
+
+	updated   []UpdateCustomerProfileRecord
+	updateErr error
+}
+
+func (f *fakeRegistryStore) UpdateCustomerProfile(_ context.Context, in UpdateCustomerProfileRecord) error {
+	f.updated = append(f.updated, in)
+	return f.updateErr
 }
 
 func (f *fakeRegistryStore) CreateCustomer(_ context.Context, in CreateCustomerRecord) (*CustomerProfile, error) {

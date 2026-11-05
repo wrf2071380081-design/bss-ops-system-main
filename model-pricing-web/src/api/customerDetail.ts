@@ -36,8 +36,12 @@ export interface CustomerProfileDTO {
   subject_type: string;
   region: string;
   settlement_currency: string;
-  /** 未填写时后端返回空串（不是 null）。 */
+  /** 未填写时后端返回空串（不是 null）。税率是比率（0.06 = 6%）。 */
   tax_rate: string;
+  /** 原型「主体资料」：联系人 / 网关用户名 / 备注，空串表示未填写。 */
+  contact_name: string;
+  gateway_username: string;
+  remark: string;
   contract_status: string;
   owner_sales_operator_id: number;
   owner_sales_name: string;
@@ -223,6 +227,13 @@ export interface OnboardingCandidate {
 export const customerDetailApi = {
   profile: (customerId: string) =>
     apiRequest<CustomerProfileDTO>({ url: `${basePath}/${customerIdParam(customerId)}`, method: "GET" }),
+
+  /** 主体资料维护（联系人 / 税率 / 网关用户名 / 备注）。税率可传 6 或 0.06，后端统一按比率存。 */
+  updateProfile: (customerId: string, body: { contact_name: string; tax_rate: string; gateway_username: string; remark: string; reason: string }, lifecycle: string) =>
+    apiRequest<CustomerProfileDTO>({
+      url: `${basePath}/${customerIdParam(customerId)}/profile`, method: "PUT", data: body,
+      idempotency: { scope: `customer:profile:${customerId}`, payload: body, lifecycle },
+    }),
 
   resourceLinks: (customerId: string, signal?: AbortSignal) =>
     apiRequest<{ list: CustomerModelServiceRow[] }>({
