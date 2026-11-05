@@ -45,6 +45,10 @@ type nativeFlowView struct {
 	CanCompleteContract bool             `json:"can_complete_contract"`
 	CreatedAt           time.Time        `json:"created_at"`
 	SubmittedAt         *time.Time       `json:"submitted_at"`
+	// 审批结论时间与审批人：取 operation_log 的 APPROVE/REJECT 记录，
+	// 只在供应商申报历史里填充，供「审批记录」表展示。
+	ApprovedAt          *time.Time       `json:"approved_at,omitempty"`
+	Approver            string           `json:"approver,omitempty"`
 }
 type nativeFlowNode struct {
 	ID           string `json:"id"`

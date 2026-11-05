@@ -90,20 +90,32 @@ func registerSupplierActivityRoutes(group *gin.RouterGroup, runtime *SupplyChain
 			supplyHTTPError(c, err)
 			return
 		}
-		rows, err := runtime.raw.QueryContext(c.Request.Context(), `SELECT id::text FROM submission WHERE supplier_id=$1 ORDER BY id DESC LIMIT $2 OFFSET $3`, c.Param("id"), size, (page-1)*size)
+		// 审批时间与审批人来自 operation_log 的 APPROVE/REJECT 记录；
+		// 一次查询带出来，避免逐条再查。
+		rows, err := runtime.raw.QueryContext(c.Request.Context(), `SELECT s.id::text,
+ (SELECT max(l.created_at) FROM operation_log l WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT')),
+ COALESCE((SELECT l.operator_name_snapshot FROM operation_log l WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),'')
+ FROM submission s WHERE s.supplier_id=$1 ORDER BY s.id DESC LIMIT $2 OFFSET $3`, c.Param("id"), size, (page-1)*size)
 		if err != nil {
 			supplyHTTPError(c, err)
 			return
 		}
+		type approvalMeta struct {
+			at sql.NullTime
+			by string
+		}
 		ids := []string{}
+		metas := []approvalMeta{}
 		for rows.Next() {
 			var id string
-			if err = rows.Scan(&id); err != nil {
+			var meta approvalMeta
+			if err = rows.Scan(&id, &meta.at, &meta.by); err != nil {
 				rows.Close()
 				supplyHTTPError(c, err)
 				return
 			}
 			ids = append(ids, id)
+			metas = append(metas, meta)
 		}
 		err = rows.Err()
 		rows.Close()
@@ -112,11 +124,16 @@ func registerSupplierActivityRoutes(group *gin.RouterGroup, runtime *SupplyChain
 			return
 		}
 		list := []*nativeFlowView{}
-		for _, id := range ids {
+		for i, id := range ids {
 			v, err := runtime.nativeFlowView(c.Request.Context(), id, supplyActor(c), false)
 			if err != nil {
 				supplyHTTPError(c, err)
 				return
+			}
+			if i < len(metas) && metas[i].at.Valid {
+				at := metas[i].at.Time.UTC()
+				v.ApprovedAt = &at
+				v.Approver = metas[i].by
 			}
 			list = append(list, v)
 		}

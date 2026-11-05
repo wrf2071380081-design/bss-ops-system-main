@@ -6,6 +6,8 @@ export interface SubmissionFlowView {
  nodes:Array<{id:string;key:string;status:string;assignee_id:string;assignee_name:string}>;
  flow_id:string;flow_revision:string;selected_node_id:string;can_handle_contract:boolean;can_complete_contract:boolean;
  created_at:string;submitted_at:string|null;
+  /** 审批结论时间与审批人：仅供应商申报历史返回（取 APPROVE/REJECT 操作记录）。 */
+  approved_at?:string|null;approver?:string;
 }
 export interface SupplierProgressNode {resource_id:string;submission_id:string;node_id:string;key:string;status:string;assignee_id:string;assignee_name:string;row_status:string}
 export const submissionFlowsApi={

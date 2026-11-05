@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, type UploadFile } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 import { supplierEntitiesApi } from "../../../api/supplierEntities";
@@ -11,7 +11,7 @@ import SubmissionFlowDialog from '../workbench/SubmissionFlowDialog.vue';
 import { supplierSourceOperationsApi } from "../../../api/supplierSourceOperations";
 import type { SourceOperation } from "../../../api/sourceOperations.contract";
 import { sourceOperationLocation, supplierOperationCategories, supplierOperationCategoryLabels, supplierOperationLabel, type SourceOperationType } from "../../../api/sourceOperations.contract";
-import { standardModelVersion } from "../../../api/standardModels.contract";
+import { modelTypeLabels, standardModelVersion } from "../../../api/standardModels.contract";
 import type { ResourceRow } from "../../../api/resources.types";
 import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
@@ -21,6 +21,14 @@ import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
 import SupplierProfileForm from "./SupplierProfileForm.vue";
 import SupplierAccessBatchPanel from './SupplierAccessBatchPanel.vue';
 const batchSelected=ref<ResourceRow[]>([]);
+// 原型「接入模型」的三个筛选：模型公司 / 模型类型 / 状态。
+const modelFilters=reactive({ company: "", modelType: "", state: "" });
+const modelCompanies=computed(()=>[...new Set(rows.value.map(row=>row.company).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-CN")));
+const filteredRows=computed(()=>rows.value.filter(row=>
+  (!modelFilters.company||row.company===modelFilters.company)
+  &&(!modelFilters.modelType||row.model_type===modelFilters.modelType)
+  &&(!modelFilters.state||row.state===modelFilters.state)));
+function resetModelFilters(){ Object.assign(modelFilters,{company:"",modelType:"",state:""}); }
 import SupplierTestConfigPanel from "./SupplierTestConfigPanel.vue";
 
 const route = useRoute();
@@ -51,6 +59,34 @@ const nodeLabels:Record<string,string>={CONFIG:'测试与资源配置',CONTRACT:
 let progressSequence=0;
 const nodeStatusLabels:Record<string,string>={WAITING_PREDECESSOR:'等待前序',IN_PROGRESS:'办理中',COMPLETED:'已完成',CANCELED:'已取消',CANCELLED:'已取消'};
 const submissionStatusLabels:Record<string,string>={DRAFT:'草稿',PENDING_APPROVAL:'待审批',REJECTED:'已驳回',PROCESSING:'办理中',COMPLETED:'已完成',WITHDRAWN:'已撤回'};
+// 原型「申报与审批记录」：申报类型 / 处理状态 / 提交时间 三个筛选，
+// 并按状态拆成「待审核」与「审批记录」两张表。
+// 原型「操作记录」的筛选：操作人 + 时间区间（左闭右开）。
+const operationOperator = ref(""), operationRange = ref<string[]>([]);
+function operationRangeParams() {
+  const params: { from?: string; to?: string } = {};
+  if (operationRange.value[0]) params.from = new Date(`${operationRange.value[0]}T00:00:00`).toISOString();
+  if (operationRange.value[1]) { const end = new Date(`${operationRange.value[1]}T00:00:00`); end.setDate(end.getDate() + 1); params.to = end.toISOString(); }
+  return params;
+}
+function resetOperationFilters() { operationOperator.value = ""; operationRange.value = []; operationPage.value = 1; void loadOperations(); }
+const quoteFilters = reactive({ kind: "", status: "", range: [] as string[] });
+const quoteKindLabel = (kind: string) => kind === "PRICE_CHANGE" ? "价格变更" : "模型新增";
+const quoteStatusOptions = computed(() => [...new Set(pendingQuotes.value.map(row => row.status).filter(Boolean))]);
+const filteredQuotes = computed(() => pendingQuotes.value.filter(row => {
+  if (quoteFilters.kind && quoteKindLabel(row.kind) !== quoteFilters.kind) return false;
+  if (quoteFilters.status && row.status !== quoteFilters.status) return false;
+  const submitted = row.submitted_at ? row.submitted_at.slice(0, 10) : "";
+  if (quoteFilters.range[0] && (!submitted || submitted < quoteFilters.range[0])) return false;
+  if (quoteFilters.range[1] && (!submitted || submitted > quoteFilters.range[1])) return false;
+  return true;
+}));
+// 待审核只放真正等审批的；草稿与已撤回连同已出结论的一起进「审批记录」，
+// 否则草稿会把待审核列表占满（原型也是这么分的）。
+const pendingQuoteRows = computed(() => filteredQuotes.value.filter(row => row.status === "PENDING_APPROVAL"));
+const decidedQuoteRows = computed(() => filteredQuotes.value.filter(row => row.status !== "PENDING_APPROVAL"));
+const quoteStatusLabel = (status: string) => submissionStatusLabels[status] || status || "未记录";
+function resetQuoteFilters() { Object.assign(quoteFilters, { kind: "", status: "", range: [] }); }
 function resourceNodes(id:string){return progress.value.filter(n=>n.resource_id===id);}
 function openInterfaceConfig(row:ResourceRow){void router.push({path:`/internal/model-plaza/${row.id}`,query:{region:row.region,tab:'operations',supplier_id:supplierID.value}});}
 // 原型那条进度：技术完成 x/y · 已取消 · 尚待配置 · 当前可办理 · 商务待完成 · 办理人
@@ -326,7 +362,8 @@ async function loadOperations() {
   operationRequest?.abort(); const current = operationRequest = new AbortController();
   operationLoading.value = true; operationError.value = "";
   try {
-    const result = await supplierSourceOperationsApi.list(id, operationPage.value, 20, current.signal, operationCategory.value || undefined);
+    const result = await supplierSourceOperationsApi.list(id, operationPage.value, 20, current.signal, operationCategory.value || undefined,
+      { operator: operationOperator.value.trim() || undefined, ...operationRangeParams() });
     if (isCurrentSupplier(id, epoch) && !current.signal.aborted) { operationRows.value = result.list; operationTotal.value = result.total; }
   } catch (value) { if (isCurrentSupplier(id, epoch) && !current.signal.aborted) { operationRows.value = []; operationTotal.value = 0; operationError.value = value instanceof Error ? value.message : "供应商操作记录暂时无法加载。"; } }
   finally { if (isCurrentSupplier(id, epoch) && !current.signal.aborted) operationLoading.value = false; }
@@ -469,8 +506,15 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <span>商务：{{ flowSummary.contractDone ? '已完成' : '待完成' }}<template v-if="!flowSummary.contractDone && flowSummary.contractAssignee"> · {{ flowSummary.contractAssignee }}</template></span>
             <span v-if="flowSummary.configAssignee">技术办理 · {{ flowSummary.configAssignee }}</span>
           </p>
+          <div class="model-filters">
+            <label>模型公司<el-select v-model="modelFilters.company" clearable placeholder="全部" aria-label="模型公司" style="width:150px"><el-option v-for="company in modelCompanies" :key="company" :label="company" :value="company"/></el-select></label>
+            <label>模型类型<el-select v-model="modelFilters.modelType" clearable placeholder="全部" aria-label="模型类型" style="width:130px"><el-option v-for="(name,key) in modelTypeLabels" :key="key" :label="name" :value="key"/></el-select></label>
+            <label>状态<el-select v-model="modelFilters.state" clearable placeholder="全部" aria-label="资源状态" style="width:130px"><el-option v-for="(name,key) in resourceStateLabels" :key="key" :label="name" :value="key"/></el-select></label>
+            <el-button @click="resetModelFilters">重置</el-button>
+            <span v-if="rows.length" class="muted">共 {{ filteredRows.length }} / {{ rows.length }} 条</span>
+          </div>
           <SupplierAccessBatchPanel :supplier-id="supplierID" :selected="batchSelected" @changed="load();loadProgress()"/>
-          <el-table :data="rows" row-key="id" highlight-current-row :current-row-key="selectedID" style="width:100%" @selection-change="batchSelected=$event">
+          <el-table :data="filteredRows" row-key="id" highlight-current-row :current-row-key="selectedID" style="width:100%" @selection-change="batchSelected=$event">
             <el-table-column type="selection" width="45"/>
             <el-table-column label="标准模型 / 官方 ID" min-width="190"><template #default="{ row }"><strong>{{ row.model_name }}</strong><span class="muted">{{ row.official_id }}</span></template></el-table-column>
             <el-table-column label="供应商接口模型 ID" min-width="180"><template #default="{ row }"><code>{{ row.supplier_model_id }}</code></template></el-table-column>
@@ -523,15 +567,48 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
         <el-tab-pane label="申报与审批记录" name="quotes" lazy>
           <div v-loading="quoteLoading" class="supplier-tab-content">
             <p class="muted">当前主体的全部模型申报与改价记录，包含草稿、待审批、驳回、办理及已完成状态。</p>
+            <div class="quote-record-filters">
+              <label>申报类型<el-select v-model="quoteFilters.kind" clearable placeholder="全部" aria-label="申报类型" style="width:130px"><el-option label="模型新增" value="模型新增" /><el-option label="价格变更" value="价格变更" /></el-select></label>
+              <label>处理状态<el-select v-model="quoteFilters.status" clearable placeholder="全部" aria-label="处理状态" style="width:150px"><el-option v-for="status in quoteStatusOptions" :key="status" :label="quoteStatusLabel(status)" :value="status" /></el-select></label>
+              <label>提交时间<el-date-picker v-model="quoteFilters.range" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始" end-placeholder="结束" aria-label="提交时间" style="width:250px" /></label>
+              <el-button @click="resetQuoteFilters">重置</el-button>
+            </div>
             <el-alert v-if="quoteError" :title="quoteError" type="error" :closable="false"><el-button text @click="loadQuotes">重试</el-button></el-alert>
-            <el-table v-else :data="pendingQuotes" empty-text="暂无报价申报历史"><el-table-column prop="id" label="申报单" width="110"/><el-table-column label="类型" width="120"><template #default="{row}">{{row.kind==='PRICE_CHANGE'?'价格变更':'模型申报'}}</template></el-table-column><el-table-column prop="revision" label="版本" width="80"/><el-table-column label="模型及采购系数" min-width="220"><template #default="{row}"><div v-for="item in row.rows" :key="item.id">{{item.model_name}} · {{item.coefficient}}</div></template></el-table-column><el-table-column label="提交时间" min-width="180"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column><el-table-column label="状态" width="110"><template #default="{row}">{{submissionStatusLabels[row.status]||row.status}}</template></el-table-column><el-table-column label="详情" width="100"><template #default="{ row }"><el-button link type="primary" @click="openQuote(row)">查看报价</el-button></template></el-table-column></el-table>
+            <div v-else>
+              <h3>待审核</h3>
+              <el-table :data="pendingQuoteRows" empty-text="暂无待审核申报">
+                <el-table-column prop="id" label="申报编号" width="120" />
+                <el-table-column label="类型" width="110"><template #default="{ row }">{{ quoteKindLabel(row.kind) }}</template></el-table-column>
+                <el-table-column label="模型数量" width="100"><template #default="{ row }">{{ row.rows.length }}</template></el-table-column>
+                <el-table-column label="提交时间" width="180"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column>
+                <el-table-column label="状态" width="110"><template #default="{ row }">{{ quoteStatusLabel(row.status) }}</template></el-table-column>
+                <el-table-column label="审批结果" width="110"><template #default>—</template></el-table-column>
+                <el-table-column label="详情" width="100"><template #default="{ row }"><el-button link type="primary" @click="openQuote(row)">查看报价</el-button></template></el-table-column>
+              </el-table>
+              <h3>审批记录</h3>
+              <el-table :data="decidedQuoteRows" empty-text="暂无审批记录">
+                <el-table-column prop="id" label="申请编号" width="120" />
+                <el-table-column label="类型" width="110"><template #default="{ row }">{{ quoteKindLabel(row.kind) }}</template></el-table-column>
+                <el-table-column label="模型数量" width="100"><template #default="{ row }">{{ row.rows.length }}</template></el-table-column>
+                <el-table-column label="申请时间" width="180"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column>
+                <el-table-column label="审批时间" width="180"><template #default="{ row }">{{ row.approved_at ? formatDateTime(row.approved_at) : '未记录' }}</template></el-table-column>
+                <el-table-column label="审批结果" width="110"><template #default="{ row }">{{ quoteStatusLabel(row.status) }}</template></el-table-column>
+                <el-table-column label="审批人" width="110"><template #default="{ row }">{{ row.approver || '未记录' }}</template></el-table-column>
+                <el-table-column label="详情" width="100"><template #default="{ row }"><el-button link type="primary" @click="openQuote(row)">查看报价</el-button></template></el-table-column>
+              </el-table>
+            </div>
             <el-pagination v-if="quoteTotal" v-model:current-page="quotePage" :page-size="20" :total="quoteTotal" layout="total, prev, pager, next" @current-change="loadQuotes" />
           </div>
         </el-tab-pane>
         <el-tab-pane label="操作记录" name="operations" lazy>
           <div v-loading="operationLoading" class="supplier-tab-content">
             <p class="muted">汇总主体、资质、正式配置、合同、授信、资源及计划的操作摘要。</p>
-            <div class="operation-filters"><el-select v-model="operationCategory" clearable placeholder="全部业务类型" aria-label="操作记录业务分类" @change="changeOperationCategory"><el-option v-for="category in supplierOperationCategories" :key="category" :value="category" :label="supplierOperationCategoryLabels[category]" /></el-select><el-button :loading="operationLoading" @click="loadOperations">刷新</el-button></div>
+            <div class="operation-filters">
+              <label>操作人<el-select v-model="operationOperator" clearable filterable allow-create default-first-option placeholder="全部" aria-label="操作人" style="width:150px" @change="operationPage = 1; loadOperations()"><el-option v-for="name in [...new Set(operationRows.map(row => row.operator_name).filter(Boolean))]" :key="name" :label="name" :value="name" /></el-select></label>
+              <label>操作类型<el-select v-model="operationCategory" clearable placeholder="全部" aria-label="操作记录业务分类" style="width:160px" @change="changeOperationCategory"><el-option v-for="category in supplierOperationCategories" :key="category" :value="category" :label="supplierOperationCategoryLabels[category]" /></el-select></label>
+              <label>操作时间<el-date-picker v-model="operationRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始" end-placeholder="结束" aria-label="操作时间" style="width:250px" @change="operationPage = 1; loadOperations()" /></label>
+              <el-button @click="resetOperationFilters">重置</el-button><el-button :loading="operationLoading" @click="loadOperations">刷新</el-button>
+            </div>
             <el-alert v-if="operationError" :title="operationError" type="error" :closable="false"><el-button text @click="loadOperations">重试</el-button></el-alert>
             <el-table v-else :data="operationRows" empty-text="暂无操作记录"><el-table-column label="操作" min-width="170"><template #default="{ row }">{{ operationLabel(row) }}</template></el-table-column><el-table-column label="关联对象" min-width="210"><template #default="{ row }"><template v-if="row.resource_id"><strong>{{ row.supplier_model_id }}</strong><div class="muted">资源 {{ row.resource_id }} · {{ regionLabel(row.region) }}</div></template><template v-else><strong>{{ supplierOperationCategoryLabels[row.entity_type as SourceOperationType] }}</strong><div class="muted">对象 {{ row.entity_id }} · {{ row.supplier_name }}</div></template></template></el-table-column><el-table-column prop="operator_name" label="操作人" min-width="120"><template #default="{ row }">{{ row.operator_name || '未记录姓名' }}</template></el-table-column><el-table-column label="时间" min-width="170"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column><el-table-column prop="reason" label="说明" min-width="180"/><el-table-column label="详情" width="90"><template #default="{ row }"><el-button link type="primary" @click="openOperation(row)">查看</el-button></template></el-table-column></el-table>
             <el-pagination v-if="operationTotal" v-model:current-page="operationPage" :page-size="20" :total="operationTotal" layout="total, prev, pager, next" @current-change="loadOperations" />
@@ -584,5 +661,5 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
 .supplier-access-page{color:var(--app-text-primary)}.back-button{margin-bottom:10px}.page-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:18px}.page-heading h1{margin:7px 0;font-size:26px}.page-heading p,.muted{color:var(--app-text-muted);font-size:12px}.eyebrow{color:var(--app-text-muted);font-size:11px;letter-spacing:.14em}.supplier-model-panel{padding:18px 20px}.model-context{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 14px;margin-bottom:12px;background:#f6f8fb;border:1px solid #e6e8ed;border-radius:8px}.model-context strong,.model-context .muted{display:block}.model-context strong{margin-top:4px}.muted{display:block;margin-top:4px}.supplier-tab-content{min-height:220px;padding:12px 0}.supplier-tab-content h3{margin:20px 0 10px;font-size:16px}.supplier-tab-content h4{margin:18px 0 8px}.supplier-profile{display:grid;grid-template-columns:160px minmax(0,1fr);gap:10px 20px;padding:12px 0}.supplier-profile dt{color:var(--app-text-muted)}.supplier-profile dd{margin:0;overflow-wrap:anywhere}.el-pagination{margin-top:18px;justify-content:flex-end}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}@media(max-width:640px){.page-heading{align-items:flex-start}.supplier-model-panel{padding:12px}.supplier-profile{grid-template-columns:1fr;gap:6px}.supplier-profile dd{margin-bottom:10px}}
 .supplier-profile-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.supplier-profile-heading h3{margin:20px 0 10px}.qualification-validity{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .supplier-qualification-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:24px}.supplier-qualification-heading h3{margin:0 0 10px}.qualification-list{min-height:90px}
-.operation-filters{display:flex;gap:10px;margin:12px 0}.operation-filters .el-select{max-width:220px}
+.operation-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}.operation-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.quote-record-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}.quote-record-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.model-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}.model-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.operation-filters .el-select{max-width:220px}
 </style>

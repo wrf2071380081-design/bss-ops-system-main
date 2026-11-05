@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { supplyChainApi, type ApprovalHistoryRow, type ApprovalRow } from "../../../api/supplyChain";
 import { formatDateTime } from "../../../domain/date";
@@ -38,6 +38,25 @@ const statusType = (status: string) =>
   status === "REJECTED" ? "danger"
     : status === "PENDING_APPROVAL" || status === "PENDING_TEST" || status === "PROCESSING" ? "warning"
       : status === "COMPLETED" || status === "APPROVED" ? "success" : "info";
+// 原型供应商报价页的四个筛选，待审批与审批记录共用同一套条件。
+const filters = reactive({ supplier: "", region: "", kind: "", status: "" });
+const supplierOptions = computed(() => [...new Set([...pending.value.map(row => row.supplier_name), ...history.value.map(row => row.supplier_name)])].filter(Boolean).sort((a, b) => a.localeCompare(b, "zh-CN")));
+const statusOptions = computed(() => {
+  const options = new Map<string, string>();
+  for (const row of pending.value) if (row.status && !options.has(row.status)) options.set(row.status, statusLabel(row.status));
+  for (const row of history.value) { const key = row.result || row.status; if (key && !options.has(key)) options.set(key, resultLabels[key] || statusLabel(key)); }
+  return [...options.entries()];
+});
+function matches(supplier: string, region: string, kind: string, status: string) {
+  return (!filters.supplier || supplier === filters.supplier)
+    && (!filters.region || region === filters.region)
+    && (!filters.kind || kind === filters.kind)
+    && (!filters.status || status === filters.status);
+}
+const filteredPending = computed(() => pending.value.filter(row => matches(row.supplier_name, row.region, kindLabel(row.kind), row.status)));
+const filteredHistory = computed(() => history.value.filter(row => matches(row.supplier_name, row.region, kindLabel(row.kind), row.result || row.status)));
+function resetFilters() { Object.assign(filters, { supplier: "", region: "", kind: "", status: "" }); }
+
 const historyResult = (row: ApprovalHistoryRow) => resultLabels[row.result] || statusLabels[row.result] || row.result || statusLabels[row.status] || row.status || "未记录";
 
 /** 把 `sub` / `approval` 深链写回 URL，避免刷新丢失当前 Tab。 */
@@ -134,17 +153,24 @@ onBeforeUnmount(() => { active = false; pendingRequest?.abort(); historyRequest?
           <el-tab-pane label="待审批" name="pending">
             <el-alert v-if="pendingError" :title="pendingError" type="error" show-icon :closable="false"><el-button text @click="loadPending">重新加载</el-button></el-alert>
             <template v-else>
+              <div class="quote-filters">
+                <label>供应商名称<el-select v-model="filters.supplier" clearable filterable placeholder="全部" aria-label="供应商名称" style="width:160px"><el-option v-for="name in supplierOptions" :key="name" :label="name" :value="name" /></el-select></label>
+                <label>部署节点<el-select v-model="filters.region" clearable placeholder="全部" aria-label="部署节点" style="width:120px"><el-option label="国内" value="CN" /><el-option label="海外" value="OVERSEAS" /></el-select></label>
+                <label>申报类型<el-select v-model="filters.kind" clearable placeholder="全部" aria-label="申报类型" style="width:130px"><el-option label="模型新增" value="模型申报" /><el-option label="价格变更" value="价格变更" /></el-select></label>
+                <label>处理进度<el-select v-model="filters.status" clearable placeholder="全部" aria-label="处理进度" style="width:150px"><el-option v-for="[key, label] in statusOptions" :key="key" :label="label" :value="key" /></el-select></label>
+                <el-button @click="resetFilters">重置</el-button>
+              </div>
               <div class="quote-workspace__toolbar"><span class="muted">按提交时间倒序；点「详情」进入审批与办理分派。</span><el-button :loading="pendingLoading" @click="loadPending">刷新</el-button></div>
-              <el-table v-loading="pendingLoading" :data="pending" style="width:100%">
+              <el-table v-loading="pendingLoading" :data="filteredPending" style="width:100%">
+                <el-table-column prop="supplier_name" label="供应商名称" min-width="150" />
                 <el-table-column prop="id" label="申报 ID" min-width="130" />
-                <el-table-column prop="supplier_name" label="供应商" min-width="150" />
                 <el-table-column label="申报类型" width="110"><template #default="{ row }">{{ kindLabel(row.kind) }}</template></el-table-column>
                 <el-table-column label="部署节点" width="100"><template #default="{ row }">{{ regionLabel(row.region) }}</template></el-table-column>
                 <el-table-column prop="row_count" label="模型数" width="90" />
                 <el-table-column label="提交人" min-width="120"><template #default="{ row }">{{ row.submitter || "未记录" }}</template></el-table-column>
                 <el-table-column label="提交时间" width="170"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column>
-                <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
-                <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" @click="openFlow(row)">详情</el-button></template></el-table-column>
+                <el-table-column label="处理进度" width="130"><template #default="{ row }"><el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
+                <el-table-column label="详情" width="100"><template #default="{ row }"><el-button size="small" @click="openFlow(row)">详情</el-button></template></el-table-column>
                 <template #empty><el-empty description="暂无待审批申报" :image-size="64" /></template>
               </el-table>
             </template>
@@ -152,11 +178,19 @@ onBeforeUnmount(() => { active = false; pendingRequest?.abort(); historyRequest?
           <el-tab-pane label="审批记录" name="history">
             <el-alert v-if="historyError" :title="historyError" type="error" show-icon :closable="false"><el-button text @click="loadHistory">重新加载</el-button></el-alert>
             <template v-else>
+              <div class="quote-filters">
+                <label>供应商名称<el-select v-model="filters.supplier" clearable filterable placeholder="全部" aria-label="供应商名称" style="width:160px"><el-option v-for="name in supplierOptions" :key="name" :label="name" :value="name" /></el-select></label>
+                <label>部署节点<el-select v-model="filters.region" clearable placeholder="全部" aria-label="部署节点" style="width:120px"><el-option label="国内" value="CN" /><el-option label="海外" value="OVERSEAS" /></el-select></label>
+                <label>申报类型<el-select v-model="filters.kind" clearable placeholder="全部" aria-label="申报类型" style="width:130px"><el-option label="模型新增" value="模型申报" /><el-option label="价格变更" value="价格变更" /></el-select></label>
+                <label>处理进度<el-select v-model="filters.status" clearable placeholder="全部" aria-label="处理进度" style="width:150px"><el-option v-for="[key, label] in statusOptions" :key="key" :label="label" :value="key" /></el-select></label>
+                <el-button @click="resetFilters">重置</el-button>
+              </div>
               <div class="quote-workspace__toolbar"><span class="muted">已完成的审批结论；点「详情」查看整批申报与办理记录。</span><el-button :loading="historyLoading" @click="loadHistory">刷新</el-button></div>
-              <el-table v-loading="historyLoading" :data="history" style="width:100%">
+              <el-table v-loading="historyLoading" :data="filteredHistory" style="width:100%">
                 <el-table-column prop="id" label="申报单" width="100" />
                 <el-table-column prop="supplier_name" label="供应商" min-width="150" />
                 <el-table-column label="申报类型" width="110"><template #default="{ row }">{{ kindLabel(row.kind) }}</template></el-table-column>
+                <el-table-column prop="row_count" label="模型数量" width="100" />
                 <el-table-column label="结果" width="110"><template #default="{ row }"><el-tag :type="statusType(row.result || row.status)" size="small">{{ historyResult(row) }}</el-tag></template></el-table-column>
                 <el-table-column label="审批人" min-width="120"><template #default="{ row }">{{ row.approver || "未记录" }}</template></el-table-column>
                 <el-table-column label="审批时间" width="170"><template #default="{ row }">{{ formatDateTime(row.approved_at) }}</template></el-table-column>
@@ -180,6 +214,6 @@ onBeforeUnmount(() => { active = false; pendingRequest?.abort(); historyRequest?
 .quote-workspace { padding: 4px 0 0; }
 .quote-workspace__hint { margin: 0 0 8px; }
 .quote-workspace__inner { margin-top: 4px; }
-.quote-workspace__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 12px; }
+.quote-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}.quote-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.quote-workspace__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 12px; }
 .quote-workspace .muted { color: var(--app-text-muted); font-size: 12px; }
 </style>

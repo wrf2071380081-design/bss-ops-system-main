@@ -53,6 +53,9 @@ const routeContractStatus = routeFilter("contract");
 const filters = reactive<{ keyword: string; region: string; contract: SupplierContractStatus | ""; stage: string; handling: string }>({ keyword: routeFilter("keyword"), region: routeFilter("region"), contract: contractStatuses.includes(routeContractStatus as SupplierContractStatus) ? routeContractStatus as SupplierContractStatus : "", stage: routeFilter("stage"), handling: routeFilter("handling") });
 
 const regionLabel = (region: string) => region === "OVERSEAS" ? "海外" : "国内";
+// 原型文案：合作阶段显示「合作」，合同状态「未登记」显示「暂无」（筛选值仍是后端枚举）。
+const stageText = (stage: string) => stage === "已有" ? "合作" : stage;
+const contractStatusText = (status: string) => status === "未登记" ? "暂无" : status;
 const contractStatusType = (status: SupplierWorkspaceRow["contract_status"]) => status === "已归档" ? "success" : status === "办理中" ? "warning" : "info";
 const currencyAmount = (row: SupplierWorkspaceRow) => {
   if (row.credit_status === "AMBIGUOUS_VERSION") return "版本冲突，待核对";
@@ -157,20 +160,19 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
       <el-tab-pane label="供应商列表" name="list">
         <el-alert v-if="supplierError" :title="supplierError" type="error" show-icon :closable="false" />
         <div class="filters">
-          <el-input v-model="filters.keyword" placeholder="搜索供应商名称 / 曾用名" clearable style="width: 220px" />
-          <el-select v-model="filters.region" placeholder="国内 / 海外主体" clearable style="width: 140px">
+          <el-input v-model="filters.keyword" placeholder="搜索供应商名称 / 曾用名" clearable style="width: 220px" @change="searchSuppliers" @keyup.enter="searchSuppliers" />
+          <el-select v-model="filters.region" placeholder="国内 / 海外主体" clearable style="width: 140px" @change="searchSuppliers">
             <el-option value="CN" label="国内" /><el-option value="OVERSEAS" label="海外" />
           </el-select>
-          <el-select v-model="filters.contract" placeholder="合同状态" clearable style="width: 120px">
-            <el-option value="已归档" label="已归档" /><el-option value="办理中" label="办理中" /><el-option value="未登记" label="未登记" />
+          <el-select v-model="filters.contract" placeholder="合同状态" clearable style="width: 120px" @change="searchSuppliers">
+            <el-option value="已归档" label="已归档" /><el-option value="办理中" label="办理中" /><el-option value="未登记" label="暂无" />
           </el-select>
-          <el-select v-model="filters.stage" placeholder="合作阶段" clearable style="width: 120px">
+          <el-select v-model="filters.stage" placeholder="合作/潜在" clearable style="width: 120px" @change="searchSuppliers">
             <el-option value="潜在" label="潜在" /><el-option value="已有" label="已有" />
           </el-select>
-          <el-select v-model="filters.handling" placeholder="办理状态" clearable style="width: 150px">
+          <el-select v-model="filters.handling" placeholder="办理状态" clearable style="width: 150px" @change="searchSuppliers">
             <el-option value="有未完成事项" label="有未完成事项" /><el-option value="无未完成事项" label="无未完成事项" />
           </el-select>
-          <el-button type="primary" :loading="supplierLoading" @click="searchSuppliers">查询</el-button>
           <el-button @click="resetFilters">重置</el-button>
         </div>
         <el-table v-loading="supplierLoading" :data="filteredSuppliers" :default-sort="{ prop: supplierSortBy, order: supplierSortOrder === 'desc' ? 'descending' : 'ascending' }" style="width: 100%" @sort-change="supplierSortChanged">
@@ -181,11 +183,11 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
             <template #default="{ row }"><strong>{{ currencyAmount(row) }}</strong><span class="muted">供应商-我方</span></template>
           </el-table-column>
           <el-table-column prop="contract_status" label="合同状态" width="100" sortable="custom">
-            <template #default="{ row }"><el-tag :type="contractStatusType(row.contract_status)" size="small">{{ row.contract_status }}</el-tag></template>
+            <template #default="{ row }"><el-tag :type="contractStatusType(row.contract_status)" size="small">{{ contractStatusText(row.contract_status) }}</el-tag></template>
           </el-table-column>
           <el-table-column label="结算币种" width="100"><template #default="{ row }">{{ row.settlement_currency || "—" }}</template></el-table-column>
           <el-table-column label="税率" width="80"><template #default="{ row }">{{ formatSupplierTaxRate(row.tax_rate) }}</template></el-table-column>
-          <el-table-column prop="cooperation_stage" label="合作阶段" width="100" sortable="custom"><template #default="{ row }">{{ row.cooperation_stage }}</template></el-table-column>
+          <el-table-column prop="cooperation_stage" label="合作/潜在" width="110" sortable="custom"><template #default="{ row }">{{ stageText(row.cooperation_stage) }}</template></el-table-column>
           <el-table-column prop="handling_status" label="办理状态" width="130" sortable="custom">
             <template #default="{ row }"><el-tag :type="row.handling_status === '有未完成事项' ? 'warning' : 'info'" size="small">{{ row.handling_status }}</el-tag></template>
           </el-table-column>
