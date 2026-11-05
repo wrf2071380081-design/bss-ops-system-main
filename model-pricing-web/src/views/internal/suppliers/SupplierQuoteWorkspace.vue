@@ -3,8 +3,6 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router";
 import { supplyChainApi, type ApprovalHistoryRow, type ApprovalRow } from "../../../api/supplyChain";
 import { formatDateTime } from "../../../domain/date";
-import SubmissionFlowDialog from "../workbench/SubmissionFlowDialog.vue";
-import SupplierQuoteList from "../supplierQuotes/SupplierQuoteList.vue";
 
 type QuoteSubTab = "submission" | "price";
 type ApprovalTab = "pending" | "history";
@@ -20,7 +18,6 @@ const approvalTab = ref<ApprovalTab>(route.query.approval === "history" ? "histo
 const pending = ref<ApprovalRow[]>([]), history = ref<ApprovalHistoryRow[]>([]);
 const pendingLoading = ref(false), historyLoading = ref(false);
 const pendingError = ref(""), historyError = ref("");
-const flowID = ref("");
 let pendingRequest: AbortController | undefined, historyRequest: AbortController | undefined;
 let active = true;
 let historyLoaded = false;
@@ -112,11 +109,9 @@ async function loadHistory() {
   }
 }
 
-function reloadAfterChange() {
-  void loadPending();
-  if (historyLoaded) void loadHistory();
-}
-function openFlow(row: { id: number }) { flowID.value = String(row.id); }
+// 原型：点详情打开独立页「XX · 模型新增申请」，不是弹窗。
+// 用 from=quote 记住来路，审批完返回时回到这张全局待审批列表。
+function openFlow(row: { id: number }) { void router.push({ path: `/internal/submissions/${row.id}`, query: { from: "quote" } }); }
 
 // 两个 watch 会互相触发：父组件删掉 tab 回到列表时，这里必须直接返回，
 // 否则「sub 重置为 submission」→「写回 tab=quote」→ 父组件切回报价 Tab，表现为点一次列表被弹回。
@@ -146,10 +141,10 @@ onBeforeUnmount(() => { active = false; pendingRequest?.abort(); historyRequest?
 
 <template>
   <section class="quote-workspace">
-    <el-tabs v-model="sub" class="quote-workspace__tabs">
-      <el-tab-pane label="接入申报" name="submission">
-        <p class="muted quote-workspace__hint">供应商新增模型与价格变更的整批申报；审批通过后由办理人完成测试与资源配置、合同与授信。</p>
-        <el-tabs v-model="approvalTab" class="quote-workspace__inner">
+    <!-- 原型：供应商报价下直接是「待审批 / 审批记录」，没有中间一层。
+         价格报价（SKU 报价单）另有独立路由，不在这里占一个 Tab。 -->
+    <p class="muted quote-workspace__hint">供应商新增模型与价格变更的整批申报；审批通过后由办理人完成测试与资源配置、合同与授信。</p>
+    <el-tabs v-model="approvalTab" class="quote-workspace__inner">
           <el-tab-pane label="待审批" name="pending">
             <el-alert v-if="pendingError" :title="pendingError" type="error" show-icon :closable="false"><el-button text @click="loadPending">重新加载</el-button></el-alert>
             <template v-else>
@@ -200,13 +195,7 @@ onBeforeUnmount(() => { active = false; pendingRequest?.abort(); historyRequest?
               </el-table>
             </template>
           </el-tab-pane>
-        </el-tabs>
-      </el-tab-pane>
-      <el-tab-pane label="价格报价" name="price">
-        <SupplierQuoteList v-if="sub === 'price'" embedded />
-      </el-tab-pane>
     </el-tabs>
-    <SubmissionFlowDialog v-if="flowID" :id="flowID" @close="flowID = ''" @changed="reloadAfterChange" />
   </section>
 </template>
 

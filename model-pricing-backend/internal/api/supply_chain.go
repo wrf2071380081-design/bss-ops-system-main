@@ -138,7 +138,9 @@ func (r *SupplyChainRuntime) ListApprovals(ctx context.Context) ([]ApprovalRow, 
        to_char(s.submitted_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
        COALESCE(NULLIF(sp.contact,''),sp.phone,'—'), s.revision
 FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id
-WHERE s.status IN ('PENDING_APPROVAL','PROCESSING','PENDING_TEST') ORDER BY s.id DESC`)
+-- 待审批只放「等审批」与「等测试补齐」两类；PROCESSING 是已审批、正在办理，
+-- 不属于待办，归到「审批记录」里。原型待审批列表里也只有待审核/待核对两类。
+WHERE s.status IN ('PENDING_APPROVAL','PENDING_TEST') ORDER BY s.id DESC`)
 	if err != nil {
 		return nil, err
 	}

@@ -87,7 +87,7 @@ SELECT st.id,'TODO'::varchar(8),CASE WHEN s.status='PENDING_APPROVAL' THEN 'TODO
  WHERE s.status='PENDING_APPROVAL' OR (decided.operator_id=st.id AND s.status IN('REJECTED','PROCESSING','COMPLETED'))
 UNION ALL
 SELECT n.assignee_id,'TODO'::varchar(8),CASE WHEN n.status='COMPLETED' THEN 'DONE' ELSE 'TODO' END::varchar(16),
- 'SUBMISSION_HANDLING'::varchar(32),n.id,'测试与资源配置办理'::varchar(256),sp.name || ' · ' || s.submission_no,s.region,'MID'::varchar(8),coalesce(n.completed_at,f.created_at),NULL::bigint
+ 'SUBMISSION_HANDLING'::varchar(32),n.id,'供应资源接入'::varchar(256),sp.name || ' · ' || s.submission_no,s.region,'MID'::varchar(8),coalesce(n.completed_at,f.created_at),NULL::bigint
  FROM onboarding_node n JOIN onboarding_flow f ON f.id=n.flow_id
  JOIN operation_log l ON l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'node_id'=n.id::text
  JOIN submission s ON s.id=l.entity_id JOIN supplier sp ON sp.id=s.supplier_id

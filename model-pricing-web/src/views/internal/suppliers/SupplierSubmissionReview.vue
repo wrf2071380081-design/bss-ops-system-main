@@ -133,9 +133,10 @@ function toggle(rowID: string, checked: boolean) {
 }
 
 function backToSupplier() {
+  // 从「供应商报价 · 待审批」进来的，回到那张全局列表；从供应商详情进来的，回它的申报页签。
+  if (route.query.from === "quote") { void router.push({ path: "/internal/suppliers", query: { tab: "quote" } }); return; }
   const supplierID = view.value?.supplier_id;
   if (!supplierID) { void router.push({ path: "/internal/workbench" }); return; }
-  // 回到该供应商的「申报与审批记录」页签（原型审批完也是回这张表）。
   void router.push({ path: `/internal/suppliers/${supplierID}/models`, query: { tab: "quotes" } });
 }
 
@@ -338,7 +339,9 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
             <el-table-column label="对比" width="90">
               <template #default="{ row }"><el-button link type="primary" @click="toggleCompare(row)">{{ compareRowID === row.id ? "收起对比" : "对比" }}</el-button></template>
             </el-table-column>
-            <el-table-column label="资源" width="104">
+            <!-- 待审批时这列不出现（原型只有到「测试与报告 / 对比」为止）；
+                 已审批的单子才给「去办理 / 查看资源」入口。 -->
+            <el-table-column v-if="view.status !== 'PENDING_APPROVAL'" label="资源" width="104">
               <template #default="{ row }"><el-button v-if="row.resource_id" link type="primary" @click="openResource(row)">{{ view.can_handle && row.status !== 'CANCELED' ? "去办理" : "查看资源" }}</el-button><span v-else class="muted">{{ view.can_approve ? "批准后生成" : "未接入" }}</span></template>
             </el-table-column>
           </el-table>
