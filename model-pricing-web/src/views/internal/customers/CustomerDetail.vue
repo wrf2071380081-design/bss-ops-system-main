@@ -459,7 +459,7 @@ function backToList() {
         </div>
         <div class="head-sub" v-if="profile">
           销售 {{ profile.owner_sales_name }} · {{ profile.region === "OVERSEAS" ? "海外" : "国内" }} ·
-          {{ profile.settlement_currency }} · 税率 {{ profile.tax_rate || "未填写" }} · 合同 {{ profile.contract_status }}
+          {{ profile.settlement_currency }} · 税率 {{ formatSupplierTaxRate(profile.tax_rate) }} · 合同 {{ profile.contract_status }}
         </div>
         <div class="head-sub" v-else-if="profileLoading">加载中…</div>
       </div>
