@@ -24,6 +24,8 @@ import {
   type OnboardingNodeDTO,
 } from "../../../api/customerDetail";
 import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow } from "../../../api/customerWorkspace";
+import { changeRequestsApi } from "../../../api/changeRequests";
+import type { ChangeRequestDetailDTO } from "../../../api/changeRequests.types";
 import { modelTypeLabels } from "../../../api/standardModels.contract";
 import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
@@ -586,7 +588,8 @@ const quoteLoading = ref(false);
 const quoteError = ref("");
 const quoteLoaded = ref(false);
 
-async function loadQuotes() {
+async function loadQuotes(force = false) {
+  if (force) quoteLoaded.value = false;
   if (quoteLoaded.value || quoteLoading.value) return;
   quoteLoading.value = true;
   quoteError.value = "";
@@ -616,6 +619,125 @@ const quoteTypeText = (type: string) =>
 /** 新建报价：跳回列表页的报价 Tab，复用那边的编辑器（本页不搬 380 行编辑器）。 */
 function newQuote() {
   void router.push({ path: "/internal/customers", query: { tab: "quote", customer_id: customerId.value } });
+}
+
+// ---------------- Tab3 报价审批（特价审批链，可操作） ----------------
+//
+// 后端这张表是 `change_request[change_type=SPECIAL_PRICE]`：报价破线时建单，
+// 固定两步（PRICING_OP → FINANCE），全步通过才把 `customer_quote.special_price_status` 置 APPROVED。
+// 之前这里只读，等于这条链路在界面上走不完——决策接口一直是通用的
+// `POST /internal/approvals/:id/decision`，只是没人调。
+//
+// 前端只做「能不能点」的提示，**不要**复制一份后端规则当真相：
+// 角色匹配、同单两步不能同一人、步骤已决策，最终都由服务层裁决（403/400/409 都有文案）。
+const APPROVAL_ROLE_LABELS: Record<string, string> = {
+  PLATFORM_ADMIN: "平台管理员", MODEL_OPS: "模型运营", PROCUREMENT: "采购",
+  PRICING_OP: "定价运营", SALES: "销售", FINANCE: "财务", OPS_ADMIN: "运营管理员",
+  RETRO_OP: "补录专员", AUDIT_READONLY: "审计只读", LEADER: "领导", STAFF: "员工",
+};
+const roleText = (code?: string | null) => (code ? APPROVAL_ROLE_LABELS[code] ?? code : "—");
+const approvalStatusText = (status?: string) =>
+  ({ PENDING: "待审批", CONFIRMING: "待确认", APPROVING: "审批中", APPROVED: "已批准", EFFECTIVE: "已生效", REJECTED: "已驳回" } as Record<string, string>)[status ?? ""] || status || "—";
+
+/**
+ * 后端这两列存的是 `staff:<id>`（审批人存纯 id）。
+ * 前端没有员工目录接口，硬翻名字只能靠猜——所以只把它翻成能读的「员工 #id」，
+ * 不假装知道是谁。真要显示姓名，得由后端 JOIN internal_staff 下发。
+ */
+function staffText(raw?: string | null) {
+  const text = (raw ?? "").trim();
+  if (!text) return "—";
+  const matched = /^staff:(\d+)$/.exec(text);
+  if (matched) return `员工 #${matched[1]}`;
+  return /^\d+$/.test(text) ? `员工 #${text}` : text;
+}
+
+const approvalVisible = ref(false);
+const approvalTarget = ref<CustomerApprovalRow>();
+const approvalDetail = ref<ChangeRequestDetailDTO>();
+const approvalLoading = ref(false);
+const approvalError = ref("");
+const approvalComment = ref("");
+const approvalBusy = ref(false);
+
+/** payload / margin_preview 在 DTO 里是 unknown：取不到就当没填，不要编数字。 */
+function objectOf(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+}
+const approvalPayload = computed(() => objectOf(approvalDetail.value?.payload));
+const approvalMargin = computed(() => objectOf(approvalDetail.value?.marginPreview));
+const payloadText = (record: Record<string, unknown>, key: string) => {
+  const value = record[key];
+  return value === null || value === undefined || value === "" ? "—" : String(value);
+};
+
+const approvalPending = computed(() => approvalDetail.value?.pendingStepNo ?? null);
+
+/** 当前账号在本单上是否还可能有权点：只排除「明显没戏」的情况，剩下交给后端。 */
+const approvalBlockReason = computed(() => {
+  const detail = approvalDetail.value;
+  if (!detail) return "";
+  if (approvalPending.value === null) return "该单没有待处理步骤（已批准或已驳回）。";
+  const me = session.user?.staffId ? String(session.user.staffId) : "";
+  // 同一单的两个步骤不得由同一人完成（后端 ErrSelfApproval），提前告知避免白点。
+  if (me && detail.steps.some(step => step.decision && String(step.approverId ?? "") === me))
+    return "同一单的两个步骤不能由同一人完成，请交给另一位审批人。";
+  const roles = session.user?.roleCodes ?? [];
+  if (roles.length && detail.pendingRole && !roles.includes(detail.pendingRole))
+    return `本步需要「${roleText(detail.pendingRole)}」角色，当前账号无权审批。`;
+  return "";
+});
+const approvalCanDecide = computed(() => Boolean(approvalDetail.value) && approvalPending.value !== null && !approvalBlockReason.value);
+
+async function openApproval(row: CustomerApprovalRow) {
+  approvalTarget.value = row;
+  approvalVisible.value = true;
+  approvalDetail.value = undefined;
+  approvalError.value = "";
+  approvalComment.value = "";
+  approvalLoading.value = true;
+  try {
+    // 列表只给报价单维度，审批链与待办步骤要读变更单详情（同源，别在前端猜 step_no）。
+    approvalDetail.value = await changeRequestsApi.get(String(row.id));
+  } catch (value) {
+    approvalError.value = message(value);
+  } finally {
+    approvalLoading.value = false;
+  }
+}
+
+async function decideApproval(decision: "APPROVED" | "REJECTED") {
+  const detail = approvalDetail.value;
+  if (!detail || approvalPending.value === null || approvalBusy.value) return;
+  if (decision === "REJECTED" && !approvalComment.value.trim()) {
+    approvalError.value = "驳回必须写明理由（会写进审批记录）。";
+    return;
+  }
+  const step = approvalPending.value;
+  approvalBusy.value = true;
+  approvalError.value = "";
+  try {
+    await ElMessageBox.confirm(
+      decision === "APPROVED"
+        ? `确认通过报价单 #${detail.id} 的第 ${step} 步（${roleText(detail.pendingRole)}）？`
+        : `确认驳回报价单 #${detail.id}？驳回后本单审批立即终止。`,
+      decision === "APPROVED" ? "审批通过" : "审批驳回",
+      { confirmButtonText: "确认", cancelButtonText: "取消", type: decision === "APPROVED" ? "info" : "warning" },
+    );
+    const result = await changeRequestsApi.decide(detail.id, {
+      stepNo: step, decision, comment: approvalComment.value.trim() || undefined,
+    });
+    ElMessage.success(`第 ${result.stepNo} 步已${decision === "APPROVED" ? "通过" : "驳回"}，单据状态：${approvalStatusText(result.finalStatus)}`);
+    approvalComment.value = "";
+    approvalDetail.value = await changeRequestsApi.get(detail.id);
+    // 审批结果会改报价单的 special_price_status，列表必须重拉，不能只改弹窗。
+    await loadQuotes(true);
+    if (logLoaded.value) { logLoaded.value = false; void loadLogs(true); }
+  } catch (value) {
+    if (value !== "cancel" && value !== "close") approvalError.value = message(value);
+  } finally {
+    approvalBusy.value = false;
+  }
 }
 
 // ---------------- Tab4 操作记录 ----------------
@@ -1055,12 +1177,12 @@ function backToList() {
           <div class="card-head-left"><h3 class="card-title">报价审批</h3></div>
         </div>
         <!-- 列按原型：报价单 ID / 销售与提交时间 / 状态；申请原因是我们多出来的判断依据，保留。 -->
-        <el-table :data="approvalRows" size="small" class="grid" row-key="id" empty-text="暂无审批记录">
+        <el-table :data="approvalRows" size="small" class="grid" row-key="id" empty-text="暂无审批记录（报价破线申请特价后才会产生）">
           <el-table-column label="报价单 ID" width="130">
             <template #default="{ row }">{{ row.quote_id ? `#${row.quote_id}` : `#${row.id}` }}</template>
           </el-table-column>
           <el-table-column label="销售与提交时间" min-width="240">
-            <template #default="{ row }">{{ row.created_by || "未记录" }} · {{ formatDateTime(row.created_at, "—", false) }}</template>
+            <template #default="{ row }">{{ staffText(row.created_by) }} · {{ formatDateTime(row.created_at, "—", false) }}</template>
           </el-table-column>
           <el-table-column label="状态" width="110">
             <template #default="{ row }">
@@ -1070,6 +1192,11 @@ function backToList() {
             </template>
           </el-table-column>
           <el-table-column label="申请原因" min-width="240" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "—" }}</template></el-table-column>
+          <el-table-column label="操作" width="100" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="openApproval(row)">{{ row.status === "PENDING" ? "审批" : "查看" }}</el-button>
+            </template>
+          </el-table-column>
         </el-table>
       </div>
     </template>
@@ -1216,6 +1343,86 @@ function backToList() {
           <div class="json-title">变更后</div>
           <pre class="json">{{ prettyJson(logDetail.after) }}</pre>
         </div>
+      </template>
+    </el-dialog>
+
+    <!-- 报价审批：特价审批链（PRICING_OP → FINANCE），可在这个页面直接批 -->
+    <el-dialog v-model="approvalVisible" title="报价审批" width="min(780px, 96vw)" :close-on-click-modal="false">
+      <div v-loading="approvalLoading">
+        <el-alert v-if="approvalError" :title="approvalError" type="error" show-icon :closable="false" class="block-gap" />
+        <template v-if="approvalDetail">
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="报价单">{{ approvalTarget?.quote_id ? `#${approvalTarget.quote_id}` : `#${approvalDetail.id}` }}</el-descriptions-item>
+            <el-descriptions-item label="单据状态">{{ approvalStatusText(approvalDetail.status) }}</el-descriptions-item>
+            <el-descriptions-item label="提交人">{{ staffText(approvalTarget?.created_by || approvalDetail.createdBy) }}</el-descriptions-item>
+            <el-descriptions-item label="提交时间">{{ formatDateTime(approvalDetail.createdAt, "—", false) }}</el-descriptions-item>
+            <el-descriptions-item label="审批进度">
+              {{ approvalDetail.stepsApproved }} / {{ approvalDetail.stepsTotal }}
+              <span v-if="approvalPending !== null" class="hint">（当前第 {{ approvalPending }} 步 · {{ roleText(approvalDetail.pendingRole) }}）</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="风险等级">{{ approvalDetail.riskLevel || "—" }}</el-descriptions-item>
+          </el-descriptions>
+
+          <div class="sub-block">
+            <div class="selected-title">申请依据</div>
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item label="申请原因" :span="2">{{ payloadText(approvalPayload, "reason") }}</el-descriptions-item>
+              <el-descriptions-item label="当前价">{{ payloadText(approvalPayload, "current_price") }}</el-descriptions-item>
+              <el-descriptions-item label="目标价">{{ payloadText(approvalPayload, "target_price") }}</el-descriptions-item>
+              <el-descriptions-item label="期望毛利">{{ payloadText(approvalPayload, "expected_margin") }}</el-descriptions-item>
+              <el-descriptions-item label="与底价距离">{{ payloadText(approvalMargin, "delta_gap_distance") }}</el-descriptions-item>
+            </el-descriptions>
+          </div>
+
+          <div class="sub-block">
+            <div class="selected-title">审批链</div>
+            <el-table :data="approvalDetail.steps" size="small" class="grid" row-key="stepNo" empty-text="没有审批步骤记录">
+              <el-table-column label="步骤" width="70">
+                <template #default="{ row }">第 {{ row.stepNo }} 步</template>
+              </el-table-column>
+              <el-table-column label="需要角色" width="120">
+                <template #default="{ row }">{{ roleText(row.requiredRole) }}</template>
+              </el-table-column>
+              <el-table-column label="结果" width="100">
+                <template #default="{ row }">
+                  <el-tag v-if="row.decision" size="small" :type="row.decision === 'APPROVED' ? 'success' : 'danger'">
+                    {{ row.decision === "APPROVED" ? "已通过" : "已驳回" }}
+                  </el-tag>
+                  <el-tag v-else size="small" type="info">待处理</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="审批人" width="100">
+                <template #default="{ row }">{{ row.approverId ? staffText(row.approverId) : "—" }}</template>
+              </el-table-column>
+              <el-table-column label="意见" min-width="160" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.comment || "—" }}</template>
+              </el-table-column>
+              <el-table-column label="时间" width="170">
+                <template #default="{ row }">{{ row.decidedAt ? formatDateTime(row.decidedAt, "—", false) : "—" }}</template>
+              </el-table-column>
+            </el-table>
+          </div>
+
+          <div v-if="approvalPending !== null" class="sub-block">
+            <el-alert v-if="approvalBlockReason" :title="approvalBlockReason" type="info" show-icon :closable="false" class="block-gap" />
+            <el-input
+              v-model="approvalComment"
+              type="textarea"
+              :rows="2"
+              maxlength="200"
+              show-word-limit
+              aria-label="审批意见"
+              placeholder="审批意见（驳回必填，会写入审批记录）"
+            />
+          </div>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="approvalVisible = false">关闭</el-button>
+        <template v-if="approvalDetail && approvalPending !== null">
+          <el-button type="danger" plain :disabled="!approvalCanDecide || approvalBusy" @click="decideApproval('REJECTED')">驳回</el-button>
+          <el-button type="primary" :loading="approvalBusy" :disabled="!approvalCanDecide || approvalBusy" @click="decideApproval('APPROVED')">通过本步</el-button>
+        </template>
       </template>
     </el-dialog>
 
