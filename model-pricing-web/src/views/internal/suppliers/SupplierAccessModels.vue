@@ -29,6 +29,8 @@ const filteredRows=computed(()=>rows.value.filter(row=>
   &&(!modelFilters.modelType||row.model_type===modelFilters.modelType)
   &&(!modelFilters.state||row.state===modelFilters.state)));
 function resetModelFilters(){ Object.assign(modelFilters,{company:"",modelType:"",state:""}); }
+// 系数按有效位展示（1.0000 → 1），与模型广场一致。
+const coefficientText = (raw: string) => raw && raw.includes(".") ? raw.replace(/0+$/, "").replace(/\.$/, "") : raw;
 import SupplierTestConfigPanel from "./SupplierTestConfigPanel.vue";
 
 const route = useRoute();
@@ -519,7 +521,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-table-column label="标准模型 / 官方 ID" min-width="190"><template #default="{ row }"><strong>{{ row.model_name }}</strong><span class="muted">{{ row.official_id }}</span></template></el-table-column>
             <el-table-column label="供应商接口模型 ID" min-width="180"><template #default="{ row }"><code>{{ row.supplier_model_id }}</code></template></el-table-column>
             <el-table-column label="部署节点" width="100"><template #default="{ row }">{{ regionLabel(row.region) }}</template></el-table-column>
-            <el-table-column prop="coefficient" label="采购系数" width="110" />
+            <el-table-column label="采购系数" width="110"><template #default="{ row }">{{ coefficientText(row.coefficient) }}</template></el-table-column>
             <el-table-column label="连通耗时(ms)" width="120"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.connection_ms, row.test.status) }}</template></el-table-column>
             <el-table-column label="RPS" width="100"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.rps, row.test.status) }}</template></el-table-column>
             <el-table-column label="TPS" width="100"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.tps, row.test.status) }}</template></el-table-column>
