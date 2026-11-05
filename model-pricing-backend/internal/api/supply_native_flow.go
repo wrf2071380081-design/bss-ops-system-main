@@ -35,6 +35,13 @@ type nativeFlowRow struct {
 	TPS            string `json:"tps"`
 	CacheHitRate   string `json:"cache_hit_rate"`
 	CacheAvailable bool   `json:"cache_available"`
+	// 最近一次测试的两项结论与时间：审批页据此提示「压力测试未通过」，
+	// 否则四列有数值、结论却是未通过，审批人会以为只是没测。
+	// 用指针表达三态：true 通过 / false 不通过 / nil 该项还没测过。
+	ConnectionPassed *bool  `json:"connection_passed"`
+	StressPassed     *bool  `json:"stress_passed"`
+	TestedAt         string `json:"tested_at"`
+	ReportCount      int    `json:"report_count"`
 }
 type nativeFlowView struct {
 	ID                  string           `json:"id"`
@@ -137,15 +144,53 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 	if err := r.raw.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.operation_log l JOIN public.onboarding_node n ON n.id::text=l."after"->>'node_id' JOIN public.onboarding_flow f ON f.id=n.flow_id WHERE l.entity_type='submission' AND l.entity_id=$1 AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND n.enabled AND n.status='IN_PROGRESS' AND n.assignee_id=$2 AND f.status='PROCESSING' AND f.current_node='CONFIG')`, id, actor).Scan(&v.CanHandle); err != nil {
 		return nil, err
 	}
-	// 指标取「该行供应资源最近一次测试报告」：与资源列表同一份证据，不在申报侧另算。
+	// 指标取「该资源最近一次实际测试」。
+	// 不能用 r.latest_test_report_id：那是「当前生效、可作为准入依据」的报告指针，
+	// 压力测试没过（或办理重开）时它会被清空，于是测过的也会显示成「未测试」。
+	// 审批人要看的恰恰是「这轮测出来什么、过没过」，所以按 resource 取最近一份
+	// baseline（连通）与 stress（压力）的实测值——两类报告是两个 test_job，不能只取一行。
 	rows, err := r.raw.QueryContext(ctx, `SELECT sr.id::text,sr.standard_model_id::text,m.name,sr.supplier_model_name,sr.coefficient::text,sr.row_status,coalesce(sr.resource_id::text,''),sr.decision,coalesce(m.company,''),coalesce(m.model_type,''),
-		 CASE WHEN tr.id IS NULL THEN 'NOT_TESTED' ELSE 'READY' END,
+		 CASE WHEN tr.last_report_id IS NULL THEN 'NOT_TESTED'
+		      WHEN tr.connection_passed IS FALSE OR tr.stress_passed IS FALSE THEN 'FAILED'
+		      WHEN tr.connection_passed IS TRUE AND tr.stress_passed IS TRUE THEN 'PASSED'
+		      ELSE 'INCOMPLETE' END,
 		 coalesce(tr.connection_ms::text,''),coalesce(tr.rps::text,''),coalesce(tr.tps::text,''),
-		 coalesce(tr.cache_hit_ratio::text,''),coalesce(tr.cache_ratio_available,false)
+		 coalesce(tr.cache_hit_ratio::text,''),coalesce(tr.cache_available,false),
+		 tr.connection_passed,tr.stress_passed,
+		 coalesce(tr.tested_at::text,''),coalesce(tr.report_count,0)
 FROM public.submission_row sr
 JOIN public.standard_model m ON m.id=sr.standard_model_id
 LEFT JOIN public.resource r ON r.id=sr.resource_id
-LEFT JOIN public.test_report tr ON tr.id=r.latest_test_report_id
+LEFT JOIN LATERAL (
+	SELECT
+		max(t.id) AS last_report_id,
+		count(*) AS report_count,
+		max(t.tested_at) AS tested_at,
+		-- 连通与压力是两个独立 test_job（category=baseline / stress），必须分开取：
+		-- stress 报告同样会写 connection_passed=false，混在一起取「最近非空」会把连通结论取成 false。
+		(SELECT x.connection_ms FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
+			WHERE x.resource_id=r.id AND j.category='baseline' AND x.connection_ms IS NOT NULL
+			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS connection_ms,
+		(SELECT x.connection_passed FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
+			WHERE x.resource_id=r.id AND j.category='baseline' AND x.connection_passed IS NOT NULL
+			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS connection_passed,
+		(SELECT x.rps FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
+			WHERE x.resource_id=r.id AND j.category='stress' AND x.rps IS NOT NULL
+			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS rps,
+		(SELECT x.tps FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
+			WHERE x.resource_id=r.id AND j.category='stress' AND x.tps IS NOT NULL
+			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS tps,
+		(SELECT x.cache_hit_ratio FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
+			WHERE x.resource_id=r.id AND j.category='stress' AND x.cache_hit_ratio IS NOT NULL
+			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS cache_hit_ratio,
+		(SELECT x.cache_ratio_available FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
+			WHERE x.resource_id=r.id AND j.category='stress'
+			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS cache_available,
+		(SELECT x.stress_passed FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
+			WHERE x.resource_id=r.id AND j.category='stress' AND x.stress_passed IS NOT NULL
+			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS stress_passed
+	FROM public.test_report t WHERE t.resource_id=r.id
+) tr ON TRUE
 WHERE sr.submission_id=$1 ORDER BY sr.id`, id)
 	if err != nil {
 		return nil, err
@@ -154,9 +199,17 @@ WHERE sr.submission_id=$1 ORDER BY sr.id`, id)
 	v.Rows = []nativeFlowRow{}
 	for rows.Next() {
 		var row nativeFlowRow
+		var connectionPassed, stressPassed sql.NullBool
 		if err := rows.Scan(&row.ID, &row.ModelID, &row.ModelName, &row.InterfaceModel, &row.Coefficient, &row.Status, &row.ResourceID, &row.Decision, &row.Company, &row.ModelType,
-			&row.TestStatus, &row.ConnectionMS, &row.RPS, &row.TPS, &row.CacheHitRate, &row.CacheAvailable); err != nil {
+			&row.TestStatus, &row.ConnectionMS, &row.RPS, &row.TPS, &row.CacheHitRate, &row.CacheAvailable,
+			&connectionPassed, &stressPassed, &row.TestedAt, &row.ReportCount); err != nil {
 			return nil, err
+		}
+		if connectionPassed.Valid {
+			row.ConnectionPassed = &connectionPassed.Bool
+		}
+		if stressPassed.Valid {
+			row.StressPassed = &stressPassed.Bool
 		}
 		v.Rows = append(v.Rows, row)
 	}

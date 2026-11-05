@@ -661,7 +661,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
     <template #footer><el-button :disabled="qualificationSaving || qualificationReloading" @click="qualificationDialogOpen = false">取消</el-button><el-button type="primary" :loading="qualificationSaving" :disabled="qualificationSaving || qualificationReloading || qualificationConflict && !qualificationConflictReady" @click="saveQualification">{{ qualificationConflictReady ? '按最新修订重试' : '保存资质' }}</el-button></template>
   </el-dialog>
 
-    <el-dialog v-if="reportsVisible && reportsRow" v-model="reportsVisible" :title="`${reportsRow.model_name} · 测试列表`" width="min(1120px, 96vw)" append-to-body>
+    <el-dialog v-if="reportsVisible && reportsRow" v-model="reportsVisible" :title="`${reportsRow.model_name} · 资源 #${reportsRow.id}`" width="min(1120px, 96vw)" append-to-body>
       <p class="muted">{{ reportsRow.supplier_model_id }} · 每次测试单独留档</p>
       <ResourceReportsPanel :resource-i-d="reportsRow.id" :current-report-i-d="reportsRow.test.report_id" />
       <template #footer><el-button @click="reportsVisible = false">关闭测试列表</el-button></template>

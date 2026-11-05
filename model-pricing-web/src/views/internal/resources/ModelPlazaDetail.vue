@@ -216,7 +216,7 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
       </el-tabs>
     </section>
 
-    <el-dialog v-if="reportsVisible && selected" v-model="reportsVisible" :title="`${model?.name || '模型'} · 测试列表`" width="min(1120px, 96vw)" append-to-body><p class="muted">{{ selected.supplier_name }} · 每次测试单独留档</p><ResourceReportsPanel :resource-i-d="selected.id" :current-report-i-d="selected.test.report_id" /><template #footer><el-button @click="reportsVisible = false">关闭测试列表</el-button></template></el-dialog>
+    <el-dialog v-if="reportsVisible && selected" v-model="reportsVisible" :title="`${model?.name || '模型'} · 资源 #${selected?.id || ''}`" width="min(1120px, 96vw)" append-to-body><p class="muted">{{ selected.supplier_name }} · 每次测试单独留档</p><ResourceReportsPanel :resource-i-d="selected.id" :current-report-i-d="selected.test.report_id" /><template #footer><el-button @click="reportsVisible = false">关闭测试列表</el-button></template></el-dialog>
     <ResourceStateRegisterDialog v-if="registerVisible && registerRows.length" :key="`${registerKind}:${registerRows.map(row => row.id).join(',')}`" :rows="registerRows" :kind="registerKind" @close="closeRegister" @done="registerDone" />
     <ResourceDetailDrawer v-if="detailVisible && selected" :key="`${selected.id}:${selectedTab}`" :id="selected.id" :region="selected.region" :expected-supplier-i-d="selected.supplier_id" :expected-model-i-d="selected.standard_model_id" :initial-tab="selectedTab" @close="closeResourceDetail" @changed="load()" />
   </section>

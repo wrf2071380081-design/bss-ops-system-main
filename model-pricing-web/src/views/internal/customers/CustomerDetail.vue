@@ -1767,7 +1767,7 @@ function backToList() {
     <!-- 测试与报告：复用模型广场那份面板，同一份证据链 -->
     <el-dialog
       v-model="reportsVisible"
-      :title="`${reportsTarget?.row.model_name || '模型'} · 测试与报告`"
+      :title="`${reportsTarget?.row.model_name || '模型'} · 资源 #${reportsTarget?.link.resource_id ?? ''}`"
       width="min(1120px, 96vw)"
       append-to-body
     >
@@ -1778,6 +1778,7 @@ function backToList() {
         v-if="reportsVisible && reportsTarget"
         :key="reportsTarget.link.resource_id"
         :resource-i-d="String(reportsTarget.link.resource_id)"
+        :model-name="reportsTarget.row.model_name"
       />
       <template #footer><el-button @click="reportsVisible = false">关闭</el-button></template>
     </el-dialog>

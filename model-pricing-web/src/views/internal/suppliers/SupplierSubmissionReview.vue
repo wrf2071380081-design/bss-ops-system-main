@@ -66,7 +66,11 @@ const statusLabels: Record<string, string> = {
 };
 const statusLabel = computed(() => statusLabels[view.value?.status || ""] || view.value?.status || "—");
 const nodeNames: Record<string, string> = { CONFIG: "测试与资源配置", CONTRACT: "合同与授信" };
-/** 申报行的四项指标：没有报告=未测试；缓存另有「未提供」一档（原型也是这么分的）。 */
+/**
+ * 申报行的四项指标取「该资源最近一次实际测试」，不是「当前生效报告」。
+ * 两者要分开说：压力测试没过时资源没有生效报告（不能准入），但确实测过、有实测值，
+ * 审批人要看的正是这个数值 + 没过这个事实。
+ */
 function metricText(row: SubmissionFlowView["rows"][number], key: "connection_ms" | "rps" | "tps") {
   if (row.test_status === "NOT_TESTED") return "未测试";
   const value = row[key];
@@ -78,6 +82,22 @@ function cacheText(row: SubmissionFlowView["rows"][number]) {
   const rate = Number(row.cache_hit_rate);
   return Number.isFinite(rate) ? `${rate.toFixed(2)}%` : "未记录";
 }
+/** 最近一次测试的结论行：给四列数值一个可读的上下文（悬停与按钮上都能看到）。 */
+function testConclusion(row: SubmissionFlowView["rows"][number]) {
+  if (row.test_status === "NOT_TESTED" || !row.test_status) return "本轮还没有测试报告";
+  // 注意三态：false 才是「没通过」，null 是「这一项还没跑」，别混成一句。
+  const notes: string[] = [];
+  if (row.connection_passed === false) notes.push("连通性未通过");
+  if (row.stress_passed === false) notes.push("压力测试未通过");
+  if (row.connection_passed == null) notes.push("连通性未测");
+  if (row.stress_passed == null) notes.push("压力测试未测");
+  const when = row.tested_at ? formatDateTime(row.tested_at, "—", false) : "时间未记录";
+  const verdict = notes.length ? notes.join("、") : "连通性与压力测试均通过";
+  return `最近一次测试 ${when} · ${verdict} · 共 ${row.report_count ?? 0} 份报告`;
+}
+const hasFailedTest = (row: SubmissionFlowView["rows"][number]) => row.test_status === "FAILED";
+/** 只测了一半（例如只跑了连通）：不能算通过，也不该说成不通过。 */
+const isIncompleteTest = (row: SubmissionFlowView["rows"][number]) => row.test_status === "INCOMPLETE";
 const nodeStates: Record<string, string> = { IN_PROGRESS: "办理中", WAITING_PREDECESSOR: "等待前序办理", COMPLETED: "已完成", CANCELED: "已取消" };
 
 const approvedCount = computed(() => (view.value?.rows ?? []).filter(row => picked.value[row.id]).length);
@@ -304,8 +324,17 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
                 <el-tag v-else size="small" type="info">待审核</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="测试与报告" width="100">
-              <template #default="{ row }"><el-button v-if="row.resource_id" link type="primary" @click="openReports(row)">测试与报告</el-button><span v-else class="muted">未接入</span></template>
+            <el-table-column label="测试与报告" width="112">
+              <template #default="{ row }">
+                <template v-if="row.resource_id">
+                  <el-tooltip :content="testConclusion(row)" placement="top">
+                    <el-button link :type="hasFailedTest(row) || isIncompleteTest(row) ? 'warning' : 'primary'" @click="openReports(row)">测试与报告</el-button>
+                  </el-tooltip>
+                  <span v-if="hasFailedTest(row)" class="test-failed">未通过</span>
+                  <span v-else-if="isIncompleteTest(row)" class="test-failed">未测全</span>
+                </template>
+                <span v-else class="muted">未接入</span>
+              </template>
             </el-table-column>
             <el-table-column label="对比" width="90">
               <template #default="{ row }"><el-button link type="primary" @click="toggleCompare(row)">{{ compareRowID === row.id ? "收起对比" : "对比" }}</el-button></template>
@@ -364,11 +393,13 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
       </template>
     </div>
 
-    <el-dialog v-model="reportsVisible" title="测试与报告" width="min(1180px,96vw)" append-to-body align-center>
-      <p class="muted">{{ reportsRow?.model_name }} · {{ reportsRow?.interface_model_id }}</p>
-      <ResourceReportsPanel v-if="reportsRow?.resource_id" :resource-i-d="reportsRow.resource_id" />
-      <template #footer><el-button @click="reportsVisible = false">关闭测试报告</el-button></template>
-    </el-dialog>
+    <!-- 原型是从右侧滑出的抽屉，标题在面板内部（不再套一层 dialog 标题，避免「测试与报告」出现两遍）。 -->
+    <el-drawer v-model="reportsVisible" size="min(860px, 96vw)" :with-header="false" append-to-body destroy-on-close>
+      <div class="report-drawer">
+        <ResourceReportsPanel v-if="reportsRow?.resource_id" :resource-i-d="reportsRow.resource_id" :model-name="reportsRow.model_name" />
+        <div class="report-drawer-foot"><el-button @click="reportsVisible = false">关闭</el-button></div>
+      </div>
+    </el-drawer>
   </section>
 </template>
 
@@ -395,6 +426,9 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
 .compare-panel { padding: 12px 14px; background: var(--el-fill-color-light); border-radius: 8px; }
 .compare-panel .muted { margin: 0 0 8px; }
 .cell-main { font-weight: 500; }
+.test-failed { display: block; margin-top: 2px; font-size: 11px; color: var(--el-color-warning); }
+.report-drawer { padding: 18px 20px; }
+.report-drawer-foot { display: flex; justify-content: flex-end; padding-top: 14px; border-top: 1px solid var(--el-border-color-light); }
 .cell-sub { font-size: 12px; color: var(--app-text-muted); }
 .mono { font-variant-numeric: tabular-nums; }
 .muted { color: var(--app-text-muted); font-size: 12px; }

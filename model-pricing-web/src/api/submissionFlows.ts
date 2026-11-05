@@ -4,7 +4,9 @@ export interface SubmissionFlowView {
  id:string;supplier_id:string;supplier_name:string;revision:string;status:string;kind:string;region:string;first_model:boolean;can_approve:boolean;can_handle:boolean;
  rows:Array<{id:string;model_id:string;model_name:string;interface_model_id:string;coefficient:string;status:string;resource_id:string;decision?:'PENDING'|'APPROVED'|'REJECTED';company?:string;model_type?:string;
   /** 该行供应资源最近一次测试（原型审批页四列指标）；无报告时 test_status=NOT_TESTED。 */
-  test_status?:string;connection_ms?:string;rps?:string;tps?:string;cache_hit_rate?:string;cache_available?:boolean}>;
+  test_status?:'NOT_TESTED'|'PASSED'|'FAILED'|'INCOMPLETE';connection_ms?:string;rps?:string;tps?:string;cache_hit_rate?:string;cache_available?:boolean;
+  /** 最近一次测试的两项结论：四列有数值但结论未通过时，审批人要能看出来。 */
+  connection_passed?:boolean|null;stress_passed?:boolean|null;tested_at?:string;report_count?:number}>;
  nodes:Array<{id:string;key:string;status:string;assignee_id:string;assignee_name:string}>;
  flow_id:string;flow_revision:string;selected_node_id:string;can_handle_contract:boolean;can_complete_contract:boolean;
  created_at:string;submitted_at:string|null;
