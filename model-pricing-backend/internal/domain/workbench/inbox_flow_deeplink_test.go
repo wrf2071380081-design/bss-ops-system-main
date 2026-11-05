@@ -12,7 +12,7 @@ import (
 // 点进去会落到供应商列表。修法：在 service 层对当页节点**批量**补 kind/owner_id，再按 kind 分派。
 //
 // 本文件钉三件事：
-//  1. CUSTOMER 节点 → 客户详情「档案与办理」Tab
+//  1. CUSTOMER 节点 → 客户详情「接入模型」Tab（走查手册 3.9c）
 //  2. SUPPLIER 节点 → **逐字保持**原实现（回归断言）
 //  3. 查询次数与行数无关：一页 N 条节点只说 1 次 FlowOwners；无节点时 0 次
 
@@ -23,9 +23,9 @@ func TestInboxDeeplinkDispatchesOnboardingNodeByKind(t *testing.T) {
 		want string
 	}{
 		{
-			name: "客户节点落客户详情档案与办理 Tab",
+			name: "客户节点落客户详情接入模型 Tab",
 			item: InboxItem{BizType: "ONBOARDING_NODE", BizID: 11, BizObject: "蓝海电商", FlowKind: "CUSTOMER", FlowOwnerID: 5},
-			want: "/internal/customers/5?tab=onboarding",
+			want: "/internal/customers/5?tab=models",
 		},
 		{
 			name: "供应商节点保持原行为（逐字）",
@@ -76,9 +76,9 @@ func TestInboxAttachesFlowOwnersWithSingleQuery(t *testing.T) {
 		t.Fatalf("批量查询的 id 应去重为 [100 101]，got %v", store.flowOwnerIDs)
 	}
 	want := []string{
-		"/internal/customers/5?tab=onboarding",
-		"/internal/customers/6?tab=onboarding",
-		"/internal/customers/5?tab=onboarding",
+		"/internal/customers/5?tab=models",
+		"/internal/customers/6?tab=models",
+		"/internal/customers/5?tab=models",
 		"/internal/model-plaza/7", // PLAN 分支不受影响
 	}
 	for i, w := range want {

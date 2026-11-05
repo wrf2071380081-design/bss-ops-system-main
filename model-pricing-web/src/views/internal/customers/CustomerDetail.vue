@@ -217,8 +217,39 @@ const modelEmptyText = computed(() => {
     : "该客户还没有接入任何模型";
 });
 
-function linkActionLabel(action: string) {
-  return CUSTOMER_LINK_ACTION_LABELS[action] ?? action;
+/**
+ * 接入模型页顶部的办理摘要（原型 3.9b 的红字块）。
+ *
+ * 口径：
+ * - 技术 x/y：CONFIG 节点完成数 / 总数
+ * - 已接入 x/y：未归档绑定覆盖的模型数 / 本次开通的模型数
+ * - 已取消：取消状态的节点数（当前节点状态机没有「取消」，恒为 0，保留原型字段）
+ * - 必要商务：CONTRACT 节点是否全部完成
+ * 没有发起过开通时整块不显示——空块比没有更容易误读。
+ */
+const ONBOARDING_DONE_STATES = ["COMPLETED", "DONE"];
+const onboardingSummary = computed(() => {
+  const current = flow.value;
+  if (!current) return undefined;
+  const done = (status: string) => ONBOARDING_DONE_STATES.includes(status);
+  const config = current.nodes.filter(node => node.key === "CONFIG");
+  const contract = current.nodes.filter(node => node.key === "CONTRACT");
+  const boundModels = new Set(current.links.filter(link => !link.archived).map(link => link.standard_model_id));
+  const openingModels = new Set(current.models.map(model => model.standard_model_id));
+  const pending = current.nodes.find(node => node.status === "IN_PROGRESS") || current.nodes.find(node => !done(node.status));
+  return {
+    id: current.id,
+    techDone: config.filter(node => done(node.status)).length,
+    techTotal: config.length,
+    boundCount: boundModels.size,
+    modelCount: openingModels.size,
+    canceled: current.nodes.filter(node => node.status === "CANCELED" || node.status === "CANCELLED").length,
+    contractDone: contract.length > 0 && contract.every(node => done(node.status)),
+    assignee: pending?.assignee_name || "",
+  };
+});
+
+function linkActionLabel(action: string) {  return CUSTOMER_LINK_ACTION_LABELS[action] ?? action;
 }
 
 function linkActionTagType(action: string): "primary" | "danger" | "warning" | "success" {
@@ -999,7 +1030,7 @@ void loadProfile();
 // 不在这里无条件 loadModels()：直接落在 `?tab=onboarding` 时不该打 resource-links。
 // 懒加载统一由下面的 watch(immediate) 驱动 —— 初始 Tab 是 models 时它会在首帧就触发。
 watch(activeTab, tab => {
-  if (tab === "models") void loadModels();
+  if (tab === "models") { void loadModels(); void loadFlow(); }
   if (tab === "onboarding") void loadFlow();
   if (tab === "quotes") void loadQuotes();
   if (tab === "records") void loadLogs();
@@ -1052,6 +1083,16 @@ function backToList() {
 
     <!-- ============ Tab 1 · 接入模型 ============ -->
     <template v-if="activeTab === 'models'">
+      <div v-if="onboardingSummary" class="flow-brief" aria-label="开通办理摘要">
+        <div class="flow-brief-main">
+          当前定位：<span class="mono">{{ onboardingSummary.id }}</span> · 技术 {{ onboardingSummary.techDone }}/{{ onboardingSummary.techTotal }}
+          · 已接入 {{ onboardingSummary.boundCount }}/{{ onboardingSummary.modelCount }}
+          · 已取消 {{ onboardingSummary.canceled }}
+          · 必要商务：{{ onboardingSummary.contractDone ? "已完成" : "待完成" }}
+          <template v-if="onboardingSummary.assignee"> · 办理人 {{ onboardingSummary.assignee }}</template>
+        </div>
+        <el-button link type="primary" @click="selectTab('onboarding')">办理原技术批次</el-button>
+      </div>
       <el-alert v-if="modelError" :title="modelError" type="error" show-icon :closable="false" class="block-gap" />
       <div class="model-filterbar">
         <label>模型公司<el-select v-model="modelFilters.company" clearable placeholder="全部" aria-label="模型公司" style="width:150px"><el-option v-for="company in modelCompanies" :key="company" :label="company" :value="company" /></el-select></label>
@@ -1812,6 +1853,9 @@ function backToList() {
 .model-filterbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}.model-filterbar label{display:inline-flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}
 .cell-main { font-weight: 600; }
 .cell-sub { color: var(--app-text-muted); font-size: 12px; margin-top: 2px; }
+/* 原型 3.9b 的办理摘要：红字块 + 右侧「办理原技术批次」。 */
+.flow-brief{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 12px;padding:8px 12px;border-radius:8px;border:1px solid var(--el-color-danger-light-7);background:var(--el-color-danger-light-9);color:var(--el-color-danger);font-size:12px}
+.flow-brief-main{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .stack-tag { margin: 0 6px 4px 0; }
 .card { border: 1px solid var(--el-border-color-light); border-radius: 10px; padding: 18px 20px; margin-bottom: 18px; background: var(--el-bg-color); }
 .card-title { margin: 0; font-size: 15px; font-weight: 600; }

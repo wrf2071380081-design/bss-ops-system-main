@@ -22,7 +22,7 @@ import (
 // `workbenchInboxSource`（6 分支 UNION）→ `FlowOwners` 批量补 kind/owner → deeplink 成型。
 //
 // 两个断言：
-//   - 客户开通节点 → `/internal/customers/{customer_profile.id}?tab=onboarding`
+//   - 客户开通节点 → `/internal/customers/{customer_profile.id}?tab=models`
 //   - 供应商办理节点 → **逐字等于**改动前的 `/internal/suppliers?keyword=<供应商名>`
 //     （供应商侧一行代码都没动，这里是回归钉子）
 func TestWorkbenchInboxOnboardingNodeDeeplinkByKind(t *testing.T) {
@@ -116,7 +116,7 @@ VALUES ($1, 'PREP', 'IN_PROGRESS', TRUE, $2) RETURNING id`, supplierFlowID, staf
 	if !ok {
 		t.Fatalf("客户节点待办未出现在收件箱里（flow=%d）", customerFlowID)
 	}
-	wantCustomer := fmt.Sprintf("/internal/customers/%d?tab=onboarding", customer.ID)
+	wantCustomer := fmt.Sprintf("/internal/customers/%d?tab=models", customer.ID)
 	if gotCustomer.Deeplink != wantCustomer {
 		t.Fatalf("客户节点 deeplink got %q want %q", gotCustomer.Deeplink, wantCustomer)
 	}

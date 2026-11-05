@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow, type CustomerWorkspaceRow } from "../../../api/customerWorkspace";
+import { customerDetailApi } from "../../../api/customerDetail";
 import { customerQuotesApi } from "../../../api/customerQuotes";
 import { quoteApprovalApi } from "../../../api/customerQuoteApproval";
 import { quoteCandidatesApi, type ResourceQuoteCandidate } from "../../../api/quoteCandidates";
@@ -14,7 +15,6 @@ import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
 import { useSessionStore } from "../../../stores/session";
 import CustomerTransferDialog from "./CustomerTransferDialog.vue";
-import CustomerCreateWizard from "./CustomerCreateWizard.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -158,6 +158,8 @@ const approvalRows = ref<CustomerApprovalRow[]>([]);
 const form = reactive({
   customerId: "",
   customerName: "",
+  /** 原型里客户不是从客户管理新建的，而是在报价单「关联客户」选「+ 新建客户」时顺手建出来。 */
+  isNewCustomer: false,
   ourCompany: "根公司",
   region: "CN",
   currency: "CNY",
@@ -197,9 +199,17 @@ const customerOptions = computed(() => rows.value.map(row => ({
   id: String(row.id), name: row.name, region: row.region,
   currency: row.settlement_currency, owner: row.owner_name,
 })));
-const filteredCustomers = computed(() => customerOptions.value);
+/** 下拉首项「+ 新建客户」：报价单是客户进入系统的唯一入口。 */
+const NEW_CUSTOMER_ID = "__new__";
+const filteredCustomers = computed(() => [{ id: NEW_CUSTOMER_ID, name: "+ 新建客户", region: "CN", currency: "CNY", owner: "" }, ...customerOptions.value]);
 
 function onCustomerChange(customerId: string) {
+  if (customerId === NEW_CUSTOMER_ID) {
+    form.isNewCustomer = true;
+    form.customerName = "";
+    return;
+  }
+  form.isNewCustomer = false;
   const option = customerOptions.value.find(item => item.id === customerId);
   if (!option) { form.customerName = ""; return; }
   form.customerName = option.name;
@@ -214,6 +224,7 @@ function startNewQuote(row?: CustomerWorkspaceRow) {
   quoteView.value = "edit";
   form.customerId = row ? String(row.id) : "";
   form.customerName = "";
+  form.isNewCustomer = false;
   form.region = row?.region || "CN";
   form.currency = row?.settlement_currency || "CNY";
   form.quoteNo = "";
@@ -346,7 +357,9 @@ function confirmPicker() {
 }
 
 function validateBeforeSubmit() {
-  if (!positiveId(form.customerId)) return "请先选择关联客户。";
+  if (form.isNewCustomer) {
+    if (!form.customerName.trim()) return "请填写新客户名称。";
+  } else if (!positiveId(form.customerId)) return "请先选择关联客户。";
   if (!lines.value.length) return "请至少添加一个模型。";
   const bad = lines.value.find(line => !positiveId(line.resourceId) || !isDecimalAmount(line.price));
   if (bad) return `${bad.modelName} / ${bad.priceItemLabel} 的报价单价必须是大于 0 的普通十进制字符串。`;
@@ -354,15 +367,38 @@ function validateBeforeSubmit() {
 }
 
 const submitting = ref(false);
+/**
+ * 新客户先落档案再出报价：客户档案要销售归属（owner_sales_operator_id），取当前登录人。
+ * 同名客户后端直接 409，交给下面统一展示后端文案，不自己编。
+ */
+async function ensureCustomer(): Promise<string> {
+  if (!form.isNewCustomer) return form.customerId;
+  const operatorId = session.user?.staffId;
+  if (!operatorId) throw new Error("当前登录身份缺少销售归属，无法新建客户；请改用正式内部账号，或先在客户管理选择已有客户。");
+  const profile = await customerDetailApi.createCustomer({
+    legal_name: form.customerName.trim(),
+    subject_type: "COMPANY",
+    region: form.region,
+    settlement_currency: form.currency,
+    owner_sales_operator_id: operatorId,
+    reason: "客户报价单新建客户",
+  });
+  const customerId = String(profile.id);
+  form.customerId = customerId;
+  form.isNewCustomer = false;
+  void loadCustomers();
+  return customerId;
+}
 async function saveDraft(exportAfter: boolean, submitAfter = false) {
   const invalid = validateBeforeSubmit();
   if (invalid) { ElMessage.error(invalid); return; }
   if (submitting.value) return;
   submitting.value = true;
   try {
+    const customerId = await ensureCustomer();
     const validTo = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
     const result = await customerQuotesApi.generateResource({
-      customerId: form.customerId,
+      customerId,
       validTo,
       items: lines.value.map(line => ({ resourceId: line.resourceId, priceItemKey: line.priceItemKey, unitPrice: line.price })),
     });
@@ -440,13 +476,6 @@ function openDetail(row: CustomerWorkspaceRow) {
   void router.push({ path: `/internal/customers/${row.id}`, query: { tab: "models" } });
 }
 
-// 建客户向导（B3b 第 2 项）：建客户 + 发起开通两步，组件内部处理失败恢复。
-const createVisible = ref(false);
-function onCustomerCreated() {
-  // 建完刷新列表（新客户排在最前）；向导自己会跳到 Step2 发起开通。
-  void loadCustomers();
-}
-
 // 移交：逻辑全部收进 CustomerTransferDialog（B3b 第 4 项），这里只负责"对谁移交"与刷新。
 const transferVisible = ref(false);
 const transferTarget = ref<CustomerWorkspaceRow>();
@@ -480,7 +509,6 @@ onMounted(async () => {
         <button class="tab" :class="{ active: activeTab === 'quote' }" @click="activeTab = 'quote'">客户报价单</button>
       </div>
       <div class="tabbar-actions">
-        <el-button v-if="activeTab === 'list' && canTransfer" @click="createVisible = true">新建客户</el-button>
         <el-button v-if="activeTab === 'list' && canQuote" type="primary" @click="startNewQuote()">新建报价</el-button>
       </div>
     </div>
@@ -584,15 +612,15 @@ onMounted(async () => {
         <div class="linked">
           <label class="linked-label">关联客户</label>
           <el-select v-model="form.customerId" filterable clearable placeholder="搜索客户名称" class="linked-input" @change="onCustomerChange">
-            <el-option v-for="item in filteredCustomers" :key="item.id" :label="`${item.name} · ${regionText(item.region)} · ${item.owner}`" :value="item.id" />
+            <el-option v-for="item in filteredCustomers" :key="item.id" :value="item.id" :label="item.id === NEW_CUSTOMER_ID ? '+ 新建客户' : `${item.name} · ${regionText(item.region)} · ${item.owner}`" />
           </el-select>
-          <span class="linked-hint">每份报价关联一个客户；新客户首次成功导出时入库</span>
+          <span class="linked-hint">每份报价关联一个客户；选「+ 新建客户」即在本单里建档</span>
         </div>
 
         <div class="card">
           <h3 class="card-title">报价信息</h3>
           <div class="form-grid">
-            <div class="field"><label>客户名称</label><el-input v-model="form.customerName" disabled placeholder="选择关联客户后自动带出" /></div>
+            <div class="field"><label>客户名称</label><el-input v-model="form.customerName" :disabled="!form.isNewCustomer" :placeholder="form.isNewCustomer ? '填写新客户名称' : '选择关联客户后自动带出'" /></div>
             <div class="field"><label>我方公司</label><el-input v-model="form.ourCompany" disabled /></div>
             <div class="field">
               <label>国内/海外业务区域</label>
@@ -779,9 +807,6 @@ onMounted(async () => {
         <el-button type="primary" @click="confirmPicker">加入报价（{{ pickerSelected.size }}）</el-button>
       </template>
     </el-dialog>
-
-    <!-- 新建客户向导（建客户 + 发起开通两步） -->
-    <CustomerCreateWizard v-model:visible="createVisible" @created="onCustomerCreated" />
 
     <!-- 移交客户（共用弹窗组件） -->
     <CustomerTransferDialog

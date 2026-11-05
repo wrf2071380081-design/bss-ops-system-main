@@ -152,10 +152,37 @@ func (s *InboxService) Inbox(ctx context.Context, q InboxQuery, viewerID int64) 
 	}
 	for i := range list {
 		list[i].AssigneeRole = inboxAssigneeRole(list[i])
+		list[i].Title = inboxTitle(list[i])
 		list[i].Deeplink = inboxItemDeeplink(list[i])
 		list[i].Readable = list[i].BizType == "NOTICE" && list[i].State == "READ" && q.AssigneeID == viewerID
 	}
 	return &InboxResult{List: list, Total: total, Page: q.Page, Size: q.Size}, nil
+}
+
+// inboxTitle 把办理节点的原始 node_key 翻成待办标题。
+//
+// 视图 `v_work_item` 里 title 直接取 onboarding_node.node_key（CONFIG / CONTRACT），
+// 待办列表上就显示成「CONFIG」。原型 3.9c 的写法是「客户模型开通 / 客户名」。
+// 改视图会牵动 `workbench_inbox.go` 里按 `title IN ('CONFIG','CONTRACT')` 写的排除
+// SQL，所以只在**显示值**上翻译，不动视图与那条件。
+func inboxTitle(item InboxItem) string {
+	if item.BizType != "ONBOARDING_NODE" {
+		return item.Title
+	}
+	customer := item.FlowKind == "CUSTOMER"
+	switch item.Title {
+	case "CONFIG":
+		if customer {
+			return "客户模型开通"
+		}
+		return "供应资源接入"
+	case "CONTRACT":
+		if customer {
+			return "客户商务办理"
+		}
+		return "合同与授信办理"
+	}
+	return item.Title
 }
 
 // attachFlowOwners 给 ONBOARDING_NODE 行补上流程主体类型与主体 id。
@@ -271,10 +298,12 @@ func inboxDeeplink(item InboxItem) string {
 	case "PLAN":
 		return fmt.Sprintf("/internal/model-plaza/%d", item.BizID)
 	case "ONBOARDING_NODE":
-		// 客户开通节点：落到客户详情「档案与办理」Tab（?tab=onboarding）。
+		// 客户开通待办：按走查手册 3.9c 落到客户详情「接入模型」Tab。
+		// 原型把"技术批次 / 已接入 / 必要商务"这组办理摘要放在接入模型页顶部，
+		// 从待办点进来的人要看的是"这个客户还差哪些模型没接上"，不是档案表单。
 		// owner_id 是 customer_profile.id（迁移 000050 已把注释纠偏为这个语义）。
 		if item.FlowKind == "CUSTOMER" && item.FlowOwnerID > 0 {
-			return fmt.Sprintf("/internal/customers/%d?tab=onboarding", item.FlowOwnerID)
+			return fmt.Sprintf("/internal/customers/%d?tab=models", item.FlowOwnerID)
 		}
 		// 供应商节点（以及取不到 kind 的防御分支）保持原有行为，一字不改。
 		// 旧版通用办理节点没有独立页面，落到供应商列表并按供应商名过滤。
