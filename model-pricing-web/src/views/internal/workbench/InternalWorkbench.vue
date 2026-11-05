@@ -259,8 +259,14 @@ async function openItem(item: InboxItemDTO) {
     await jumpToHandling(item);
     return;
   }
-  if (["SUBMISSION_APPROVAL", "SUBMISSION_CONTRACT"].includes(item.biz_type)) {
-    selectedFlow.value = { id: String(item.biz_id), node: item.biz_type !== "SUBMISSION_APPROVAL" };
+  // 申报审批按原型走独立页（可筛选模型、逐模型摆开看、审批完回供应商记录）；
+  // 合同与授信仍是「办理」，继续用办理弹窗（那里要嵌 F12 合同授信面板）。
+  if (item.biz_type === "SUBMISSION_APPROVAL") {
+    await router.push({ path: `/internal/submissions/${item.biz_id}` });
+    return;
+  }
+  if (item.biz_type === "SUBMISSION_CONTRACT") {
+    selectedFlow.value = { id: String(item.biz_id), node: true };
     return;
   }
   if (item.biz_type === "NOTICE") {

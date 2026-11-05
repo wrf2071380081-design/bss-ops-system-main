@@ -2,12 +2,14 @@ import {apiRequest} from './http';
 import {standardModelVersion} from './standardModels.contract';
 export interface SubmissionFlowView {
  id:string;supplier_id:string;supplier_name:string;revision:string;status:string;kind:string;region:string;first_model:boolean;can_approve:boolean;can_handle:boolean;
- rows:Array<{id:string;model_id:string;model_name:string;interface_model_id:string;coefficient:string;status:string;resource_id:string;decision?:'PENDING'|'APPROVED'|'REJECTED'}>;
+ rows:Array<{id:string;model_id:string;model_name:string;interface_model_id:string;coefficient:string;status:string;resource_id:string;decision?:'PENDING'|'APPROVED'|'REJECTED';company?:string;model_type?:string}>;
  nodes:Array<{id:string;key:string;status:string;assignee_id:string;assignee_name:string}>;
  flow_id:string;flow_revision:string;selected_node_id:string;can_handle_contract:boolean;can_complete_contract:boolean;
  created_at:string;submitted_at:string|null;
   /** 审批结论时间与审批人：仅供应商申报历史返回（取 APPROVE/REJECT 操作记录）。 */
   approved_at?:string|null;approver?:string;
+  /** 逐模型决定的派生结论：通过 / 部分通过 / 不通过；未决策时为空。 */
+  approval_result?:string;
 }
 export interface SupplierProgressNode {resource_id:string;submission_id:string;node_id:string;key:string;status:string;assignee_id:string;assignee_name:string;row_status:string}
 export const submissionFlowsApi={

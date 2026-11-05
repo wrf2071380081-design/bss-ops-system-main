@@ -24,6 +24,9 @@ type nativeFlowRow struct {
 	Status         string `json:"status"`
 	ResourceID     string `json:"resource_id"`
 	Decision       string `json:"decision"`
+	// Company / ModelType 给审批页的「模型公司 / 模型类型」筛选（原型审批页有这两个筛选）。
+	Company   string `json:"company"`
+	ModelType string `json:"model_type"`
 }
 type nativeFlowView struct {
 	ID                  string           `json:"id"`
@@ -49,6 +52,9 @@ type nativeFlowView struct {
 	// 只在供应商申报历史里填充，供「审批记录」表展示。
 	ApprovedAt          *time.Time       `json:"approved_at,omitempty"`
 	Approver            string           `json:"approver,omitempty"`
+	// ApprovalResult 是逐模型决定的派生结论：通过 / 部分通过 / 不通过（未决定为空）。
+	// 原型列表直接显示「部分通过」，而 submission.status 只能表达 APPROVED/PROCESSING。
+	ApprovalResult string `json:"approval_result,omitempty"`
 }
 type nativeFlowNode struct {
 	ID           string `json:"id"`
@@ -121,7 +127,7 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 	if err := r.raw.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.operation_log l JOIN public.onboarding_node n ON n.id::text=l."after"->>'node_id' JOIN public.onboarding_flow f ON f.id=n.flow_id WHERE l.entity_type='submission' AND l.entity_id=$1 AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND n.enabled AND n.status='IN_PROGRESS' AND n.assignee_id=$2 AND f.status='PROCESSING' AND f.current_node='CONFIG')`, id, actor).Scan(&v.CanHandle); err != nil {
 		return nil, err
 	}
-	rows, err := r.raw.QueryContext(ctx, `SELECT sr.id::text,sr.standard_model_id::text,m.name,sr.supplier_model_name,sr.coefficient::text,sr.row_status,coalesce(sr.resource_id::text,''),sr.decision FROM public.submission_row sr JOIN public.standard_model m ON m.id=sr.standard_model_id WHERE sr.submission_id=$1 ORDER BY sr.id`, id)
+	rows, err := r.raw.QueryContext(ctx, `SELECT sr.id::text,sr.standard_model_id::text,m.name,sr.supplier_model_name,sr.coefficient::text,sr.row_status,coalesce(sr.resource_id::text,''),sr.decision,coalesce(m.company,''),coalesce(m.model_type,'') FROM public.submission_row sr JOIN public.standard_model m ON m.id=sr.standard_model_id WHERE sr.submission_id=$1 ORDER BY sr.id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -129,14 +135,47 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 	v.Rows = []nativeFlowRow{}
 	for rows.Next() {
 		var row nativeFlowRow
-		if err := rows.Scan(&row.ID, &row.ModelID, &row.ModelName, &row.InterfaceModel, &row.Coefficient, &row.Status, &row.ResourceID, &row.Decision); err != nil {
+		if err := rows.Scan(&row.ID, &row.ModelID, &row.ModelName, &row.InterfaceModel, &row.Coefficient, &row.Status, &row.ResourceID, &row.Decision, &row.Company, &row.ModelType); err != nil {
 			return nil, err
 		}
 		v.Rows = append(v.Rows, row)
 	}
-	return &v, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	v.ApprovalResult = approvalResultOf(v.Status, v.Rows)
+	return &v, nil
 }
 func mustFlowInt(s string) int64 { n, _ := strconv.ParseInt(s, 10, 64); return n }
+
+// approvalResultOf 把逐模型决定折成一句结论。
+// 与原型一致：只要有一个不通过就是「部分通过」（全不通过才叫「不通过」）。
+// 整单驳回时行上不会写逐模型决定，所以要看单据状态兜底成「不通过」。
+func approvalResultOf(status string, rows []nativeFlowRow) string {
+	approved, rejected := 0, 0
+	for _, row := range rows {
+		switch row.Decision {
+		case "APPROVED":
+			approved++
+		case "REJECTED":
+			rejected++
+		}
+	}
+	if approved+rejected == 0 {
+		if status == "REJECTED" {
+			return "不通过"
+		}
+		return ""
+	}
+	switch {
+	case rejected == 0:
+		return "通过"
+	case approved == 0:
+		return "不通过"
+	default:
+		return "部分通过"
+	}
+}
 
 // One registered entry for real B decisions. Old stage approve/simulate routes
 // remain absent. Writes are authenticated and share public idempotency commit.

@@ -14,6 +14,7 @@ import PriceBookList from "../views/internal/pricing/PriceBookList.vue";
 import PricingPolicyList from "../views/internal/pricing/PricingPolicyList.vue";
 import SupplierWorkspace from "../views/internal/suppliers/SupplierWorkspace.vue";
 import SupplierAccessModels from "../views/internal/suppliers/SupplierAccessModels.vue";
+import SupplierSubmissionReview from "../views/internal/suppliers/SupplierSubmissionReview.vue";
 import SupplierEntityList from "../views/internal/suppliers/SupplierEntityList.vue";
 import CustomerWorkspace from "../views/internal/customers/CustomerWorkspace.vue";
 import CustomerDetail from "../views/internal/customers/CustomerDetail.vue";
@@ -126,6 +127,22 @@ export const internalRoutes: RouteRecordRaw = {
         title: "供应商主体档案",
         menu: false,
         order: 51,
+      },
+    },
+    {
+      // 申报审批独立页（原型：工作台待办 → 供应商管理 / {供应商} / 申报与审批记录 / {类型}申请）。
+      // routeKey 用 internal.workbench（无模块权限点）：审批人只要能看到待办，就必须打得开这一页；
+      // 挂 M3:V 会把「有 can_approve_supplier 但没有供应商模块权限」的账号挡在门外。
+      path: "submissions/:submissionId",
+      component: SupplierSubmissionReview,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.workbench",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.workbench"],
+        title: "申报审批",
+        menu: false,
+        order: 53,
       },
     },
     {

@@ -7,7 +7,6 @@ import type { SupplierEntityDTO, SupplierEntityForm, SupplierQualificationDTO } 
 import { resourcesApi } from "../../../api/resources";
 import { buildResourceQuery, resourceCacheDisplay, resourceMetricDisplay, resourceRegionLabels, resourceStateLabels } from "../../../api/resources.contract";
 import {submissionFlowsApi,type SubmissionFlowView,type SupplierProgressNode} from '../../../api/submissionFlows';
-import SubmissionFlowDialog from '../workbench/SubmissionFlowDialog.vue';
 import { supplierSourceOperationsApi } from "../../../api/supplierSourceOperations";
 import type { SourceOperation } from "../../../api/sourceOperations.contract";
 import { sourceOperationLocation, supplierOperationCategories, supplierOperationCategoryLabels, supplierOperationLabel, type SourceOperationType } from "../../../api/sourceOperations.contract";
@@ -56,7 +55,7 @@ const operationCategory = ref<SourceOperationType | "">("");
 const operationDetail = ref<SourceOperation>(), operationDetailOpen = ref(false);
 const profileAnchor = ref<HTMLElement>(), qualificationsAnchor = ref<HTMLElement>(), f12Anchor = ref<HTMLElement>();
 const pendingQuotes = ref<SubmissionFlowView[]>([]), quotePage = ref(1), quoteTotal = ref(0), quoteLoading = ref(false), quoteError = ref("");
-const progress=ref<SupplierProgressNode[]>([]),progressError=ref(''),flowDetail=ref('');
+const progress=ref<SupplierProgressNode[]>([]),progressError=ref('');
 const nodeLabels:Record<string,string>={CONFIG:'测试与资源配置',CONTRACT:'合同与授信'};
 let progressSequence=0;
 const nodeStatusLabels:Record<string,string>={WAITING_PREDECESSOR:'等待前序',IN_PROGRESS:'办理中',COMPLETED:'已完成',CANCELED:'已取消',CANCELLED:'已取消'};
@@ -400,7 +399,8 @@ function onTabChange(tab: string | number) {
 const operationLabel = supplierOperationLabel;
 function changeOperationCategory() { operationPage.value = 1; void loadOperations(); }
 
-function openQuote(quote: SubmissionFlowView) { flowDetail.value=quote.id; }
+// 原型里「详情」是一张独立页（可筛选模型、逐模型勾选审批）。
+function openQuote(quote: SubmissionFlowView) { void router.push({ path: `/internal/submissions/${quote.id}` }); }
 function openOperation(row: SourceOperation) {
   operationDetail.value = row; operationDetailOpen.value = true;
 }
@@ -464,7 +464,7 @@ function onSupplierChanged() {
   ++supplierEpoch;
   request?.abort(); profileRequest?.abort(); qualificationRequest?.abort(); operationRequest?.abort(); quoteRequest?.abort();
   profile.value = undefined; profileLoading.value = false; profileError.value = "";
-  progress.value=[];progressError.value='';flowDetail.value='';
+  progress.value=[];progressError.value='';
   profileFormOpen.value = false; profileSaving.value = false; reloadingProfileConflict.value = false; profileSaveError.value = ""; profileSaveConflict.value = false;
   qualifications.value = []; qualificationTotal.value = 0; qualificationPage.value = 1; qualificationLoading.value = false; qualificationError.value = ""; qualificationMetadataSupported.value = null;
   qualificationDialogOpen.value = false; qualificationSaving.value = false; qualificationSubmittingError.value = ""; qualificationDownloading.value = "";
@@ -478,7 +478,19 @@ function onSupplierChanged() {
   else if (activeTab.value === "operations") void loadOperations();
   else if (activeTab.value === "quotes") void loadQuotes();
 }
-onMounted(() => { void load(); if (queryString(route.query.tab) === "profile") void showBusinessSection(queryString(route.query.section)); });
+onMounted(() => {
+  // 审批页审批完会回到 ?tab=quotes：这里要把页签落到「申报与审批记录」并把数据拉起来，
+  // 否则用户回到供应商页看到的是「接入模型」，会以为审批没生效。
+  const tab = queryString(route.query.tab);
+  if (["models", "profile", "quotes", "operations"].includes(tab)) {
+    activeTab.value = tab;
+    if (tab === "quotes") void loadQuotes();
+    if (tab === "profile") void loadProfile();
+    if (tab === "operations") void loadOperations();
+  }
+  void load();
+  if (tab === "profile") void showBusinessSection(queryString(route.query.section));
+});
 watch(supplierID, onSupplierChanged);
 onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(); qualificationRequest?.abort(); operationRequest?.abort(); quoteRequest?.abort(); });
 </script>
@@ -594,7 +606,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
                 <el-table-column label="模型数量" width="100"><template #default="{ row }">{{ row.rows.length }}</template></el-table-column>
                 <el-table-column label="申请时间" width="180"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column>
                 <el-table-column label="审批时间" width="180"><template #default="{ row }">{{ row.approved_at ? formatDateTime(row.approved_at) : '未记录' }}</template></el-table-column>
-                <el-table-column label="审批结果" width="110"><template #default="{ row }">{{ quoteStatusLabel(row.status) }}</template></el-table-column>
+                <el-table-column label="审批结果" width="110"><template #default="{ row }">{{ row.approval_result || "—" }}</template></el-table-column>
                 <el-table-column label="审批人" width="110"><template #default="{ row }">{{ row.approver || '未记录' }}</template></el-table-column>
                 <el-table-column label="详情" width="100"><template #default="{ row }"><el-button link type="primary" @click="openQuote(row)">查看报价</el-button></template></el-table-column>
               </el-table>
@@ -648,7 +660,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
     </el-form>
     <template #footer><el-button :disabled="qualificationSaving || qualificationReloading" @click="qualificationDialogOpen = false">取消</el-button><el-button type="primary" :loading="qualificationSaving" :disabled="qualificationSaving || qualificationReloading || qualificationConflict && !qualificationConflictReady" @click="saveQualification">{{ qualificationConflictReady ? '按最新修订重试' : '保存资质' }}</el-button></template>
   </el-dialog>
-    <SubmissionFlowDialog v-if="flowDetail" :id="flowDetail" @close="flowDetail=''" @changed="loadQuotes();loadProgress()" />
+
     <el-dialog v-if="reportsVisible && reportsRow" v-model="reportsVisible" :title="`${reportsRow.model_name} · 测试列表`" width="min(1120px, 96vw)" append-to-body>
       <p class="muted">{{ reportsRow.supplier_model_id }} · 每次测试单独留档</p>
       <ResourceReportsPanel :resource-i-d="reportsRow.id" :current-report-i-d="reportsRow.test.report_id" />

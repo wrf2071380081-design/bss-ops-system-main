@@ -24,6 +24,8 @@ const flowContext=computed(()=>{const v=data.value;if(!v?.flow_id||!v.flow_revis
 const nodeNames:Record<string,string>={CONFIG:'测试与资源配置',CONTRACT:'合同与授信'};
 const nodeStates:Record<string,string>={IN_PROGRESS:'办理中',WAITING_PREDECESSOR:'等待前序办理',COMPLETED:'已完成'};
 const decisionLabels:Record<string,string>={PENDING:'待决策',APPROVED:'通过',REJECTED:'不通过'};
+// 状态码直接印在弹窗抬头会露出 PENDING_APPROVAL 这种英文枚举，按原型翻成人话。
+const submissionStatusLabels:Record<string,string>={DRAFT:'草稿',PENDING_APPROVAL:'待审批',APPROVED:'已批准',REJECTED:'已驳回',PROCESSING:'办理中',COMPLETED:'已完成',WITHDRAWN:'已撤回'};
 function resetPicked(view:SubmissionFlowView){const next:Record<string,boolean>={};for(const row of view.rows){next[row.id]=row.decision==='APPROVED';}picked.value=next;}
 async function load(){request?.abort();const current=request=new AbortController();loading.value=true;error.value='';
  try{const [view,staff]=await Promise.all([submissionFlowsApi.get(props.id,props.node,current.signal),workbenchApi.people()]);if(active&&!current.signal.aborted){data.value=view;people.value=staff;if(view.can_approve)resetPicked(view);}}
@@ -40,7 +42,7 @@ watch(()=>[props.id,props.node],()=>{contractReady.value=false;void load();},{im
 <template>
  <el-dialog :model-value="true" :title="title" :width="isContract?'min(1120px,94vw)':'min(980px,94vw)'" :close-on-click-modal="false" :show-close="!busy" @close="!busy&&emit('close')">
   <div v-loading="loading"><el-alert v-if="error" :title="error" type="error" :closable="false"><el-button text :disabled="busy" @click="load">刷新办理信息</el-button></el-alert>
-   <template v-if="data"><p>{{ data.supplier_name }} · 申报 {{ data.id }} · 修订 {{ data.revision }} · {{ data.status }}</p>
+   <template v-if="data"><p>{{ data.supplier_name }} · 申报 {{ data.id }} · 修订 {{ data.revision }} · {{ submissionStatusLabels[data.status] || data.status }}</p>
     <p v-if="data.can_approve" class="decision-summary">通过 {{ approvedCount }} 个 · 不通过 {{ rejectedCount }} 个。勾选为通过，未勾选为不通过。</p>
     <el-table :data="data.rows">
      <el-table-column v-if="data.can_approve" label="决定" width="70"><template #default="{row}"><input type="checkbox" :checked="!!picked[row.id]" :aria-label="`通过模型 ${row.model_name}`" :disabled="busy" @change="picked={...picked,[row.id]:($event.target as HTMLInputElement).checked}"></template></el-table-column>
