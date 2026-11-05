@@ -10,7 +10,7 @@
  *  - 每个 Tab **首次进入才请求**（`loaded` 标记），来回切换不重复拉；也不做 v-show 全量预渲染；
  *  - 报价编辑器**不搬**（380 行，见工单坑 3）：「该客户报价」Tab 只读，新建报价跳回列表页复用编辑器。
  */
-import { computed, ref, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -23,7 +23,8 @@ import {
   type OnboardingFlowDTO,
   type OnboardingNodeDTO,
 } from "../../../api/customerDetail";
-import { customerWorkspaceApi, type CustomerQuoteRow } from "../../../api/customerWorkspace";
+import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow } from "../../../api/customerWorkspace";
+import { modelTypeLabels } from "../../../api/standardModels.contract";
 import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
 import { PERMISSIONS } from "../../../domain/permissions";
@@ -151,6 +152,15 @@ const justArchivedModel = ref(false);
  */
 const ARCHIVING_ACTIONS = new Set(["OFFLINE_CONFIRM"]);
 
+// 原型「接入模型」的筛选：模型公司 / 模型类型。
+const modelFilters = reactive({ company: "", modelType: "" });
+const modelCompanies = computed(() => [...new Set(modelRows.value.map(row => row.company).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN")));
+const filteredModelRows = computed(() => modelRows.value.filter(row =>
+  (!modelFilters.company || row.company === modelFilters.company)
+  && (!modelFilters.modelType || row.model_type === modelFilters.modelType)));
+function resetModelFilters() { Object.assign(modelFilters, { company: "", modelType: "" }); }
+// 系数按有效位展示（0.7200 → 0.72），与模型广场一致。
+const coefficientText = (raw: string) => raw && raw.includes(".") ? raw.replace(/0+$/, "").replace(/\.$/, "") : raw;
 const modelEmptyText = computed(() =>
   justArchivedModel.value
     ? "该模型来源已停用并归档，可到「操作记录」查看本次操作"
@@ -300,6 +310,7 @@ const nodeKeyText = (key: string) => ({ CONTRACT: "合同与授信", CONFIG: "�
 
 // ---------------- Tab3 该客户报价 ----------------
 const quoteRows = ref<CustomerQuoteRow[]>([]);
+const approvalRows = ref<CustomerApprovalRow[]>([]);
 const quoteLoading = ref(false);
 const quoteError = ref("");
 const quoteLoaded = ref(false);
@@ -311,6 +322,13 @@ async function loadQuotes() {
   try {
     const result = await customerWorkspaceApi.quotes({ customer_id: Number(customerId.value), page: 1, size: 200 });
     quoteRows.value = result.list;
+    // 原型「该客户报价」有「报价记录 + 报价审批」两张表；审批接口不带客户维度，
+    // 用本客户的报价单号反查，避免把别人的审批显示出来。
+    try {
+      const all = await customerWorkspaceApi.approvals();
+      const ids = new Set(result.list.map(row => row.id));
+      approvalRows.value = all.filter(row => ids.has(row.quote_id));
+    } catch { approvalRows.value = []; }
     quoteLoaded.value = true;
   } catch (value) {
     quoteError.value = message(value);
@@ -336,12 +354,24 @@ const logError = ref("");
 const logLoaded = ref(false);
 const logTotal = ref(0);
 
-async function loadLogs() {
-  if (logLoaded.value || logLoading.value) return;
+// 原型「操作记录」筛选：操作人 / 操作类型 / 操作时间。
+const logFilters = reactive({ operator: "", action: "", range: [] as string[] });
+const logActionOptions = computed(() => [...new Map(logRows.value.map(row => [row.action, row.action_label || row.action])).entries()]);
+const logOperatorOptions = computed(() => [...new Set(logRows.value.map(row => row.operator_name).filter(Boolean))]);
+function logRangeParams() {
+  const params: { from?: string; to?: string } = {};
+  if (logFilters.range[0]) params.from = new Date(`${logFilters.range[0]}T00:00:00`).toISOString();
+  if (logFilters.range[1]) { const end = new Date(`${logFilters.range[1]}T00:00:00`); end.setDate(end.getDate() + 1); params.to = end.toISOString(); }
+  return params;
+}
+async function loadLogs(force = false) {
+  if (!force && (logLoaded.value || logLoading.value)) return;
   logLoading.value = true;
   logError.value = "";
   try {
-    const result = await customerDetailApi.operationLogs(customerId.value, 1, 100);
+    const result = await customerDetailApi.operationLogs(customerId.value, 1, 100, undefined, {
+      operator: logFilters.operator.trim() || undefined, action: logFilters.action || undefined, ...logRangeParams(),
+    });
     logRows.value = result.list;
     logTotal.value = result.total;
     logLoaded.value = true;
@@ -351,6 +381,7 @@ async function loadLogs() {
     logLoading.value = false;
   }
 }
+function resetLogFilters() { logFilters.operator = ""; logFilters.action = ""; logFilters.range = []; void loadLogs(true); }
 
 const logDetail = ref<CustomerOperationLogDTO>();
 /** before/after 是 JSON 字符串：能解析就格式化，解析不了原样展示（不要让详情弹窗白屏）。 */
@@ -426,9 +457,15 @@ function backToList() {
     <!-- ============ Tab 1 · 接入模型 ============ -->
     <template v-if="activeTab === 'models'">
       <el-alert v-if="modelError" :title="modelError" type="error" show-icon :closable="false" class="block-gap" />
+      <div class="model-filterbar">
+        <label>模型公司<el-select v-model="modelFilters.company" clearable placeholder="全部" aria-label="模型公司" style="width:150px"><el-option v-for="company in modelCompanies" :key="company" :label="company" :value="company" /></el-select></label>
+        <label>模型类型<el-select v-model="modelFilters.modelType" clearable placeholder="全部" aria-label="模型类型" style="width:130px"><el-option v-for="(name, key) in modelTypeLabels" :key="key" :label="name" :value="key" /></el-select></label>
+        <el-button @click="resetModelFilters">重置</el-button>
+        <span v-if="modelRows.length" class="hint">共 {{ filteredModelRows.length }} / {{ modelRows.length }} 条</span>
+      </div>
       <el-table
         v-loading="modelLoading"
-        :data="modelRows"
+        :data="filteredModelRows"
         row-key="standard_model_id"
         class="grid"
         :row-class-name="({ row }: { row: CustomerModelServiceRow }) => row.service_state === '无可用来源' ? 'row-muted' : ''"
@@ -488,11 +525,26 @@ function backToList() {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="模型" min-width="200">
+        <el-table-column label="模型名称 / 官方 ID" min-width="210">
           <template #default="{ row }">
             <div class="cell-main">{{ row.model_name || `标准模型 #${row.standard_model_id}` }}</div>
-            <div class="cell-sub">部署节点 {{ row.region }}</div>
+            <div class="cell-sub">{{ row.official_id || "官方 ID 待补齐" }}</div>
           </template>
+        </el-table-column>
+        <el-table-column label="模型公司" width="130">
+          <template #default="{ row }">{{ row.company || "待补齐" }}</template>
+        </el-table-column>
+        <el-table-column label="模型类型" width="100">
+          <template #default="{ row }">{{ modelTypeLabels[row.model_type] || "待补齐" }}</template>
+        </el-table-column>
+        <el-table-column label="部署区域" width="100">
+          <template #default="{ row }">{{ row.region === "OVERSEAS" ? "海外" : row.region === "CN" ? "国内" : "—" }}</template>
+        </el-table-column>
+        <el-table-column label="客户报价系数" width="130">
+          <template #default><span class="hint">待核对</span></template>
+        </el-table-column>
+        <el-table-column label="采购系数" width="110">
+          <template #default="{ row }">{{ row.coefficient ? coefficientText(row.coefficient) : "—" }}</template>
         </el-table-column>
         <el-table-column label="模型服务状态" width="140">
           <template #default="{ row }">
@@ -640,11 +692,35 @@ function backToList() {
           </el-table-column>
         </el-table>
         <div class="hint foot">报价编辑器在「客户管理 → 客户报价单」，这里点「新建报价」会带着本客户跳过去。</div>
+
+        <div class="card-head sub-block">
+          <div class="card-head-left"><h3 class="card-title">报价审批</h3></div>
+        </div>
+        <el-table :data="approvalRows" size="small" class="grid" row-key="id" empty-text="暂无审批记录">
+          <el-table-column label="特价变更单" width="130"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
+          <el-table-column label="关联报价" width="120"><template #default="{ row }">{{ row.quote_id ? `#${row.quote_id}` : "—" }}</template></el-table-column>
+          <el-table-column label="审批结果" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.status === 'APPROVED' ? 'success' : row.status === 'REJECTED' ? 'danger' : 'warning'">
+                {{ ({ PENDING: "待审批", APPROVED: "已通过", REJECTED: "已驳回" } as Record<string, string>)[row.status] || row.status }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="申请原因" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "—" }}</template></el-table-column>
+          <el-table-column label="提交人" width="120"><template #default="{ row }">{{ row.created_by || "—" }}</template></el-table-column>
+          <el-table-column label="提交时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
+        </el-table>
       </div>
     </template>
 
     <!-- ============ Tab 4 · 操作记录 ============ -->
     <template v-if="activeTab === 'records'">
+      <div class="model-filterbar">
+        <label>操作人<el-select v-model="logFilters.operator" clearable filterable allow-create default-first-option placeholder="全部" aria-label="操作人" style="width:150px" @change="loadLogs(true)"><el-option v-for="name in logOperatorOptions" :key="name" :label="name" :value="name" /></el-select></label>
+        <label>操作类型<el-select v-model="logFilters.action" clearable placeholder="全部" aria-label="操作类型" style="width:170px" @change="loadLogs(true)"><el-option v-for="[action, label] in logActionOptions" :key="action" :label="label" :value="action" /></el-select></label>
+        <label>操作时间<el-date-picker v-model="logFilters.range" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始" end-placeholder="结束" aria-label="操作时间" style="width:250px" @change="loadLogs(true)" /></label>
+        <el-button @click="resetLogFilters">重置</el-button>
+      </div>
       <el-alert v-if="logError" :title="logError" type="error" show-icon :closable="false" class="block-gap" />
       <el-table v-loading="logLoading" :data="logRows" size="small" class="grid" row-key="id" empty-text="暂无操作记录">
         <el-table-column label="时间" width="180">
@@ -744,6 +820,8 @@ function backToList() {
 .tab { background: none; border: none; padding: 10px 2px; cursor: pointer; font-size: 14px; color: var(--app-text-secondary); border-bottom: 2px solid transparent; }
 .tab.active { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); font-weight: 600; }
 .grid { width: 100%; }
+.sub-block{margin-top:22px}
+.model-filterbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}.model-filterbar label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}
 .cell-main { font-weight: 600; }
 .cell-sub { color: var(--app-text-muted); font-size: 12px; margin-top: 2px; }
 .stack-tag { margin: 0 6px 4px 0; }

@@ -59,6 +59,11 @@ export interface CustomerProfileDTO {
 export interface CustomerModelServiceRow {
   standard_model_id: number;
   model_name: string;
+  /** 原型「接入模型」列：官方模型 ID / 模型公司 / 模型类型 / 采购系数（取 ACTIVE 优先的绑定资源）。 */
+  official_id: string;
+  company: string;
+  model_type: string;
+  coefficient: string;
   region: string;
   service_state: string;
   bound_count: number;
@@ -230,10 +235,12 @@ export const customerDetailApi = {
       url: `${basePath}/${customerIdParam(customerId)}/onboarding`, method: "GET", signal,
     }),
 
-  operationLogs: (customerId: string, page = 1, size = 20, signal?: AbortSignal) =>
+  /** filters 与原型「操作记录」的三个筛选一致：操作人 / 操作类型 / 时间区间（左闭右开）。 */
+  operationLogs: (customerId: string, page = 1, size = 20, signal?: AbortSignal,
+    filters?: { operator?: string; action?: string; from?: string; to?: string }) =>
     apiRequest<{ list: CustomerOperationLogDTO[]; total: number; page: number; size: number }>({
       url: `${basePath}/${customerIdParam(customerId)}/operation-logs`, method: "GET",
-      params: { page, size }, signal,
+      params: { page, size, ...(filters?.operator ? { operator: filters.operator } : {}), ...(filters?.action ? { action: filters.action } : {}), ...(filters?.from ? { from: filters.from } : {}), ...(filters?.to ? { to: filters.to } : {}) }, signal,
     }),
 
   /**

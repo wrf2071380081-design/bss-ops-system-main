@@ -16,6 +16,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -55,7 +56,15 @@ type CustomerOperationLogRow struct {
 }
 
 // ListOperationLogs 读该客户的操作记录：建客户（customer_profile） + 开通流程（onboarding_flow）。
-func (rt *CustomerWorkspaceRuntime) ListOperationLogs(ctx context.Context, customerID int64, page, size int) ([]CustomerOperationLogRow, int, error) {
+// OperationLogFilters 是原型的三个筛选：操作人 / 操作类型 / 时间区间（左闭右开）。
+type OperationLogFilters struct {
+	Operator string
+	Action   string
+	From     *time.Time
+	To       *time.Time
+}
+
+func (rt *CustomerWorkspaceRuntime) ListOperationLogs(ctx context.Context, customerID int64, page, size int, filters OperationLogFilters) ([]CustomerOperationLogRow, int, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -66,12 +75,29 @@ func (rt *CustomerWorkspaceRuntime) ListOperationLogs(ctx context.Context, custo
 	//   - 客户档案自身的动作（B1 建客户）
 	//   - 该客户的**所有**开通流程动作（B2 START / COMPLETE_CONTRACT / COMPLETE_CONFIG）
 	// onboarding_flow 的 owner_id 是 customer_profile.id（迁移 000050 已纠偏注释），不是遗留 customer 表。
-	const where = `((l.entity_type = 'customer_profile' AND l.entity_id = $1)
+	where := `((l.entity_type = 'customer_profile' AND l.entity_id = $1)
 	    OR (l.entity_type = 'onboarding_flow' AND l.entity_id IN (
 	          SELECT f.id FROM onboarding_flow f WHERE f.kind = 'CUSTOMER' AND f.owner_id = $1)))`
+	args := []any{customerID}
+	if filters.Operator != "" {
+		args = append(args, filters.Operator)
+		where += ` AND coalesce(l.operator_name_snapshot,'')=$` + strconv.Itoa(len(args))
+	}
+	if filters.Action != "" {
+		args = append(args, filters.Action)
+		where += ` AND l.action=$` + strconv.Itoa(len(args))
+	}
+	if filters.From != nil {
+		args = append(args, *filters.From)
+		where += ` AND l.created_at >= $` + strconv.Itoa(len(args))
+	}
+	if filters.To != nil {
+		args = append(args, *filters.To)
+		where += ` AND l.created_at < $` + strconv.Itoa(len(args))
+	}
 
 	var total int
-	if err := rt.raw.QueryRowContext(ctx, `SELECT count(*) FROM operation_log l WHERE `+where, customerID).Scan(&total); err != nil {
+	if err := rt.raw.QueryRowContext(ctx, `SELECT count(*) FROM operation_log l WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	if total == 0 {
@@ -85,7 +111,7 @@ SELECT l.id, l.entity_type, l.entity_id, l.action, COALESCE(l.operator_name_snap
   FROM operation_log l
  WHERE `+where+`
  ORDER BY l.created_at DESC, l.id DESC
- LIMIT $2 OFFSET $3`, customerID, size, (page-1)*size)
+ LIMIT $`+strconv.Itoa(len(args)+1)+` OFFSET $`+strconv.Itoa(len(args)+2), append(args, size, (page-1)*size)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -150,9 +176,27 @@ func (h *CustomerOperationLogHandler) ListCustomerOperationLogs(c *gin.Context) 
 		response.Error(c, customerRegistryErrToAppErr(err))
 		return
 	}
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
-	list, total, err := h.rt.ListOperationLogs(c.Request.Context(), id, page, size)
+	values, err := supplyQuery(c, "page", "size", "operator", "action", "from", "to")
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	page, _ := strconv.Atoi(values.Get("page"))
+	size, _ := strconv.Atoi(values.Get("size"))
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 100 {
+		size = 20
+	}
+	from, to, err := sourceOperationRange(values)
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	list, total, err := h.rt.ListOperationLogs(c.Request.Context(), id, page, size, OperationLogFilters{
+		Operator: values.Get("operator"), Action: values.Get("action"), From: from, To: to,
+	})
 	if err != nil {
 		response.Error(c, apperr.ErrSystem)
 		return

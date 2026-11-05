@@ -223,6 +223,39 @@ function applyMarginAll() {
   lines.value = lines.value.map(line => ({ ...line, margin: marginAll.value, price: priceFromMargin(line.basePrice, marginAll.value) }));
   ElMessage.success(`已按毛利率 ${marginAll.value} 统一 ${lines.value.length} 个模型`);
 }
+// 原型「统一报价系数」：报价系数 = 采购系数 + 小数增量，据此反推报价单价与毛利率。
+const coefficientDelta = ref("0.05");
+function quoteCoefficient(line: QuoteLine) {
+  const cost = Number(line.basePrice), coefficient = Number(line.coefficient), price = Number(line.price);
+  if (![cost, coefficient, price].every(Number.isFinite) || cost <= 0 || coefficient <= 0 || price <= 0) return "";
+  return ((price * coefficient) / cost).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+}
+// 行内「提示」：把踩线情况直接写在行上，别让人自己去算。
+function lineHint(line: QuoteLine) {
+  if (!isDecimalAmount(line.price)) return "待填报价";
+  const cost = Number(line.basePrice), price = Number(line.price);
+  if (![cost, price].every(Number.isFinite)) return "—";
+  if (price < cost) return "低于采购成本";
+  const margin = (price - cost) / price;
+  return margin < 0.1 ? `毛利率 ${(margin * 100).toFixed(1)}% 低于 10%` : "—";
+}
+function applyCoefficientAll() {
+  if (!isDecimalAmount(coefficientDelta.value)) { ElMessage.error("小数增量必须是合法小数，例如 0.05"); return; }
+  if (!lines.value.length) { ElMessage.warning("请先添加模型"); return; }
+  const delta = Number(coefficientDelta.value);
+  let applied = 0;
+  lines.value = lines.value.map(line => {
+    const cost = Number(line.basePrice), coefficient = Number(line.coefficient);
+    if (![cost, coefficient].every(Number.isFinite) || cost <= 0 || coefficient <= 0) return line;
+    const nextCoefficient = coefficient + delta;
+    if (nextCoefficient <= 0) return line;
+    const price = (cost / coefficient) * nextCoefficient;
+    const margin = (price - cost) / price;
+    applied += 1;
+    return { ...line, price: price.toFixed(8).replace(/0+$/, "").replace(/\.$/, ""), margin: margin.toFixed(6).replace(/0+$/, "").replace(/\.$/, "") };
+  });
+  ElMessage.success(`已按「采购系数 + ${delta}」统一 ${applied} 个价项`);
+}
 function removeLine(resourceId: string, priceItemKey: string) {
   lines.value = lines.value.filter(line => !(line.resourceId === resourceId && line.priceItemKey === priceItemKey));
 }
@@ -460,12 +493,13 @@ onMounted(async () => {
       </el-alert>
 
       <el-table v-loading="loading" :data="filteredRows" row-key="id" class="grid">
-        <el-table-column type="selection" width="44" />
-        <el-table-column label="客户名称" min-width="200">
+        <el-table-column label="客户名称" min-width="190">
           <template #default="{ row }">
             <div class="cell-main">{{ row.name }}</div>
-            <div class="cell-sub">销售 {{ row.owner_name }}</div>
           </template>
+        </el-table-column>
+        <el-table-column label="销售" width="110">
+          <template #default="{ row }">{{ row.owner_name || "未分配" }}</template>
         </el-table-column>
         <el-table-column label="国内/海外" width="100">
           <template #default="{ row }">{{ regionText(row.region) }}</template>
@@ -565,6 +599,10 @@ onMounted(async () => {
               <el-input v-model="marginAll" class="margin-input" placeholder="输入数值" />
               <span class="muted">%</span>
               <el-button @click="applyMarginAll">统一当前全部价项</el-button>
+              <span class="muted">统一报价系数</span>
+              <el-input v-model="coefficientDelta" class="margin-input" placeholder="小数增量" aria-label="报价系数小数增量" />
+              <span class="muted">= 采购系数 + 增量</span>
+              <el-button @click="applyCoefficientAll">统一报价系数</el-button>
             </div>
           </div>
 
@@ -585,6 +623,12 @@ onMounted(async () => {
             </el-table-column>
             <el-table-column label="报价单价" width="160">
               <template #default="{ row }"><el-input v-model="row.price" size="small" placeholder="必填" /></template>
+            </el-table-column>
+            <el-table-column label="报价系数" width="110" align="right">
+              <template #default="{ row }"><span class="mono">{{ quoteCoefficient(row) || "—" }}</span></template>
+            </el-table-column>
+            <el-table-column label="提示" min-width="170">
+              <template #default="{ row }"><span :class="{ warn: lineHint(row) !== '—' }">{{ lineHint(row) }}</span></template>
             </el-table-column>
             <el-table-column label="操作" width="80">
               <template #default="{ row }"><el-button link type="danger" @click="removeLine(row.resourceId, row.priceItemKey)">移除</el-button></template>
@@ -752,6 +796,7 @@ onMounted(async () => {
 .dialog-form { margin-top: 16px; }
 .form-error { margin-top: 14px; }
 .muted { color: var(--app-text-muted); font-size: 12px; }
+.warn { color: #b87327; }
 .mono { font-variant-numeric: tabular-nums; }
 @media (max-width: 1200px) { .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .foot-note { max-width: 100%; } .card-foot { flex-direction: column; align-items: stretch; } }
 </style>

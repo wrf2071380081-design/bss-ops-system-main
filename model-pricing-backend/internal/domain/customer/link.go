@@ -298,7 +298,11 @@ type RebindRecord struct {
 type CustomerModelServiceRow struct {
 	StandardModelID     int64
 	ModelName           string
+	OfficialID          string
+	Company             string
+	ModelType           string
 	Region              string
+	Coefficient         string
 	PrimaryState        string // 优先取 ACTIVE 行的状态；无 ACTIVE 时取最早一条绑定
 	BoundCount          int64
 	ActiveCount         int64
@@ -321,7 +325,11 @@ type CustomerModelServiceRow struct {
 type CustomerModelService struct {
 	StandardModelID int64    `json:"standard_model_id"`
 	ModelName       string   `json:"model_name"`
+	OfficialID      string   `json:"official_id"`
+	Company         string   `json:"company"`
+	ModelType       string   `json:"model_type"`
 	Region          string   `json:"region"`
+	Coefficient     string   `json:"coefficient"`
 	ServiceState    string   `json:"service_state"`
 	BoundCount      int64    `json:"bound_count"`
 	AvailableCount  int64    `json:"available_count"`
@@ -384,7 +392,11 @@ func (r CustomerModelServiceRow) Project() CustomerModelService {
 	out := CustomerModelService{
 		StandardModelID: r.StandardModelID,
 		ModelName:       r.ModelName,
+		OfficialID:      r.OfficialID,
+		Company:         r.Company,
+		ModelType:       r.ModelType,
 		Region:          r.Region, // 无绑定时为 ""（不是 null），见 CustomerModelService 注释
+		Coefficient:     r.Coefficient,
 		BoundCount:      r.BoundCount,
 		AvailableCount:  r.AvailableCount,
 		RiskFlags:       make([]string, 0, 3),

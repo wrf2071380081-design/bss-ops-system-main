@@ -65,7 +65,7 @@ func TestCustomerOperationLogsTimeline(t *testing.T) {
 	}
 
 	rt := NewCustomerWorkspaceRuntime(db)
-	list, total, err := rt.ListOperationLogs(ctx, profile.ID, 1, 20)
+	list, total, err := rt.ListOperationLogs(ctx, profile.ID, 1, 20, OperationLogFilters{})
 	if err != nil {
 		t.Fatalf("list operation logs: %v", err)
 	}

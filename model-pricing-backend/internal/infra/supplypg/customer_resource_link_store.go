@@ -402,15 +402,20 @@ WITH bound AS (
            count(*) FILTER (WHERE l.state = 'DISABLED')                  AS disabled_count,
            count(*) FILTER (WHERE l.state = 'SUPPLY_OFFLINE_PENDING')    AS offline_pending_count,
            (array_agg(l.state  ORDER BY (l.state = 'ACTIVE') DESC, l.id ASC))[1] AS primary_state,
-           (array_agg(r.region ORDER BY (l.state = 'ACTIVE') DESC, l.id ASC))[1] AS region
+           (array_agg(r.region ORDER BY (l.state = 'ACTIVE') DESC, l.id ASC))[1] AS region,
+           (array_agg(r.coefficient ORDER BY (l.state = 'ACTIVE') DESC, l.id ASC))[1] AS coefficient
       FROM %s l
       JOIN %s r ON r.id = l.resource_id
      WHERE l.customer_profile_id = $1 AND l.archived = FALSE
      GROUP BY l.standard_model_id
 )
 SELECT b.standard_model_id,
-       COALESCE(sm.name, '')  AS model_name,
-       COALESCE(b.region, '') AS region,
+       COALESCE(sm.name, '')        AS model_name,
+       COALESCE(sm.official_id, '') AS official_id,
+       COALESCE(sm.company, '')     AS company,
+       COALESCE(sm.model_type, '')  AS model_type,
+       COALESCE(b.region, '')       AS region,
+       COALESCE(b.coefficient::text, '') AS coefficient,
        b.primary_state,
        b.bound_count, b.active_count, b.disabled_count, b.offline_pending_count,
        (SELECT count(*)
@@ -436,7 +441,7 @@ SELECT b.standard_model_id,
 			primaryState sql.NullString
 		)
 		if err := rows.Scan(
-			&row.StandardModelID, &row.ModelName, &row.Region, &primaryState,
+			&row.StandardModelID, &row.ModelName, &row.OfficialID, &row.Company, &row.ModelType, &row.Region, &row.Coefficient, &primaryState,
 			&row.BoundCount, &row.ActiveCount, &row.DisabledCount, &row.OfflinePendingCount,
 			&row.AvailableCount,
 		); err != nil {
