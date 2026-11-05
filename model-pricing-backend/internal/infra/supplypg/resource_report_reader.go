@@ -43,7 +43,7 @@ func (r *ResourceReportReader) List(ctx context.Context, actorID, resourceID str
 		if tx == nil {
 			return supply.ErrDependencyUnavailable
 		}
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM `+r.table("test_report")+` p JOIN `+r.table("test_job")+` j ON j.id=p.test_job_id AND j.resource_id=p.resource_id WHERE p.resource_id=$1::bigint`, resourceID).Scan(&result.Total); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM `+r.table("test_report")+` p LEFT JOIN `+r.table("test_job")+` j ON j.id=p.test_job_id AND j.resource_id=p.resource_id WHERE p.resource_id=$1::bigint`, resourceID).Scan(&result.Total); err != nil {
 			return err
 		}
 		rows, err := tx.QueryContext(ctx, r.selectSQL()+` WHERE p.resource_id=$1::bigint ORDER BY p.tested_at DESC,p.id DESC LIMIT $2 OFFSET $3`, resourceID, size, (page-1)*size)
@@ -117,8 +117,9 @@ func (r *ResourceReportReader) OpenFile(ctx context.Context, actorID, resourceID
 func (r *ResourceReportReader) selectSQL() string {
 	report, job := r.table("test_report"), r.table("test_job")
 	resource, logs, staff := r.table("resource"), r.table("operation_log"), r.table("internal_staff")
-	return `SELECT p.id::text,p.resource_id::text,j.status,j.created_at,j.finished_at,p.tested_at,j.category,COALESCE(st.name,''),
-p.connection_passed,p.stress_passed,p.connection_ms::text,p.rps::text,p.tps::text,
+	// 外部上传的专项报告没有 test_job：状态与时间按报告自身落库事实兜底。
+	return `SELECT p.id::text,p.resource_id::text,COALESCE(j.status,'SUCCEEDED'),COALESCE(j.created_at,p.created_at),j.finished_at,p.tested_at,COALESCE(j.category,'UPLOADED'),COALESCE(st.name,''),
+COALESCE(p.source,''),p.connection_passed,p.stress_passed,p.connection_ms::text,p.rps::text,p.tps::text,
 p.cache_hit_tokens,p.cache_input_tokens,p.scene,p.report_format,
 EXISTS (SELECT 1 FROM ` + logs + ` e
   WHERE e.entity_type='resource' AND e.entity_id=p.resource_id AND e.action='RESOURCE_REVISION'
@@ -128,7 +129,7 @@ EXISTS (SELECT 1 FROM ` + logs + ` e
     AND e."after"->'test_evidence'->>'target_version'=latest.control->>'target_version'
     AND e."after"->'test_evidence'->>'origin_row_version'=latest.control->>'origin_row_version') AS target_matches,
 (NULLIF(BTRIM(p.report_file),'') IS NOT NULL OR NULLIF(BTRIM(p.report_url),'') IS NOT NULL) AS has_file
-FROM ` + report + ` p JOIN ` + job + ` j ON j.id=p.test_job_id AND j.resource_id=p.resource_id
+FROM ` + report + ` p LEFT JOIN ` + job + ` j ON j.id=p.test_job_id AND j.resource_id=p.resource_id
 JOIN ` + resource + ` r ON r.id=p.resource_id
 LEFT JOIN ` + staff + ` st ON st.id::text=p.tested_by::text
 LEFT JOIN LATERAL (SELECT l."after"->'resource' AS control FROM ` + logs + ` l
@@ -151,7 +152,8 @@ func scanResourceReport(row reportRowScanner) (supply.ResourceReportView, bool, 
 	var cacheHit, cacheInput sql.NullInt64
 	var scene, format sql.NullString
 	var targetMatches, hasFile bool
-	err := row.Scan(&view.ID, &view.ResourceID, &jobStatus, &createdAt, &finishedAt, &testedAt, &testItem, &operatorName,
+	var source string
+	err := row.Scan(&view.ID, &view.ResourceID, &jobStatus, &createdAt, &finishedAt, &testedAt, &testItem, &operatorName, &source,
 		&connectivity, &pressure, &connectionMS, &rps, &tps,
 		&cacheHit, &cacheInput, &scene, &format, &targetMatches, &hasFile)
 	if err != nil {
@@ -165,8 +167,15 @@ func scanResourceReport(row reportRowScanner) (supply.ResourceReportView, bool, 
 	tested := testedAt.UTC()
 	view.TestedAt = &tested
 	view.TestItem = strings.TrimSpace(testItem)
+	if strings.EqualFold(view.TestItem, "UPLOADED") {
+		view.TestItem = "专项报告"
+	}
 	view.OperatorName = strings.TrimSpace(operatorName)
-	view.Source = "" // v36 stores no trusted supplier/internal provenance for this report.
+	view.Source = strings.ToUpper(strings.TrimSpace(source)) // UPLOADED = 外部上传的专项报告
+	if view.Source == "" {
+		// v36 stores no trusted supplier/internal provenance for this report.
+		view.Source = ""
+	}
 	view.Scene = strings.TrimSpace(scene.String)
 	if finishedAt.Valid {
 		finished := finishedAt.Time.UTC()

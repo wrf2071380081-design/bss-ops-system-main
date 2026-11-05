@@ -8,7 +8,10 @@ import (
 type SourceOperationQuery struct {
 	ModelID, SupplierID, ResourceID string
 	EntityType                     string
-	Page, Size                      int
+	// 原型「操作记录」的筛选：操作人、操作类型、时间区间。
+	Operator, Action string
+	From, To         *time.Time
+	Page, Size       int
 }
 
 // SourceOperation contains display fields only, never operation snapshots.
@@ -35,6 +38,16 @@ type SourceOperationPage struct {
 type SourceOperationStore interface {
 	ListSourceOperations(context.Context, SourceOperationQuery) ([]SourceOperation, int64, error)
 }
+
+// SourceOperationOptions 是筛选下拉的候选值：只取当前范围内的去重结果。
+type SourceOperationOptions struct {
+	Operators []string `json:"operators"`
+	Actions   []string `json:"actions"`
+}
+
+type SourceOperationOptionStore interface {
+	ListSourceOperationOptions(context.Context, SourceOperationQuery) (SourceOperationOptions, error)
+}
 type SourceOperationReader struct{ store SourceOperationStore }
 
 func sourceOperationTypeAllowed(entityType string, supplierScope bool) bool {
@@ -51,6 +64,45 @@ func sourceOperationTypeAllowed(entityType string, supplierScope bool) bool {
 func NewSourceOperationReader(store SourceOperationStore) *SourceOperationReader {
 	return &SourceOperationReader{store: store}
 }
+
+func validateSourceOperationFilters(q SourceOperationQuery) error {
+	if len(q.Operator) > 64 || len(q.Action) > 64 {
+		return invalid("operator", "operator or action is too long")
+	}
+	if q.From != nil && q.To != nil && !q.From.Before(*q.To) {
+		return invalid("from", "time range start must be earlier than end")
+	}
+	return nil
+}
+
+// Options 返回筛选下拉的候选值。存储不支持时按依赖不可用处理，
+// 不把「没有候选值」和「筛选项加载失败」混在一起。
+func (r *SourceOperationReader) Options(ctx context.Context, q SourceOperationQuery) (*SourceOperationOptions, error) {
+	if r == nil || r.store == nil {
+		return nil, ErrDependencyUnavailable
+	}
+	store, ok := r.store.(SourceOperationOptionStore)
+	if !ok {
+		return nil, ErrDependencyUnavailable
+	}
+	if (validID(q.ModelID) == validID(q.SupplierID)) || (q.ModelID != "" && !validID(q.ModelID)) || (q.SupplierID != "" && !validID(q.SupplierID)) {
+		return nil, invalid("id", "exactly one model or supplier scope is required")
+	}
+	if err := validateSourceOperationFilters(q); err != nil {
+		return nil, err
+	}
+	options, err := store.ListSourceOperationOptions(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	if options.Operators == nil {
+		options.Operators = []string{}
+	}
+	if options.Actions == nil {
+		options.Actions = []string{}
+	}
+	return &options, nil
+}
 func (r *SourceOperationReader) List(ctx context.Context, q SourceOperationQuery) (*SourceOperationPage, error) {
 	if r == nil || r.store == nil {
 		return nil, ErrDependencyUnavailable
@@ -60,6 +112,9 @@ func (r *SourceOperationReader) List(ctx context.Context, q SourceOperationQuery
 	}
 	if q.EntityType != "" && (q.SupplierID == "" || !sourceOperationTypeAllowed(q.EntityType, true)) {
 		return nil, invalid("entity_type", "unsupported supplier operation category")
+	}
+	if err := validateSourceOperationFilters(q); err != nil {
+		return nil, err
 	}
 	var err error
 	q.Page, q.Size, err = readPagination(q.Page, q.Size)

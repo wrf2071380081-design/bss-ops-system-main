@@ -9,7 +9,7 @@ export interface SourceFilters {
 }
 export const emptySourceFilters = (): SourceFilters => ({ keyword: "", companies: [], model_types: [], supplier_ids: [], regions: [], states: [], coefficient_min: "", coefficient_max: "", connection_min: "", connection_max: "", rps_min: "", rps_max: "", tps_min: "", tps_max: "" });
 export const rangeFields = ["coefficient", "connection", "rps", "tps"] as const;
-export const rangeLabels = { coefficient: "采购系数", connection: "连通耗时 · ms", rps: "压力 RPS", tps: "压力 TPS" };
+export const rangeLabels = { coefficient: "采购系数", connection: "连通耗时（ms）", rps: "RPS", tps: "TPS" };
 function rangeFilters(filters: SourceFilters): RangeFilters {
   return { supplierIDs: filters.supplier_ids, states: filters.states, ranges: {
     coefficient: { min: filters.coefficient_min, max: filters.coefficient_max },

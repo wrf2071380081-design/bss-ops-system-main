@@ -124,6 +124,7 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	group.GET("/:id/operations/:operationId", h.modelOperation)
 	group.GET("/:id/versions", h.versions)
 	group.GET("/:id/resource-operations", h.sourceOperations)
+	group.GET("/:id/resource-operations/options", h.sourceOperationOptions)
 	group.GET("/:id", h.get)
 	var idem gin.HandlerFunc
 	if deps.IdemStore == nil {
@@ -144,6 +145,8 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	resources.GET("/:id", rh.get)
 	rph := &supplyResourceReportHandler{reader: deps.ResourceReports}
 	resources.GET("/:id/test-reports", rph.list)
+	resources.GET("/:id/uploaded-reports", rph.uploaded)
+	resources.POST("/:id/test-reports", idem, rph.upload)
 	resources.GET("/:id/test-reports/:reportId", rph.get)
 	resources.GET("/:id/test-reports/:reportId/files/:fileId", rph.file)
 	rwh := &supplyResourceOperationHandler{admitter: deps.ResourceAdmitter, binder: deps.ResourceConfigBinder}

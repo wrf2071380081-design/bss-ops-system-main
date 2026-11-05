@@ -123,7 +123,7 @@ try {
   await page.getByRole("option", { name: "国内", exact: true }).click();
   await page.locator(".el-select").filter({ has: page.getByRole("combobox", { name: "供应商", exact: true }) }).click();
   await page.getByRole("option", { name: "供应商甲 · 国内", exact: true }).click();
-  await page.getByRole("button", { name: "查询", exact: true }).click();
+  // 筛选即改即生效（原型无「查询」按钮），选完直接等结果刷新。
   await page.getByText("1 条资源 · 1 条可用", { exact: true }).waitFor();
   await page.locator(".plaza-table").getByRole("button", { name: "详情", exact: true }).click();
   await sources.getByText("供应商甲", { exact: true }).waitFor();
