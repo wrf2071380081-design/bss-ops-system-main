@@ -107,7 +107,7 @@ func (rt *CustomerWorkspaceRuntime) ListOperationLogs(ctx context.Context, custo
 	rows, err := rt.raw.QueryContext(ctx, `
 SELECT l.id, l.entity_type, l.entity_id, l.action, COALESCE(l.operator_name_snapshot, ''),
        COALESCE(l.reason, ''), COALESCE(l."before"::text, ''), COALESCE(l."after"::text, ''),
-       COALESCE(l.request_id, ''), to_char(l.created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF')
+       COALESCE(l.request_id, ''), to_char(l.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
   FROM operation_log l
  WHERE `+where+`
  ORDER BY l.created_at DESC, l.id DESC

@@ -200,7 +200,18 @@ VALUES ('customer_profile', $1, 'CREATE', $2,
 func (s *CustomerRegistryStore) GetCustomerProfile(ctx context.Context, customerID int64, scope customer.OwnerScope) (*customer.CustomerProfile, bool, bool, error) {
 	query := fmt.Sprintf(`
 SELECT cp.id, cp.subject_id, ls.legal_name, COALESCE(ls.uscc, ''), ls.subject_type,
-       cp.region, cp.settlement_currency, COALESCE(cp.tax_rate::text, ''), cp.contract_status,
+       cp.region, cp.settlement_currency, COALESCE(cp.tax_rate::text, ''),
+       -- 与客户列表同一口径：按 CONTRACT 节点推导，而不是读静态列。
+       COALESCE((
+         SELECT CASE
+                  WHEN count(*) FILTER (WHERE n.status IN ('IN_PROGRESS','WAITING_PREDECESSOR')) > 0 THEN '办理中'
+                  WHEN count(*) FILTER (WHERE n.status = 'COMPLETED') > 0 THEN '已归档'
+                  ELSE '暂无'
+                END
+           FROM onboarding_flow f
+           JOIN onboarding_node n ON n.flow_id = f.id AND n.node_key = 'CONTRACT' AND n.enabled
+          WHERE f.kind = 'CUSTOMER' AND f.owner_id = cp.id
+       ), '暂无'),
        cp.owner_sales_operator_id, st.name, cp.payment_type, cp.billing_cycle,
        cp.credit_limit::text, cp.credit_used::text, cp.status, cp.created_at, cp.updated_at,
        COALESCE(cp.contact_name, ''), COALESCE(cp.gateway_username, ''), COALESCE(cp.remark, '')

@@ -52,6 +52,13 @@ type ResourceQuoteCandidate struct {
 	BlockedReasons []string `json:"blocked_reasons,omitempty"`
 	// PriceItems 是该资源的官方价项（键 + 金额 + 单位量），供前端按分项报价。
 	PriceItems []ResourcePriceItem `json:"price_items"`
+	// 来源最近一次测试结果：原型报价行里直接摆出 连通/RPS/TPS/缓存命中率，
+	// 销售当场就能判断这个来源稳不稳。没有报告的来源为空串（前端显示「未记录」）。
+	TestConnectionMS string `json:"test_connection_ms,omitempty"`
+	TestRPS          string `json:"test_rps,omitempty"`
+	TestTPS          string `json:"test_tps,omitempty"`
+	TestCacheHitRate string `json:"test_cache_hit_rate,omitempty"`
+	TestCacheStatus  string `json:"test_cache_status,omitempty"`
 }
 
 // ResourcePriceItem 是候选资源上的一个官方价项。

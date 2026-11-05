@@ -26,7 +26,7 @@ const message = (value: unknown) => value instanceof ApiError ? value.message : 
 const positiveId = (value: string) => /^[1-9]\d*$/.test(value.trim()) && Number.isSafeInteger(Number(value));
 
 const activeTab = ref<"list" | "quote">("list");
-const quoteView = ref<"edit" | "drafts" | "exported" | "logs">("edit");
+const quoteView = ref<"edit" | "drafts" | "exported" | "approvals" | "logs">("edit");
 
 function unique(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)));
@@ -34,6 +34,17 @@ function unique(values: string[]) {
 const regionText = (region: string) => region === "OVERSEAS" ? "海外" : "国内";
 const currencyText = (currency: string) => currency === "USD" ? "美元 USD" : "人民币 CNY";
 const currencySymbol = (currency: string) => currency === "USD" ? "$" : "¥";
+/**
+ * 授信额度展示：**0 不等于「没有授信」**，而是「还没登记」——原型对未登记客户显示「待记录」。
+ * 这里把 0/空串都归到「待记录」，避免把"未登记"读成"额度为零"。
+ */
+function creditText(currency: string, amount: string) {
+  const value = Number(amount || 0);
+  if (!Number.isFinite(value) || value <= 0) return "待记录";
+  // 有小数才保留两位（去掉尾零），整数与原型一致显示 ¥50,000 而不是 ¥50,000.00。
+  const text = value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  return `${currencySymbol(currency)}${text}`;
+}
 function amountText(currency: string, amount: string) {
   const value = Number(amount || 0);
   if (!Number.isFinite(value)) return amount;
@@ -52,11 +63,12 @@ const loadError = ref("");
  */
 const FILTERS_STORAGE_KEY = "customer-workspace:filters";
 type CustomerFilters = {
-  names: string[]; owners: string[]; regions: string[]; contracts: string[];
-  services: string[]; currencies: string[]; stages: string[]; handlings: string[];
+  /** 原型是「搜索客户名称 / 曾用名」的自由文本；我们库里没有曾用名字段，只按法定名称匹配。 */
+  keyword: string;
+  owners: string[]; regions: string[]; contracts: string[]; currencies: string[]; stages: string[]; handlings: string[];
 };
 const emptyFilters = (): CustomerFilters => ({
-  names: [], owners: [], regions: [], contracts: [], services: [], currencies: [], stages: [], handlings: [],
+  keyword: "", owners: [], regions: [], contracts: [], currencies: [], stages: [], handlings: [],
 });
 function readFilters(): CustomerFilters {
   const base = emptyFilters();
@@ -67,6 +79,10 @@ function readFilters(): CustomerFilters {
     if (!parsed || typeof parsed !== "object") return base;
     for (const key of Object.keys(base) as (keyof CustomerFilters)[]) {
       const value = (parsed as Record<string, unknown>)[key];
+      if (key === "keyword") {
+        if (typeof value === "string") base.keyword = value;
+        continue;
+      }
       if (Array.isArray(value)) base[key] = value.filter((item): item is string => typeof item === "string");
     }
   } catch {
@@ -79,7 +95,7 @@ const filters = reactive<CustomerFilters>(readFilters());
 // 全部为空时**移除** key 而不是写回 `{"names":[],...}`——
 // 否则「重置」之后 storage 里仍有一条"看起来有筛选"的空记录，排查时会被误判成没清干净。
 watch(filters, value => {
-  const empty = Object.values(value).every(list => list.length === 0);
+  const empty = Object.entries(value).every(([key, item]) => key === "keyword" ? item === "" : item.length === 0);
   try {
     if (empty) {
       sessionStorage.removeItem(FILTERS_STORAGE_KEY);
@@ -92,22 +108,20 @@ watch(filters, value => {
 }, { deep: true });
 
 const options = computed(() => ({
-  names: unique(rows.value.map(row => row.name)),
   owners: unique(rows.value.map(row => row.owner_name)),
   regions: unique(rows.value.map(row => regionText(row.region))),
   contracts: unique(rows.value.map(row => row.contract_status)),
-  services: unique(rows.value.map(row => row.service_status)),
   currencies: unique(rows.value.map(row => currencyText(row.settlement_currency))),
   stages: unique(rows.value.map(row => row.cooperation_stage)),
   handlings: unique(rows.value.map(row => row.handling_status)),
 }));
 
 const filteredRows = computed(() => rows.value.filter(row => {
-  if (filters.names.length && !filters.names.includes(row.name)) return false;
+  const keyword = filters.keyword.trim().toLowerCase();
+  if (keyword && !row.name.toLowerCase().includes(keyword)) return false;
   if (filters.owners.length && !filters.owners.includes(row.owner_name)) return false;
   if (filters.regions.length && !filters.regions.includes(regionText(row.region))) return false;
   if (filters.contracts.length && !filters.contracts.includes(row.contract_status)) return false;
-  if (filters.services.length && !filters.services.includes(row.service_status)) return false;
   if (filters.currencies.length && !filters.currencies.includes(currencyText(row.settlement_currency))) return false;
   if (filters.stages.length && !filters.stages.includes(row.cooperation_stage)) return false;
   if (filters.handlings.length && !filters.handlings.includes(row.handling_status)) return false;
@@ -161,6 +175,11 @@ interface QuoteLine {
   supplierName: string;
   region: string;
   coefficient: string;
+  /** 来源最近一次测试结果，随候选一起带过来（原型报价行要展示）。 */
+  connectionMS: string;
+  rps: string;
+  tps: string;
+  cacheHitRate: string;
   currency: string;
   /** 采购成本（官方价 × 采购系数），毛利率以此为基数。 */
   basePrice: string;
@@ -314,6 +333,8 @@ function confirmPicker() {
         resourceId: String(row.resource_id), priceItemKey: item.item_key, priceItemLabel: item.label,
         modelName: row.model_name, supplierName: row.supplier_name, region: row.region,
         coefficient: row.coefficient, currency: item.currency,
+        connectionMS: row.test_connection_ms || "", rps: row.test_rps || "",
+        tps: row.test_tps || "", cacheHitRate: row.test_cache_hit_rate || "",
         basePrice: item.unit_cost, margin: marginAll.value,
         price: priceFromMargin(item.unit_cost, marginAll.value),
       });
@@ -393,7 +414,7 @@ const quoteTypeText = (type: string) => ({ APPLY: "套用价目表", CLONE: "克
 const approvalStatusText = (status: string) => ({ PENDING: "待审批", APPROVED: "已通过", REJECTED: "已驳回" } as Record<string, string>)[status] || status;
 const approvalStatusType = (status: string) => status === "APPROVED" ? "success" : status === "REJECTED" ? "danger" : "warning";
 
-function switchQuoteView(view: "edit" | "drafts" | "exported" | "logs") {
+function switchQuoteView(view: "edit" | "drafts" | "exported" | "approvals" | "logs") {
   quoteView.value = view;
   if (view !== "edit" && !quoteRows.value.length) void loadQuotes();
 }
@@ -462,9 +483,7 @@ onMounted(async () => {
     <!-- ================= 客户列表 ================= -->
     <template v-if="activeTab === 'list'">
       <div class="filterbar">
-        <el-select v-model="filters.names" multiple filterable clearable collapse-tags placeholder="客户名称" class="flt" filter-placeholder="输入匹配已有选项">
-          <el-option v-for="item in options.names" :key="item" :label="item" :value="item" />
-        </el-select>
+        <el-input v-model="filters.keyword" class="flt keyword" placeholder="搜索客户名称" clearable aria-label="搜索客户名称" />
         <el-select v-model="filters.owners" multiple filterable clearable collapse-tags placeholder="销售" class="flt" filter-placeholder="输入匹配已有选项">
           <el-option v-for="item in options.owners" :key="item" :label="item" :value="item" />
         </el-select>
@@ -474,13 +493,10 @@ onMounted(async () => {
         <el-select v-model="filters.contracts" multiple filterable clearable collapse-tags placeholder="合同状态" class="flt" filter-placeholder="输入匹配已有选项">
           <el-option v-for="item in options.contracts" :key="item" :label="item" :value="item" />
         </el-select>
-        <el-select v-model="filters.services" multiple filterable clearable collapse-tags placeholder="服务状态" class="flt" filter-placeholder="输入匹配已有选项">
-          <el-option v-for="item in options.services" :key="item" :label="item" :value="item" />
-        </el-select>
         <el-select v-model="filters.currencies" multiple filterable clearable collapse-tags placeholder="结算币种" class="flt" filter-placeholder="输入匹配已有选项">
           <el-option v-for="item in options.currencies" :key="item" :label="item" :value="item" />
         </el-select>
-        <el-select v-model="filters.stages" multiple filterable clearable collapse-tags placeholder="合作阶段" class="flt" filter-placeholder="输入匹配已有选项">
+        <el-select v-model="filters.stages" multiple filterable clearable collapse-tags placeholder="合作/商机" class="flt" filter-placeholder="输入匹配已有选项">
           <el-option v-for="item in options.stages" :key="item" :label="item" :value="item" />
         </el-select>
         <el-select v-model="filters.handlings" multiple filterable clearable collapse-tags placeholder="办理状态" class="flt" filter-placeholder="输入匹配已有选项">
@@ -510,16 +526,14 @@ onMounted(async () => {
             <span class="mono">{{ row.opened_model_count }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="授信额度" width="150" align="right">
+        <el-table-column label="授信额度" width="140" align="right">
           <template #default="{ row }">
-            <div class="cell-main mono">{{ amountText(row.settlement_currency, row.credit_limit) }}</div>
-            <div class="cell-sub">我方 → 客户</div>
+            <span class="mono">{{ creditText(row.settlement_currency, row.credit_limit) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="合同信息" width="130">
+        <el-table-column label="合同状态" width="110">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.contract_status === '已归档' ? 'success' : row.contract_status === '办理中' ? 'warning' : 'info'" class="stack-tag">{{ row.contract_status }}</el-tag>
-            <el-tag size="small" :type="row.service_status === '服务中' ? 'success' : row.service_status === '接入中' ? 'warning' : 'info'" class="stack-tag">{{ row.service_status }}</el-tag>
+            <el-tag size="small" :type="row.contract_status === '已归档' ? 'success' : row.contract_status === '办理中' ? 'warning' : 'info'">{{ row.contract_status }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="结算币种" width="120">
@@ -528,7 +542,7 @@ onMounted(async () => {
         <el-table-column label="税率" width="100">
           <template #default="{ row }">{{ formatSupplierTaxRate(row.tax_rate) }}</template>
         </el-table-column>
-        <el-table-column label="合作阶段" width="100">
+        <el-table-column label="合作/商机" width="110">
           <template #default="{ row }">{{ row.cooperation_stage }}</template>
         </el-table-column>
         <el-table-column label="办理状态" width="140">
@@ -555,6 +569,7 @@ onMounted(async () => {
           <button class="tab" :class="{ active: quoteView === 'edit' }" @click="switchQuoteView('edit')">报价</button>
           <button class="tab" :class="{ active: quoteView === 'drafts' }" @click="switchQuoteView('drafts')">报价草稿</button>
           <button class="tab" :class="{ active: quoteView === 'exported' }" @click="switchQuoteView('exported')">已导出报价</button>
+          <button class="tab" :class="{ active: quoteView === 'approvals' }" @click="switchQuoteView('approvals')">报价审批</button>
           <button class="tab" :class="{ active: quoteView === 'logs' }" @click="switchQuoteView('logs')">报价操作日志</button>
         </div>
         <el-button v-if="canQuote" @click="startNewQuote()">新建报价单</el-button>
@@ -584,7 +599,7 @@ onMounted(async () => {
             <div class="field"><label>报价时间</label><el-input v-model="form.quoteDate" disabled /></div>
             <div class="field"><label>操作人</label><el-input v-model="form.operator" disabled /></div>
             <div class="field"><label>报价编号</label><el-input v-model="form.quoteNo" disabled placeholder="导出时自动生成" /></div>
-            <div class="field"><label>报价说明</label><el-input v-model="form.remark" maxlength="200" /></div>
+            <div class="field"><label>商业条件</label><el-input v-model="form.remark" maxlength="200" placeholder="付款方式 / 账期 / 最低消费等" /></div>
           </div>
         </div>
 
@@ -616,6 +631,10 @@ onMounted(async () => {
             </el-table-column>
             <el-table-column label="价项" width="130"><template #default="{ row }">{{ row.priceItemLabel }}</template></el-table-column>
             <el-table-column label="采购系数" width="100" align="right"><template #default="{ row }"><span class="mono">{{ row.coefficient }}</span></template></el-table-column>
+            <el-table-column label="连通 · ms" width="100" align="right"><template #default="{ row }"><span class="mono">{{ row.connectionMS || "未记录" }}</span></template></el-table-column>
+            <el-table-column label="RPS" width="90" align="right"><template #default="{ row }"><span class="mono">{{ row.rps || "未记录" }}</span></template></el-table-column>
+            <el-table-column label="TPS" width="90" align="right"><template #default="{ row }"><span class="mono">{{ row.tps || "未记录" }}</span></template></el-table-column>
+            <el-table-column label="输入缓存命中率" width="130" align="right"><template #default="{ row }"><span class="mono">{{ row.cacheHitRate ? row.cacheHitRate + "%" : "未记录" }}</span></template></el-table-column>
             <el-table-column label="采购成本" width="140" align="right">
               <template #default="{ row }"><span class="mono">{{ row.basePrice || "—" }} {{ row.currency }}</span></template>
             </el-table-column>
@@ -675,6 +694,23 @@ onMounted(async () => {
         </el-table>
       </template>
 
+      <template v-else-if="quoteView === 'approvals'">
+        <!-- 原型「报价审批」是独立页签。之前塞在操作日志里且带 v-if：
+             没有审批记录时整块不渲染，点进来会以为功能不存在。 -->
+        <el-table v-loading="quoteLoading" :data="approvalRows" row-key="id" class="grid" empty-text="暂无审批记录">
+          <el-table-column label="报价单 ID" width="130">
+            <template #default="{ row }">{{ row.quote_id ? `#${row.quote_id}` : "—" }}</template>
+          </el-table-column>
+          <el-table-column label="销售与提交时间" min-width="240">
+            <template #default="{ row }">{{ row.created_by || "未记录" }} · {{ formatDateTime(row.created_at, "—", false) }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="110">
+            <template #default="{ row }"><el-tag size="small" :type="approvalStatusType(row.status)">{{ approvalStatusText(row.status) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="申请原因" min-width="260" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "—" }}</template></el-table-column>
+        </el-table>
+      </template>
+
       <template v-else>
         <el-table v-loading="quoteLoading" :data="logRows" row-key="id" class="grid">
           <el-table-column label="时间" width="180"><template #default="{ row }">{{ formatDateTime(row.at, "—", false) }}</template></el-table-column>
@@ -683,16 +719,6 @@ onMounted(async () => {
           <el-table-column label="版本 / 状态" width="150"><template #default="{ row }">V{{ row.version }} · {{ statusText(row.status) }}</template></el-table-column>
           <el-table-column label="操作人" width="130"><template #default="{ row }">{{ row.operator }}</template></el-table-column>
           <template #empty><el-empty description="暂无报价记录" :image-size="64" /></template>
-        </el-table>
-        <el-table v-if="approvalRows.length" :data="approvalRows" row-key="id" class="grid approval-grid">
-          <el-table-column label="特价变更单" width="130"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
-          <el-table-column label="客户名称" min-width="200"><template #default="{ row }">{{ row.customer_name }}</template></el-table-column>
-          <el-table-column label="关联报价" width="120"><template #default="{ row }">{{ row.quote_id ? `#${row.quote_id}` : "—" }}</template></el-table-column>
-          <el-table-column label="审批结果" width="110">
-            <template #default="{ row }"><el-tag size="small" :type="approvalStatusType(row.status)">{{ approvalStatusText(row.status) }}</el-tag></template>
-          </el-table-column>
-          <el-table-column label="申请原因" min-width="200" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "—" }}</template></el-table-column>
-          <el-table-column label="提交时间" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
         </el-table>
       </template>
     </template>

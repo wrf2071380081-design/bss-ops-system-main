@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -516,14 +518,26 @@ SELECT l.id,
        l.revision,
        l.activated_at,
        l.created_at,
-       l.updated_at
+       l.updated_at,
+       COALESCE(tr.connection_ms, ''), COALESCE(tr.rps, ''), COALESCE(tr.tps, ''),
+       COALESCE(tr.hit_tokens, ''), COALESCE(tr.input_tokens, '')
   FROM %s l
   LEFT JOIN %s r  ON r.id  = l.resource_id
   LEFT JOIN %s sp ON sp.id = r.supplier_id
+  -- 最近一次测试结果：展开区要直接看指标，避免每次都跳资源页。
+  -- 按 tested_at 取最新一条；没有报告的来源这五列为空，前端显示「未记录」。
+  LEFT JOIN LATERAL (
+        SELECT p.connection_ms::text AS connection_ms, p.rps::text AS rps, p.tps::text AS tps,
+               p.cache_hit_tokens::text AS hit_tokens, p.cache_input_tokens::text AS input_tokens
+          FROM %s p
+         WHERE p.resource_id = l.resource_id
+         ORDER BY p.tested_at DESC NULLS LAST, p.id DESC
+         LIMIT 1
+       ) tr ON TRUE
  WHERE l.customer_profile_id = $1
    AND l.archived = FALSE
  ORDER BY l.standard_model_id ASC, l.id ASC`,
-		s.table("customer_resource_link"), s.table("resource"), s.table("supplier"))
+		s.table("customer_resource_link"), s.table("resource"), s.table("supplier"), s.table("test_report"))
 
 	rows, err := s.db.QueryContext(ctx, query, customerProfileID)
 	if err != nil {
@@ -537,13 +551,16 @@ SELECT l.id,
 			item      customer.CustomerLinkDetail
 			activated sql.NullTime
 		)
+		var hitTokens, inputTokens string
 		if err := rows.Scan(
 			&item.LinkID, &item.StandardModelID, &item.ResourceID,
 			&item.SupplierID, &item.SupplierName, &item.Region, &item.ResourceState,
 			&item.State, &item.Revision, &activated, &item.CreatedAt, &item.UpdatedAt,
+			&item.TestConnectionMS, &item.TestRPS, &item.TestTPS, &hitTokens, &inputTokens,
 		); err != nil {
 			return nil, mapLinkStorageError(err)
 		}
+		item.TestCacheHitRate = cacheHitRate(hitTokens, inputTokens)
 		if activated.Valid {
 			at := activated.Time
 			item.ActivatedAt = &at
@@ -570,4 +587,15 @@ func nullableLinkTime(value *time.Time) any {
 		return nil
 	}
 	return *value
+}
+
+// cacheHitRate 把命中/输入 token 折算成百分比；输入为 0 或解析失败时返回空串。
+// 用 float64 足够（只做展示，两位小数），避免为了一个展示值引入 decimal 依赖。
+func cacheHitRate(hitTokens, inputTokens string) string {
+	hit, errHit := strconv.ParseFloat(strings.TrimSpace(hitTokens), 64)
+	input, errInput := strconv.ParseFloat(strings.TrimSpace(inputTokens), 64)
+	if errHit != nil || errInput != nil || input <= 0 {
+		return ""
+	}
+	return strconv.FormatFloat(hit/input*100, 'f', 2, 64)
 }

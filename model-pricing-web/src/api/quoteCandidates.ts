@@ -25,6 +25,12 @@ export interface ResourceQuoteCandidate {
   region: string;
   supplier_model_id: string;
   coefficient: string;
+  /** 来源最近一次测试结果（原型报价行直接展示）；没有报告时缺省，前端显示「未记录」。 */
+  test_connection_ms?: string;
+  test_rps?: string;
+  test_tps?: string;
+  test_cache_hit_rate?: string;
+  test_cache_status?: string;
   blocked_reasons?: string[];
   price_items: ResourceQuotePriceItem[];
 }

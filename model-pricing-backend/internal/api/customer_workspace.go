@@ -135,7 +135,11 @@ func (rt *CustomerWorkspaceRuntime) ListCustomers(ctx context.Context, op *middl
 	rows, err := rt.raw.QueryContext(ctx, `
 		SELECT cp.id, ls.legal_name, cp.level_code, st.name, cp.owner_sales_operator_id, cp.status,
 		       cp.credit_limit::text, cp.credit_used::text,
-		       cp.region, cp.settlement_currency, COALESCE(cp.tax_rate::text, ''), cp.contract_status,
+		       cp.region, cp.settlement_currency, COALESCE(cp.tax_rate::text, ''),
+		       -- 合同状态按 CONTRACT 节点推导（与供应商列表同一套口径），不再读 cp.contract_status：
+		       -- 那个字段只在建客户时写入默认值、全库没有任何更新路径，导致列表永远"待记录"，
+		       -- 与档案里已经登记的合同完全脱节。
+		       COALESCE(cf.contract_state, '暂无'),
 		       COALESCE(q.active_cnt, 0), COALESCE(q.pending_cnt, 0),
 		       -- 已开通模型数：与原型一致；禁用/待处理/停供不计入（只算 archived=FALSE AND state='ACTIVE'）。
 		       -- 用 count(DISTINCT standard_model_id) 而不是数绑定行：与原型 new Set(...).size 同语义。
@@ -157,6 +161,20 @@ func (rt *CustomerWorkspaceRuntime) ListCustomers(ctx context.Context, op *middl
 		          FROM customer_quote
 		         GROUP BY customer_id
 		       ) q ON q.customer_id = cp.id
+		  -- 一次聚合出全部客户的合同状态，避免逐行子查询。
+		  -- 「办理中」压过「已归档」：还有在办节点却显示已归档，会让人以为这单结束了。
+		  LEFT JOIN (
+		        SELECT f.owner_id,
+		               CASE
+		                 WHEN count(*) FILTER (WHERE n.status IN ('IN_PROGRESS','WAITING_PREDECESSOR')) > 0 THEN '办理中'
+		                 WHEN count(*) FILTER (WHERE n.status = 'COMPLETED') > 0 THEN '已归档'
+		                 ELSE '暂无'
+		               END AS contract_state
+		          FROM onboarding_flow f
+		          JOIN onboarding_node n ON n.flow_id = f.id AND n.node_key = 'CONTRACT' AND n.enabled
+		         WHERE f.kind = 'CUSTOMER'
+		         GROUP BY f.owner_id
+		       ) cf ON cf.owner_id = cp.id
 		 WHERE `+cond+`
 		 ORDER BY cp.created_at DESC, cp.id DESC
 		 LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)),
@@ -190,10 +208,10 @@ func (rt *CustomerWorkspaceRuntime) ListCustomers(ctx context.Context, op *middl
 		// 若只给 ServiceStatus 赋值，会出现「合作阶段=潜在 + 服务状态=服务中」这种更难看的分叉。
 		switch {
 		case row.ActiveQuotes > 0 || row.OpenedModelCount > 0:
-			row.CooperationStage = "已有"
+			row.CooperationStage = "合作"
 			row.ServiceStatus = "服务中"
 		case row.PendingQuotes > 0:
-			row.CooperationStage = "已有"
+			row.CooperationStage = "合作"
 			row.ServiceStatus = "接入中"
 		default:
 			row.CooperationStage = "潜在"

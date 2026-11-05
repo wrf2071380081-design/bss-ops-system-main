@@ -366,6 +366,13 @@ type CustomerLinkDetail struct {
 	State            string     `json:"state"`
 	StateLabel       string     `json:"state_label"`
 	Revision         int        `json:"revision"`
+	// 来源的最近一次测试结果（原型展开区直接把这些列摆出来，审批/议价时要看）。
+	// 没有测试报告时为空串，前端显示「未记录」。
+	TestConnectionMS  string `json:"test_connection_ms,omitempty"`
+	TestRPS           string `json:"test_rps,omitempty"`
+	TestTPS           string `json:"test_tps,omitempty"`
+	TestCacheHitRate  string `json:"test_cache_hit_rate,omitempty"`
+	TestCacheStatus   string `json:"test_cache_status,omitempty"`
 	ActivatedAt      *time.Time `json:"activated_at,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`

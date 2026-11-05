@@ -384,6 +384,20 @@ async function prepareConfigAccess() {
   ElMessage.info("「资源配置」是整单节点：本次确认会一并登记本申请内的全部模型。");
 }
 
+/** 某行是否有可执行的服务动作（禁用/启用），判据与批量完全一致。 */
+function rowHasServiceState(row: CustomerModelServiceRow, kind: BatchServiceKind) {
+  const spec = BATCH_SERVICE_SPEC[kind];
+  return row.links.some(link => spec.from.includes(link.state)
+    && (link.available_actions.includes(spec.first) || link.available_actions.includes(spec.second)));
+}
+const canDisableRow = (row: CustomerModelServiceRow) => canEdit.value && rowHasServiceState(row, "disable");
+const canRestoreRow = (row: CustomerModelServiceRow) => canEdit.value && rowHasServiceState(row, "restore");
+/** 行内「禁用模型 / 启用模型」：复用批量弹窗，保证与勾选批量是同一条路径。 */
+function openRowService(row: CustomerModelServiceRow, kind: BatchServiceKind) {
+  batchSelected.value = [row];
+  openBatchService(kind);
+}
+
 /** 行内「去配置」：等价于只勾这一行再点批量「配置资源」。 */
 function prepareConfigAccessFromRow(row: CustomerModelServiceRow) {
   batchSelected.value = [row];
@@ -559,6 +573,23 @@ const logTotal = ref(0);
 
 // 原型「操作记录」筛选：操作人 / 操作类型 / 操作时间。
 const logFilters = reactive({ operator: "", action: "", range: [] as string[] });
+/**
+ * 「对象」列：原型用一列说明这次操作落在谁身上。
+ * 库里是 entity_type + entity_id，这里翻成人话（不认识的类型原样输出，不猜语义）。
+ */
+const LOG_OBJECT_LABELS: Record<string, string> = {
+  customer_profile: "客户档案",
+  onboarding_flow: "开通流程",
+  onboarding_node: "开通节点",
+  customer_resource_link: "客户接入绑定",
+  customer_quote: "客户报价",
+  quote: "报价单",
+};
+function logObjectText(row: CustomerOperationLogDTO) {
+  const label = LOG_OBJECT_LABELS[row.entity_type] || row.entity_type || "未记录";
+  return row.entity_id ? `${label} #${row.entity_id}` : label;
+}
+
 const logActionOptions = computed(() => [...new Map(logRows.value.map(row => [row.action, row.action_label || row.action])).entries()]);
 const logOperatorOptions = computed(() => [...new Set(logRows.value.map(row => row.operator_name).filter(Boolean))]);
 function logRangeParams() {
@@ -710,6 +741,26 @@ function backToList() {
                     </el-tag>
                   </template>
                 </el-table-column>
+                <el-table-column label="连通 · ms" width="100" align="right">
+                  <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
+                    <span class="mono">{{ link.test_connection_ms || "未记录" }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="RPS" width="90" align="right">
+                  <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
+                    <span class="mono">{{ link.test_rps || "未记录" }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="TPS" width="90" align="right">
+                  <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
+                    <span class="mono">{{ link.test_tps || "未记录" }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="输入缓存命中率" width="130" align="right">
+                  <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
+                    <span class="mono">{{ link.test_cache_hit_rate ? link.test_cache_hit_rate + "%" : "未记录" }}</span>
+                  </template>
+                </el-table-column>
                 <el-table-column label="生效时间" width="170">
                   <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
                     <span class="mono">{{ link.activated_at ? formatDateTime(link.activated_at) : "—" }}</span>
@@ -777,10 +828,14 @@ function backToList() {
             <span v-if="!row.risk_flags?.length" class="hint">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="170" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.pending_config" link type="primary" @click="prepareConfigAccessFromRow(row)">配置资源</el-button>
-            <span v-else class="hint">展开查看来源</span>
+            <template v-else>
+              <el-button v-if="canDisableRow(row)" link type="danger" @click="openRowService(row, 'disable')">禁用模型</el-button>
+              <el-button v-if="canRestoreRow(row)" link type="primary" @click="openRowService(row, 'restore')">启用模型</el-button>
+              <span v-if="!canDisableRow(row) && !canRestoreRow(row)" class="hint">展开查看来源</span>
+            </template>
           </template>
         </el-table-column>
       </el-table>
@@ -806,6 +861,20 @@ function backToList() {
           <el-descriptions-item label="备注">{{ profile.remark || "未填写" }}</el-descriptions-item>
         </el-descriptions>
         <div v-else class="hint">加载客户档案后显示主体资料。</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-head-left"><h3 class="card-title">合同与授信</h3></div>
+        </div>
+        <F12SubjectPanel
+          v-if="profile"
+          subject-type="CUSTOMER"
+          :subject-id="customerId"
+          :can-manage="canManageF12"
+          @changed="loadProfile"
+        />
+        <div v-else class="hint">加载客户档案后显示合同与授信记录。</div>
       </div>
 
       <div class="card">
@@ -870,20 +939,6 @@ function backToList() {
           </template>
         </div>
       </div>
-
-      <div class="card">
-        <div class="card-head">
-          <div class="card-head-left"><h3 class="card-title">合同与授信</h3></div>
-        </div>
-        <F12SubjectPanel
-          v-if="profile"
-          subject-type="CUSTOMER"
-          :subject-id="customerId"
-          :can-manage="canManageF12"
-          @changed="loadProfile"
-        />
-        <div v-else class="hint">加载客户档案后显示合同与授信记录。</div>
-      </div>
     </template>
 
     <!-- ============ Tab 3 · 该客户报价（只读） ============ -->
@@ -932,19 +987,22 @@ function backToList() {
         <div class="card-head sub-block">
           <div class="card-head-left"><h3 class="card-title">报价审批</h3></div>
         </div>
+        <!-- 列按原型：报价单 ID / 销售与提交时间 / 状态；申请原因是我们多出来的判断依据，保留。 -->
         <el-table :data="approvalRows" size="small" class="grid" row-key="id" empty-text="暂无审批记录">
-          <el-table-column label="特价变更单" width="130"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
-          <el-table-column label="关联报价" width="120"><template #default="{ row }">{{ row.quote_id ? `#${row.quote_id}` : "—" }}</template></el-table-column>
-          <el-table-column label="审批结果" width="110">
+          <el-table-column label="报价单 ID" width="130">
+            <template #default="{ row }">{{ row.quote_id ? `#${row.quote_id}` : `#${row.id}` }}</template>
+          </el-table-column>
+          <el-table-column label="销售与提交时间" min-width="240">
+            <template #default="{ row }">{{ row.created_by || "未记录" }} · {{ formatDateTime(row.created_at, "—", false) }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="110">
             <template #default="{ row }">
               <el-tag size="small" :type="row.status === 'APPROVED' ? 'success' : row.status === 'REJECTED' ? 'danger' : 'warning'">
                 {{ ({ PENDING: "待审批", APPROVED: "已通过", REJECTED: "已驳回" } as Record<string, string>)[row.status] || row.status }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="申请原因" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "—" }}</template></el-table-column>
-          <el-table-column label="提交人" width="120"><template #default="{ row }">{{ row.created_by || "—" }}</template></el-table-column>
-          <el-table-column label="提交时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
+          <el-table-column label="申请原因" min-width="240" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "—" }}</template></el-table-column>
         </el-table>
       </div>
     </template>
@@ -959,14 +1017,17 @@ function backToList() {
       </div>
       <el-alert v-if="logError" :title="logError" type="error" show-icon :closable="false" class="block-gap" />
       <el-table v-loading="logLoading" :data="logRows" size="small" class="grid" row-key="id" empty-text="暂无操作记录">
-        <el-table-column label="时间" width="180">
-          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
-        </el-table-column>
         <el-table-column label="操作" width="180">
           <template #default="{ row }">{{ row.action_label || row.action }}</template>
         </el-table-column>
+        <el-table-column label="对象" width="200">
+          <template #default="{ row }">{{ logObjectText(row) }}</template>
+        </el-table-column>
         <el-table-column label="操作人" width="130">
           <template #default="{ row }">{{ row.operator_name || "—" }}</template>
+        </el-table-column>
+        <el-table-column label="时间" width="180">
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="说明" min-width="240">
           <template #default="{ row }">{{ row.reason || "—" }}</template>
@@ -1115,7 +1176,9 @@ function backToList() {
 .tab.active { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); font-weight: 600; }
 .grid { width: 100%; }
 .sub-block{margin-top:22px}
-.model-batchbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px}\n.batch-form{margin-top:14px}\n.model-filterbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}.model-filterbar label{display:inline-flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}
+.model-batchbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px}
+.batch-form{margin-top:14px}
+.model-filterbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}.model-filterbar label{display:inline-flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}
 .cell-main { font-weight: 600; }
 .cell-sub { color: var(--app-text-muted); font-size: 12px; margin-top: 2px; }
 .stack-tag { margin: 0 6px 4px 0; }
@@ -1134,7 +1197,9 @@ function backToList() {
 .json { margin: 0; max-height: 240px; overflow: auto; background: var(--el-fill-color-light); border-radius: 8px; padding: 10px 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 .mono { font-variant-numeric: tabular-nums; }
 /* 展开区：与外层表格拉开层级，避免两条表线糊在一起 */
-.link-detail { padding: 8px 12px 8px 48px; background: var(--el-fill-color-lighter); border-radius: 8px; }
+.link-detail { padding: 8px 12px 8px 48px; background: var(--el-fill-color-lighter); border-radius: 8px; overflow-x: auto; }
+/* 展开区列变多（加了 连通/RPS/TPS/缓存），内层表格给个最小宽度，宁可横向滚动也不压字。 */
+.link-detail :deep(.el-table) { min-width: 1040px; }
 .link-detail :deep(.el-table) { background: transparent; }
 :deep(.row-muted) { color: var(--app-text-muted); }
 </style>

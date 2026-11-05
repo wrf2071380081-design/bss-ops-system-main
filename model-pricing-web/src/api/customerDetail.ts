@@ -110,6 +110,12 @@ export interface CustomerLinkDetailDTO {
   /** 服务端翻译好的中文状态名，前端直接用。 */
   state_label: string;
   revision: number;
+  /** 来源最近一次测试结果；没有报告时缺省（展示「未记录」）。 */
+  test_connection_ms?: string;
+  test_rps?: string;
+  test_tps?: string;
+  test_cache_hit_rate?: string;
+  test_cache_status?: string;
   activated_at?: string;
   created_at: string;
   updated_at: string;

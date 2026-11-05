@@ -135,7 +135,7 @@ func (r *SupplyChainRuntime) ListApprovals(ctx context.Context) ([]ApprovalRow, 
 	rows, err := r.raw.QueryContext(ctx, `SELECT s.id,s.supplier_id,sp.name,s.region,s.status,s.kind,
        (SELECT count(*) FROM public.submission_row r WHERE r.submission_id=s.id),
        NOT EXISTS (SELECT 1 FROM public.resource res WHERE res.supplier_id=s.supplier_id AND res.ever_admitted=true),
-       to_char(s.submitted_at,'YYYY-MM-DD"T"HH24:MI:SSOF'),
+       to_char(s.submitted_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
        COALESCE(NULLIF(sp.contact,''),sp.phone,'—'), s.revision
 FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id
 WHERE s.status IN ('PENDING_APPROVAL','PROCESSING','PENDING_TEST') ORDER BY s.id DESC`)
@@ -175,7 +175,7 @@ func (r *SupplyChainRuntime) ListApprovalHistory(ctx context.Context) ([]Approva
        COALESCE((SELECT operator_name_snapshot FROM public.operation_log l
          WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),''),
        COALESCE(to_char((SELECT created_at FROM public.operation_log l
-         WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),'YYYY-MM-DD"T"HH24:MI:SSOF'),''),
+         WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),''),
        COALESCE((SELECT action FROM public.operation_log l
          WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),''),
        COALESCE((SELECT reason FROM public.operation_log l
