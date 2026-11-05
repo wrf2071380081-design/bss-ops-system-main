@@ -268,28 +268,25 @@ func (n *NativeHandling) complete(ctx context.Context, tx *sql.Tx, rowID, actor,
 		return err
 	}
 	if admitted == 0 {
-		if _, err := tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_node")+` SET enabled=false,status='CANCELED',note=$2 WHERE flow_id=$1 AND node_key='CONTRACT' AND status='WAITING_PREDECESSOR'`, a.FlowID, note); err != nil {
+		// 一条都没接入成功：商务那条腿没有可签的内容，一并取消（并行的腿此时可能已经在办理中）。
+		if _, err := tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_node")+` SET enabled=false,status='CANCELED',note=$2 WHERE flow_id=$1 AND node_key='CONTRACT' AND status IN ('WAITING_PREDECESSOR','IN_PROGRESS')`, a.FlowID, note); err != nil {
 			return err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_node")+` SET status='COMPLETED',completed_at=now(),note=$2 WHERE id=$1`, a.NodeID, note); err != nil {
 		return err
 	}
-	var contract string
-	err = tx.QueryRowContext(ctx, `UPDATE `+n.State.table("onboarding_node")+` SET status='IN_PROGRESS' WHERE flow_id=$1 AND enabled AND node_key='CONTRACT' AND status='WAITING_PREDECESSOR' RETURNING id::text`, a.FlowID).Scan(&contract)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	// 技术条线完成。商务条线是并行推进的（原型「技术完成 x/y · 商务待完成 · 办理人」），
+	// 所以这里不再把合同节点从前序等待里推起来，只判断两条腿是否都完成。
+	var pending int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM `+n.State.table("onboarding_node")+` WHERE flow_id=$1 AND enabled AND status<>'COMPLETED'`, a.FlowID).Scan(&pending); err != nil {
 		return err
 	}
-	if contract != "" {
-		_, err = tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_flow")+` SET current_node='CONTRACT',updated_at=now() WHERE id=$1`, a.FlowID)
-	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_flow")+` SET status='COMPLETED',updated_at=now() WHERE id=$1`, a.FlowID)
-	}
-	if err != nil {
-		return err
-	}
-	if contract != "" {
+	if pending > 0 {
 		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_flow")+` SET status='COMPLETED',current_node=NULL,updated_at=now() WHERE id=$1`, a.FlowID); err != nil {
+		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE `+n.State.table("submission")+` SET status='COMPLETED',completed_at=now(),revision=revision+1,updated_at=now() WHERE id=$1`, a.SubmissionID)
 	return err

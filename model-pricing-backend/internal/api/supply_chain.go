@@ -614,8 +614,10 @@ VALUES($1,'CONFIG','IN_PROGRESS',$2)`, flowID, testAssignee); err != nil {
 		return err
 	}
 	if firstModel && contractAssignee > 0 {
+		// 技术（CONFIG）与商务（CONTRACT）是并行的两条腿，和原型一致：
+		// 审批一通过两条腿同时可办，谁先完成都可以，两个都完成才收口整单。
 		if _, err := tx.ExecContext(ctx, `INSERT INTO public.onboarding_node(flow_id,node_key,status,assignee_id)
-VALUES($1,'CONTRACT','WAITING_PREDECESSOR',$2)`, flowID, contractAssignee); err != nil {
+VALUES($1,'CONTRACT','IN_PROGRESS',$2)`, flowID, contractAssignee); err != nil {
 			return err
 		}
 	}

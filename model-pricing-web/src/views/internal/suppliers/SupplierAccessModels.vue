@@ -5,6 +5,8 @@ import { useRoute, useRouter } from "vue-router";
 import { supplierEntitiesApi } from "../../../api/supplierEntities";
 import type { SupplierEntityDTO, SupplierEntityForm, SupplierQualificationDTO } from "../../../api/supplierEntities.contract";
 import { resourcesApi } from "../../../api/resources";
+import { resourceOperationsApi } from "../../../api/resourceOperations";
+import type { FormalConfigOption } from "../../../api/resourceOperations.contract";
 import { buildResourceQuery, resourceCacheDisplay, resourceMetricDisplay, resourceRegionLabels, resourceStateLabels } from "../../../api/resources.contract";
 import {submissionFlowsApi,type SubmissionFlowView,type SupplierProgressNode} from '../../../api/submissionFlows';
 import { supplierSourceOperationsApi } from "../../../api/supplierSourceOperations";
@@ -15,18 +17,23 @@ import type { ResourceRow } from "../../../api/resources.types";
 import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
 import ResourceDetailDrawer from "../resources/ResourceDetailDrawer.vue";
+import ResourceOperationsPanel from "../resources/ResourceOperationsPanel.vue";
 import ResourceReportsPanel from "../resources/ResourceReportsPanel.vue";
 import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
 import SupplierAccessBatchPanel from './SupplierAccessBatchPanel.vue';
 const batchSelected=ref<ResourceRow[]>([]);
-// 原型「接入模型」的三个筛选：模型公司 / 模型类型 / 状态。
-const modelFilters=reactive({ company: "", modelType: "", state: "" });
+// 原型「接入模型」的四个筛选：模型公司 / 模型类型 / 状态 + 关键词（平台模型名称或接口模型 ID）。
+const modelFilters=reactive({ company: "", modelType: "", state: "", keyword: "" });
 const modelCompanies=computed(()=>[...new Set(rows.value.map(row=>row.company).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-CN")));
-const filteredRows=computed(()=>rows.value.filter(row=>
-  (!modelFilters.company||row.company===modelFilters.company)
-  &&(!modelFilters.modelType||row.model_type===modelFilters.modelType)
-  &&(!modelFilters.state||row.state===modelFilters.state)));
-function resetModelFilters(){ Object.assign(modelFilters,{company:"",modelType:"",state:""}); }
+const filteredRows=computed(()=>{
+  const keyword=modelFilters.keyword.trim().toLowerCase();
+  return rows.value.filter(row=>
+    (!modelFilters.company||row.company===modelFilters.company)
+    &&(!modelFilters.modelType||row.model_type===modelFilters.modelType)
+    &&(!modelFilters.state||row.state===modelFilters.state)
+    &&(!keyword||`${row.model_name} ${row.supplier_model_id} ${row.official_id||""}`.toLowerCase().includes(keyword)));
+});
+function resetModelFilters(){ Object.assign(modelFilters,{company:"",modelType:"",state:"",keyword:""}); }
 // 系数按有效位展示（1.0000 → 1），与模型广场一致。
 const coefficientText = (raw: string) => raw && raw.includes(".") ? raw.replace(/0+$/, "").replace(/\.$/, "") : raw;
 
@@ -119,7 +126,25 @@ const latestQualificationText = computed(() => {
 });
 function resetQuoteFilters() { Object.assign(quoteFilters, { kind: "", status: "", range: [] }); }
 function resourceNodes(id:string){return progress.value.filter(n=>n.resource_id===id);}
-function openInterfaceConfig(row:ResourceRow){void router.push({path:`/internal/model-plaza/${row.id}`,query:{region:row.region,tab:'operations',supplier_id:supplierID.value}});}
+// 原型「接口配置」是页内弹窗（接口模型 ID / Base URL / API Key + 复制 + 历史版本与证据），
+// 不再跳走单条资源的详情抽屉——那样看不到同批其他模型，也没法对照办理进度。
+const ifaceOpen = ref(false), ifaceRow = ref<ResourceRow>(), ifaceConfigs = ref<FormalConfigOption[]>([]), ifaceLoading = ref(false);
+const ifaceConfig = computed(() => (ifaceRow.value ? ifaceConfigs.value.find(item => item.id === ifaceRow.value?.formal_config_id) : undefined));
+async function openInterfaceConfig(row: ResourceRow) {
+  ifaceRow.value = row; ifaceOpen.value = true; ifaceConfigs.value = []; ifaceLoading.value = true;
+  try { ifaceConfigs.value = await resourceOperationsApi.formalConfigs(supplierID.value, row.region); }
+  catch { ifaceConfigs.value = []; }
+  finally { ifaceLoading.value = false; }
+}
+async function copyText(value: string, label: string) {
+  if (!value) { ElMessage.info(`${label}尚未登记`); return; }
+  try { await navigator.clipboard.writeText(value); ElMessage.success(`${label}已复制`); }
+  catch { ElMessage.warning("浏览器未授权剪贴板，请手动选择复制"); }
+}
+/** 配置登记/接入完成后刷新列表与进度（弹窗不关，方便接着看下一项）。 */
+function afterInterfaceChange() { void load(); }
+/** API Key 一律不回显：库里只有密文，界面只能告诉你"设没设"。 */
+function copyKey() { ElMessage.info("API Key 不回显；需要更换请在下方正式配置里重置。"); }
 // 原型那条进度：技术完成 x/y · 已取消 · 尚待配置 · 当前可办理 · 商务待完成 · 办理人
 const flowSummary=computed(()=>{
   const total=rows.value.length;
@@ -504,6 +529,13 @@ async function load() {
       selectedID.value = selectedRow.id;
     }
     rows.value = result;
+    // 从工作台「供应资源接入」进来时带 ?highlight=<资源 ID>：落到对应行，省得再找。
+    // 注意：参数缺省时不能拿空串去解析（standardModelVersion("") 会直接抛校验错）。
+    const highlightRaw = queryString(route.query.highlight);
+    if (highlightRaw) {
+      const highlight = standardModelVersion(highlightRaw);
+      if (result.some(row => row.id === highlight)) selectedID.value = highlight;
+    }
     void loadProgress();
   } catch (value) {
     if (!active || current.signal.aborted) return;
@@ -578,15 +610,15 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <label>模型公司<el-select v-model="modelFilters.company" clearable placeholder="全部" aria-label="模型公司" style="width:150px"><el-option v-for="company in modelCompanies" :key="company" :label="company" :value="company"/></el-select></label>
             <label>模型类型<el-select v-model="modelFilters.modelType" clearable placeholder="全部" aria-label="模型类型" style="width:130px"><el-option v-for="(name,key) in modelTypeLabels" :key="key" :label="name" :value="key"/></el-select></label>
             <label>状态<el-select v-model="modelFilters.state" clearable placeholder="全部" aria-label="资源状态" style="width:130px"><el-option v-for="(name,key) in resourceStateLabels" :key="key" :label="name" :value="key"/></el-select></label>
+            <el-input v-model="modelFilters.keyword" clearable placeholder="搜索平台模型名称 / 供应商接口模型 ID" aria-label="搜索模型名称或接口模型 ID" style="width:280px" />
             <el-button @click="resetModelFilters">重置</el-button>
             <span v-if="rows.length" class="muted">共 {{ filteredRows.length }} / {{ rows.length }} 条</span>
           </div>
           <SupplierAccessBatchPanel :supplier-id="supplierID" :selected="batchSelected" @changed="load();loadProgress()"/>
-          <el-table :data="filteredRows" row-key="id" highlight-current-row :current-row-key="selectedID" style="width:100%" @selection-change="batchSelected=$event">
+          <el-table :data="filteredRows" row-key="id" highlight-current-row :current-row-key="selectedID" style="width:100%" @selection-change="batchSelected=$event" @row-click="focus">
             <el-table-column type="selection" width="45"/>
             <el-table-column label="标准模型 / 官方 ID" min-width="190"><template #default="{ row }"><strong>{{ row.model_name }}</strong><span class="muted">{{ row.official_id }}</span></template></el-table-column>
             <el-table-column label="供应商接口模型 ID" min-width="180"><template #default="{ row }"><code>{{ row.supplier_model_id }}</code></template></el-table-column>
-            <el-table-column label="部署节点" width="100"><template #default="{ row }">{{ regionLabel(row.region) }}</template></el-table-column>
             <el-table-column label="采购系数" width="110"><template #default="{ row }">{{ coefficientText(row.coefficient) }}</template></el-table-column>
             <el-table-column label="连通耗时(ms)" width="120"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.connection_ms, row.test.status) }}</template></el-table-column>
             <el-table-column label="RPS" width="100"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.rps, row.test.status) }}</template></el-table-column>
@@ -594,9 +626,9 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-table-column label="输入缓存命中率" width="130"><template #default="{ row }">{{ resourceCacheDisplay(row.test.cache_stats, row.test.status) }}</template></el-table-column>
             <el-table-column label="最近上架时间" width="170"><template #default="{ row }">{{ row.admitted_at ? formatDateTime(row.admitted_at) : "未记录" }}</template></el-table-column>
             <el-table-column label="状态" min-width="150"><template #default="{ row }"><el-tag :type="row.state === 'ADMITTED' ? 'success' : 'info'" size="small">{{ stateLabel(row.state) }}</el-tag><span class="muted">{{rowHandling(row.id)}}</span></template></el-table-column>
-            <el-table-column label="接口配置" width="100" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click="openInterfaceConfig(row)">接口配置</el-button></template></el-table-column>
-            <el-table-column label="测试与报告" width="100" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click="openReports(row)">测试列表</el-button></template></el-table-column>
-            <el-table-column label="操作" width="110" fixed="right"><template #default="{ row }"><el-button size="small" @click="focus(row)">{{ row.id === selectedID ? "当前详情" : "查看详情" }}</el-button></template></el-table-column>
+            <el-table-column label="测试与报告" width="112" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click.stop="openReports(row)">测试与报告</el-button></template></el-table-column>
+            <!-- 原型末列「资源操作」里就是「接口配置」；行点击仍会选中行看下方详情，不再单占一列。 -->
+            <el-table-column label="资源操作" width="110" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click.stop="openInterfaceConfig(row)">接口配置</el-button></template></el-table-column>
             <template #empty><el-empty description="该供应商暂无接入模型" :image-size="64" /></template>
           </el-table>
         </el-tab-pane>
@@ -718,6 +750,33 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
     <template #footer><el-button :disabled="qualificationSaving || qualificationReloading" @click="qualificationDialogOpen = false">取消</el-button><el-button type="primary" :loading="qualificationSaving" :disabled="qualificationSaving || qualificationReloading || qualificationConflict && !qualificationConflictReady" @click="saveQualification">{{ qualificationConflictReady ? '按最新修订重试' : '保存资质' }}</el-button></template>
   </el-dialog>
 
+    <!-- 原型「接口配置 · 模型名」：接口模型 ID / Base URL / API Key + 复制，下面接登记与接入。 -->
+    <el-dialog v-if="ifaceRow" v-model="ifaceOpen" class="iface-dialog" :title="`接口配置 · ${ifaceRow.model_name}`" width="min(940px, 96vw)" top="6vh" append-to-body :close-on-click-modal="false">
+      <el-alert type="info" :closable="false" show-icon title="生产配置待登记；申报时用的准入测试 Key 不会自动带入，生产 Key 需要单独登记。" />
+      <el-form label-position="top" class="iface-form" v-loading="ifaceLoading">
+        <el-form-item label="接口模型 ID">
+          <el-input :model-value="ifaceRow.supplier_model_id" readonly>
+            <template #append><el-button @click="copyText(ifaceRow.supplier_model_id, '接口模型 ID')">复制</el-button></template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="Base URL">
+          <el-input :model-value="ifaceConfig?.base_url || ''" readonly placeholder="未登记正式配置">
+            <template #append><el-button @click="copyText(ifaceConfig?.base_url || '', 'Base URL')">复制</el-button></template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="API Key">
+          <el-input :model-value="ifaceConfig ? (ifaceConfig.has_api_key ? '已登记（不回显）' : '未设置') : ''" readonly placeholder="未登记正式配置">
+            <template #append><el-button @click="copyKey">复制</el-button></template>
+          </el-input>
+        </el-form-item>
+      </el-form>
+      <ResourceOperationsPanel :resource="ifaceRow" @updated="afterInterfaceChange" />
+      <template #footer>
+        <el-button @click="ifaceOpen = false">关闭</el-button>
+        <el-button @click="openReports(ifaceRow)">历史版本与证据</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-if="reportsVisible && reportsRow" v-model="reportsVisible" :title="`${reportsRow.model_name} · 资源 #${reportsRow.id}`" width="min(1120px, 96vw)" append-to-body>
       <p class="muted">{{ reportsRow.supplier_model_id }} · 每次测试单独留档</p>
       <ResourceReportsPanel :resource-i-d="reportsRow.id" :current-report-i-d="reportsRow.test.report_id" />
@@ -738,9 +797,15 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
 .profile-grid .span-2{grid-column:1 / -1}
 @media(max-width:820px){.profile-grid{grid-template-columns:1fr}}.qualification-validity{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .supplier-qualification-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:24px}.supplier-qualification-heading h3{margin:0 0 10px}.qualification-list{min-height:90px}
+.iface-form { margin-top: 14px; }
 .qualification-inline{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:44px;padding:4px 0}
 /* 合同与授信是独立区块，和上方营业执照留出间距（原型也是分开的两块）。 */
 .supplier-access-page :deep(.f12-subject-panel){margin-top:28px}
 .qualification-file{color:var(--app-text-muted);font-size:13px}
 .operation-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}.operation-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.quote-record-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}.quote-record-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.model-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}.model-filters label{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}.operation-filters .el-select{max-width:220px}
+</style>
+
+<style>
+/* 接口配置弹窗内嵌了配置与接入面板：限制高度、内部滚动（弹窗被 teleport 到 body，需全局选择器）。 */
+.iface-dialog .el-dialog__body { max-height: 68vh; overflow-y: auto; }
 </style>

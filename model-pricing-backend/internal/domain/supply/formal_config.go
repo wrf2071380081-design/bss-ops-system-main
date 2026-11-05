@@ -108,6 +108,10 @@ type FormalConfigUnitOfWork interface {
 type FormalConfigTransaction interface {
 	// Binding, resource linking and disabling must obey the same lock order.
 	SupplierForUpdate(context.Context, string) (FormalConfigSupplier, error)
+	// HandlingAssigneeForSupplier 判断此人是否是本供应商「办理中」节点的分派办理人。
+	// 技术条线的办理人要在原型里自己登记接口配置（Base URL / API Key），
+	// 只认归属采购人会让技术办理人无权办理自己名下的接入任务。
+	HandlingAssigneeForSupplier(context.Context, string, string) (bool, error)
 	NextID(context.Context) (string, error)
 	ConfigForUpdate(context.Context, string, string) (*FormalConfig, error)
 	CreateConfig(context.Context, *FormalConfig) error

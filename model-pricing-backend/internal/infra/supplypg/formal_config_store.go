@@ -278,6 +278,20 @@ type formalConfigTransaction struct {
 
 var _ supply.FormalConfigTransaction = (*formalConfigTransaction)(nil)
 
+// HandlingAssigneeForSupplier：本供应商有「办理中」且分派给此人的开通节点。
+func (t *formalConfigTransaction) HandlingAssigneeForSupplier(ctx context.Context, supplierID, actorID string) (bool, error) {
+	if !modelIdentity(supplierID) || !modelIdentity(actorID) {
+		return false, supply.ErrReadContract
+	}
+	var assigned bool
+	err := t.tx.QueryRowContext(ctx, `SELECT EXISTS(
+SELECT 1 FROM `+t.store.table("onboarding_node")+` n
+JOIN `+t.store.table("onboarding_flow")+` f ON f.id=n.flow_id
+WHERE f.owner_id=$1 AND f.kind='SUPPLIER' AND f.status='PROCESSING'
+  AND n.enabled AND n.status='IN_PROGRESS' AND n.assignee_id=$2)`, supplierID, actorID).Scan(&assigned)
+	return assigned, err
+}
+
 func (t *formalConfigTransaction) SupplierForUpdate(ctx context.Context, id string) (supply.FormalConfigSupplier, error) {
 	var s supply.FormalConfigSupplier
 	if !modelIdentity(id) || t.supplier.ID != "" {
@@ -348,7 +362,10 @@ func (t *formalConfigTransaction) ConfigForUpdate(ctx context.Context, supplier,
 	return c, nil
 }
 func (t *formalConfigTransaction) validateStage(c *supply.FormalConfig) error {
-	if t.staged != nil || t.logged || t.supplier.ID == "" || t.supplier.Status != "ACTIVE" || c.SupplierID != t.supplier.ID || c.Region != t.supplier.Region || c.UpdatedBy != t.supplier.BuyerID {
+	// 授权在领域层做（归属采购人 / M3:E 维护人 / 本供应商办理中的分派办理人），
+	// 这里只做引用一致性校验；原先还要求 c.UpdatedBy == BuyerID，
+	// 会把技术办理人自己登记接口配置挡成"数据不一致"。
+	if t.staged != nil || t.logged || t.supplier.ID == "" || t.supplier.Status != "ACTIVE" || c.SupplierID != t.supplier.ID || c.Region != t.supplier.Region || !modelIdentity(c.UpdatedBy) {
 		return supply.ErrReadContract
 	}
 	return nil
@@ -437,7 +454,8 @@ func (t *formalConfigTransaction) HasResourceReferences(ctx context.Context, id 
 	return false, nil
 }
 func (t *formalConfigTransaction) AppendConfigOperation(ctx context.Context, op supply.FormalConfigOperation) error {
-	if t.logged || op.EntityType != "supplier_formal_config" || op.SupplierID != t.supplier.ID || op.ActorID != t.supplier.BuyerID || op.After == nil {
+	// 授权在领域层判定（归属采购人 / M3:E / 分派办理人），这里只校验引用与"谁写的"可追溯。
+	if t.logged || op.EntityType != "supplier_formal_config" || op.SupplierID != t.supplier.ID || !modelIdentity(op.ActorID) || op.After == nil {
 		return supply.ErrReadContract
 	}
 	meta := supply.WriteMeta{ActorID: op.ActorID, Reason: op.Reason, RequestID: op.RequestID}

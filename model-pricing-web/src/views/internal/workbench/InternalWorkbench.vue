@@ -282,13 +282,17 @@ async function openItem(item: InboxItemDTO) {
   ElMessage.info("该事项暂无关联页面");
 }
 
-// 测试与资源配置办理：只有一条可办理资源时直接进资源详情页；多条时先列出来让人挑。
+// 供应资源接入：原型是从供应商详情的「接入模型」进入（能看到同批所有模型与进度），
+// 不是单条资源的详情抽屉——抽屉里看不到其他模型，也没法对照办理进度。
 async function jumpToHandling(item: InboxItemDTO) {
   try {
     const view = await submissionFlowsApi.get(String(item.biz_id), true);
     const targets = (view.rows || []).filter(row => row.resource_id && row.status !== "CANCELED");
-    if (targets.length === 1) {
-      await router.push({ path: `/internal/model-plaza/${targets[0].resource_id}`, query: { region: view.region, tab: "operations" } });
+    if (view.supplier_id) {
+      await router.push({
+        path: `/internal/suppliers/${view.supplier_id}/models`,
+        query: { tab: "models", ...(targets.length === 1 ? { highlight: targets[0].resource_id } : {}) },
+      });
       return;
     }
   } catch {
