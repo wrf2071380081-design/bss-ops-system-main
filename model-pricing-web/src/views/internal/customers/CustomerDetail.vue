@@ -32,6 +32,7 @@ import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
 import { useSessionStore } from "../../../stores/session";
 import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
+import ResourceReportsPanel from "../resources/ResourceReportsPanel.vue";
 import CustomerOnboardingStartForm from "./CustomerOnboardingStartForm.vue";
 import CustomerTransferDialog from "./CustomerTransferDialog.vue";
 
@@ -153,20 +154,47 @@ const justArchivedModel = ref(false);
  */
 const ARCHIVING_ACTIONS = new Set(["OFFLINE_CONFIRM"]);
 
-// 原型「接入模型」的筛选：模型公司 / 模型类型。
-const modelFilters = reactive({ company: "", modelType: "" });
+// 原型「接入模型」的筛选：模型公司 / 模型类型 / 搜索模型名称·官方 ID。
+const modelFilters = reactive({ company: "", modelType: "", keyword: "" });
 const modelCompanies = computed(() => [...new Set(modelRows.value.map(row => row.company).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN")));
-const filteredModelRows = computed(() => modelRows.value.filter(row =>
-  (!modelFilters.company || row.company === modelFilters.company)
-  && (!modelFilters.modelType || row.model_type === modelFilters.modelType)));
-function resetModelFilters() { Object.assign(modelFilters, { company: "", modelType: "" }); }
+/**
+ * 关键字搜索口径与原型一致：模型名称 / 官方 ID（原型 `c4VisibleModelRows` 只搜这两个）。
+ * 额外带上标准模型 ID：运维口头沟通时说的是「3 号模型」，加一列不影响原口径。
+ */
+const filteredModelRows = computed(() => {
+  const keyword = modelFilters.keyword.trim().toLowerCase();
+  return modelRows.value.filter(row => {
+    if (modelFilters.company && row.company !== modelFilters.company) return false;
+    if (modelFilters.modelType && row.model_type !== modelFilters.modelType) return false;
+    if (!keyword) return true;
+    return [row.model_name, row.official_id, row.standard_model_id]
+      .some(value => Boolean(value) && String(value).toLowerCase().includes(keyword));
+  });
+});
+function resetModelFilters() { Object.assign(modelFilters, { company: "", modelType: "", keyword: "" }); }
+
+// 列排序：模板里的列都用了自定义 cell，没有 prop，所以显式给 sort-by。
+// 文案类统一转小写后比较；系数/计数按数值排，避免「0.9 < 0.52」这种字典序错。
+const byText = (pick: (row: CustomerModelServiceRow) => string | undefined) =>
+  (row: CustomerModelServiceRow) => (pick(row) || "").toLowerCase();
+const sortByName = byText(row => row.model_name);
+const sortByOfficial = byText(row => row.official_id);
+const sortByCompany = byText(row => row.company);
+const sortByType = byText(row => row.model_type);
+const sortByRegion = byText(row => row.region);
+const sortByCoefficient = (row: CustomerModelServiceRow) => Number(row.coefficient) || 0;
+const sortByAvailable = (row: CustomerModelServiceRow) => row.available_count ?? 0;
+const sortByBound = (row: CustomerModelServiceRow) => row.bound_count ?? 0;
+const sortByRisk = (row: CustomerModelServiceRow) => (row.risk_flags?.length ? 1 : 0);
 // 系数按有效位展示（0.7200 → 0.72），与模型广场一致。
 const coefficientText = (raw: string) => raw && raw.includes(".") ? raw.replace(/0+$/, "").replace(/\.$/, "") : raw;
-const modelEmptyText = computed(() =>
-  justArchivedModel.value
+const modelEmptyText = computed(() => {
+  // 有数据但被筛没了 ≠ 客户没有模型：两种空态分开说，否则用户以为接入记录丢了。
+  if (modelRows.value.length && !filteredModelRows.value.length) return "没有匹配的模型：可调整模型公司 / 类型筛选，或清空搜索关键字";
+  return justArchivedModel.value
     ? "该模型来源已停用并归档，可到「操作记录」查看本次操作"
-    : "该客户还没有接入任何模型",
-);
+    : "该客户还没有接入任何模型";
+});
 
 function linkActionLabel(action: string) {
   return CUSTOMER_LINK_ACTION_LABELS[action] ?? action;
@@ -219,6 +247,20 @@ async function runLinkAction(link: CustomerLinkDetailDTO, action: string) {
   } finally {
     linkActionSubmitting.value = "";
   }
+}
+
+/**
+ * 原型「接入模型」展开区的「测试与报告」：弹窗看该来源资源的历次测试。
+ *
+ * 这里直接复用模型广场那份 `ResourceReportsPanel`，不新写一套：
+ * 测试报告只有一条证据链，两个入口各读一份必然漂移。
+ * `/internal/resources/:id/test-reports` 的权限是「内部员工」，与客户管理同域，不需要额外权限点。
+ */
+const reportsVisible = ref(false);
+const reportsTarget = ref<{ row: CustomerModelServiceRow; link: CustomerLinkDetailDTO }>();
+function openResourceReports(row: CustomerModelServiceRow, link: CustomerLinkDetailDTO) {
+  reportsTarget.value = { row, link };
+  reportsVisible.value = true;
 }
 
 // ---------------- Tab1 批量操作（原型「配置资源 / 禁用 / 启用」） ----------------
@@ -694,6 +736,13 @@ function backToList() {
       <div class="model-filterbar">
         <label>模型公司<el-select v-model="modelFilters.company" clearable placeholder="全部" aria-label="模型公司" style="width:150px"><el-option v-for="company in modelCompanies" :key="company" :label="company" :value="company" /></el-select></label>
         <label>模型类型<el-select v-model="modelFilters.modelType" clearable placeholder="全部" aria-label="模型类型" style="width:130px"><el-option v-for="(name, key) in modelTypeLabels" :key="key" :label="name" :value="key" /></el-select></label>
+        <el-input
+          v-model="modelFilters.keyword"
+          clearable
+          aria-label="搜索模型名称 / 官方 ID"
+          placeholder="搜索模型名称 / 官方 ID"
+          style="width:230px"
+        />
         <el-button @click="resetModelFilters">重置</el-button>
         <span v-if="modelRows.length" class="hint">共 {{ filteredModelRows.length }} / {{ modelRows.length }} 条</span>
       </div>
@@ -766,6 +815,12 @@ function backToList() {
                     <span class="mono">{{ link.activated_at ? formatDateTime(link.activated_at) : "—" }}</span>
                   </template>
                 </el-table-column>
+                <!-- 原型展开区有独立的「测试与报告」入口：报告是准入证据，不该只能从模型广场找。 -->
+                <el-table-column label="测试与报告" width="110">
+                  <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
+                    <el-button size="small" link type="primary" @click="openResourceReports(row, link)">测试与报告</el-button>
+                  </template>
+                </el-table-column>
                 <el-table-column label="操作" width="150">
                   <template #default="{ row: link }: { row: CustomerLinkDetailDTO }">
                     <template v-if="canEdit && link.available_actions.length">
@@ -788,25 +843,25 @@ function backToList() {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="模型名称 / 官方 ID" min-width="210">
+        <el-table-column label="模型名称 / 官方 ID" min-width="210" sortable :sort-by="sortByName">
           <template #default="{ row }">
             <div class="cell-main">{{ row.model_name || `标准模型 #${row.standard_model_id}` }}</div>
             <div class="cell-sub">{{ row.official_id || "官方 ID 待补齐" }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="模型公司" width="130">
+        <el-table-column label="模型公司" width="130" sortable :sort-by="sortByCompany">
           <template #default="{ row }">{{ row.company || "待补齐" }}</template>
         </el-table-column>
-        <el-table-column label="模型类型" width="100">
+        <el-table-column label="模型类型" width="100" sortable :sort-by="sortByType">
           <template #default="{ row }">{{ modelTypeLabels[row.model_type] || "待补齐" }}</template>
         </el-table-column>
-        <el-table-column label="部署区域" width="100">
+        <el-table-column label="部署区域" width="100" sortable :sort-by="sortByRegion">
           <template #default="{ row }">{{ row.region === "OVERSEAS" ? "海外" : row.region === "CN" ? "国内" : "—" }}</template>
         </el-table-column>
         <el-table-column label="客户报价系数" width="130">
           <template #default><span class="hint">待核对</span></template>
         </el-table-column>
-        <el-table-column label="采购系数" width="110">
+        <el-table-column label="采购系数" width="110" sortable :sort-by="sortByCoefficient">
           <template #default="{ row }">{{ row.coefficient ? coefficientText(row.coefficient) : "—" }}</template>
         </el-table-column>
         <el-table-column label="模型服务状态" width="140">
@@ -816,13 +871,13 @@ function backToList() {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="有效可用资源数" width="140" align="right">
+        <el-table-column label="有效可用资源数" width="140" align="right" sortable :sort-by="sortByAvailable">
           <template #default="{ row }"><span class="mono">{{ row.available_count }}</span></template>
         </el-table-column>
-        <el-table-column label="已绑定资源数" width="130" align="right">
+        <el-table-column label="已绑定资源数" width="130" align="right" sortable :sort-by="sortByBound">
           <template #default="{ row }"><span class="mono">{{ row.bound_count }}</span></template>
         </el-table-column>
-        <el-table-column label="风险异常" min-width="200">
+        <el-table-column label="风险异常" min-width="200" sortable :sort-by="sortByRisk">
           <template #default="{ row }">
             <el-tag v-for="flag in row.risk_flags" :key="flag" size="small" type="danger" class="stack-tag">{{ flag }}</el-tag>
             <span v-if="!row.risk_flags?.length" class="hint">—</span>
@@ -1150,6 +1205,24 @@ function backToList() {
           <pre class="json">{{ prettyJson(logDetail.after) }}</pre>
         </div>
       </template>
+    </el-dialog>
+
+    <!-- 测试与报告：复用模型广场那份面板，同一份证据链 -->
+    <el-dialog
+      v-model="reportsVisible"
+      :title="`${reportsTarget?.row.model_name || '模型'} · 测试与报告`"
+      width="min(1120px, 96vw)"
+      append-to-body
+    >
+      <p v-if="reportsTarget" class="hint">
+        {{ reportsTarget.link.supplier_name || "来源待核对" }} · 资源 #{{ reportsTarget.link.resource_id }} · 每次测试单独留档
+      </p>
+      <ResourceReportsPanel
+        v-if="reportsVisible && reportsTarget"
+        :key="reportsTarget.link.resource_id"
+        :resource-i-d="String(reportsTarget.link.resource_id)"
+      />
+      <template #footer><el-button @click="reportsVisible = false">关闭</el-button></template>
     </el-dialog>
 
     <!-- 移交客户（共用弹窗） -->
