@@ -422,19 +422,23 @@ func (r *SupplyChainRuntime) isApprover(ctx context.Context, staffID int64) (boo
 }
 
 // Approve 领导通过申报并分配测试/合同办理人。
-func (r *SupplyChainRuntime) Approve(ctx context.Context, submissionID, actorID, testAssignee, contractAssignee int64, reason string) error {
-	return r.approve(ctx, submissionID, 0, actorID, testAssignee, contractAssignee, reason, fmt.Sprintf("approve-%d", submissionID))
+//
+// decisions 是原型「逐模型决定」的落点：key=submission_row.id，true=通过、false=不通过。
+// 没有出现在 map 里的行按原型口径当作「不勾=不通过」；decisions 为 nil 时视为整单通过，
+// 兼容尚未升级的调用方（老接口/老测试）。
+func (r *SupplyChainRuntime) Approve(ctx context.Context, submissionID, actorID, testAssignee, contractAssignee int64, reason string, decisions map[int64]bool) error {
+	return r.approve(ctx, submissionID, 0, actorID, testAssignee, contractAssignee, reason, fmt.Sprintf("approve-%d", submissionID), decisions)
 }
 
 // ApproveVersioned joins the public idempotency transaction. The decision and
 // task assignment are the same implementation used by native A handling.
-func (r *SupplyChainRuntime) ApproveVersioned(ctx context.Context, submissionID, expected, actorID, testAssignee, contractAssignee int64, reason, requestID string) error {
-	if expected <= 0 || strings.TrimSpace(reason) == "" || len(reason) > 2000 {
+func (r *SupplyChainRuntime) ApproveVersioned(ctx context.Context, submissionID, expected, actorID, testAssignee, contractAssignee int64, reason, requestID string, decisions map[int64]bool) error {
+	if expected <= 0 || len(reason) > 2000 {
 		return supply.ErrReadContract
 	}
-	return r.approve(ctx, submissionID, expected, actorID, testAssignee, contractAssignee, reason, requestID)
+	return r.approve(ctx, submissionID, expected, actorID, testAssignee, contractAssignee, reason, requestID, decisions)
 }
-func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected, actorID, testAssignee, contractAssignee int64, reason, requestID string) error {
+func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected, actorID, testAssignee, contractAssignee int64, reason, requestID string, decisions map[int64]bool) error {
 	ok, err := r.isApprover(ctx, actorID)
 	if err != nil {
 		return err
@@ -487,6 +491,44 @@ func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected
 	if expected > 0 && revision != expected {
 		return supply.ErrRevisionConflict
 	}
+	// 逐模型决策：原型里勾=通过、不勾=不通过，因此没出现在 decisions 里的行按不通过处理。
+	// decisions == nil 表示调用方没启用途模型审批，等价于整单通过。
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "领导审批通过"
+	}
+	rowIDs, err := submissionRowIDs(ctx, tx, submissionID)
+	if err != nil {
+		return err
+	}
+	if len(rowIDs) == 0 {
+		return supply.ErrReadContract
+	}
+	approved := map[int64]bool{}
+	if decisions == nil {
+		for _, id := range rowIDs {
+			approved[id] = true
+		}
+	} else {
+		known := map[int64]bool{}
+		for _, id := range rowIDs {
+			known[id] = true
+		}
+		for id := range decisions {
+			if !known[id] {
+				return &supply.FieldError{Path: "rows", Reason: "decision row does not belong to this submission"}
+			}
+		}
+		for _, id := range rowIDs {
+			approved[id] = decisions[id]
+		}
+	}
+	approvedCount := 0
+	for _, id := range rowIDs {
+		if approved[id] {
+			approvedCount++
+		}
+	}
 	for _, staff := range []int64{testAssignee, contractAssignee} {
 		if staff <= 0 {
 			continue
@@ -505,6 +547,57 @@ func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected
 	}
 	if expected > 0 && firstModel && contractAssignee <= 0 {
 		return &supply.FieldError{Path: "contract_assignee_id", Reason: "first model requires a contract handler"}
+	}
+	// 校验全部通过后才落库：这道事务在 idempotency 中间件里提交，
+	// handler 返回错误并不会自动回滚，所以任何写操作都必须排在校验之后，
+	// 否则会出现「报错了但状态/决策已经改了」的半截数据。
+	var submissionKind string
+	if err := tx.QueryRowContext(ctx, `SELECT kind FROM public.submission WHERE id=$1`, submissionID).Scan(&submissionKind); err != nil {
+		return err
+	}
+	if approvedCount > 0 && submissionKind != "PRICE_CHANGE" {
+		// 新模型接入要求每行都有可用的测试指纹（与 RecordNativeApproval 同一门槛），
+		// 提前拦下来，避免先改状态再失败。
+		for _, id := range rowIDs {
+			if !approved[id] {
+				continue
+			}
+			var fingerprint string
+			if err := tx.QueryRowContext(ctx, `SELECT coalesce(test_fingerprint,'') FROM public.submission_row WHERE id=$1`, id).Scan(&fingerprint); err != nil {
+				return err
+			}
+			if fingerprint == "" {
+				return supply.ErrTestEvidenceRequired
+			}
+		}
+	}
+	for _, id := range rowIDs {
+		decision := "REJECTED"
+		if approved[id] {
+			decision = "APPROVED"
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE public.submission_row
+SET decision=$1, decided_at=now(), decided_by=$2 WHERE id=$3`, decision, actorID, id); err != nil {
+			return err
+		}
+	}
+	if approvedCount == 0 {
+		// 全部不通过 = 整单驳回：状态打到 REJECTED，不生成办理流程，也不分派办理人。
+		if _, err := tx.ExecContext(ctx, `UPDATE public.submission SET status='REJECTED',revision=revision+1,updated_at=now() WHERE id=$1`, submissionID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO public.operation_log
+(entity_type, entity_id, action, "after", reason, request_id, created_at, operator_id, operator_name_snapshot)
+VALUES ('submission', $1, 'REJECT', $2::jsonb, $3, $4, now(), $5, (SELECT name FROM public.internal_staff WHERE id=$5))`,
+			fmt.Sprintf("%d", submissionID),
+			fmt.Sprintf(`{"status":"REJECTED","revision":%d,"reason":%q,"approved":0}`, revision+1, reason),
+			reason, requestID, actorID); err != nil {
+			return err
+		}
+		if owned {
+			return tx.Commit()
+		}
+		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE public.submission SET status='PROCESSING',revision=revision+1,updated_at=now() WHERE id=$1`, submissionID); err != nil {
 		return err
@@ -560,6 +653,24 @@ func (s *stageReportRefs) get(id string) *supplypg.ReportEvidenceRef {
 		return nil
 	}
 	return s.m[id]
+}
+
+// submissionRowIDs 读出一张申报单下所有行的 id（升序），用于逐模型决策。
+func submissionRowIDs(ctx context.Context, tx *sql.Tx, submissionID int64) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM public.submission_row WHERE submission_id=$1 ORDER BY id`, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, 8)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // SimulateAndAdmit 由办理人触发：mock 测试 + 创建资源 + 绑定正式配置 + 登记接入。
@@ -858,7 +969,8 @@ func (h *SupplyChainHandler) Approve(c *gin.Context) {
 		response.Error(c, apperr.ErrInvalidParams)
 		return
 	}
-	if err := h.rt.Approve(c.Request.Context(), id, op.StaffID, req.TestAssigneeID, req.ContractAssigneeID, req.Reason); err != nil {
+	// 旧入口不分行：nil decisions = 整单通过（逐模型决策走 /flows/submissions/:id/approve）。
+	if err := h.rt.Approve(c.Request.Context(), id, op.StaffID, req.TestAssigneeID, req.ContractAssigneeID, req.Reason, nil); err != nil {
 		if err == supply.ErrForbidden {
 			response.Error(c, apperr.ErrForbidden)
 			return

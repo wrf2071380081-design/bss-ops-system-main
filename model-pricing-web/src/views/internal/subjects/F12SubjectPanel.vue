@@ -497,9 +497,9 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
         <el-table-column label="版本" width="110"><template #default="{ row }">V{{ row.version }}<span v-if="row.is_latest === true" class="latest-version">当前版本</span><span v-else-if="row.is_latest === false" class="historical-version">历史版本</span></template></el-table-column>
         <el-table-column label="状态" width="100"><template #default="{ row }">{{ row.status === "ARCHIVED" ? "已归档" : "办理中" }}</template></el-table-column>
         <el-table-column label="附件" min-width="140"><template #default="{ row }"><el-button v-if="canManage && row.file_id" link type="primary" :loading="downloading === row.file_id" @click="downloadFile(row.file_id, 'CONTRACT', row.document_name || 'contract.pdf')">下载 {{ row.has_attachment ? "附件" : "" }}</el-button><span v-else-if="row.file_id">需责任人或当前办理人下载</span><span v-else>{{ row.has_attachment ? "旧附件暂不可下载" : "未关联" }}</span></template></el-table-column>
-        <el-table-column prop="created_by" label="登记人ID" width="100"><template #default="{ row }">{{ row.created_by || "—" }}</template></el-table-column>
-        <el-table-column label="实际办理人ID" width="120"><template #default="{ row }">{{ row.actual_operator_id || "—" }}</template></el-table-column>
-        <el-table-column label="办理来源" min-width="180"><template #default="{ row }">{{ row.source_flow_id ? `${row.source_module_key} · 流程 ${row.source_flow_id} / R${row.source_flow_revision}` : "普通维护" }}</template></el-table-column>
+        <el-table-column prop="created_by" :label="subjectType === 'SUPPLIER' ? '操作人' : '登记人ID'" width="100"><template #default="{ row }">{{ row.created_by || "—" }}</template></el-table-column>
+        <el-table-column v-if="subjectType !== 'SUPPLIER'" label="实际办理人ID" width="120"><template #default="{ row }">{{ row.actual_operator_id || "—" }}</template></el-table-column>
+        <el-table-column v-if="subjectType !== 'SUPPLIER'" label="办理来源" min-width="180"><template #default="{ row }">{{ row.source_flow_id ? `${row.source_module_key} · 流程 ${row.source_flow_id} / R${row.source_flow_revision}` : "普通维护" }}</template></el-table-column>
         <el-table-column label="说明" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "未记录" }}</template></el-table-column>
         <el-table-column label="保存时间" min-width="170"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
          <el-table-column v-if="canManage" label="操作" width="145"><template #default="{ row }"><el-button v-if="row.is_latest === true && row.status !== 'ARCHIVED'" link type="primary" :disabled="loading || saving || !!error" @click="openReviseContract(row)">修订</el-button><el-button v-if="row.is_latest === true && row.status !== 'ARCHIVED'" link type="danger" :disabled="loading || saving || !!error" @click="openArchive(row)">归档</el-button></template></el-table-column>
@@ -523,9 +523,9 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
         <el-table-column prop="document_no" label="依据编号" min-width="130"><template #default="{ row }">{{ row.document_no || "—" }}</template></el-table-column>
         <el-table-column prop="version" label="版本" width="80" />
         <el-table-column label="附件" min-width="120"><template #default="{ row }"><el-button v-if="canManage && row.file_id" link type="primary" :loading="downloading === row.file_id" @click="downloadFile(row.file_id, 'CREDIT', row.document_name || 'credit.pdf')">下载</el-button><span v-else-if="row.file_id">需责任人或当前办理人下载</span><span v-else>未登记 / 旧附件</span></template></el-table-column>
-        <el-table-column prop="created_by" label="登记人ID" width="100"><template #default="{ row }">{{ row.created_by || "—" }}</template></el-table-column>
-        <el-table-column label="实际办理人ID" width="120"><template #default="{ row }">{{ row.actual_operator_id || "—" }}</template></el-table-column>
-        <el-table-column label="办理来源" min-width="180"><template #default="{ row }">{{ row.source_flow_id ? `${row.source_module_key} · 流程 ${row.source_flow_id} / R${row.source_flow_revision}` : "普通维护" }}</template></el-table-column>
+        <el-table-column prop="created_by" :label="subjectType === 'SUPPLIER' ? '操作人' : '登记人ID'" width="100"><template #default="{ row }">{{ row.created_by || "—" }}</template></el-table-column>
+        <el-table-column v-if="subjectType !== 'SUPPLIER'" label="实际办理人ID" width="120"><template #default="{ row }">{{ row.actual_operator_id || "—" }}</template></el-table-column>
+        <el-table-column v-if="subjectType !== 'SUPPLIER'" label="办理来源" min-width="180"><template #default="{ row }">{{ row.source_flow_id ? `${row.source_module_key} · 流程 ${row.source_flow_id} / R${row.source_flow_revision}` : "普通维护" }}</template></el-table-column>
         <el-table-column label="说明" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "未记录" }}</template></el-table-column>
         <el-table-column label="保存时间" min-width="170"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
       </el-table>

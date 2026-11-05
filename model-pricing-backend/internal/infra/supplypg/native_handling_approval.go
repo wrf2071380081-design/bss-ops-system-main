@@ -49,7 +49,9 @@ func RecordNativeApproval(ctx context.Context, tx *sql.Tx, state *ResourceStateS
 	if err := tx.QueryRowContext(ctx, `SELECT id::text,assignee_id::text FROM `+state.table("onboarding_node")+` WHERE flow_id=$1 AND node_key='CONFIG' AND status='IN_PROGRESS' AND enabled FOR UPDATE`, flowID).Scan(&a.NodeID, &a.AssigneeID); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id::text,standard_model_id::text,supplier_model_name,coefficient::text,coalesce(test_fingerprint,''),coalesce(resource_id::text,'') FROM `+state.table("submission_row")+` WHERE submission_id=$1 ORDER BY id FOR UPDATE`, submissionID)
+	// 只处理审批通过的行：原型里没勾「决定」的行不进入技术接入，也就不建资源。
+	// 用 <> 'REJECTED' 而不是 = 'APPROVED'，兼容 000054 之前的历史行（默认 PENDING）。
+	rows, err := tx.QueryContext(ctx, `SELECT id::text,standard_model_id::text,supplier_model_name,coefficient::text,coalesce(test_fingerprint,''),coalesce(resource_id::text,'') FROM `+state.table("submission_row")+` WHERE submission_id=$1 AND decision <> 'REJECTED' ORDER BY id FOR UPDATE`, submissionID)
 	if err != nil {
 		return err
 	}

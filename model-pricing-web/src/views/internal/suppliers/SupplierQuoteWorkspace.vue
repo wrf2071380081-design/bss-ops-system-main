@@ -136,6 +136,7 @@ onBeforeUnmount(() => { active = false; pendingRequest?.abort(); historyRequest?
             <template v-else>
               <div class="quote-workspace__toolbar"><span class="muted">按提交时间倒序；点「详情」进入审批与办理分派。</span><el-button :loading="pendingLoading" @click="loadPending">刷新</el-button></div>
               <el-table v-loading="pendingLoading" :data="pending" style="width:100%">
+                <el-table-column prop="id" label="申报 ID" min-width="130" />
                 <el-table-column prop="supplier_name" label="供应商" min-width="150" />
                 <el-table-column label="申报类型" width="110"><template #default="{ row }">{{ kindLabel(row.kind) }}</template></el-table-column>
                 <el-table-column label="部署节点" width="100"><template #default="{ row }">{{ regionLabel(row.region) }}</template></el-table-column>

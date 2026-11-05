@@ -2,7 +2,7 @@ import {apiRequest} from './http';
 import {standardModelVersion} from './standardModels.contract';
 export interface SubmissionFlowView {
  id:string;supplier_id:string;supplier_name:string;revision:string;status:string;kind:string;region:string;first_model:boolean;can_approve:boolean;can_handle:boolean;
- rows:Array<{id:string;model_id:string;model_name:string;interface_model_id:string;coefficient:string;status:string;resource_id:string}>;
+ rows:Array<{id:string;model_id:string;model_name:string;interface_model_id:string;coefficient:string;status:string;resource_id:string;decision?:'PENDING'|'APPROVED'|'REJECTED'}>;
  nodes:Array<{id:string;key:string;status:string;assignee_id:string;assignee_name:string}>;
  flow_id:string;flow_revision:string;selected_node_id:string;can_handle_contract:boolean;can_complete_contract:boolean;
  created_at:string;submitted_at:string|null;
@@ -16,14 +16,20 @@ export const submissionFlowsApi={
   standardModelVersion(result.id);standardModelVersion(result.revision);
   if(typeof result.can_approve!=='boolean'||typeof result.can_handle!=='boolean'||!Array.isArray(result.rows))throw new Error('办理信息不完整，请刷新。');return result;
  },
- async approve(current:SubmissionFlowView,test:string,contract:string,reason:string,lifecycle:string){
-  if(!current.can_approve||!reason.trim()||(current.first_model&&!contract))throw new Error('请选择办理人并填写审批意见。');
-  const data={expected_revision:standardModelVersion(current.revision),test_assignee_id:standardModelVersion(test),...(contract?{contract_assignee_id:standardModelVersion(contract)}:{}),reason:reason.trim()};
+ /**
+  * decisions 是原型「逐模型决定」：key=申报行 id，true=通过、false=不通过。
+  * 未出现在 map 里的行后端按「不勾=不通过」处理。
+  */
+ async approve(current:SubmissionFlowView,test:string,contract:string,reason:string,lifecycle:string,decisions:Record<string,boolean>){
+  if(!current.can_approve||(current.first_model&&!contract))throw new Error('请选择办理人。');
+  const rows=current.rows.map(row=>({id:standardModelVersion(row.id),decision:decisions[row.id]?'APPROVED':'REJECTED'}));
+  if(rows.length&&!rows.some(row=>row.decision==='APPROVED'))throw new Error('请至少勾选一个模型通过，否则请用「驳回申报」。');
+  const data={expected_revision:standardModelVersion(current.revision),test_assignee_id:standardModelVersion(test),...(contract?{contract_assignee_id:standardModelVersion(contract)}:{}),...(reason.trim()?{reason:reason.trim()}:{}),rows};
   return apiRequest<{submission_id:string;revision:string;status:string}>({method:'POST',url:`/internal/flows/submissions/${standardModelVersion(current.id)}/approve`,data,idempotency:{scope:`submission-approve:${current.id}`,payload:data,lifecycle}});
  },
  async reject(current:SubmissionFlowView,reason:string,lifecycle:string){
-  if(!current.can_approve||!reason.trim())throw new Error('请填写驳回原因。');
-  const data={expected_revision:standardModelVersion(current.revision),reason:reason.trim()};
+  if(!current.can_approve)throw new Error('当前账号没有审批权限。');
+  const data={expected_revision:standardModelVersion(current.revision),...(reason.trim()?{reason:reason.trim()}:{})};
   return apiRequest<{submission_id:string;revision:string;status:string}>({method:'POST',url:`/internal/flows/submissions/${standardModelVersion(current.id)}/reject`,data,idempotency:{scope:`submission-reject:${current.id}`,payload:data,lifecycle}});
  },
  async completeContract(current:SubmissionFlowView,reason:string,lifecycle:string){

@@ -52,6 +52,16 @@ let progressSequence=0;
 const nodeStatusLabels:Record<string,string>={WAITING_PREDECESSOR:'等待前序',IN_PROGRESS:'办理中',COMPLETED:'已完成',CANCELED:'已取消',CANCELLED:'已取消'};
 const submissionStatusLabels:Record<string,string>={DRAFT:'草稿',PENDING_APPROVAL:'待审批',REJECTED:'已驳回',PROCESSING:'办理中',COMPLETED:'已完成',WITHDRAWN:'已撤回'};
 function resourceNodes(id:string){return progress.value.filter(n=>n.resource_id===id);}
+function openInterfaceConfig(row:ResourceRow){void router.push({path:`/internal/model-plaza/${row.id}`,query:{region:row.region,tab:'operations',supplier_id:supplierID.value}});}
+// 原型那条进度：技术完成 x/y · 已取消 · 尚待配置 · 当前可办理 · 商务待完成 · 办理人
+const flowSummary=computed(()=>{
+  const total=rows.value.length;
+  const admitted=rows.value.filter(r=>r.state==='ADMITTED').length;
+  const canceled=rows.value.filter(r=>rowHandling(r.id)==='本次办理已取消').length;
+  const pending=rows.value.filter(r=>r.state==='PENDING_TEST'||r.state==='PENDING_ACCESS').length;
+  const contractNode=progress.value.find(n=>n.key==='CONTRACT');
+  return {total,admitted,canceled,pending,contractDone:contractNode?['COMPLETED','DONE'].includes(contractNode.status):false,contractAssignee:contractNode?.assignee_name||'',configAssignee:progress.value.find(n=>n.key==='CONFIG')?.assignee_name||''};
+});
 function rowHandling(id:string){const state=resourceNodes(id).find(n=>n.key==='CONFIG')?.row_status;return state==='CANCELED'?'本次办理已取消':state==='CONFIGURED'?'配置已完成，待确认开通':'';}
 async function loadProgress(){const id=supplierID.value,epoch=supplierEpoch,sequence=++progressSequence;progressError.value='';try{const result=await submissionFlowsApi.supplierProgress(id);if(isCurrentSupplier(id,epoch)&&sequence===progressSequence){if(result.supplier_id!==id)throw new Error('办理主体不匹配');progress.value=result.list;}}catch(e){if(isCurrentSupplier(id,epoch)&&sequence===progressSequence){progress.value=[];progressError.value=e instanceof Error?e.message:'办理进度加载失败';}}}
 let request: AbortController | undefined;
@@ -451,6 +461,14 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <div><span class="muted">当前选中来源</span><strong>{{ selected.model_name }} · {{ selected.supplier_model_id }}</strong></div>
             <el-tag>{{ regionLabel(selected.region) }}</el-tag>
           </div>
+          <p v-if="rows.length" class="flow-summary">
+            <span>技术完成 {{ flowSummary.admitted }}/{{ flowSummary.total }}</span>
+            <span v-if="flowSummary.canceled">已取消 {{ flowSummary.canceled }} 个</span>
+            <span>尚待配置 {{ flowSummary.pending }} 个</span>
+            <span>当前可办理 {{ flowSummary.pending }} 个</span>
+            <span>商务：{{ flowSummary.contractDone ? '已完成' : '待完成' }}<template v-if="!flowSummary.contractDone && flowSummary.contractAssignee"> · {{ flowSummary.contractAssignee }}</template></span>
+            <span v-if="flowSummary.configAssignee">技术办理 · {{ flowSummary.configAssignee }}</span>
+          </p>
           <SupplierAccessBatchPanel :supplier-id="supplierID" :selected="batchSelected" @changed="load();loadProgress()"/>
           <el-table :data="rows" row-key="id" highlight-current-row :current-row-key="selectedID" style="width:100%" @selection-change="batchSelected=$event">
             <el-table-column type="selection" width="45"/>
@@ -464,6 +482,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-table-column label="输入缓存命中率" width="130"><template #default="{ row }">{{ resourceCacheDisplay(row.test.cache_stats, row.test.status) }}</template></el-table-column>
             <el-table-column label="最近上架时间" width="170"><template #default="{ row }">{{ row.admitted_at ? formatDateTime(row.admitted_at) : "未记录" }}</template></el-table-column>
             <el-table-column label="状态" min-width="150"><template #default="{ row }"><el-tag :type="row.state === 'ADMITTED' ? 'success' : 'info'" size="small">{{ stateLabel(row.state) }}</el-tag><span class="muted">{{rowHandling(row.id)}}</span></template></el-table-column>
+            <el-table-column label="接口配置" width="100" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click="openInterfaceConfig(row)">接口配置</el-button></template></el-table-column>
             <el-table-column label="测试与报告" width="100" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click="openReports(row)">测试列表</el-button></template></el-table-column>
             <el-table-column label="操作" width="110" fixed="right"><template #default="{ row }"><el-button size="small" @click="focus(row)">{{ row.id === selectedID ? "当前详情" : "查看详情" }}</el-button></template></el-table-column>
             <template #empty><el-empty description="该供应商暂无接入模型" :image-size="64" /></template>
@@ -561,6 +580,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
 </template>
 
 <style scoped>
+.flow-summary{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 12px;padding:10px 12px;border:1px solid #e6ebee;border-radius:6px;background:#f8fafb;font-size:12px;color:#5b6270}
 .supplier-access-page{color:var(--app-text-primary)}.back-button{margin-bottom:10px}.page-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:18px}.page-heading h1{margin:7px 0;font-size:26px}.page-heading p,.muted{color:var(--app-text-muted);font-size:12px}.eyebrow{color:var(--app-text-muted);font-size:11px;letter-spacing:.14em}.supplier-model-panel{padding:18px 20px}.model-context{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 14px;margin-bottom:12px;background:#f6f8fb;border:1px solid #e6e8ed;border-radius:8px}.model-context strong,.model-context .muted{display:block}.model-context strong{margin-top:4px}.muted{display:block;margin-top:4px}.supplier-tab-content{min-height:220px;padding:12px 0}.supplier-tab-content h3{margin:20px 0 10px;font-size:16px}.supplier-tab-content h4{margin:18px 0 8px}.supplier-profile{display:grid;grid-template-columns:160px minmax(0,1fr);gap:10px 20px;padding:12px 0}.supplier-profile dt{color:var(--app-text-muted)}.supplier-profile dd{margin:0;overflow-wrap:anywhere}.el-pagination{margin-top:18px;justify-content:flex-end}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}@media(max-width:640px){.page-heading{align-items:flex-start}.supplier-model-panel{padding:12px}.supplier-profile{grid-template-columns:1fr;gap:6px}.supplier-profile dd{margin-bottom:10px}}
 .supplier-profile-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.supplier-profile-heading h3{margin:20px 0 10px}.qualification-validity{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .supplier-qualification-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:24px}.supplier-qualification-heading h3{margin:0 0 10px}.qualification-list{min-height:90px}

@@ -7,9 +7,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"model_bss/internal/api/middleware"
 	"model_bss/internal/domain/supply"
+	infra "model_bss/internal/infra/middleware"
 	"model_bss/internal/infra/supplypg"
 	"model_bss/pkg/response"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -21,6 +23,7 @@ type nativeFlowRow struct {
 	Coefficient    string `json:"coefficient"`
 	Status         string `json:"status"`
 	ResourceID     string `json:"resource_id"`
+	Decision       string `json:"decision"`
 }
 type nativeFlowView struct {
 	ID                  string           `json:"id"`
@@ -114,7 +117,7 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 	if err := r.raw.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.operation_log l JOIN public.onboarding_node n ON n.id::text=l."after"->>'node_id' JOIN public.onboarding_flow f ON f.id=n.flow_id WHERE l.entity_type='submission' AND l.entity_id=$1 AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND n.enabled AND n.status='IN_PROGRESS' AND n.assignee_id=$2 AND f.status='PROCESSING' AND f.current_node='CONFIG')`, id, actor).Scan(&v.CanHandle); err != nil {
 		return nil, err
 	}
-	rows, err := r.raw.QueryContext(ctx, `SELECT sr.id::text,sr.standard_model_id::text,m.name,sr.supplier_model_name,sr.coefficient::text,sr.row_status,coalesce(sr.resource_id::text,'') FROM public.submission_row sr JOIN public.standard_model m ON m.id=sr.standard_model_id WHERE sr.submission_id=$1 ORDER BY sr.id`, id)
+	rows, err := r.raw.QueryContext(ctx, `SELECT sr.id::text,sr.standard_model_id::text,m.name,sr.supplier_model_name,sr.coefficient::text,sr.row_status,coalesce(sr.resource_id::text,''),sr.decision FROM public.submission_row sr JOIN public.standard_model m ON m.id=sr.standard_model_id WHERE sr.submission_id=$1 ORDER BY sr.id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +125,7 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 	v.Rows = []nativeFlowRow{}
 	for rows.Next() {
 		var row nativeFlowRow
-		if err := rows.Scan(&row.ID, &row.ModelID, &row.ModelName, &row.InterfaceModel, &row.Coefficient, &row.Status, &row.ResourceID); err != nil {
+		if err := rows.Scan(&row.ID, &row.ModelID, &row.ModelName, &row.InterfaceModel, &row.Coefficient, &row.Status, &row.ResourceID, &row.Decision); err != nil {
 			return nil, err
 		}
 		v.Rows = append(v.Rows, row)
@@ -175,7 +178,7 @@ func RegisterNativeSupplyFlowRoutes(internal *gin.RouterGroup, runtime *SupplyCh
 			Expected string `json:"expected_revision"`
 			Reason   string `json:"reason"`
 		}
-		if err := decodeSupplyRequest(c, &body, []string{"expected_revision", "reason"}); err != nil {
+		if err := decodeSupplyRequest(c, &body, []string{"expected_revision"}); err != nil {
 			supplyHTTPError(c, err)
 			return
 		}
@@ -184,7 +187,7 @@ func RegisterNativeSupplyFlowRoutes(internal *gin.RouterGroup, runtime *SupplyCh
 			supplyHTTPError(c, err)
 			return
 		}
-		meta, err := supplyWriteMeta(c, body.Reason)
+		meta, err := supplyWriteMetaOptional(c, body.Reason, "领导驳回")
 		if err != nil {
 			supplyHTTPError(c, err)
 			return
@@ -246,8 +249,14 @@ func RegisterNativeSupplyFlowRoutes(internal *gin.RouterGroup, runtime *SupplyCh
 			Test     string `json:"test_assignee_id"`
 			Contract string `json:"contract_assignee_id"`
 			Reason   string `json:"reason"`
+			// Rows 是逐模型决策（原型「决定」勾选）：不传则该行按不通过处理；
+			// 整个字段缺省时按整单通过处理，兼容尚未升级的调用方。
+			Rows []struct {
+				ID       string `json:"id"`
+				Decision string `json:"decision"`
+			} `json:"rows"`
 		}
-		if err := decodeSupplyRequest(c, &body, []string{"expected_revision", "test_assignee_id", "reason"}); err != nil {
+		if err := decodeSupplyRequest(c, &body, []string{"expected_revision", "test_assignee_id"}); err != nil {
 			supplyHTTPError(c, err)
 			return
 		}
@@ -269,12 +278,32 @@ func RegisterNativeSupplyFlowRoutes(internal *gin.RouterGroup, runtime *SupplyCh
 				return
 			}
 		}
-		meta, err := supplyWriteMeta(c, body.Reason)
+		meta, err := supplyWriteMetaOptional(c, body.Reason, "领导审批")
 		if err != nil {
 			supplyHTTPError(c, err)
 			return
 		}
-		err = runtime.ApproveVersioned(c.Request.Context(), int64(id), int64(expected), mustFlowInt(meta.ActorID), int64(test), int64(contract), meta.Reason, meta.RequestID)
+		var decisions map[int64]bool
+		if body.Rows != nil {
+			decisions = make(map[int64]bool, len(body.Rows))
+			for _, row := range body.Rows {
+				rowID, err := planPositiveID(row.ID)
+				if err != nil {
+					supplyHTTPError(c, err)
+					return
+				}
+				switch row.Decision {
+				case "APPROVED":
+					decisions[int64(rowID)] = true
+				case "REJECTED":
+					decisions[int64(rowID)] = false
+				default:
+					supplyHTTPError(c, supplyRequestError("rows", "decision must be APPROVED or REJECTED"))
+					return
+				}
+			}
+		}
+		err = runtime.ApproveVersioned(c.Request.Context(), int64(id), int64(expected), mustFlowInt(meta.ActorID), int64(test), int64(contract), meta.Reason, meta.RequestID, decisions)
 		if err != nil {
 			supplyHTTPError(c, err)
 			return
@@ -284,12 +313,12 @@ func RegisterNativeSupplyFlowRoutes(internal *gin.RouterGroup, runtime *SupplyCh
 			supplyHTTPError(c, err)
 			return
 		}
-		var revision string
-		if err := tx.QueryRowContext(c.Request.Context(), `SELECT revision::text FROM public.submission WHERE id=$1`, id).Scan(&revision); err != nil {
+		var revision, status string
+		if err := tx.QueryRowContext(c.Request.Context(), `SELECT revision::text,status FROM public.submission WHERE id=$1`, id).Scan(&revision, &status); err != nil {
 			supplyHTTPError(c, err)
 			return
 		}
-		receipt := gin.H{"submission_id": c.Param("id"), "revision": revision, "status": "PROCESSING"}
+		receipt := gin.H{"submission_id": c.Param("id"), "revision": revision, "status": status}
 		middleware.SetIdempotencyResult(c, receipt)
 		response.Success(c, receipt)
 	})
@@ -309,4 +338,22 @@ func nativeDecisionReceipt(c *gin.Context, id uint64, status string) {
 	receipt := gin.H{"submission_id": c.Param("id"), "revision": revision, "status": status}
 	middleware.SetIdempotencyResult(c, receipt)
 	response.Success(c, receipt)
+}
+
+// supplyWriteMetaOptional 与 supplyWriteMeta 相同，但理由留空时用 fallback 兜底。
+// 原型里审批/驳回都不强制填写意见（勾选即结论），故审批类动作用这个变体；
+// 标准模型维护等"必须说明理由"的写操作仍走 supplyWriteMeta，不放宽。
+func supplyWriteMetaOptional(c *gin.Context, reason, fallback string) (supply.WriteMeta, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = fallback
+	}
+	if len(reason) > 2000 {
+		return supply.WriteMeta{}, supplyRequestError("reason", "reason is too long")
+	}
+	requestID := infra.FromContext(c)
+	if requestID == "" {
+		return supply.WriteMeta{}, supply.ErrDependencyUnavailable
+	}
+	return supply.WriteMeta{ActorID: supplyActor(c), Reason: reason, RequestID: requestID, CanMaintain: supplyCanMaintain(c)}, nil
 }
