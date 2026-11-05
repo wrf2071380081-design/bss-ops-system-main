@@ -220,7 +220,9 @@ func supplierQuoteBlocks(record supplypg.SupplierModelRecord) []string {
 	}
 	if !record.HasReport {
 		reasons = append(reasons, "TESTS_REQUIRED")
-	} else if !record.ConnectionPassed || !record.StressPassed {
+	} else if !record.ConnectionPassed {
+		// 只看连通：压测平台对压力测试不返回结论（verdict 恒空），
+		// 把 stress_passed=false 当门槛会让所有供应商都卡在「测试未通过」。
 		reasons = append(reasons, "TESTS_NOT_PASSED")
 	}
 	return reasons

@@ -38,7 +38,7 @@ func TestAdmissionRejectsWrongFlowRowVersionAndUnreadyPrerequisites(t *testing.T
 	}
 }
 func TestAdmissionUsesOwnCurrentTestAndConfirmedFormalConfig(t *testing.T) {
-	for _, change := range []func(*ResourceRecord){func(r *ResourceRecord) { r.Report.ConnectivityPassed = false }, func(r *ResourceRecord) { r.Report.PressurePassed = false }, func(r *ResourceRecord) { r.Report.Valid = false }, func(r *ResourceRecord) { r.Report.TargetVersion = 2 }, func(r *ResourceRecord) { r.Report.OriginRowVersion = 2 }, func(r *ResourceRecord) { r.Report.ResourceID = "12" }, func(r *ResourceRecord) { r.Report = nil }, func(r *ResourceRecord) { r.Config = nil }, func(r *ResourceRecord) { r.Config.ConfirmedRevision = 0 }, func(r *ResourceRecord) { r.Config.HasAPIKey = false }, func(r *ResourceRecord) { r.Config.Region = "OVERSEAS" }, func(r *ResourceRecord) { r.Supplier.Status = "FROZEN" }} {
+	for _, change := range []func(*ResourceRecord){func(r *ResourceRecord) { r.Report.ConnectivityPassed = false }, func(r *ResourceRecord) { r.Report.Valid = false }, func(r *ResourceRecord) { r.Report.TargetVersion = 2 }, func(r *ResourceRecord) { r.Report.OriginRowVersion = 2 }, func(r *ResourceRecord) { r.Report.ResourceID = "12" }, func(r *ResourceRecord) { r.Report = nil }, func(r *ResourceRecord) { r.Config = nil }, func(r *ResourceRecord) { r.Config.ConfirmedRevision = 0 }, func(r *ResourceRecord) { r.Config.HasAPIKey = false }, func(r *ResourceRecord) { r.Config.Region = "OVERSEAS" }, func(r *ResourceRecord) { r.Supplier.Status = "FROZEN" }} {
 		r, p, cmd := admissionFixture(t)
 		change(r)
 		if _, err := ProposeResourceAdmission(r, p, "8", cmd, modelNow); err == nil {

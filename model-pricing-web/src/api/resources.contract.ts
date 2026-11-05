@@ -4,7 +4,7 @@ import type { ResourceCache, ResourceGroup, ResourceQuery, ResourceRow } from ".
 
 export const resourceStateLabels: Record<string, string> = { PENDING_TEST: "待测试", PENDING_ACCESS: "待接入", ADMITTED: "已接入", OFFLINE: "已下架" };
 export const resourceRegionLabels: Record<string, string> = { CN: "国内", OVERSEAS: "海外" };
-export const resourceBlockLabels: Record<string, string> = { RESOURCE_NOT_ADMITTED: "资源尚未接入或已下架", SUPPLIER_INACTIVE: "供应商已停用", SUPPLIER_REGION_MISMATCH: "供应商区域不匹配", MODEL_NOT_READY: "标准模型资料或核验尚未就绪", FORMAL_CONFIG_UNAVAILABLE: "正式接口配置尚未就绪", FORMAL_CONFIG_CHANGED: "正式配置已变更，需重新确认绑定", TESTS_REQUIRED: "尚无该资源的有效测试报告", TEST_TARGET_CHANGED: "测试目标已变化，原报告不再适用", TEST_EVIDENCE_INVALID: "测试依据已失效", TESTS_NOT_PASSED: "自身连通或压力测试尚未通过" };
+export const resourceBlockLabels: Record<string, string> = { RESOURCE_NOT_ADMITTED: "资源尚未接入或已下架", SUPPLIER_INACTIVE: "供应商已停用", SUPPLIER_REGION_MISMATCH: "供应商区域不匹配", MODEL_NOT_READY: "标准模型资料或核验尚未就绪", FORMAL_CONFIG_UNAVAILABLE: "正式接口配置尚未就绪", FORMAL_CONFIG_CHANGED: "正式配置已变更，需重新确认绑定", TESTS_REQUIRED: "尚无该资源的有效测试报告", TEST_TARGET_CHANGED: "测试目标已变化，原报告不再适用", TEST_EVIDENCE_INVALID: "测试依据已失效", TESTS_NOT_PASSED: "自身连通测试尚未通过" };
 const groupedSort = ["id", "name", "company", "model_type", "supplier_count", "resource_count", "available_count", "coefficient_min", "coefficient_max"];
 const flatSort = ["id", "supplier_name", "region", "coefficient", "state", "updated_at", "admitted_at", "connection_ms", "rps", "tps", "cache_hit_rate"];
 function invalid(): never { throw new Error("供应资源响应不符合约定，请重新查询。"); }
@@ -98,7 +98,8 @@ export function validateResourceRow(value: unknown, expectedID?: string): Resour
   if (test.status === "COMPLETED" && !["PROVIDED", "NOT_PROVIDED", "NOT_APPLICABLE"].includes(String(cache.status))) invalid();
   if (readiness.resource_revision !== row.revision || readiness.formal_config_revision !== row.formal_config_revision) invalid();
   standardModelVersion(readiness.model_version_no);
-  if (readiness.eligible && (readiness.blocked_reasons.length || row.state !== "ADMITTED" || !row.ever_admitted || test.status !== "COMPLETED" || !test.valid || !test.connectivity_passed || !test.pressure_passed)) invalid();
+  // 压力测试只作为事实返回，不再参与「能不能报价」的判定（平台对 stress 不返回 verdict）。
+  if (readiness.eligible && (readiness.blocked_reasons.length || row.state !== "ADMITTED" || !row.ever_admitted || test.status !== "COMPLETED" || !test.valid || !test.connectivity_passed)) invalid();
   resourceCacheDisplay(cache as unknown as ResourceCache, String(test.status));
   for (const key of ["connection_ms", "rps", "tps"]) resourceMetricDisplay(metrics[key] as string | null, String(test.status));
   if (!Array.isArray(row.official_price_items)) invalid();

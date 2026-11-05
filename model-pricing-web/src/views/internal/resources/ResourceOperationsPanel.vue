@@ -187,7 +187,7 @@ onBeforeUnmount(() => { active = false; configRequest?.abort(); workflowRequest?
 
     <section v-if="admissible" class="operation-card">
       <h3>登记资源接入</h3>
-      <p class="muted">仅当本资源自己的连通性和压力测试均通过、正式配置已关联时开放。页面记录外部实际操作依据，办理资格由服务端核验。</p>
+      <p class="muted">仅当本资源自己的连通测试通过、正式配置已关联时开放。页面记录外部实际操作依据，办理资格由服务端核验。</p>
       <el-checkbox v-model="externalConfirmed" :disabled="admissionBusy">已在{{ resourceRegionLabels[resource.region] }} B 端完成该模型实际配置</el-checkbox>
       <el-form label-position="top" @submit.prevent="admit">
         <el-form-item label="完成依据"><el-input v-model="completionNote" aria-label="完成依据" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="admissionBusy" /></el-form-item>

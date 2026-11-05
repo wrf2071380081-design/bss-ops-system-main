@@ -150,9 +150,11 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 	// 审批人要看的恰恰是「这轮测出来什么、过没过」，所以按 resource 取最近一份
 	// baseline（连通）与 stress（压力）的实测值——两类报告是两个 test_job，不能只取一行。
 	rows, err := r.raw.QueryContext(ctx, `SELECT sr.id::text,sr.standard_model_id::text,m.name,sr.supplier_model_name,sr.coefficient::text,sr.row_status,coalesce(sr.resource_id::text,''),sr.decision,coalesce(m.company,''),coalesce(m.model_type,''),
+		 -- 结论只看平台明确判负的 verdict：压测平台对 stress 不返回结论（verdict 空），
+		 -- 旧口径把 stress_passed=false 当不通过，会把「未判定」显示成「没通过」。
 		 CASE WHEN tr.last_report_id IS NULL THEN 'NOT_TESTED'
-		      WHEN tr.connection_passed IS FALSE OR tr.stress_passed IS FALSE THEN 'FAILED'
-		      WHEN tr.connection_passed IS TRUE AND tr.stress_passed IS TRUE THEN 'PASSED'
+		      WHEN tr.connection_failed OR tr.stress_failed THEN 'FAILED'
+		      WHEN tr.connection_passed IS TRUE THEN 'PASSED'
 		      ELSE 'INCOMPLETE' END,
 		 coalesce(tr.connection_ms::text,''),coalesce(tr.rps::text,''),coalesce(tr.tps::text,''),
 		 coalesce(tr.cache_hit_ratio::text,''),coalesce(tr.cache_available,false),
@@ -174,6 +176,15 @@ LEFT JOIN LATERAL (
 		(SELECT x.connection_passed FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
 			WHERE x.resource_id=r.id AND j.category='baseline' AND x.connection_passed IS NOT NULL
 			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS connection_passed,
+		-- 平台明确判负（fail/abort/canceled）才算失败；空 verdict 是「未判定」，不参与判定。
+		(SELECT lower(coalesce(x.verdict,'')) IN ('fail','failed','abort','aborted','canceled','cancelled')
+			FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
+			WHERE x.resource_id=r.id AND j.category='baseline'
+			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS connection_failed,
+		(SELECT lower(coalesce(x.verdict,'')) IN ('fail','failed','abort','aborted','canceled','cancelled')
+			FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
+			WHERE x.resource_id=r.id AND j.category='stress'
+			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS stress_failed,
 		(SELECT x.rps FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
 			WHERE x.resource_id=r.id AND j.category='stress' AND x.rps IS NOT NULL
 			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS rps,

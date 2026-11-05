@@ -169,7 +169,8 @@ func TestResourceOnlineRechecksModelConfigAndOwnEvidence(t *testing.T) {
 			case "config":
 				record.Config.ConfirmedRevision = 0
 			case "report":
-				record.Report.PressurePassed = false
+				// 压力测试不再作为拦截条件（平台不给结论），改用连通性表达"报告不合格"。
+				record.Report.ConnectivityPassed = false
 			case "target":
 				record.Resource.TargetVersion++
 			}

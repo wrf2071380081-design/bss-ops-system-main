@@ -46,7 +46,6 @@ func TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration(t *testing.T
 		name, reason string
 		change       func(*ResourceRecord)
 	}{
-		{"pressure failed", "TESTS_NOT_PASSED", func(r *ResourceRecord) { r.Report.PressurePassed = false }},
 		{"connection failed", "TESTS_NOT_PASSED", func(r *ResourceRecord) { r.Report.ConnectivityPassed = false }},
 		{"stale target", "TEST_TARGET_CHANGED", func(r *ResourceRecord) { r.Report.TargetVersion = 2 }},
 		{"config changed", "FORMAL_CONFIG_CHANGED", func(r *ResourceRecord) { r.Config.Revision = 2; r.Config.ConfirmedRevision = 2 }},
@@ -72,6 +71,13 @@ func TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration(t *testing.T
 	snapshot, err := BuildResourceSnapshot(record)
 	if err != nil || !snapshot.QuoteReadiness.Eligible || snapshot.Coefficient != "0.6800" || snapshot.Test.CacheStats.HitPercent != "60.00" {
 		t.Fatalf("valid resource rejected: %+v %v", snapshot, err)
+	}
+	// 压力未通过只作为事实保留，不再拦「能不能报价/接入」：
+	// 压测平台对 stress 不返回 verdict，pressure_passed 恒为 false。
+	pressureOnly := resourceRecord(t, "31", "21", "11", "CN", "0.68")
+	pressureOnly.Report.PressurePassed = false
+	if snapshot, err := BuildResourceSnapshot(pressureOnly); err != nil || !snapshot.QuoteReadiness.Eligible || snapshot.Test.PressurePassed {
+		t.Fatalf("pressure without verdict should not block readiness: %+v %v", snapshot, err)
 	}
 	encoded, _ := json.Marshal(snapshot)
 	if strings.Contains(string(encoded), "base_url") || strings.Contains(string(encoded), "api_key") || strings.Contains(string(encoded), "password") {
@@ -125,7 +131,8 @@ func (s *resourceReadMemory) GetResource(_ context.Context, id string) (*Resourc
 func TestResourceReaderGroupsAfterFilteringAndPagesModels(t *testing.T) {
 	cn1 := resourceRecord(t, "31", "21", "11", "CN", "0.7")
 	cn2 := resourceRecord(t, "32", "22", "11", "CN", "0.5")
-	cn2.Report.PressurePassed = false
+	// 用连通性表达"这条来源不可用"：压力未判定不再影响可用性计数。
+	cn2.Report.ConnectivityPassed = false
 	overseas := resourceRecord(t, "33", "23", "11", "OVERSEAS", "0.1")
 	store := &resourceReadMemory{groups: [][]*ResourceRecord{{cn1, cn2, overseas}}, total: 2}
 	result, err := NewResourceReader(store).List(context.Background(), ResourceListQuery{Region: "CN", Page: 1, Size: 1})

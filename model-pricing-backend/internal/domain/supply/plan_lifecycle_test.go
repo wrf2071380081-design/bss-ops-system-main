@@ -86,7 +86,8 @@ func TestStatePlanOnlineRechecksCurrentFacts(t *testing.T) {
 		record.Resource.State = "OFFLINE"
 		p, _ := NewStatePlan("81", "7", record.Resource, "ONLINE", modelNow, "恢复", modelNow)
 		if blocked {
-			record.Report.PressurePassed = false
+			// 压力未判定不再拦上架；用连通性表达报告不达标。
+			record.Report.ConnectivityPassed = false
 		}
 		change, err := p.ExecuteStatePlan("7", 1, record, true, "已完成上架", modelNow)
 		if blocked {

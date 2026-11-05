@@ -213,7 +213,10 @@ func BuildResourceSnapshot(record *ResourceRecord) (*ResourceSnapshot, error) {
 			if !report.Valid {
 				block("TEST_EVIDENCE_INVALID")
 			}
-			if !report.ConnectivityPassed || !report.PressurePassed {
+			// 压力测试只留指标、不参与"能不能报价/能不能接入"的判定：
+			// 压测平台对 stress 不返回 verdict，pressure_passed 恒为 false，
+			// 拿它当门槛等于把所有资源都判成不合格。
+			if !report.ConnectivityPassed {
 				block("TESTS_NOT_PASSED")
 			}
 		}

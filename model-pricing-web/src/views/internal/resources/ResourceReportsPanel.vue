@@ -58,11 +58,14 @@ const cacheText = (report: ResourceReport) => report.cache_stats.status === "NOT
 
 /** 测试项目：baseline / stress 翻成人话；专项上传用文件名当项目名。 */
 const projectText = (item: string) => item === "baseline" ? "连通性" : item === "stress" ? "压力测试" : item || "测试";
-/** 结果/内容一列（原型就是这样合的）：连通给 ms，压力给 RPS / TPS，都带结论。 */
+/**
+ * 结果/内容一列（原型就是这样合的）：连通给 ms，压力给 RPS / TPS。
+ * 压力不带结论——平台对 stress 不返回 verdict，「未判定」不能写成「不通过」。
+ */
 function resultSummary(row: ResourceReport) {
   if (row.test_item === "stress") {
     const rps = metricText(row.metrics.rps, row.status), tps = metricText(row.metrics.tps, row.status);
-    return `RPS ${rps} / TPS ${tps} · ${resultText(row.pressure_passed)}`;
+    return `RPS ${rps} / TPS ${tps}`;
   }
   if (row.test_item === "baseline") return `${metricText(row.metrics.connection_ms, row.status)} ms · ${resultText(row.connectivity_passed)}`;
   return `${resultText(row.connectivity_passed)} / ${resultText(row.pressure_passed)}`;

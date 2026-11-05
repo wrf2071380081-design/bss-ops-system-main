@@ -82,21 +82,20 @@ function cacheText(row: SubmissionFlowView["rows"][number]) {
   const rate = Number(row.cache_hit_rate);
   return Number.isFinite(rate) ? `${rate.toFixed(2)}%` : "未记录";
 }
-/** 最近一次测试的结论行：给四列数值一个可读的上下文（悬停与按钮上都能看到）。 */
+/**
+ * 最近一次测试的结论行：给四列数值一个可读的上下文（悬停与按钮上都能看到）。
+ * 只说连通性——压测平台对压力测试不返回通过/不通过（verdict 恒空），
+ * 这部分在页面上不表达，只保留实测数值。
+ */
 function testConclusion(row: SubmissionFlowView["rows"][number]) {
   if (row.test_status === "NOT_TESTED" || !row.test_status) return "本轮还没有测试报告";
-  // 注意三态：false 才是「没通过」，null 是「这一项还没跑」，别混成一句。
-  const notes: string[] = [];
-  if (row.connection_passed === false) notes.push("连通性未通过");
-  if (row.stress_passed === false) notes.push("压力测试未通过");
-  if (row.connection_passed == null) notes.push("连通性未测");
-  if (row.stress_passed == null) notes.push("压力测试未测");
+  const connectivity = row.connection_passed === true ? "连通性通过"
+    : row.connection_passed === false ? "连通性未通过" : "连通性未判定";
   const when = row.tested_at ? formatDateTime(row.tested_at, "—", false) : "时间未记录";
-  const verdict = notes.length ? notes.join("、") : "连通性与压力测试均通过";
-  return `最近一次测试 ${when} · ${verdict} · 共 ${row.report_count ?? 0} 份报告`;
+  return `最近一次测试 ${when} · ${connectivity} · 共 ${row.report_count ?? 0} 份报告`;
 }
 const hasFailedTest = (row: SubmissionFlowView["rows"][number]) => row.test_status === "FAILED";
-/** 只测了一半（例如只跑了连通）：不能算通过，也不该说成不通过。 */
+/** 有报告但连通性没有明确结论：不当通过，也不说不通过。 */
 const isIncompleteTest = (row: SubmissionFlowView["rows"][number]) => row.test_status === "INCOMPLETE";
 const nodeStates: Record<string, string> = { IN_PROGRESS: "办理中", WAITING_PREDECESSOR: "等待前序办理", COMPLETED: "已完成", CANCELED: "已取消" };
 
@@ -331,7 +330,7 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
                     <el-button link :type="hasFailedTest(row) || isIncompleteTest(row) ? 'warning' : 'primary'" @click="openReports(row)">测试与报告</el-button>
                   </el-tooltip>
                   <span v-if="hasFailedTest(row)" class="test-failed">未通过</span>
-                  <span v-else-if="isIncompleteTest(row)" class="test-failed">未测全</span>
+                  <span v-else-if="isIncompleteTest(row)" class="test-failed">未判定</span>
                 </template>
                 <span v-else class="muted">未接入</span>
               </template>
