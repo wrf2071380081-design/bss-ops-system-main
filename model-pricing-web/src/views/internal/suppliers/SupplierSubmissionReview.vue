@@ -16,6 +16,9 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { submissionFlowsApi, type SubmissionFlowView } from "../../../api/submissionFlows";
 import { workbenchApi, type WorkbenchPersonDTO } from "../../../modules/workbench/api/workbench";
 import { modelTypeLabels } from "../../../api/standardModels.contract";
+import { resourcesApi } from "../../../api/resources";
+import { resourceCacheDisplay, resourceMetricDisplay, resourceRegionLabels, resourceStateLabels } from "../../../api/resources.contract";
+import type { ResourceRow } from "../../../api/resources.types";
 import { formatDateTime } from "../../../domain/date";
 import ResourceReportsPanel from "../resources/ResourceReportsPanel.vue";
 
@@ -63,6 +66,18 @@ const statusLabels: Record<string, string> = {
 };
 const statusLabel = computed(() => statusLabels[view.value?.status || ""] || view.value?.status || "—");
 const nodeNames: Record<string, string> = { CONFIG: "测试与资源配置", CONTRACT: "合同与授信" };
+/** 申报行的四项指标：没有报告=未测试；缓存另有「未提供」一档（原型也是这么分的）。 */
+function metricText(row: SubmissionFlowView["rows"][number], key: "connection_ms" | "rps" | "tps") {
+  if (row.test_status === "NOT_TESTED") return "未测试";
+  const value = row[key];
+  return value ? String(value) : "未记录";
+}
+function cacheText(row: SubmissionFlowView["rows"][number]) {
+  if (row.test_status === "NOT_TESTED") return "未测试";
+  if (!row.cache_available) return "未提供";
+  const rate = Number(row.cache_hit_rate);
+  return Number.isFinite(rate) ? `${rate.toFixed(2)}%` : "未记录";
+}
 const nodeStates: Record<string, string> = { IN_PROGRESS: "办理中", WAITING_PREDECESSOR: "等待前序办理", COMPLETED: "已完成", CANCELED: "已取消" };
 
 const approvedCount = computed(() => (view.value?.rows ?? []).filter(row => picked.value[row.id]).length);
@@ -157,10 +172,42 @@ function openReports(row: SubmissionFlowView["rows"][number]) {
   reportsRow.value = row;
   reportsVisible.value = true;
 }
-function openCompare(row: SubmissionFlowView["rows"][number]) {
-  if (!view.value) return;
-  void router.push({ path: `/internal/model-detail/${row.model_id}`, query: { from_submission: view.value.id } });
+// 原型「对比」：行内展开，列平台已接入的同标准模型来源（供应商 / 系数 / 指标），
+// 仅供参照，不改变本次申报——所以不跳页、也不提供任何操作。
+const compareTable = ref<{ toggleRowExpansion: (row: unknown, expanded?: boolean) => void }>();
+const compareRowID = ref("");
+const compareRows = ref<Record<string, ResourceRow[]>>({});
+const compareLoading = ref<Record<string, boolean>>({});
+const compareError = ref<Record<string, string>>({});
+function toggleCompare(row: SubmissionFlowView["rows"][number]) {
+  const table = compareTable.value;
+  if (!table) return;
+  if (compareRowID.value === row.id) { table.toggleRowExpansion(row, false); compareRowID.value = ""; return; }
+  const previous = (view.value?.rows ?? []).find(item => item.id === compareRowID.value);
+  if (previous) table.toggleRowExpansion(previous, false);
+  compareRowID.value = row.id;
+  table.toggleRowExpansion(row, true);
+  if (!compareRows.value[row.id] && !compareLoading.value[row.id]) void loadCompare(row);
 }
+async function loadCompare(row: SubmissionFlowView["rows"][number]) {
+  if (!view.value) return;
+  compareLoading.value = { ...compareLoading.value, [row.id]: true };
+  compareError.value = { ...compareError.value, [row.id]: "" };
+  try {
+    const rows = await resourcesApi.allRows({
+      view: "flat", page: 1, size: 100, sort_by: "coefficient", order: "asc",
+      standard_model_id: row.model_id, region: view.value.region, state: "ADMITTED",
+    });
+    compareRows.value = { ...compareRows.value, [row.id]: rows };
+  } catch (value) {
+    compareError.value = { ...compareError.value, [row.id]: value instanceof Error ? value.message : "来源对比加载失败" };
+  } finally {
+    compareLoading.value = { ...compareLoading.value, [row.id]: false };
+  }
+}
+const compareMetric = (row: ResourceRow, key: "connection_ms" | "rps" | "tps") =>
+  resourceMetricDisplay(row.test.metrics[key], row.test.status);
+const compareCache = (row: ResourceRow) => resourceCacheDisplay(row.test.cache_stats, row.test.status);
 function openResource(row: SubmissionFlowView["rows"][number]) {
   if (!row.resource_id || !view.value) return;
   void router.push({ path: `/internal/model-plaza/${row.resource_id}`, query: { region: view.value.region, tab: "operations" } });
@@ -198,6 +245,7 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
             <span>区域：{{ view.region === "OVERSEAS" ? "海外" : "国内" }}</span>
             <span>申请类型：{{ kindLabel }}</span>
             <span>申请编号：{{ view.id }}</span>
+            <span>提交人：{{ view.submitter || "未记录" }}</span>
             <span>提交时间：{{ view.submitted_at ? formatDateTime(view.submitted_at) : "未记录" }}</span>
             <span v-if="view.first_model">首次接入：需同时办理测试与资源配置、合同与授信</span>
           </div>
@@ -212,23 +260,43 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
             <span class="muted">共 {{ filteredRows.length }} / {{ view.rows.length }} 个模型</span>
           </div>
 
-          <el-table :data="filteredRows" size="small" row-key="id" empty-text="没有匹配的模型">
+          <el-table ref="compareTable" :data="filteredRows" size="small" row-key="id" empty-text="没有匹配的模型">
+            <el-table-column type="expand" width="1" class-name="compare-expand">
+              <template #default="{ row }">
+                <div class="compare-panel">
+                  <p class="muted">平台已接入的同一标准模型供应来源；仅供对比，不更改本次申报。</p>
+                  <el-alert v-if="compareError[row.id]" :title="compareError[row.id]" type="error" :closable="false" class="block-gap" />
+                  <el-table v-else v-loading="compareLoading[row.id]" :data="compareRows[row.id] || []" size="small" empty-text="该模型暂无可对比的已接入来源">
+                    <el-table-column label="供应商" min-width="150"><template #default="{ row: source }">{{ source.supplier_name }}</template></el-table-column>
+                    <el-table-column label="接口模型 ID" min-width="150"><template #default="{ row: source }">{{ source.supplier_model_id }}</template></el-table-column>
+                    <el-table-column label="部署节点" width="100"><template #default="{ row: source }">{{ resourceRegionLabels[source.region] || source.region }}</template></el-table-column>
+                    <el-table-column label="采购系数" width="100" align="right"><template #default="{ row: source }"><span class="mono">{{ source.coefficient }}</span></template></el-table-column>
+                    <el-table-column label="连通 · ms" width="100" align="right"><template #default="{ row: source }"><span class="mono">{{ compareMetric(source, "connection_ms") }}</span></template></el-table-column>
+                    <el-table-column label="RPS" width="90" align="right"><template #default="{ row: source }"><span class="mono">{{ compareMetric(source, "rps") }}</span></template></el-table-column>
+                    <el-table-column label="TPS" width="90" align="right"><template #default="{ row: source }"><span class="mono">{{ compareMetric(source, "tps") }}</span></template></el-table-column>
+                    <el-table-column label="缓存命中率" width="110" align="right"><template #default="{ row: source }"><span class="mono">{{ compareCache(source) }}</span></template></el-table-column>
+                    <el-table-column label="状态" width="100"><template #default="{ row: source }">{{ resourceStateLabels[source.state] || source.state }}</template></el-table-column>
+                  </el-table>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column v-if="view.can_approve" label="通过" width="60">
               <template #default="{ row }">
                 <input type="checkbox" :checked="!!picked[row.id]" :aria-label="`通过模型 ${row.model_name}`" :disabled="busy" @change="toggle(row.id, ($event.target as HTMLInputElement).checked)">
               </template>
             </el-table-column>
-            <el-table-column label="平台标准模型" min-width="160">
+            <el-table-column label="平台标准模型" min-width="150">
               <template #default="{ row }">
                 <div class="cell-main">{{ row.model_name }}</div>
                 <div class="cell-sub">{{ row.company || "—" }} · {{ modelTypeLabels[row.model_type] || "未分类" }}</div>
               </template>
             </el-table-column>
-            <el-table-column label="供应商接口模型 ID" min-width="170"><template #default="{ row }">{{ row.interface_model_id }}</template></el-table-column>
+            <el-table-column label="供应商接口模型 ID" min-width="150"><template #default="{ row }">{{ row.interface_model_id }}</template></el-table-column>
             <el-table-column label="采购系数" width="100" align="right"><template #default="{ row }"><span class="mono">{{ row.coefficient }}</span></template></el-table-column>
-            <el-table-column label="办理状态" width="120">
-              <template #default="{ row }">{{ row.status === "CANCELED" ? "本次办理已取消" : row.status === "CONFIGURED" ? "配置已完成" : row.status === "ADMITTED" ? "已接入" : row.status === "COMPLETED" ? "已完成" : "待办理" }}</template>
-            </el-table-column>
+            <el-table-column label="连通耗时(ms)" width="105" align="right"><template #default="{ row }"><span class="mono">{{ metricText(row, "connection_ms") }}</span></template></el-table-column>
+            <el-table-column label="RPS" width="90" align="right"><template #default="{ row }"><span class="mono">{{ metricText(row, "rps") }}</span></template></el-table-column>
+            <el-table-column label="TPS" width="90" align="right"><template #default="{ row }"><span class="mono">{{ metricText(row, "tps") }}</span></template></el-table-column>
+            <el-table-column label="输入缓存命中率" width="115" align="right"><template #default="{ row }"><span class="mono">{{ cacheText(row) }}</span></template></el-table-column>
             <el-table-column label="审批结果" width="100">
               <template #default="{ row }">
                 <el-tag v-if="row.decision === 'APPROVED'" size="small" type="success">通过</el-tag>
@@ -236,13 +304,13 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
                 <el-tag v-else size="small" type="info">待审核</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="测试与报告" width="110">
+            <el-table-column label="测试与报告" width="100">
               <template #default="{ row }"><el-button v-if="row.resource_id" link type="primary" @click="openReports(row)">测试与报告</el-button><span v-else class="muted">未接入</span></template>
             </el-table-column>
-            <el-table-column label="对比" width="80">
-              <template #default="{ row }"><el-button link type="primary" @click="openCompare(row)">对比</el-button></template>
+            <el-table-column label="对比" width="90">
+              <template #default="{ row }"><el-button link type="primary" @click="toggleCompare(row)">{{ compareRowID === row.id ? "收起对比" : "对比" }}</el-button></template>
             </el-table-column>
-            <el-table-column label="资源" width="110">
+            <el-table-column label="资源" width="104">
               <template #default="{ row }"><el-button v-if="row.resource_id" link type="primary" @click="openResource(row)">{{ view.can_handle && row.status !== 'CANCELED' ? "去办理" : "查看资源" }}</el-button><span v-else class="muted">{{ view.can_approve ? "批准后生成" : "未接入" }}</span></template>
             </el-table-column>
           </el-table>
@@ -321,6 +389,11 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
 .confirm-bar { margin: 4px 0 10px; padding: 8px 12px; border-radius: 8px; background: var(--el-color-primary-light-9); font-size: 13px; }
 .actions { display: flex; justify-content: flex-end; gap: 10px; }
 .readonly p { margin: 0 0 8px; }
+/* 对比是「行内展开」：展开图标藏起来，由表格里的「对比 / 收起对比」按钮控制。 */
+:deep(.compare-expand .el-table__expand-icon) { display: none; }
+:deep(.compare-expand .cell) { padding: 0; }
+.compare-panel { padding: 12px 14px; background: var(--el-fill-color-light); border-radius: 8px; }
+.compare-panel .muted { margin: 0 0 8px; }
 .cell-main { font-weight: 500; }
 .cell-sub { font-size: 12px; color: var(--app-text-muted); }
 .mono { font-variant-numeric: tabular-nums; }

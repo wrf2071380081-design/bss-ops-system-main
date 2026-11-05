@@ -27,6 +27,14 @@ type nativeFlowRow struct {
 	// Company / ModelType 给审批页的「模型公司 / 模型类型」筛选（原型审批页有这两个筛选）。
 	Company   string `json:"company"`
 	ModelType string `json:"model_type"`
+	// 本次申报对应的供应资源最近一次测试结果（原型审批页的连通/RPS/TPS/缓存四列）。
+	// 没有报告就是 NOT_TESTED，前端显示「未测试」；缓存另外区分「未提供」。
+	TestStatus     string `json:"test_status"`
+	ConnectionMS   string `json:"connection_ms"`
+	RPS            string `json:"rps"`
+	TPS            string `json:"tps"`
+	CacheHitRate   string `json:"cache_hit_rate"`
+	CacheAvailable bool   `json:"cache_available"`
 }
 type nativeFlowView struct {
 	ID                  string           `json:"id"`
@@ -48,6 +56,8 @@ type nativeFlowView struct {
 	CanCompleteContract bool             `json:"can_complete_contract"`
 	CreatedAt           time.Time        `json:"created_at"`
 	SubmittedAt         *time.Time       `json:"submitted_at"`
+	// Submitter 是申报人（供应商侧联系人）。历史单据可能没记，前端显示「未记录」。
+	Submitter string `json:"submitter"`
 	// 审批结论时间与审批人：取 operation_log 的 APPROVE/REJECT 记录，
 	// 只在供应商申报历史里填充，供「审批记录」表展示。
 	ApprovedAt          *time.Time       `json:"approved_at,omitempty"`
@@ -79,7 +89,7 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 		id = sub
 	}
 	var v nativeFlowView
-	err := r.raw.QueryRowContext(ctx, `SELECT s.id::text,s.supplier_id::text,sp.name,s.revision::text,s.status,s.kind,s.region,NOT EXISTS(SELECT 1 FROM public.resource r WHERE r.supplier_id=s.supplier_id AND r.ever_admitted),s.created_at,s.submitted_at FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id WHERE s.id=$1`, id).Scan(&v.ID, &v.SupplierID, &v.SupplierName, &v.Revision, &v.Status, &v.Kind, &v.Region, &v.FirstModel, &v.CreatedAt, &v.SubmittedAt)
+	err := r.raw.QueryRowContext(ctx, `SELECT s.id::text,s.supplier_id::text,sp.name,s.revision::text,s.status,s.kind,s.region,NOT EXISTS(SELECT 1 FROM public.resource r WHERE r.supplier_id=s.supplier_id AND r.ever_admitted),s.created_at,s.submitted_at,coalesce(s.submitter_name,'') FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id WHERE s.id=$1`, id).Scan(&v.ID, &v.SupplierID, &v.SupplierName, &v.Revision, &v.Status, &v.Kind, &v.Region, &v.FirstModel, &v.CreatedAt, &v.SubmittedAt, &v.Submitter)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
@@ -127,7 +137,16 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 	if err := r.raw.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.operation_log l JOIN public.onboarding_node n ON n.id::text=l."after"->>'node_id' JOIN public.onboarding_flow f ON f.id=n.flow_id WHERE l.entity_type='submission' AND l.entity_id=$1 AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND n.enabled AND n.status='IN_PROGRESS' AND n.assignee_id=$2 AND f.status='PROCESSING' AND f.current_node='CONFIG')`, id, actor).Scan(&v.CanHandle); err != nil {
 		return nil, err
 	}
-	rows, err := r.raw.QueryContext(ctx, `SELECT sr.id::text,sr.standard_model_id::text,m.name,sr.supplier_model_name,sr.coefficient::text,sr.row_status,coalesce(sr.resource_id::text,''),sr.decision,coalesce(m.company,''),coalesce(m.model_type,'') FROM public.submission_row sr JOIN public.standard_model m ON m.id=sr.standard_model_id WHERE sr.submission_id=$1 ORDER BY sr.id`, id)
+	// 指标取「该行供应资源最近一次测试报告」：与资源列表同一份证据，不在申报侧另算。
+	rows, err := r.raw.QueryContext(ctx, `SELECT sr.id::text,sr.standard_model_id::text,m.name,sr.supplier_model_name,sr.coefficient::text,sr.row_status,coalesce(sr.resource_id::text,''),sr.decision,coalesce(m.company,''),coalesce(m.model_type,''),
+		 CASE WHEN tr.id IS NULL THEN 'NOT_TESTED' ELSE 'READY' END,
+		 coalesce(tr.connection_ms::text,''),coalesce(tr.rps::text,''),coalesce(tr.tps::text,''),
+		 coalesce(tr.cache_hit_ratio::text,''),coalesce(tr.cache_ratio_available,false)
+FROM public.submission_row sr
+JOIN public.standard_model m ON m.id=sr.standard_model_id
+LEFT JOIN public.resource r ON r.id=sr.resource_id
+LEFT JOIN public.test_report tr ON tr.id=r.latest_test_report_id
+WHERE sr.submission_id=$1 ORDER BY sr.id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +154,8 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 	v.Rows = []nativeFlowRow{}
 	for rows.Next() {
 		var row nativeFlowRow
-		if err := rows.Scan(&row.ID, &row.ModelID, &row.ModelName, &row.InterfaceModel, &row.Coefficient, &row.Status, &row.ResourceID, &row.Decision, &row.Company, &row.ModelType); err != nil {
+		if err := rows.Scan(&row.ID, &row.ModelID, &row.ModelName, &row.InterfaceModel, &row.Coefficient, &row.Status, &row.ResourceID, &row.Decision, &row.Company, &row.ModelType,
+			&row.TestStatus, &row.ConnectionMS, &row.RPS, &row.TPS, &row.CacheHitRate, &row.CacheAvailable); err != nil {
 			return nil, err
 		}
 		v.Rows = append(v.Rows, row)
