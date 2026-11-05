@@ -171,6 +171,11 @@ async function loadStateHistory() {
   finally { stateHistoryLoading.value = false; }
 }
 const stateActionLabel = (action: string) => action === "ONLINE" || action === "PLAN_ONLINE" ? "上架" : action === "OFFLINE" || action === "PLAN_OFFLINE" ? "下架" : action;
+// 原型「未完成申请」：还在办理中的开通流程要在这页露出来（技术 x/y · 已接入 x/y · 商务）。
+const openNode = computed(() => progress.value.find(node => node.status !== "COMPLETED" && node.status !== "CANCELED"));
+const hasOpenOnboarding = computed(() => Boolean(openNode.value));
+// 原型：首次接入的两个模块没办完之前，「新增」只提示不给开单。
+const addBlockedReason = computed(() => hasOpenOnboarding.value ? "请先在首次接入流程完成两个模块，再新增后续资料" : "");
 /** API Key 一律不回显：库里只有密文，界面只能告诉你"设没设"。 */
 function copyKey() { ElMessage.info("API Key 不回显；需要更换请在下方正式配置里重置。"); }
 // 原型那条进度：技术完成 x/y · 已取消 · 尚待配置 · 当前可办理 · 商务待完成 · 办理人
@@ -703,7 +708,25 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
               </div>
               <el-alert v-if="qualificationError" :title="qualificationError" type="error" :closable="false"><el-button text @click="loadQualifications">重试</el-button></el-alert>
               <!-- 合同与授信紧跟基础资料（原型顺序）；接入模型与办理状态在「接入模型」页签，这里不再重复。 -->
-              <div ref="f12Anchor"><F12SubjectPanel v-if="profile" subject-type="SUPPLIER" :subject-id="profile.id" :can-manage="profile.can_edit" layout="merged" @changed="loadProfile" /></div>
+              <div ref="f12Anchor"><F12SubjectPanel v-if="profile" subject-type="SUPPLIER" :subject-id="profile.id" :can-manage="profile.can_edit" layout="merged" :add-blocked-reason="addBlockedReason" @changed="loadProfile" /></div>
+
+              <!-- 原型页脚的「未完成申请」：还在办理中的开通流程，可跳审批记录与操作流水。 -->
+              <template v-if="hasOpenOnboarding">
+                <h3 class="open-flow-title">未完成申请</h3>
+                <div class="open-flow">
+                  <span class="open-flow-text">
+                    申请 {{ openNode?.submission_id ? `S${String(openNode.submission_id).padStart(8, "0")}` : "—" }}
+                    · 技术 {{ flowSummary.admitted }}/{{ flowSummary.total }}
+                    · 已接入 {{ flowSummary.admitted }}/{{ flowSummary.total }}
+                    · 已取消 {{ flowSummary.canceled }}
+                    · 商务：{{ flowSummary.contractDone ? "已完成" : "待完成" }}<template v-if="!flowSummary.contractDone && flowSummary.contractAssignee"> · {{ flowSummary.contractAssignee }}</template>
+                  </span>
+                  <span class="open-flow-actions">
+                    <el-button link type="primary" @click="router.push({ path: `/internal/suppliers/${supplierID}/models`, query: { tab: 'quotes' } })">查看申请与审批</el-button>
+                    <el-button link type="primary" @click="router.push({ path: `/internal/suppliers/${supplierID}/models`, query: { tab: 'operations' } })">查看办理历史</el-button>
+                  </span>
+                </div>
+              </template>
             </template>
           </div>
         </el-tab-pane>
@@ -841,6 +864,10 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
 .supplier-qualification-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:24px}.supplier-qualification-heading h3{margin:0 0 10px}.qualification-list{min-height:90px}
 .iface-form { margin-top: 14px; }
 .state-history-title { margin: 22px 0 10px; font-size: 14px; }
+.open-flow-title { margin: 26px 0 10px; font-size: 14px; }
+.open-flow { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 14px 16px; border: 1px solid var(--el-border-color-light); border-radius: 8px; background: var(--el-fill-color-lighter); }
+.open-flow-text { font-size: 13px; color: var(--app-text-muted); }
+.open-flow-actions { display: flex; gap: 6px; }
 .qualification-inline{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:44px;padding:4px 0}
 /* 合同与授信是独立区块，和上方营业执照留出间距（原型也是分开的两块）。 */
 .supplier-access-page :deep(.f12-subject-panel){margin-top:28px}

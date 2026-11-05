@@ -10,7 +10,7 @@ import { ApiError } from "../../../domain/common";
 import { f12ErrorMessage } from "../../../domain/f12Errors";
 import { canManageF12Subject } from "../../../domain/f12Permissions";
 
-const props = defineProps<{ subjectType: F12SubjectType; subjectId: string; canManage: boolean; flowContext?: F12FlowWriteContext; flowCanManage?: boolean; layout?: "full" | "merged" }>();
+const props = defineProps<{ subjectType: F12SubjectType; subjectId: string; canManage: boolean; flowContext?: F12FlowWriteContext; flowCanManage?: boolean; layout?: "full" | "merged"; addBlockedReason?: string }>();
 const emit = defineEmits<{ (event: "refresh-flow-context"): void; (event: "changed"): void; (event: "readiness-change", ready: boolean): void }>();
 // These flags only control the UI. Every write and attachment read is authorized again by the server.
 const canManage = computed(() => canManageF12Subject(props.canManage, Boolean(props.flowContext), props.flowCanManage));
@@ -403,6 +403,8 @@ const historyRows = computed(() => {
 });
 function openHistory(row: MergedRow) { historyTarget.value = row; }
 function createFromMenu(command: string) {
+  // 原型：首次接入的两个模块没办完之前，「新增」只提示不给开单。
+  if (props.addBlockedReason) { ElMessage.warning(props.addBlockedReason); return; }
   if (command === "contract") openCreateContract();
   else openCreditDialog();
 }
@@ -530,7 +532,9 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
       <div><h3>合同与授信</h3><p v-if="!isMerged">主体 {{ subjectId }} · {{ subjectType === "SUPPLIER" ? "供应商" : "客户" }}</p></div>
       <div class="heading-actions">
       <template v-if="isMerged">
-        <el-dropdown v-if="canManage" trigger="click" :disabled="loading || saving || !!error" @command="createFromMenu">
+        <!-- 首次接入没办完时「新增」只提示（原型同样只弹提示，不给开单），所以不展开菜单。 -->
+        <el-button v-if="canManage && addBlockedReason" size="small" @click="createFromMenu('contract')">新增</el-button>
+        <el-dropdown v-else-if="canManage" trigger="click" :disabled="loading || saving || !!error" @command="createFromMenu">
           <el-button size="small" :disabled="loading || saving || !!error">新增</el-button>
           <template #dropdown><el-dropdown-menu><el-dropdown-item command="contract">合同</el-dropdown-item><el-dropdown-item command="credit">授信</el-dropdown-item></el-dropdown-menu></template>
         </el-dropdown>
