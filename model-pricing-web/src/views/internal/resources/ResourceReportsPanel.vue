@@ -263,7 +263,7 @@ onBeforeUnmount(() => { active = false; listRequest?.abort(); detailRequest?.abo
 .muted{color:#8a9099}
 .foot{margin:10px 0 0;font-size:12px}
 .upload-name{margin-left:10px;font-size:12px;color:#526970}
-.upload-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:14px}
+.upload-actions{display:flex;justify-content:flex-start;gap:10px;margin-top:20px}
 .is-upload{color:#526970}
 .ref-tag{margin-left:6px}
 .el-pagination{margin-top:12px;justify-content:flex-end}
