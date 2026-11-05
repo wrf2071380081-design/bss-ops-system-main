@@ -110,11 +110,16 @@ export const quoteApprovalApi = {
       idempotency: { scope: `customer:quote-approval:${approvalID}:withdraw`, payload: { lifecycle }, lifecycle },
     }),
 
-  list: async (customerID: string | number, status = "", signal?: AbortSignal): Promise<QuoteApprovalSummaryDTO[]> => {
+  /**
+   * 审批单列表。`customerID` 传 0 或不传 = 跨客户（客户报价单页签的全局审批队列），
+   * 服务端限 200 条；传客户 id 则是客户详情「报价审批」用的客户维度列表。
+   */
+  list: async (customerID: string | number = 0, status = "", signal?: AbortSignal): Promise<QuoteApprovalSummaryDTO[]> => {
+    const scoped = Number(customerID) > 0;
     const data = await apiRequest<{ list: QuoteApprovalSummaryDTO[] }>({
       url: `${base}/customer-workspace/quote-approvals`,
       method: "GET",
-      params: { customer_id: quoteId(customerID), ...(status ? { status } : {}) },
+      params: { ...(scoped ? { customer_id: quoteId(customerID) } : {}), ...(status ? { status } : {}) },
       signal,
     });
     return data?.list ?? [];

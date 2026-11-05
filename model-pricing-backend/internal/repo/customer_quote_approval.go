@@ -427,12 +427,14 @@ func (r *CustomerSpecialRepo) LoadQuoteApproval(ctx context.Context, approvalID 
 	return out, nil
 }
 
-// ListQuoteApprovals 按客户列审批单（详情页「报价审批」）。
+// ListQuoteApprovals 列审批单。customerID=0 表示跨客户（客户报价单页签的全局审批队列）。
 func (r *CustomerSpecialRepo) ListQuoteApprovals(ctx context.Context, customerID int64, status string, limit int) ([]customer.QuoteApprovalSummary, error) {
 	tx := r.txOf(ctx).Table("customer_quote_approval a").
 		Select("a.id, a.customer_quote_id AS quote_id, q.customer_id, a.status, a.model_count, a.submitted_by, a.submitted_at, a.decided_by, a.decided_at").
-		Joins("JOIN customer_quote q ON q.id = a.customer_quote_id").
-		Where("q.customer_id = ?", customerID)
+		Joins("JOIN customer_quote q ON q.id = a.customer_quote_id")
+	if customerID > 0 {
+		tx = tx.Where("q.customer_id = ?", customerID)
+	}
 	if status != "" {
 		tx = tx.Where("a.status = ?", status)
 	}

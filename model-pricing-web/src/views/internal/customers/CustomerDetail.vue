@@ -43,6 +43,7 @@ import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
 import ResourceReportsPanel from "../resources/ResourceReportsPanel.vue";
 import CustomerOnboardingStartForm from "./CustomerOnboardingStartForm.vue";
 import CustomerTransferDialog from "./CustomerTransferDialog.vue";
+import QuoteApprovalDialog from "./QuoteApprovalDialog.vue";
 
 const TABS = ["models", "onboarding", "quotes", "records"] as const;
 type TabKey = (typeof TABS)[number];
@@ -670,14 +671,10 @@ const quoteApprovalRows = ref<QuoteApprovalSummaryDTO[]>([]);
 const quoteApprovalError = ref("");
 const quoteApprovalLoading = ref(false);
 const quoteApprovalVisible = ref(false);
-const quoteApprovalDetail = ref<QuoteApprovalDTO>();
-const quoteApprovalDetailLoading = ref(false);
-const quoteApprovalDetailError = ref("");
-const quoteApprovalBusy = ref(false);
+/** 当前打开的审批单；弹窗自身负责取详情与决策（与客户报价单页签共用同一组件）。 */
+const quoteApprovalTargetId = ref<number | null>(null);
 /** 提交中/撤回中的报价单 ID，避免连点。 */
 const quoteApprovalActing = ref<number>(0);
-/** 逐模型草稿：row_id → {result, reason}。只放待决行。 */
-const decisionDraft = ref<Record<number, { result: "APPROVED" | "REJECTED"; reason: string }>>({});
 
 const QUOTE_APPROVAL_STATUS: Record<string, { label: string; type: "success" | "danger" | "info" | "warning" }> = {
   PENDING: { label: "待审批", type: "warning" },
@@ -705,95 +702,23 @@ function pendingApprovalOf(quoteID: number) {
   return quoteApprovalRows.value.find(row => row.quote_id === quoteID && row.status === "PENDING");
 }
 
-const quotePendingRows = computed(() => (quoteApprovalDetail.value?.rows ?? []).filter(row => row.result === "PENDING"));
-
-/** 能不能批：M9:A + 不是提交人 + 审批单还在待处理。前端只做提示，服务端仍会挡。 */
-const quoteApprovalBlockReason = computed(() => {
-  const detail = quoteApprovalDetail.value;
-  if (!detail) return "";
-  if (detail.status !== "PENDING") return `该审批单已结束（${approvalStatusLabel(detail.status)}），不能重复处理。`;
-  if (staffId() && detail.submitted_by === staffId()) return "不能审批自己提交的报价单，请交给其他超管。";
-  if (!canQuoteApprove.value) return "当前账号没有报价审批权限（M9:A）。";
-  return "";
-});
-
 function staffId(): number {
   return session.user?.staffId ? Number(session.user.staffId) : 0;
 }
 
-async function openQuoteApproval(row: QuoteApprovalSummaryDTO) {
+/** 打开审批弹窗；取详情与决策都在弹窗组件里，这里只传审批单 id。 */
+function openQuoteApproval(row: QuoteApprovalSummaryDTO) {
+  quoteApprovalTargetId.value = row.id;
   quoteApprovalVisible.value = true;
-  quoteApprovalDetail.value = undefined;
-  quoteApprovalDetailError.value = "";
-  decisionDraft.value = {};
-  quoteApprovalDetailLoading.value = true;
-  try {
-    const detail = await quoteApprovalApi.get(row.id);
-    quoteApprovalDetail.value = detail;
-    decisionDraft.value = Object.fromEntries(
-      detail.rows.filter(item => item.result === "PENDING")
-        .map(item => [item.id, { result: "APPROVED" as const, reason: "" }]),
-    );
-  } catch (value) {
-    quoteApprovalDetailError.value = message(value);
-  } finally {
-    quoteApprovalDetailLoading.value = false;
-  }
 }
 
-function setRowDecision(rowID: number, result: "APPROVED" | "REJECTED") {
-  const current = decisionDraft.value[rowID];
-  if (!current) return;
-  decisionDraft.value = { ...decisionDraft.value, [rowID]: { ...current, result } };
+/** 弹窗处理完（批准 / 驳回 / 撤回）后刷新报价单与审批列表。 */
+async function onQuoteApprovalDecided() {
+  await loadQuoteApprovals();
+  await loadQuotes(true);
+  if (logLoaded.value) { logLoaded.value = false; void loadLogs(true); }
 }
 
-function setRowReason(rowID: number, reason: string) {
-  const current = decisionDraft.value[rowID];
-  if (!current) return;
-  decisionDraft.value = { ...decisionDraft.value, [rowID]: { ...current, reason } };
-}
-
-async function submitQuoteApprovalDecision() {
-  const detail = quoteApprovalDetail.value;
-  if (!detail || quoteApprovalBusy.value) return;
-  const pending = detail.rows.filter(row => row.result === "PENDING");
-  if (!pending.length) return;
-  const missing = pending.filter(row => {
-    const draft = decisionDraft.value[row.id];
-    return !draft || (draft.result === "REJECTED" && !draft.reason.trim());
-  });
-  if (missing.length) {
-    quoteApprovalDetailError.value = `以下模型还没填驳回原因：${missing.map(row => row.model_name).join("、")}`;
-    return;
-  }
-  const decisions: ApprovalDecisionInput[] = pending.map(row => {
-    const draft = decisionDraft.value[row.id];
-    return { row_id: row.id, result: draft.result, reason: draft.result === "REJECTED" ? draft.reason.trim() : undefined };
-  });
-  const approved = decisions.filter(item => item.result === "APPROVED").length;
-  quoteApprovalBusy.value = true;
-  quoteApprovalDetailError.value = "";
-  try {
-    await ElMessageBox.confirm(
-      `报价单 #${detail.quote_id} V${detail.quote_version}：批准 ${approved} 个模型，驳回 ${decisions.length - approved} 个。`
-      + (approved === decisions.length ? "" : " 有驳回时报价单会回到草稿，销售可改价后重新提交。"),
-      "提交审批结论",
-      { confirmButtonText: "确认提交", cancelButtonText: "取消", type: approved === decisions.length ? "info" : "warning" },
-    );
-    quoteApprovalDetail.value = await quoteApprovalApi.decide(detail.id, decisions, crypto.randomUUID());
-    decisionDraft.value = {};
-    ElMessage.success(approved === decisions.length ? "已全部批准，报价单状态为已批准。" : "已提交结论，报价单回到草稿。");
-    await loadQuoteApprovals();
-    await loadQuotes(true);
-    if (logLoaded.value) { logLoaded.value = false; void loadLogs(true); }
-  } catch (value) {
-    if (value !== "cancel" && value !== "close") quoteApprovalDetailError.value = message(value);
-  } finally {
-    quoteApprovalBusy.value = false;
-  }
-}
-
-/** 提交审批：DRAFT → PENDING。销售在报价单行上直接提，不必回报价编辑器。 */
 async function submitQuoteForApproval(row: CustomerQuoteRow) {
   if (quoteApprovalActing.value) return;
   quoteApprovalActing.value = row.id;
@@ -822,17 +747,12 @@ async function withdrawQuoteApproval(target: { id: number; quote_id: number }) {
     await ElMessageBox.confirm(`撤回报价单 #${target.quote_id} 的审批？撤回后报价单回到草稿。`, "撤回审批", {
       confirmButtonText: "撤回", cancelButtonText: "取消", type: "warning",
     });
-    const next = await quoteApprovalApi.withdraw(approvalID, crypto.randomUUID());
-    if (quoteApprovalVisible.value && quoteApprovalDetail.value?.id === approvalID) quoteApprovalDetail.value = next;
+    await quoteApprovalApi.withdraw(approvalID, crypto.randomUUID());
     ElMessage.success("已撤回");
     await loadQuoteApprovals();
     await loadQuotes(true);
   } catch (value) {
-    if (value !== "cancel" && value !== "close") {
-      const text = message(value);
-      if (quoteApprovalVisible.value) quoteApprovalDetailError.value = text;
-      else ElMessage.error(text);
-    }
+    if (value !== "cancel" && value !== "close") ElMessage.error(message(value));
   } finally {
     quoteApprovalActing.value = 0;
   }
@@ -1640,90 +1560,14 @@ function backToList() {
       </template>
     </el-dialog>
 
-    <!-- 报价审批（原型）：逐模型批准 / 驳回，驳回必填原因 -->
-    <el-dialog v-model="quoteApprovalVisible" title="报价审批" width="min(880px, 96vw)" :close-on-click-modal="false">
-      <div v-loading="quoteApprovalDetailLoading">
-        <el-alert v-if="quoteApprovalDetailError" :title="quoteApprovalDetailError" type="error" show-icon :closable="false" class="block-gap" />
-        <template v-if="quoteApprovalDetail">
-          <el-descriptions :column="2" border size="small">
-            <el-descriptions-item label="报价单">#{{ quoteApprovalDetail.quote_id }} · V{{ quoteApprovalDetail.quote_version }}</el-descriptions-item>
-            <el-descriptions-item label="审批状态">
-              <el-tag size="small" :type="approvalStatusType(quoteApprovalDetail.status)">{{ approvalStatusLabel(quoteApprovalDetail.status) }}</el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="提交人">{{ staffText(`staff:${quoteApprovalDetail.submitted_by}`) }}</el-descriptions-item>
-            <el-descriptions-item label="提交时间">{{ formatDateTime(quoteApprovalDetail.submitted_at, "—", false) }}</el-descriptions-item>
-            <el-descriptions-item label="处理人">{{ quoteApprovalDetail.decided_by ? staffText(`staff:${quoteApprovalDetail.decided_by}`) : "—" }}</el-descriptions-item>
-            <el-descriptions-item label="处理时间">{{ quoteApprovalDetail.decided_at ? formatDateTime(quoteApprovalDetail.decided_at, "—", false) : "—" }}</el-descriptions-item>
-          </el-descriptions>
-
-          <div class="sub-block">
-            <div class="selected-title">逐模型结论（{{ quoteApprovalDetail.rows.length }} 个模型）</div>
-            <el-table :data="quoteApprovalDetail.rows" size="small" class="grid" row-key="id" empty-text="没有模型明细">
-              <el-table-column label="模型" min-width="170">
-                <template #default="{ row }">
-                  <div class="cell-main">{{ row.model_name || `标准模型 #${row.standard_model_id}` }}</div>
-                  <div class="cell-sub">{{ row.official_id || "官方 ID 待补齐" }}</div>
-                </template>
-              </el-table-column>
-              <el-table-column label="价项数" width="80" align="right">
-                <template #default="{ row }"><span class="mono">{{ row.item_count }}</span></template>
-              </el-table-column>
-              <el-table-column label="报价区间" width="150" align="right">
-                <template #default="{ row }">
-                  <span class="mono">{{ row.price_min ? (row.price_min === row.price_max ? row.price_min : `${row.price_min} ~ ${row.price_max}`) : "—" }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="结论" width="150">
-                <template #default="{ row }">
-                  <el-radio-group
-                    v-if="row.result === 'PENDING' && !quoteApprovalBlockReason"
-                    :model-value="decisionDraft[row.id]?.result || 'APPROVED'"
-                    size="small"
-                    @change="(value: string | number | boolean | undefined) => setRowDecision(row.id, value === 'REJECTED' ? 'REJECTED' : 'APPROVED')"
-                  >
-                    <el-radio-button value="APPROVED">批准</el-radio-button>
-                    <el-radio-button value="REJECTED">驳回</el-radio-button>
-                  </el-radio-group>
-                  <el-tag v-else-if="row.result !== 'PENDING'" size="small" :type="row.result === 'APPROVED' ? 'success' : 'danger'">
-                    {{ row.result === "APPROVED" ? "已批准" : "已驳回" }}
-                  </el-tag>
-                  <span v-else class="hint">待处理</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="驳回原因 / 意见" min-width="200">
-                <template #default="{ row }">
-                  <el-input
-                    v-if="row.result === 'PENDING' && !quoteApprovalBlockReason && decisionDraft[row.id]?.result === 'REJECTED'"
-                    :model-value="decisionDraft[row.id]?.reason || ''"
-                    size="small"
-                    maxlength="200"
-                    aria-label="驳回原因"
-                    placeholder="驳回必须说明原因"
-                    @update:model-value="(value: string) => setRowReason(row.id, value)"
-                  />
-                  <span v-else>{{ row.reason || "—" }}</span>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-
-          <el-alert v-if="quoteApprovalBlockReason" :title="quoteApprovalBlockReason" type="info" show-icon :closable="false" class="block-gap" />
-        </template>
-      </div>
-      <template #footer>
-        <el-button @click="quoteApprovalVisible = false">关闭</el-button>
-        <el-button
-          v-if="quoteApprovalDetail && quoteApprovalDetail.status === 'PENDING' && quoteApprovalDetail.submitted_by === staffId()"
-          type="warning" plain :disabled="quoteApprovalBusy"
-          @click="withdrawQuoteApproval({ id: quoteApprovalDetail.id, quote_id: quoteApprovalDetail.quote_id })"
-        >撤回</el-button>
-        <el-button
-          v-if="quoteApprovalDetail && quoteApprovalDetail.status === 'PENDING' && !quoteApprovalBlockReason && quotePendingRows.length"
-          type="primary" :loading="quoteApprovalBusy"
-          @click="submitQuoteApprovalDecision"
-        >提交审批结论</el-button>
-      </template>
-    </el-dialog>
+    <!-- 报价审批（原型）：逐模型批准 / 驳回，驳回必填原因。与客户报价单页签共用同一组件。 -->
+    <QuoteApprovalDialog
+      v-model:visible="quoteApprovalVisible"
+      :approval-id="quoteApprovalTargetId"
+      :can-approve="canQuoteApprove"
+      :staff-id="staffId()"
+      @decided="onQuoteApprovalDecided"
+    />
 
     <!-- 特价审批：两步角色链（PRICING_OP → FINANCE），与上面的报价审批无关 -->
     <el-dialog v-model="approvalVisible" title="特价审批（破线）" width="min(780px, 96vw)" :close-on-click-modal="false">

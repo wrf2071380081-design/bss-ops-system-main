@@ -204,14 +204,15 @@ func (h *QuoteApprovalHandler) WithdrawQuoteApproval(c *gin.Context) {
 	response.Success(c, res)
 }
 
-// ListQuoteApprovals 客户维度的审批单列表（M9:V）。
+// ListQuoteApprovals 审批单列表（M9:V）。
 //
 // @Summary 客户报价审批列表（M9:V）
-// @Description 按客户列审批单，可选 status=PENDING/APPROVED/REJECTED/WITHDRAWN。客户详情「报价审批」用。
+// @Description 按客户列审批单，可选 status=PENDING/APPROVED/REJECTED/WITHDRAWN。
+// @Description 不传 customer_id 表示跨客户（客户报价单页签的全局审批队列），仍受 200 条上限约束。
 // @Tags 客户报价
 // @Produce json
 // @Security BearerAuth
-// @Param customer_id query int64 true "customer_profile.id"
+// @Param customer_id query int64 false "customer_profile.id；不传=全部客户"
 // @Param status query string false "PENDING / APPROVED / REJECTED / WITHDRAWN"
 // @Success 200 {object} api.APIResponse "code=0；data={list:[QuoteApprovalSummary]}"
 // @Failure 400 {object} api.APIResponse "code=10001 customer_id 非法"
@@ -222,10 +223,14 @@ func (h *QuoteApprovalHandler) ListQuoteApprovals(c *gin.Context) {
 		response.Error(c, apperr.ErrUnauthorized)
 		return
 	}
-	customerID, err := strconv.ParseInt(c.Query("customer_id"), 10, 64)
-	if err != nil || customerID <= 0 {
-		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "customer_id 必填且必须为正整数", apperr.ErrInvalidParams.Status))
-		return
+	var customerID int64
+	if raw := c.Query("customer_id"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 {
+			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "customer_id 必须是正整数", apperr.ErrInvalidParams.Status))
+			return
+		}
+		customerID = parsed
 	}
 	list, err := h.svc.List(c.Request.Context(), customerID, c.Query("status"), 200)
 	if err != nil {

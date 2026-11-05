@@ -5,7 +5,7 @@ import { ElMessage } from "element-plus";
 import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow, type CustomerWorkspaceRow } from "../../../api/customerWorkspace";
 import { customerDetailApi } from "../../../api/customerDetail";
 import { customerQuotesApi } from "../../../api/customerQuotes";
-import { quoteApprovalApi } from "../../../api/customerQuoteApproval";
+import { quoteApprovalApi, type QuoteApprovalSummaryDTO } from "../../../api/customerQuoteApproval";
 import { quoteCandidatesApi, type ResourceQuoteCandidate } from "../../../api/quoteCandidates";
 import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
@@ -15,6 +15,7 @@ import { PERMISSIONS } from "../../../domain/permissions";
 import { usePermissionStore } from "../../../stores/permission";
 import { useSessionStore } from "../../../stores/session";
 import CustomerTransferDialog from "./CustomerTransferDialog.vue";
+import QuoteApprovalDialog from "./QuoteApprovalDialog.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -27,7 +28,7 @@ const message = (value: unknown) => value instanceof ApiError ? value.message : 
 const positiveId = (value: string) => /^[1-9]\d*$/.test(value.trim()) && Number.isSafeInteger(Number(value));
 
 const activeTab = ref<"list" | "quote">("list");
-const quoteView = ref<"edit" | "drafts" | "exported" | "approvals" | "logs">("edit");
+const quoteView = ref<"edit" | "records" | "approvals" | "logs">("edit");
 
 function unique(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)));
@@ -161,7 +162,8 @@ const form = reactive({
   /** 原型里客户不是从客户管理新建的，而是在报价单「关联客户」选「+ 新建客户」时顺手建出来。 */
   isNewCustomer: false,
   ourCompany: "根公司",
-  region: "CN",
+  // 原型：区域不选就点「添加模型」会拦。默认留空，逼一次显式选择。
+  region: "",
   currency: "CNY",
   quoteDate: new Date().toISOString().slice(0, 10),
   operator: session.user?.name || "—",
@@ -225,7 +227,7 @@ function startNewQuote(row?: CustomerWorkspaceRow) {
   form.customerId = row ? String(row.id) : "";
   form.customerName = "";
   form.isNewCustomer = false;
-  form.region = row?.region || "CN";
+  form.region = row?.region || "";
   form.currency = row?.settlement_currency || "CNY";
   form.quoteNo = "";
   form.remark = "";
@@ -249,14 +251,51 @@ function priceFromMargin(base: string, margin: string) {
 function applyPrice(line: QuoteLine) {
   line.price = line.price || priceFromMargin(line.basePrice, line.margin);
 }
-function applyMarginAll() {
-  if (!isDecimalAmount(marginAll.value)) { ElMessage.error("统一毛利率必须是合法十进制数，例如 0.15"); return; }
-  if (!lines.value.length) { ElMessage.warning("请先添加模型"); return; }
-  lines.value = lines.value.map(line => ({ ...line, margin: marginAll.value, price: priceFromMargin(line.basePrice, marginAll.value) }));
-  ElMessage.success(`已按毛利率 ${marginAll.value} 统一 ${lines.value.length} 个模型`);
+// 原型 3.10：一个下拉选"统一定价方式"，一个值，一个「统一当前全部模型」。
+const pricingMode = ref<"margin" | "coefficient" | "delta">("margin");
+const pricingValue = ref("0.10");
+const PRICING_MODES = [
+  { value: "margin", label: "统一毛利率 %" },
+  { value: "coefficient", label: "统一报价系数" },
+  { value: "delta", label: "采购系数＋小数增量" },
+] as const;
+const pricingHint = computed(() => pricingMode.value === "margin" ? "如 0.15 = 15%" : pricingMode.value === "coefficient" ? "如 0.62" : "如 0.05（在采购系数上加）");
+function onPricingModeChange(value: "margin" | "coefficient" | "delta") {
+  pricingValue.value = value === "margin" ? "0.10" : value === "coefficient" ? "0.62" : "0.05";
 }
-// 原型「统一报价系数」：报价系数 = 采购系数 + 小数增量，据此反推报价单价与毛利率。
-const coefficientDelta = ref("0.05");
+function applyPricing() {
+  if (!isDecimalAmount(pricingValue.value)) { ElMessage.error("统一定价值必须是合法十进制数，例如 0.15"); return; }
+  if (!lines.value.length) { ElMessage.warning("请先添加模型"); return; }
+  const value = Number(pricingValue.value);
+  if (value <= 0) { ElMessage.error("统一定价值必须大于 0"); return; }
+  let applied = 0;
+  lines.value = lines.value.map(line => {
+    const cost = Number(line.basePrice), coefficient = Number(line.coefficient);
+    if (![cost, coefficient].every(Number.isFinite) || cost <= 0 || coefficient <= 0) return line;
+    applied += 1;
+    if (pricingMode.value === "margin") {
+      // 毛利率口径：报价单价 = 采购成本 ÷ (1 − 毛利率)，与服务端 floor 同源。
+      const price = priceFromMargin(line.basePrice, pricingValue.value);
+      return { ...line, margin: pricingValue.value, price };
+    }
+    if (pricingMode.value === "coefficient") {
+      // 直接指定报价系数：报价系数 = 报价单价 × 采购系数 ÷ 采购成本，反解报价单价。
+      const price = (cost * value) / coefficient;
+      const margin = (price - cost) / price;
+      return { ...line, price: trimNumber(price), margin: trimNumber(margin) };
+    }
+    // 采购系数 + 小数增量：客户价 = 官方价 × (采购系数 + 增量)。
+    const nextCoefficient = coefficient + value;
+    if (nextCoefficient <= 0) return line;
+    const price = (cost / coefficient) * nextCoefficient;
+    return { ...line, price: trimNumber(price), margin: trimNumber((price - cost) / price) };
+  });
+  ElMessage.success(`已按「${PRICING_MODES.find(mode => mode.value === pricingMode.value)?.label}」统一 ${applied} 个价项`);
+}
+/** 统一去掉尾零（0.620000 → 0.62），避免把 8 位小数塞进表格。 */
+function trimNumber(value: number) {
+  return value.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+}
 function quoteCoefficient(line: QuoteLine) {
   const cost = Number(line.basePrice), coefficient = Number(line.coefficient), price = Number(line.price);
   if (![cost, coefficient, price].every(Number.isFinite) || cost <= 0 || coefficient <= 0 || price <= 0) return "";
@@ -270,23 +309,6 @@ function lineHint(line: QuoteLine) {
   if (price < cost) return "低于采购成本";
   const margin = (price - cost) / price;
   return margin < 0.1 ? `毛利率 ${(margin * 100).toFixed(1)}% 低于 10%` : "—";
-}
-function applyCoefficientAll() {
-  if (!isDecimalAmount(coefficientDelta.value)) { ElMessage.error("小数增量必须是合法小数，例如 0.05"); return; }
-  if (!lines.value.length) { ElMessage.warning("请先添加模型"); return; }
-  const delta = Number(coefficientDelta.value);
-  let applied = 0;
-  lines.value = lines.value.map(line => {
-    const cost = Number(line.basePrice), coefficient = Number(line.coefficient);
-    if (![cost, coefficient].every(Number.isFinite) || cost <= 0 || coefficient <= 0) return line;
-    const nextCoefficient = coefficient + delta;
-    if (nextCoefficient <= 0) return line;
-    const price = (cost / coefficient) * nextCoefficient;
-    const margin = (price - cost) / price;
-    applied += 1;
-    return { ...line, price: price.toFixed(8).replace(/0+$/, "").replace(/\.$/, ""), margin: margin.toFixed(6).replace(/0+$/, "").replace(/\.$/, "") };
-  });
-  ElMessage.success(`已按「采购系数 + ${delta}」统一 ${applied} 个价项`);
 }
 function removeLine(resourceId: string, priceItemKey: string) {
   lines.value = lines.value.filter(line => !(line.resourceId === resourceId && line.priceItemKey === priceItemKey));
@@ -306,6 +328,7 @@ const pickerTotal = ref(0);
 let pickerSequence = 0;
 
 async function openPicker() {
+  if (!form.region) { ElMessage.error("请先选择客户业务区域"); return; }
   pickerVisible.value = true;
   pickerKeyword.value = "";
   pickerSelected.clear();
@@ -357,8 +380,9 @@ function confirmPicker() {
 }
 
 function validateBeforeSubmit() {
+  if (!form.region) return "请先选择客户业务区域";
   if (form.isNewCustomer) {
-    if (!form.customerName.trim()) return "请填写新客户名称。";
+    if (!form.customerName.trim()) return "请填写客户名称和我方公司";
   } else if (!positiveId(form.customerId)) return "请先选择关联客户。";
   if (!lines.value.length) return "请至少添加一个模型。";
   const bad = lines.value.find(line => !positiveId(line.resourceId) || !isDecimalAmount(line.price));
@@ -427,10 +451,46 @@ async function saveDraft(exportAfter: boolean, submitAfter = false) {
   }
 }
 
+// ---------------- 报价审批（原型 3.10：审批人在这个页签里逐模型批） ----------------
+// 客户维度之外的全局队列：不传 customer_id，服务端限 200 条。
+const quoteApprovalRows = ref<QuoteApprovalSummaryDTO[]>([]);
+const quoteApprovalLoading = ref(false);
+const quoteApprovalError = ref("");
+const quoteApprovalVisible = ref(false);
+const quoteApprovalTargetId = ref<number | null>(null);
+const canQuoteApprove = computed(() => permissions.canAction(PERMISSIONS.CUSTOMER_QUOTE_APPROVE));
+const quoteApprovalView = ref<"pending" | "history">("pending");
+
+const pendingApprovalRows = computed(() => quoteApprovalRows.value.filter(row => row.status === "PENDING"));
+const decidedApprovalRows = computed(() => quoteApprovalRows.value.filter(row => row.status !== "PENDING"));
+
+async function loadQuoteApprovals() {
+  quoteApprovalLoading.value = true;
+  quoteApprovalError.value = "";
+  try {
+    quoteApprovalRows.value = await quoteApprovalApi.list(0);
+  } catch (error) {
+    quoteApprovalRows.value = [];
+    quoteApprovalError.value = message(error);
+  } finally {
+    quoteApprovalLoading.value = false;
+  }
+}
+
+function openQuoteApproval(row: QuoteApprovalSummaryDTO) {
+  quoteApprovalTargetId.value = row.id;
+  quoteApprovalVisible.value = true;
+}
+
+/** 弹窗处理完（批准 / 驳回 / 撤回）后刷新两张表。 */
+async function onQuoteApprovalDecided() {
+  await loadQuoteApprovals();
+  await loadQuotes();
+}
+
 async function loadQuotes() {
   quoteLoading.value = true;
-  quoteError.value = "";
-  try {
+  quoteError.value = "";  try {
     const result = await customerWorkspaceApi.quotes({ page: 1, size: 200 });
     quoteRows.value = result.list;
     approvalRows.value = await customerWorkspaceApi.approvals();
@@ -442,22 +502,31 @@ async function loadQuotes() {
   }
 }
 
-const draftRows = computed(() => quoteRows.value.filter(row => row.status === "DRAFT" || row.status === "PENDING" || row.status === "APPROVED"));
-const exportedRows = computed(() => quoteRows.value.filter(row => row.status === "EFFECTIVE" || row.status === "EXPIRED" || row.status === "FORMAL"));
+// 「报价记录」= 全部报价单（原型 3.10 第三步：新单在最上面，靠「当前状态」区分阶段）。
+const recordRows = computed(() => quoteRows.value);
 // 报价操作日志：当前没有独立审计表，用报价单自身的时间/状态/操作人派生（不编造动作）。
 const logRows = computed(() => quoteRows.value.map(row => ({
   id: row.id, customer: row.customer_name, version: row.version_no,
   status: row.status, operator: row.owner_name, at: row.created_at,
 })));
 
-const statusText = (status: string) => ({ EFFECTIVE: "生效", DRAFT: "草稿", PENDING: "待审批", APPROVED: "已批准", EXPIRED: "已过期", REJECTED: "已驳回", FORMAL: "正式" } as Record<string, string>)[status] || status;
+const statusText = (status: string) => ({ EFFECTIVE: "历史记录", DRAFT: "草稿", PENDING: "待审批", APPROVED: "已批准", EXPIRED: "历史记录", REJECTED: "已驳回", FORMAL: "历史记录" } as Record<string, string>)[status] || status;
+/** 已生效/过期的报价单只读：不能继续编辑，只能看。 */
+const isReadonlyQuote = (status: string) => ["EFFECTIVE", "EXPIRED", "FORMAL"].includes(status);
+const quoteStatusType = (status: string) => status === "APPROVED" ? "success" : status === "PENDING" ? "warning" : isReadonlyQuote(status) ? "info" : status === "REJECTED" ? "danger" : "";
 const quoteTypeText = (type: string) => ({ APPLY: "套用价目表", CLONE: "克隆历史", TEMP: "临时报价", RESOURCE: "按资源报价", SPECIAL: "特价", CONTRACT: "合同" } as Record<string, string>)[type] || type;
 const approvalStatusText = (status: string) => ({ PENDING: "待审批", APPROVED: "已通过", REJECTED: "已驳回" } as Record<string, string>)[status] || status;
 const approvalStatusType = (status: string) => status === "APPROVED" ? "success" : status === "REJECTED" ? "danger" : "warning";
 
-function switchQuoteView(view: "edit" | "drafts" | "exported" | "approvals" | "logs") {
+function switchQuoteView(view: "edit" | "records" | "approvals" | "logs") {
   quoteView.value = view;
   if (view !== "edit" && !quoteRows.value.length) void loadQuotes();
+  if (view === "approvals") void loadQuoteApprovals();
+}
+
+/** 已生效/过期的报价单是只读的：跳到该客户详情的「该客户报价」看明细。 */
+function openQuoteRecord(row: CustomerQuoteRow) {
+  void router.push({ path: `/internal/customers/${row.customer_id}`, query: { tab: "quotes" } });
 }
 
 function openRowQuote(row: CustomerQuoteRow) {
@@ -600,8 +669,7 @@ onMounted(async () => {
       <div class="subtabbar">
         <div class="tabbar-left">
           <button class="tab" :class="{ active: quoteView === 'edit' }" @click="switchQuoteView('edit')">报价</button>
-          <button class="tab" :class="{ active: quoteView === 'drafts' }" @click="switchQuoteView('drafts')">报价草稿</button>
-          <button class="tab" :class="{ active: quoteView === 'exported' }" @click="switchQuoteView('exported')">已导出报价</button>
+          <button class="tab" :class="{ active: quoteView === 'records' }" @click="switchQuoteView('records')">报价记录</button>
           <button class="tab" :class="{ active: quoteView === 'approvals' }" @click="switchQuoteView('approvals')">报价审批</button>
           <button class="tab" :class="{ active: quoteView === 'logs' }" @click="switchQuoteView('logs')">报价操作日志</button>
         </div>
@@ -644,14 +712,12 @@ onMounted(async () => {
               <span class="muted">· 候选来自已接入且可报价的资源</span>
             </div>
             <div class="card-head-right">
-              <span class="muted">统一毛利率</span>
-              <el-input v-model="marginAll" class="margin-input" placeholder="输入数值" />
-              <span class="muted">%</span>
-              <el-button @click="applyMarginAll">统一当前全部价项</el-button>
-              <span class="muted">统一报价系数</span>
-              <el-input v-model="coefficientDelta" class="margin-input" placeholder="小数增量" aria-label="报价系数小数增量" />
-              <span class="muted">= 采购系数 + 增量</span>
-              <el-button @click="applyCoefficientAll">统一报价系数</el-button>
+              <span class="muted">统一定价方式</span>
+              <el-select v-model="pricingMode" style="width: 168px" aria-label="统一定价方式" @change="onPricingModeChange">
+                <el-option v-for="mode in PRICING_MODES" :key="mode.value" :value="mode.value" :label="mode.label" />
+              </el-select>
+              <el-input v-model="pricingValue" class="margin-input" :placeholder="pricingHint" aria-label="统一定价值" />
+              <el-button @click="applyPricing">统一当前全部模型</el-button>
             </div>
           </div>
 
@@ -700,48 +766,60 @@ onMounted(async () => {
         </div>
       </template>
 
-      <template v-else-if="quoteView === 'drafts'">
+      <template v-else-if="quoteView === 'records'">
+        <!-- 原型 3.10 第三步：报价单 ID / 客户 / 销售 / 提交时间 / 模型数 / 当前状态 / 操作。
+             任务从"按导出与否拆两个表"改为"一张表看当前状态"——同一张单会从草稿走到待审批再到历史记录。 -->
         <el-alert v-if="quoteError" :title="quoteError" type="error" show-icon :closable="false" />
-        <el-table v-loading="quoteLoading" :data="draftRows" row-key="id" class="grid">
-          <el-table-column label="报价编号" width="120"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
-          <el-table-column label="客户名称" min-width="200"><template #default="{ row }">{{ row.customer_name }}</template></el-table-column>
-          <el-table-column label="版本" width="80"><template #default="{ row }">V{{ row.version_no }}</template></el-table-column>
-          <el-table-column label="类型" width="120"><template #default="{ row }">{{ quoteTypeText(row.quote_type) }}</template></el-table-column>
-          <el-table-column label="状态" width="100"><template #default="{ row }">{{ statusText(row.status) }}</template></el-table-column>
-          <el-table-column label="模型数" width="90"><template #default="{ row }">{{ row.item_count }}</template></el-table-column>
-          <el-table-column label="报价时间" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
-          <el-table-column label="操作" width="120"><template #default="{ row }"><el-button link type="primary" @click="openRowQuote(row)">继续编辑</el-button></template></el-table-column>
-          <template #empty><el-empty description="暂无报价草稿" :image-size="64" /></template>
-        </el-table>
-      </template>
-
-      <template v-else-if="quoteView === 'exported'">
-        <el-table v-loading="quoteLoading" :data="exportedRows" row-key="id" class="grid">
-          <el-table-column label="报价编号" width="120"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
-          <el-table-column label="客户名称" min-width="200"><template #default="{ row }">{{ row.customer_name }}</template></el-table-column>
-          <el-table-column label="版本" width="80"><template #default="{ row }">V{{ row.version_no }}</template></el-table-column>
-          <el-table-column label="状态" width="100"><template #default="{ row }">{{ statusText(row.status) }}</template></el-table-column>
-          <el-table-column label="模型数" width="90"><template #default="{ row }">{{ row.item_count }}</template></el-table-column>
-          <el-table-column label="有效期至" width="170"><template #default="{ row }">{{ row.valid_until ? formatDateTime(row.valid_until, "—", false) : "—" }}</template></el-table-column>
-          <el-table-column label="报价时间" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
-          <template #empty><el-empty description="暂无已导出报价" :image-size="64" /></template>
+        <el-table v-loading="quoteLoading" :data="recordRows" row-key="id" class="grid">
+          <el-table-column label="报价单 ID" width="120"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
+          <el-table-column label="客户" min-width="200"><template #default="{ row }">{{ row.customer_name }}</template></el-table-column>
+          <el-table-column label="销售" width="130"><template #default="{ row }">{{ row.owner_name || "—" }}</template></el-table-column>
+          <el-table-column label="提交时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template></el-table-column>
+          <el-table-column label="模型数" width="90" align="right"><template #default="{ row }"><span class="mono">{{ row.item_count }}</span></template></el-table-column>
+          <el-table-column label="当前状态" width="120">
+            <template #default="{ row }"><el-tag size="small" :type="quoteStatusType(row.status)">{{ statusText(row.status) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="操作" width="160">
+            <template #default="{ row }">
+              <el-button v-if="!isReadonlyQuote(row.status)" link type="primary" @click="openRowQuote(row)">继续编辑</el-button>
+              <el-button v-else link type="primary" @click="openQuoteRecord(row)">查看</el-button>
+            </template>
+          </el-table-column>
+          <template #empty><el-empty description="暂无报价记录" :image-size="64" /></template>
         </el-table>
       </template>
 
       <template v-else-if="quoteView === 'approvals'">
-        <!-- 原型「报价审批」是独立页签。之前塞在操作日志里且带 v-if：
-             没有审批记录时整块不渲染，点进来会以为功能不存在。 -->
-        <el-table v-loading="quoteLoading" :data="approvalRows" row-key="id" class="grid" empty-text="暂无审批记录">
-          <el-table-column label="报价单 ID" width="130">
-            <template #default="{ row }">{{ row.quote_id ? `#${row.quote_id}` : "—" }}</template>
-          </el-table-column>
-          <el-table-column label="销售与提交时间" min-width="240">
-            <template #default="{ row }">{{ row.created_by || "未记录" }} · {{ formatDateTime(row.created_at, "—", false) }}</template>
+        <div class="subtabs">
+          <button class="subtab" :class="{ active: quoteApprovalView === 'pending' }" @click="quoteApprovalView = 'pending'">待审批（{{ pendingApprovalRows.length }}）</button>
+          <button class="subtab" :class="{ active: quoteApprovalView === 'history' }" @click="quoteApprovalView = 'history'">审批记录</button>
+        </div>
+        <el-alert v-if="quoteApprovalError" :title="quoteApprovalError" type="error" show-icon :closable="false" />
+        <el-table
+          v-loading="quoteApprovalLoading"
+          :data="quoteApprovalView === 'pending' ? pendingApprovalRows : decidedApprovalRows"
+          row-key="id"
+          class="grid"
+          :empty-text="quoteApprovalView === 'pending' ? '暂无待审批的报价单' : '暂无审批记录'"
+        >
+          <el-table-column label="报价单 ID" width="120"><template #default="{ row }">#{{ row.quote_id }}</template></el-table-column>
+          <el-table-column label="模型数" width="90" align="right"><template #default="{ row }"><span class="mono">{{ row.model_count }}</span></template></el-table-column>
+          <el-table-column label="提交人 / 提交时间" min-width="240">
+            <template #default="{ row }">员工 #{{ row.submitted_by }} · {{ formatDateTime(row.submitted_at, "—", false) }}</template>
           </el-table-column>
           <el-table-column label="状态" width="110">
             <template #default="{ row }"><el-tag size="small" :type="approvalStatusType(row.status)">{{ approvalStatusText(row.status) }}</el-tag></template>
           </el-table-column>
-          <el-table-column label="申请原因" min-width="260" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "—" }}</template></el-table-column>
+          <el-table-column label="处理人 / 处理时间" min-width="240">
+            <template #default="{ row }">{{ row.decided_by ? `员工 #${row.decided_by}` : "—" }} · {{ row.decided_at ? formatDateTime(row.decided_at, "—", false) : "—" }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="110">
+            <template #default="{ row }">
+              <el-button link type="primary" :disabled="row.status !== 'PENDING' && !canQuoteApprove" @click="openQuoteApproval(row)">
+                {{ row.status === "PENDING" ? "审批" : "查看" }}
+              </el-button>
+            </template>
+          </el-table-column>
         </el-table>
       </template>
 
@@ -808,6 +886,15 @@ onMounted(async () => {
       </template>
     </el-dialog>
 
+    <!-- 报价审批（逐模型批准 / 驳回）：与客户详情共用同一组件 -->
+    <QuoteApprovalDialog
+      v-model:visible="quoteApprovalVisible"
+      :approval-id="quoteApprovalTargetId"
+      :can-approve="canQuoteApprove"
+      :staff-id="session.user?.staffId ? Number(session.user.staffId) : 0"
+      @decided="onQuoteApprovalDecided"
+    />
+
     <!-- 移交客户（共用弹窗组件） -->
     <CustomerTransferDialog
       v-model:visible="transferVisible"
@@ -827,6 +914,10 @@ onMounted(async () => {
 .tabbar-actions { display: flex; gap: 10px; }
 .tab { background: none; border: none; padding: 10px 2px; cursor: pointer; font-size: 14px; color: var(--app-text-secondary); border-bottom: 2px solid transparent; }
 .tab.active { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); font-weight: 600; }
+/* 报价审批的两个子标签（待审批 / 审批记录）：原型里是浅色胶囊，不抢外层 Tab 的视觉层级。 */
+.subtabs { display: flex; gap: 8px; margin: 0 0 12px; }
+.subtab { border: 1px solid var(--el-border-color); background: var(--el-bg-color); border-radius: 999px; padding: 5px 14px; font-size: 12px; cursor: pointer; color: var(--app-text-secondary); }
+.subtab.active { border-color: var(--el-color-primary); color: var(--el-color-primary); font-weight: 600; }
 .filterbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
 .flt { width: 148px; }
 .grid { width: 100%; }

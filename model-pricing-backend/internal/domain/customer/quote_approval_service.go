@@ -190,12 +190,15 @@ func (s *QuoteApprovalService) Get(ctx context.Context, approvalID int64, scope 
 	return s.loadInScope(ctx, approvalID, scope)
 }
 
-// List 按客户列审批单（M9:V）。成交条件（customerID）必填，避免变成全表翻页。
+// List 列审批单（M9:V）。
+//
+// customerID=0 表示跨客户：客户报价单页签的「报价审批」是全局队列（原型 3.10，
+// 分「待审批 / 审批记录」两个子标签）。仍受 limit（默认 200）约束，不是无界翻页。
 func (s *QuoteApprovalService) List(ctx context.Context, customerID int64, status string, limit int) ([]QuoteApprovalSummary, error) {
 	if s == nil || s.store == nil {
 		return nil, ErrApprovalStoreUnavailable
 	}
-	if customerID <= 0 {
+	if customerID < 0 {
 		return nil, ErrCustomerNotFound
 	}
 	if limit <= 0 || limit > 200 {
