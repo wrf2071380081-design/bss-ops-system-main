@@ -18,6 +18,7 @@ import { ApiError } from "../../../domain/common";
 import { formatDateTime } from "../../../domain/date";
 import ResourceDetailDrawer from "../resources/ResourceDetailDrawer.vue";
 import ResourceOperationsPanel from "../resources/ResourceOperationsPanel.vue";
+import ResourceStateRegisterDialog from "../resources/ResourceStateRegisterDialog.vue";
 import ResourceReportsPanel from "../resources/ResourceReportsPanel.vue";
 import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
 import SupplierAccessBatchPanel from './SupplierAccessBatchPanel.vue';
@@ -143,6 +144,33 @@ async function copyText(value: string, label: string) {
 }
 /** 配置登记/接入完成后刷新列表与进度（弹窗不关，方便接着看下一项）。 */
 function afterInterfaceChange() { void load(); }
+// 原型：勾选行 → 顶部「上架 / 下架」。与模型广场用同一张登记单（一次点击即登记完成）。
+const registerVisible = ref(false), registerKind = ref<"down" | "up">("down"), registerRows = ref<ResourceRow[]>([]);
+function openRegister(kind: "down" | "up") {
+  const chosen = batchSelected.value;
+  if (!chosen.length) { ElMessage.warning("请先勾选要上架或下架的模型"); return; }
+  const targets = chosen.filter(row => kind === "down" ? row.state !== "OFFLINE" : row.state === "OFFLINE");
+  if (!targets.length) {
+    ElMessage.warning(kind === "down" ? "所选模型均不在架，无需下架" : "所选模型均不是已下架状态，无需上架");
+    return;
+  }
+  registerKind.value = kind;
+  registerRows.value = targets;
+  registerVisible.value = true;
+}
+function registerDone() { registerVisible.value = false; registerRows.value = []; batchSelected.value = []; void load(); void loadStateHistory(); }
+// 原型在这张表下面还有一块「上下架登记历史」：模型 / 接口模型 ID / 操作 / 时间 / 操作人 / 备注。
+const stateHistory = ref<SourceOperation[]>([]), stateHistoryLoading = ref(false);
+async function loadStateHistory() {
+  stateHistoryLoading.value = true;
+  try {
+    const page = await supplierSourceOperationsApi.list(supplierID.value, 1, 100, undefined, "resource");
+    // 上下架在库里记成 PLAN_ONLINE / PLAN_OFFLINE（计划执行）；老数据可能直接是 ONLINE / OFFLINE。
+    stateHistory.value = page.list.filter(row => ["ONLINE", "OFFLINE", "PLAN_ONLINE", "PLAN_OFFLINE"].includes(row.action));
+  } catch { stateHistory.value = []; }
+  finally { stateHistoryLoading.value = false; }
+}
+const stateActionLabel = (action: string) => action === "ONLINE" || action === "PLAN_ONLINE" ? "上架" : action === "OFFLINE" || action === "PLAN_OFFLINE" ? "下架" : action;
 /** API Key 一律不回显：库里只有密文，界面只能告诉你"设没设"。 */
 function copyKey() { ElMessage.info("API Key 不回显；需要更换请在下方正式配置里重置。"); }
 // 原型那条进度：技术完成 x/y · 已取消 · 尚待配置 · 当前可办理 · 商务待完成 · 办理人
@@ -537,6 +565,7 @@ async function load() {
       if (result.some(row => row.id === highlight)) selectedID.value = highlight;
     }
     void loadProgress();
+    void loadStateHistory();
   } catch (value) {
     if (!active || current.signal.aborted) return;
     error.value = value instanceof Error ? value.message : "供应商模型列表暂时无法加载，请重试。";
@@ -614,7 +643,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-button @click="resetModelFilters">重置</el-button>
             <span v-if="rows.length" class="muted">共 {{ filteredRows.length }} / {{ rows.length }} 条</span>
           </div>
-          <SupplierAccessBatchPanel :supplier-id="supplierID" :selected="batchSelected" @changed="load();loadProgress()"/>
+          <SupplierAccessBatchPanel :supplier-id="supplierID" :selected="batchSelected" @changed="load();loadProgress()" @register="openRegister"/>
           <el-table :data="filteredRows" row-key="id" highlight-current-row :current-row-key="selectedID" style="width:100%" @selection-change="batchSelected=$event" @row-click="focus">
             <el-table-column type="selection" width="45"/>
             <el-table-column label="标准模型 / 官方 ID" min-width="190"><template #default="{ row }"><strong>{{ row.model_name }}</strong><span class="muted">{{ row.official_id }}</span></template></el-table-column>
@@ -630,6 +659,17 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <!-- 原型末列「资源操作」里就是「接口配置」；行点击仍会选中行看下方详情，不再单占一列。 -->
             <el-table-column label="资源操作" width="110" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click.stop="openInterfaceConfig(row)">接口配置</el-button></template></el-table-column>
             <template #empty><el-empty description="该供应商暂无接入模型" :image-size="64" /></template>
+          </el-table>
+
+          <!-- 原型：接入模型表下面跟一块「上下架登记历史」，只做留痕展示。 -->
+          <h3 class="state-history-title">上下架登记历史</h3>
+          <el-table v-loading="stateHistoryLoading" :data="stateHistory" size="small" empty-text="暂无上下架记录">
+            <el-table-column label="平台模型名称" min-width="180"><template #default="{ row }">{{ rows.find(item => item.id === row.resource_id)?.model_name || "—" }}</template></el-table-column>
+            <el-table-column label="接口模型 ID" min-width="160"><template #default="{ row }">{{ row.supplier_model_id || "—" }}</template></el-table-column>
+            <el-table-column label="操作" width="90"><template #default="{ row }">{{ stateActionLabel(row.action) }}</template></el-table-column>
+            <el-table-column label="时间" min-width="170"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
+            <el-table-column label="操作人" width="110"><template #default="{ row }">{{ row.operator_name || "—" }}</template></el-table-column>
+            <el-table-column label="备注" min-width="200" show-overflow-tooltip><template #default="{ row }">{{ row.reason || "—" }}</template></el-table-column>
           </el-table>
         </el-tab-pane>
         <el-tab-pane label="档案与办理" name="profile" lazy>
@@ -777,6 +817,8 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
       </template>
     </el-dialog>
 
+    <ResourceStateRegisterDialog v-if="registerVisible && registerRows.length" :key="`${registerKind}:${registerRows.map(row => row.id).join(',')}`" :rows="registerRows" :kind="registerKind" @close="registerVisible = false" @done="registerDone" />
+
     <el-dialog v-if="reportsVisible && reportsRow" v-model="reportsVisible" :title="`${reportsRow.model_name} · 资源 #${reportsRow.id}`" width="min(1120px, 96vw)" append-to-body>
       <p class="muted">{{ reportsRow.supplier_model_id }} · 每次测试单独留档</p>
       <ResourceReportsPanel :resource-i-d="reportsRow.id" :current-report-i-d="reportsRow.test.report_id" />
@@ -798,6 +840,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
 @media(max-width:820px){.profile-grid{grid-template-columns:1fr}}.qualification-validity{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .supplier-qualification-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:24px}.supplier-qualification-heading h3{margin:0 0 10px}.qualification-list{min-height:90px}
 .iface-form { margin-top: 14px; }
+.state-history-title { margin: 22px 0 10px; font-size: 14px; }
 .qualification-inline{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:44px;padding:4px 0}
 /* 合同与授信是独立区块，和上方营业执照留出间距（原型也是分开的两块）。 */
 .supplier-access-page :deep(.f12-subject-panel){margin-top:28px}

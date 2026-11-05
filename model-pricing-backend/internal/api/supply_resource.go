@@ -38,8 +38,10 @@ type supplyResourceDTO struct {
 	Permissions supplyResourcePermissions `json:"permissions"`
 }
 
-func resourceResponse(row *supply.ResourceSnapshot, actor string) supplyResourceDTO {
-	return supplyResourceDTO{ResourceSnapshot: row, Permissions: supplyResourcePermissions{CanEdit: row.BuyerID == actor}}
+// resourceResponse 的写权限：归属采购人，或持 M3:E 的维护人（与供应商档案同一套口径）。
+// 原型里上架/下架是业务动作，不看"归属人"，而我们的 RBAC 已把 M3:E 给了运营领导。
+func resourceResponse(row *supply.ResourceSnapshot, actor string, canMaintain bool) supplyResourceDTO {
+	return supplyResourceDTO{ResourceSnapshot: row, Permissions: supplyResourcePermissions{CanEdit: row.BuyerID == actor || canMaintain}}
 }
 
 type supplyResourcePageDTO struct {
@@ -109,7 +111,7 @@ func (h *supplyResourceHandler) list(c *gin.Context) {
 	if result.View == "flat" {
 		flat := make([]supplyResourceDTO, 0, len(result.Resources))
 		for _, resource := range result.Resources {
-			flat = append(flat, resourceResponse(resource, supplyActor(c)))
+			flat = append(flat, resourceResponse(resource, supplyActor(c), supplyCanEditSupplier(c)))
 		}
 		rows = flat
 	}
@@ -135,5 +137,5 @@ func (h *supplyResourceHandler) get(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	response.Success(c, resourceResponse(row, supplyActor(c)))
+	response.Success(c, resourceResponse(row, supplyActor(c), supplyCanEditSupplier(c)))
 }

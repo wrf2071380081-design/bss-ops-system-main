@@ -13,23 +13,23 @@ func TestStatePlanCreationRecordsSnapshotWithoutChangingResource(t *testing.T) {
 	r := lifecycleResource()
 	before := *r
 	due := modelNow.Add(time.Hour)
-	p, err := NewStatePlan("81", "7", r, "OFFLINE", due, " 维护 ", modelNow)
+	p, err := NewStatePlan("81", "7", r, "OFFLINE", due, " 维护 ", modelNow, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if *r != before || p.Status != "PENDING" || p.CreatedBy != "7" || p.ExpectedResourceRevision != 2 || p.Revision != 1 || p.Reason != "维护" || !p.DueAt.Equal(due) {
 		t.Fatalf("invalid plan %+v", p)
 	}
-	if _, err := NewStatePlan("81", "8", r, "OFFLINE", due, "维护", modelNow); !errors.Is(err, ErrForbidden) {
+	if _, err := NewStatePlan("81", "8", r, "OFFLINE", due, "维护", modelNow, false); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("unbound creation %v", err)
 	}
-	if _, err := NewStatePlan("81", "7", r, "ONLINE", due, "维护", modelNow); err == nil {
+	if _, err := NewStatePlan("81", "7", r, "ONLINE", due, "维护", modelNow, false); err == nil {
 		t.Fatal("online plan for admitted resource")
 	}
 }
 func TestStatePlanRevisionAndCancellationUseOriginalInitiator(t *testing.T) {
 	r := lifecycleResource()
-	p, _ := NewStatePlan("81", "7", r, "OFFLINE", modelNow.Add(time.Hour), "维护", modelNow)
+	p, _ := NewStatePlan("81", "7", r, "OFFLINE", modelNow.Add(time.Hour), "维护", modelNow, false)
 	r.BuyerID = "8"
 	if _, err := p.RevisedStatePlan("8", 1, modelNow.Add(2*time.Hour), "修改"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("buyer impersonation %v", err)
@@ -52,7 +52,7 @@ func TestStatePlanRevisionAndCancellationUseOriginalInitiator(t *testing.T) {
 func TestStatePlanExecutionBeforeDueRequiresInitiatorAndExternalEvidence(t *testing.T) {
 	record := resourceRecord(t, "11", "21", "31", "CN", "0.68")
 	record.Resource.Revision = 2
-	p, _ := NewStatePlan("81", "7", record.Resource, "OFFLINE", modelNow.Add(24*time.Hour), "维护", modelNow)
+	p, _ := NewStatePlan("81", "7", record.Resource, "OFFLINE", modelNow.Add(24*time.Hour), "维护", modelNow, false)
 	record.Resource.BuyerID = "8"
 	change, err := p.ExecuteStatePlan("7", 1, record, true, " 平台操作依据 ", modelNow.Add(time.Hour))
 	if err != nil || change.Plan.Status != "EXECUTED" || change.Plan.Revision != 2 || change.Plan.ExecutedAt == nil || change.Resource.State != "OFFLINE" || change.Resource.Revision != 3 || change.CompletionNote != "平台操作依据" {
@@ -73,7 +73,7 @@ func TestStatePlanExecutionBeforeDueRequiresInitiatorAndExternalEvidence(t *test
 }
 func TestStatePlanResourceConflictReturnsBlockedProposal(t *testing.T) {
 	r := lifecycleResource()
-	p, _ := NewStatePlan("81", "7", r, "OFFLINE", modelNow, "维护", modelNow)
+	p, _ := NewStatePlan("81", "7", r, "OFFLINE", modelNow, "维护", modelNow, false)
 	r.Revision = 3
 	change, err := p.ExecuteStatePlan("7", 1, &ResourceRecord{Resource: r}, true, "依据", modelNow)
 	if !errors.Is(err, ErrRevisionConflict) || change == nil || change.Plan.Status != "BLOCKED" || change.Resource != nil || p.Status != "PENDING" {
@@ -84,7 +84,7 @@ func TestStatePlanOnlineRechecksCurrentFacts(t *testing.T) {
 	for _, blocked := range []bool{false, true} {
 		record := resourceRecord(t, "11", "21", "31", "CN", "0.68")
 		record.Resource.State = "OFFLINE"
-		p, _ := NewStatePlan("81", "7", record.Resource, "ONLINE", modelNow, "恢复", modelNow)
+		p, _ := NewStatePlan("81", "7", record.Resource, "ONLINE", modelNow, "恢复", modelNow, false)
 		if blocked {
 			// 压力未判定不再拦上架；用连通性表达报告不达标。
 			record.Report.ConnectivityPassed = false

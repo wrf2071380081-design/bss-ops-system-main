@@ -4,7 +4,7 @@ import {apiRequest} from '../../../api/http';
 import {resourceOperationsApi} from '../../../api/resourceOperations';
 import type {FormalConfigOption} from '../../../api/resourceOperations.contract';
 import type {ResourceRow} from '../../../api/resources.types';
-const props=defineProps<{supplierId:string;selected:ResourceRow[]}>();const emit=defineEmits<{changed:[]}>();
+const props=defineProps<{supplierId:string;selected:ResourceRow[]}>();const emit=defineEmits<{changed:[];register:[kind:'up'|'down']}>();
 type Action='CONFIGURE'|'CONFIRM'|'CANCEL';
 type Result={resource_id:string;status:number;message?:string;receipt?:{stage:string;revision:string}};
 const open=ref(false),action=ref<Action>('CONFIGURE'),busy=ref(false),loading=ref(false),error=ref(''),reason=ref(''),note=ref(''),confirmed=ref(false),lifecycle=ref('');
@@ -32,7 +32,13 @@ async function submit(){
 }
 </script>
 <template>
- <div class="batch-access-actions"><span>已选 {{selected.length}} 个模型</span><el-button v-for="value in (['CONFIGURE','CONFIRM','CANCEL'] as const)" :key="value" :type="value==='CANCEL'?'danger':'primary'" :disabled="!selected.length||busy" @click="show(value)">{{labels[value]}}</el-button></div>
+ <div class="batch-access-actions">
+  <span>已选 {{selected.length}} 个模型</span>
+  <el-button v-for="value in (['CONFIGURE','CONFIRM','CANCEL'] as const)" :key="value" :type="value==='CANCEL'?'danger':'primary'" :disabled="!selected.length||busy" @click="show(value)">{{labels[value]}}</el-button>
+  <!-- 原型顶部就是「接入 / 上架 / 下架」三个动作：上架下架走同一张登记单，一次点击即登记完成。 -->
+  <el-button :disabled="!selected.length||busy" @click="emit('register','up')">上架</el-button>
+  <el-button :disabled="!selected.length||busy" @click="emit('register','down')">下架</el-button>
+ </div>
  <el-dialog v-model="open" :title="labels[action]" width="min(860px,94vw)" append-to-body :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy">
   <el-alert v-if="action==='CANCEL'" type="warning" :closable="false" title="仅取消尚未接入模型的本次办理；已接入模型请创建下架计划。"/>
   <el-alert v-else type="info" :closable="false" title="本系统登记外部实际操作结果。逐条校验人员、版本及前置条件，未通过的模型会单独显示失败原因。"/>

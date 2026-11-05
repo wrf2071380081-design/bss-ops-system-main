@@ -27,11 +27,13 @@ func (p *StatePlan) copy() *StatePlan {
 	copy.ResourcePlan = *p.ResourcePlan.Clone()
 	return &copy
 }
-func NewStatePlan(id, actor string, r *Resource, kind string, due time.Time, reason string, now time.Time) (*StatePlan, error) {
+// canMaintain 表示调用方已按模块权限（M3:E）判定此人可维护该供应资源，
+// 与「归属采购人」并列；原型里上下架是业务动作，不看归属人。
+func NewStatePlan(id, actor string, r *Resource, kind string, due time.Time, reason string, now time.Time, canMaintain bool) (*StatePlan, error) {
 	if !validID(id) || !validID(actor) || r == nil || !validID(r.ID) || !validID(r.BuyerID) || r.Revision == 0 || r.Revision > math.MaxInt64 || (r.Region != "CN" && r.Region != "OVERSEAS") {
 		return nil, invalid("resource", "valid plan identity and resource snapshot required")
 	}
-	if r.BuyerID != actor {
+	if r.BuyerID != actor && !canMaintain {
 		return nil, ErrForbidden
 	}
 	if (kind != "OFFLINE" && kind != "ONLINE") || due.IsZero() || now.IsZero() || strings.TrimSpace(reason) == "" {
