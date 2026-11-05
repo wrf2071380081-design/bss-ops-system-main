@@ -590,25 +590,26 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-alert v-if="quoteError" :title="quoteError" type="error" :closable="false"><el-button text @click="loadQuotes">重试</el-button></el-alert>
             <div v-else>
               <h3>待审核</h3>
-              <el-table :data="pendingQuoteRows" empty-text="暂无待审核申报">
-                <el-table-column prop="id" label="申报编号" width="120" />
-                <el-table-column label="类型" width="110"><template #default="{ row }">{{ quoteKindLabel(row.kind) }}</template></el-table-column>
-                <el-table-column label="模型数量" width="100"><template #default="{ row }">{{ row.rows.length }}</template></el-table-column>
-                <el-table-column label="提交时间" width="180"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column>
-                <el-table-column label="状态" width="110"><template #default="{ row }">{{ quoteStatusLabel(row.status) }}</template></el-table-column>
-                <el-table-column label="审批结果" width="110"><template #default>—</template></el-table-column>
-                <el-table-column label="详情" width="100"><template #default="{ row }"><el-button link type="primary" @click="openQuote(row)">查看报价</el-button></template></el-table-column>
+              <!-- 列宽用 min-width：容器变宽时由各列分摊剩余空间，避免右侧留一大片空白。 -->
+              <el-table :data="pendingQuoteRows" empty-text="暂无待审核申报" style="width:100%">
+                <el-table-column prop="id" label="申报编号" min-width="120" />
+                <el-table-column label="类型" min-width="120"><template #default="{ row }">{{ quoteKindLabel(row.kind) }}</template></el-table-column>
+                <el-table-column label="模型数量" min-width="90"><template #default="{ row }">{{ row.rows.length }}</template></el-table-column>
+                <el-table-column label="提交时间" min-width="160"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column>
+                <el-table-column label="状态" min-width="120"><template #default="{ row }">{{ quoteStatusLabel(row.status) }}</template></el-table-column>
+                <el-table-column label="审批结果" min-width="120"><template #default>—</template></el-table-column>
+                <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="openQuote(row)">详情</el-button></template></el-table-column>
               </el-table>
               <h3>审批记录</h3>
-              <el-table :data="decidedQuoteRows" empty-text="暂无审批记录">
-                <el-table-column prop="id" label="申请编号" width="120" />
-                <el-table-column label="类型" width="110"><template #default="{ row }">{{ quoteKindLabel(row.kind) }}</template></el-table-column>
-                <el-table-column label="模型数量" width="100"><template #default="{ row }">{{ row.rows.length }}</template></el-table-column>
-                <el-table-column label="申请时间" width="180"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column>
-                <el-table-column label="审批时间" width="180"><template #default="{ row }">{{ row.approved_at ? formatDateTime(row.approved_at) : '未记录' }}</template></el-table-column>
-                <el-table-column label="审批结果" width="110"><template #default="{ row }">{{ row.approval_result || (["PROCESSING", "COMPLETED"].includes(row.status) ? "未记录" : "—") }}</template></el-table-column>
-                <el-table-column label="审批人" width="110"><template #default="{ row }">{{ row.approver || '未记录' }}</template></el-table-column>
-                <el-table-column label="详情" width="100"><template #default="{ row }"><el-button link type="primary" @click="openQuote(row)">查看报价</el-button></template></el-table-column>
+              <el-table :data="decidedQuoteRows" empty-text="暂无审批记录" style="width:100%">
+                <el-table-column prop="id" label="申请编号" min-width="120" />
+                <el-table-column label="类型" min-width="110"><template #default="{ row }">{{ quoteKindLabel(row.kind) }}</template></el-table-column>
+                <el-table-column label="模型数量" min-width="90"><template #default="{ row }">{{ row.rows.length }}</template></el-table-column>
+                <el-table-column label="申请时间" min-width="160"><template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template></el-table-column>
+                <el-table-column label="审批时间" min-width="160"><template #default="{ row }">{{ row.approved_at ? formatDateTime(row.approved_at) : '未记录' }}</template></el-table-column>
+                <el-table-column label="审批结果" min-width="120"><template #default="{ row }">{{ row.approval_result || (["PROCESSING", "COMPLETED"].includes(row.status) ? "未记录" : "—") }}</template></el-table-column>
+                <el-table-column label="审批人" min-width="110"><template #default="{ row }">{{ row.approver || '未记录' }}</template></el-table-column>
+                <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="openQuote(row)">详情</el-button></template></el-table-column>
               </el-table>
             </div>
             <el-pagination v-if="quoteTotal" v-model:current-page="quotePage" :page-size="20" :total="quoteTotal" layout="total, prev, pager, next" @current-change="loadQuotes" />
