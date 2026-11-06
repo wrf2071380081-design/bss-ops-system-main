@@ -72,7 +72,11 @@ func ProposeTestEvidence(r *Resource, report *ResourceReportSummary, now time.Ti
 	copy.UpdatedAt = now.UTC()
 	if !r.EverAdmitted {
 		copy.State = "PENDING_TEST"
-		if report.Valid && report.ConnectivityPassed && report.PressurePassed {
+		// 只看连通：压测平台对 stress 门类不返回 verdict，pressure_passed 恒为 false
+		// （supply/resource.go 的 QuoteReadiness 也是同一口径）。这里若仍要求
+		// PressurePassed，信号通过的报告永远升不到「待接入」，
+		// 而 ProposeAdmission 又硬要求 state=PENDING_ACCESS，准入链会死锁。
+		if report.Valid && report.ConnectivityPassed {
 			copy.State = "PENDING_ACCESS"
 		}
 	}

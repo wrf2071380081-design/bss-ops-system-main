@@ -77,7 +77,9 @@ func paramsOrDefault(category tpdomain.Category, params map[string]any) map[stri
 	case tpdomain.CategoryBaseline:
 		return map[string]any{"min_layer_score": 0.8, "mode": "gate"}
 	case tpdomain.CategoryStress:
-		return map[string]any{"concurrency": []int{1}, "duration": "30s"}
+		// engine 是平台 stress 门类的必填参数，且当前只有这一个合法值；
+		// 不传会被平台判 400「参数校验失败」，表现为「测试平台调用失败，请稍后重试」。
+		return map[string]any{"engine": "reference-performance-v1", "concurrency": []int{1}, "duration": "30s"}
 	}
 	return nil
 }
