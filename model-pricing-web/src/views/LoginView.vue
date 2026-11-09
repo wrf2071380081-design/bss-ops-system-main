@@ -5,6 +5,7 @@ import { ElMessage } from "element-plus";
 import { login, loginSupplierMobile, registerSupplier } from "../api/auth";
 import { ApiError } from "../domain/common";
 import { useSessionStore, type PortalType } from "../stores/session";
+import { usePermissionStore } from "../stores/permission";
 
 const route = useRoute();
 const router = useRouter();
@@ -89,11 +90,21 @@ function errorText(cause: unknown) {
 async function finish(result: Parameters<typeof session.startSession>[0], displayName: string) {
   const target = portal.value;
   session.startSession(result, target, displayName);
+  // startSession 内部已用服务端返回的 perms / roles 重建权限集，这里可以直接判定。
+  const permissions = usePermissionStore();
   const redirect = route.query.redirect;
   const destination = typeof redirect === "string" && redirect.startsWith(`/${target}/`)
     ? router.resolve(redirect) : null;
-  await router.replace(destination?.meta.requiresAuth && destination.meta.portal === target
-    ? destination.fullPath : homes[target]);
+  // 只校验「路由存在 + 需要登录 + portal 匹配」是不够的：登录前所在的页面未必是
+  // 当前账号有权访问的页面。典型场景——平台管理员在「账号管理」页退出登录，
+  // redirect 仍是 /internal/accounts，换成新员工账号登录后会被送回该页，
+  // 路由守卫判定无权 → 落地即 /403（用户看到「无权访问」，点返回才恢复）。
+  // 所以落地前必须再校验一次目标 routeKey，无权就回该门户首页。
+  const routeKey = destination?.meta.routeKey as string | undefined;
+  const landingAllowed = Boolean(destination?.meta.requiresAuth)
+    && destination?.meta.portal === target
+    && (!routeKey || permissions.canRoute(routeKey));
+  await router.replace(landingAllowed && destination ? destination.fullPath : homes[target]);
 }
 
 async function submitInternal() {

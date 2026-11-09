@@ -21,6 +21,7 @@ import CustomerDetail from "../views/internal/customers/CustomerDetail.vue";
 import FinanceCenter from "../views/internal/finance/FinanceCenter.vue";
 import InternalWorkbench from "../views/internal/workbench/InternalWorkbench.vue";
 import OrgPermissionCenter from "../views/internal/orgPermissions/OrgPermissionCenter.vue";
+import AccountList from "../views/internal/orgPermissions/AccountList.vue";
 import IntegrationCenter from "../views/internal/integration/IntegrationCenter.vue";
 import { ROUTE_REQUIREMENTS } from "../domain/permissions";
 
@@ -280,6 +281,22 @@ export const internalRoutes: RouteRecordRaw = {
         title: "审计日志",
         menu: false,
         order: 120,
+      },
+    },
+    {
+      // 账号管理：后端 7 个写接口（建人 / 改人 / 重置口令 / 授·回收角色）已就绪，
+      // 真正的门槛是**角色**而非权限点——见 ROLE_REQUIREMENTS["internal.accounts"]。
+      // 只有 PLATFORM_ADMIN 能看到本菜单；LEADER 虽持 M11:E，也被 canRoute 拦在门外。
+      path: "accounts",
+      component: AccountList,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.accounts",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.accounts"],
+        title: "账号管理",
+        menu: true,
+        order: 125,
       },
     },
     {
