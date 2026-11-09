@@ -147,19 +147,16 @@ func TestAdmissionServiceRejectsInvalidTraceAndCanceledRequestBeforeTransaction(
 		t.Fatal(err)
 	}
 }
-func TestAdmissionServiceDoesNotAdmitOtherResourcesFromBatchPass(t *testing.T) {
+// 测试结果不再决定能否接入：三种测试结论都应逐行独立完成接入。
+func TestAdmissionServiceAdmitsIndependentlyOfTestOutcome(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		f := admissionStore(t)
 		f.record.Report.ConnectivityPassed = i == 0
 		f.record.Report.PressurePassed = i == 0
 		_, _, cmd := admissionFixture(t)
 		result, err := NewResourceAdmissionService(f, nil).Admit(context.Background(), WriteMeta{ActorID: "8", Reason: "逐行接入", RequestID: "trace"}, cmd)
-		if i == 0 {
-			if err != nil || result == nil {
-				t.Fatalf("passed resource blocked %v", err)
-			}
-		} else if err == nil || result != nil || f.rowAdmitted || f.record.Resource.State != "PENDING_ACCESS" {
-			t.Fatal("batch pass admitted untested resource")
+		if err != nil || result == nil || result.State != "ADMITTED" || !f.rowAdmitted {
+			t.Fatalf("test outcome %d blocked admission: %v", i, err)
 		}
 	}
 }

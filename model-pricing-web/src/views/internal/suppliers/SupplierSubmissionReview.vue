@@ -60,6 +60,11 @@ const filteredRows = computed(() => {
 function resetFilters() { filters.value = { company: "", modelType: "", keyword: "" }; }
 
 const kindLabel = computed(() => (view.value?.kind === "PRICE_CHANGE" ? "价格变更" : "模型新增"));
+/**
+ * 价格变更单只调整采购系数，模型其余信息（接口模型 ID、测试结论、接入状态）沿用既有资源；
+ * 审批页因此要把「原系数 → 新系数」并排摆出来，指标与报告取的是那份既有数据。
+ */
+const isPriceChange = computed(() => view.value?.kind === "PRICE_CHANGE");
 const statusLabels: Record<string, string> = {
   DRAFT: "草稿", PENDING_APPROVAL: "待审批", APPROVED: "已批准", REJECTED: "已驳回",
   PROCESSING: "办理中", COMPLETED: "已完成", WITHDRAWN: "已撤回",
@@ -88,11 +93,13 @@ function cacheText(row: SubmissionFlowView["rows"][number]) {
  * 这部分在页面上不表达，只保留实测数值。
  */
 function testConclusion(row: SubmissionFlowView["rows"][number]) {
-  if (row.test_status === "NOT_TESTED" || !row.test_status) return "本轮还没有测试报告";
+  if (row.test_status === "NOT_TESTED" || !row.test_status) return isPriceChange.value ? "该模型还没有既有测试报告" : "本轮还没有测试报告";
   const connectivity = row.connection_passed === true ? "连通性通过"
     : row.connection_passed === false ? "连通性未通过" : "连通性未判定";
   const when = row.tested_at ? formatDateTime(row.tested_at, "—", false) : "时间未记录";
-  return `最近一次测试 ${when} · ${connectivity} · 共 ${row.report_count ?? 0} 份报告`;
+  // 价格变更不重测，摆出来的是既有资源的既有报告——说清楚，免得读成"本次又测了一遍"。
+  const scope = isPriceChange.value ? "既有资源最近一次测试" : "最近一次测试";
+  return `${scope} ${when} · ${connectivity} · 共 ${row.report_count ?? 0} 份报告`;
 }
 const hasFailedTest = (row: SubmissionFlowView["rows"][number]) => row.test_status === "FAILED";
 /** 有报告但连通性没有明确结论：不当通过，也不说不通过。 */
@@ -272,6 +279,13 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
         </div>
 
         <div class="card">
+          <el-alert
+            v-if="isPriceChange"
+            class="price-change-note"
+            type="info"
+            :closable="false"
+            title="价格变更只调整采购系数：模型其余信息（接口模型 ID、测试结论、接入状态）沿用现有资源，不重新测试、不改测试结果。下方指标与报告即该资源的既有数据。"
+          />
           <div class="filterbar">
             <label>模型公司<el-select v-model="filters.company" clearable placeholder="全部" aria-label="模型公司" style="width:150px"><el-option v-for="company in companies" :key="company" :label="company" :value="company" /></el-select></label>
             <label>模型类型<el-select v-model="filters.modelType" clearable placeholder="全部" aria-label="模型类型" style="width:140px"><el-option v-for="(name, key) in modelTypeLabels" :key="key" :label="name" :value="key" /></el-select></label>
@@ -312,7 +326,14 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
               </template>
             </el-table-column>
             <el-table-column label="供应商接口模型 ID" min-width="150"><template #default="{ row }">{{ row.interface_model_id }}</template></el-table-column>
-            <el-table-column label="采购系数" width="100" align="right"><template #default="{ row }"><span class="mono">{{ row.coefficient }}</span></template></el-table-column>
+            <!-- 价格变更的核心是「从多少改到多少」，两个数必须并排；新增单只有申报值。 -->
+            <el-table-column v-if="isPriceChange" label="原采购系数" width="105" align="right">
+              <template #default="{ row }"><span class="mono current-coefficient">{{ row.current_coefficient || "—" }}</span></template>
+            </el-table-column>
+            <el-table-column v-if="isPriceChange" label="申报采购系数" width="112" align="right">
+              <template #default="{ row }"><span class="mono new-coefficient">{{ row.coefficient }}</span></template>
+            </el-table-column>
+            <el-table-column v-else label="采购系数" width="100" align="right"><template #default="{ row }"><span class="mono">{{ row.coefficient }}</span></template></el-table-column>
             <el-table-column label="连通耗时(ms)" width="105" align="right"><template #default="{ row }"><span class="mono">{{ metricText(row, "connection_ms") }}</span></template></el-table-column>
             <el-table-column label="RPS" width="90" align="right"><template #default="{ row }"><span class="mono">{{ metricText(row, "rps") }}</span></template></el-table-column>
             <el-table-column label="TPS" width="90" align="right"><template #default="{ row }"><span class="mono">{{ metricText(row, "tps") }}</span></template></el-table-column>
@@ -433,5 +454,9 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
 .report-drawer-foot { display: flex; justify-content: flex-end; padding-top: 14px; border-top: 1px solid var(--el-border-color-light); }
 .cell-sub { font-size: 12px; color: var(--app-text-muted); }
 .mono { font-variant-numeric: tabular-nums; }
+.price-change-note { margin-bottom: 12px; }
+/* 原系数弱化、申报值强调：一眼看出"改成了多少"。 */
+.current-coefficient { color: var(--app-text-muted); }
+.new-coefficient { font-weight: 600; }
 .muted { color: var(--app-text-muted); font-size: 12px; }
 </style>

@@ -21,7 +21,11 @@ type nativeFlowRow struct {
 	ModelName      string `json:"model_name"`
 	InterfaceModel string `json:"interface_model_id"`
 	Coefficient    string `json:"coefficient"`
-	Status         string `json:"status"`
+	// CurrentCoefficient 是**该模型现有资源当前生效的采购系数**（价格变更才有意义）。
+	// 价格变更审批的核心就是"从多少改到多少"，只给新值审批人无法判断涨跌幅度；
+	// 模型新增没有"原系数"，这里返回空串，由前端决定是否出这一列。
+	CurrentCoefficient string `json:"current_coefficient"`
+	Status             string `json:"status"`
 	ResourceID     string `json:"resource_id"`
 	Decision       string `json:"decision"`
 	// Company / ModelType 给审批页的「模型公司 / 模型类型」筛选（原型审批页有这两个筛选）。
@@ -149,7 +153,26 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 	// 压力测试没过（或办理重开）时它会被清空，于是测过的也会显示成「未测试」。
 	// 审批人要看的恰恰是「这轮测出来什么、过没过」，所以按 resource 取最近一份
 	// baseline（连通）与 stress（压力）的实测值——两类报告是两个 test_job，不能只取一行。
-	rows, err := r.raw.QueryContext(ctx, `SELECT sr.id::text,sr.standard_model_id::text,m.name,sr.supplier_model_name,sr.coefficient::text,sr.row_status,coalesce(sr.resource_id::text,''),sr.decision,coalesce(m.company,''),coalesce(m.model_type,''),
+	//
+	// 价格变更单另有两处口径差异（见下方 resourceJoin）：
+	//  - 这类单子不发测试，submission_row.resource_id 一直是空的，但它对应的
+	//    「同一个模型」早就有资源、有实测数据。审批人要看的正是那份既有数据，
+	//    所以按 (主体, 标准模型, 区域) 回落到既有资源，而不是显示「未测试 / 未接入」；
+	//  - 同时把该资源当前生效的 coefficient 取出来，和本次申报值并排展示。
+	resourceJoin := `LEFT JOIN public.resource r ON r.id=sr.resource_id`
+	queryArgs := []any{id}
+	if v.Kind == "PRICE_CHANGE" {
+		// resource 上有唯一约束 (supplier_id, standard_model_id, region)，回落最多命中一行。
+		resourceJoin = `LEFT JOIN public.resource r ON r.id=coalesce(sr.resource_id,(
+			SELECT x.id FROM public.resource x
+			WHERE x.supplier_id=$2::bigint AND x.standard_model_id=sr.standard_model_id AND x.region=$3 LIMIT 1))`
+		queryArgs = append(queryArgs, v.SupplierID, v.Region)
+	}
+	query := `SELECT sr.id::text,sr.standard_model_id::text,m.name,sr.supplier_model_name,sr.coefficient::text,
+		 -- 原系数只在资源已准入时给值：PENDING_TEST 的资源是测试时临时建的，
+		 -- 它的 coefficient 就是本次申报值，当成「原系数」会显示成"没变化"。
+		 coalesce(CASE WHEN r.ever_admitted THEN r.coefficient::text END,''),
+		 sr.row_status,coalesce(r.id::text,''),sr.decision,coalesce(m.company,''),coalesce(m.model_type,''),
 		 -- 结论只看平台明确判负的 verdict：压测平台对 stress 不返回结论（verdict 空），
 		 -- 旧口径把 stress_passed=false 当不通过，会把「未判定」显示成「没通过」。
 		 CASE WHEN tr.last_report_id IS NULL THEN 'NOT_TESTED'
@@ -162,7 +185,7 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 		 coalesce(tr.tested_at::text,''),coalesce(tr.report_count,0)
 FROM public.submission_row sr
 JOIN public.standard_model m ON m.id=sr.standard_model_id
-LEFT JOIN public.resource r ON r.id=sr.resource_id
+` + resourceJoin + `
 LEFT JOIN LATERAL (
 	SELECT
 		max(t.id) AS last_report_id,
@@ -202,7 +225,8 @@ LEFT JOIN LATERAL (
 			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS stress_passed
 	FROM public.test_report t WHERE t.resource_id=r.id
 ) tr ON TRUE
-WHERE sr.submission_id=$1 ORDER BY sr.id`, id)
+WHERE sr.submission_id=$1 ORDER BY sr.id`
+	rows, err := r.raw.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -211,10 +235,15 @@ WHERE sr.submission_id=$1 ORDER BY sr.id`, id)
 	for rows.Next() {
 		var row nativeFlowRow
 		var connectionPassed, stressPassed sql.NullBool
-		if err := rows.Scan(&row.ID, &row.ModelID, &row.ModelName, &row.InterfaceModel, &row.Coefficient, &row.Status, &row.ResourceID, &row.Decision, &row.Company, &row.ModelType,
+		if err := rows.Scan(&row.ID, &row.ModelID, &row.ModelName, &row.InterfaceModel, &row.Coefficient, &row.CurrentCoefficient, &row.Status, &row.ResourceID, &row.Decision, &row.Company, &row.ModelType,
 			&row.TestStatus, &row.ConnectionMS, &row.RPS, &row.TPS, &row.CacheHitRate, &row.CacheAvailable,
 			&connectionPassed, &stressPassed, &row.TestedAt, &row.ReportCount); err != nil {
 			return nil, err
+		}
+		// 只有价格变更才有「原系数」这一说：模型新增的 coefficient 就是申报值，
+		// 再回一份同样的数字放在「原系数」列上会读成"没变化"。
+		if v.Kind != "PRICE_CHANGE" {
+			row.CurrentCoefficient = ""
 		}
 		if connectionPassed.Valid {
 			row.ConnectionPassed = &connectionPassed.Bool

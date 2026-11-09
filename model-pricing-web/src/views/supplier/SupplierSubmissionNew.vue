@@ -58,6 +58,9 @@ const groupSaving = ref(false);
 const groupDialog = ref(false);
 const groupEditingID = ref("");
 const groupForm = ref({ name: "", base_url: "", api_key: "" });
+// 弹窗内错误。**不能复用页面顶部的 error**：那片区域在弹窗打开时被完全遮挡，
+// 结果是「点保存没反应、窗口关不掉」，用户看不到真正原因（最常见是组名重复 409）。
+const groupError = ref("");
 const enabledGroups = computed(() => groups.value.filter(group => group.enabled));
 const hasGroups = computed(() => groups.value.length > 0);
 const defaultGroupID = computed(() => enabledGroups.value[0]?.id || "");
@@ -88,6 +91,7 @@ async function loadGroups() {
 function openCreateGroup() {
   groupEditingID.value = "";
   groupForm.value = { name: "", base_url: "", api_key: "" };
+  groupError.value = "";
   groupDialog.value = true;
 }
 
@@ -95,6 +99,7 @@ function openEditGroup(group: SupplierTestConfigGroupDTO) {
   groupEditingID.value = group.id;
   // Key 不回显：留空＝保持已保存的 Key。
   groupForm.value = { name: group.name, base_url: group.base_url, api_key: "" };
+  groupError.value = "";
   groupDialog.value = true;
 }
 
@@ -102,10 +107,12 @@ async function saveGroup() {
   if (groupSaving.value) return;
   const name = groupForm.value.name.trim();
   const baseURL = groupForm.value.base_url.trim();
-  if (!name) { error.value = "请填写配置组名称。"; return; }
-  if (!baseURL) { error.value = "请填写测试接口 URL。"; return; }
+  if (!name) { groupError.value = "请填写配置组名称。"; return; }
+  if (!baseURL) { groupError.value = "请填写测试接口 URL。"; return; }
   groupSaving.value = true;
+  groupError.value = "";
   error.value = "";
+  let saved = false;
   try {
     const apiKey = groupForm.value.api_key.trim();
     if (groupEditingID.value) {
@@ -120,19 +127,35 @@ async function saveGroup() {
         crypto.randomUUID(),
       );
       ElMessage.success("配置组已新增");
-      // 新建后自动挂到当前表单里还没选组的行上。
+      // 先把新组并入本地列表，再挂到当前表单里还没选组的行上。
+      // 否则行立刻挂上 created.id，而 groups 还没刷新 → groupByID 查不到 →
+      // 表格里会闪过（甚至一直停着）「该组尚未配置 Key」的误报。
+      const merged = [...groups.value, created].sort(
+        (a, b) => a.sort_order - b.sort_order || Number(a.id) - Number(b.id),
+      );
+      groups.value = merged;
       for (const row of rows.value) {
         if (!row.test_config_group_id) row.test_config_group_id = created.id;
       }
     }
+    saved = true;
     groupDialog.value = false;
+  } catch (value) {
+    // 落在弹窗内，用户才看得到「该配置组名称已存在，请换一个名字」这类原因。
+    if (active) groupError.value = value instanceof Error && value.message
+      ? value.message
+      : "配置组保存失败，请重试。";
+  } finally {
+    if (active) groupSaving.value = false;
+  }
+  if (!saved) return;
+  // 关闭之后的刷新失败不等于「保存失败」，不能再用保存失败的文案去误导用户。
+  try {
     await loadGroups();
     // 改组会刷新挂在它上面的行快照（换 URL/Key → 旧结果失效），重拉一次才看得到。
     if (submissionID.value) await reloadKeepingKeys();
   } catch (value) {
-    if (active) showError(value, "配置组保存失败，请重试。");
-  } finally {
-    if (active) groupSaving.value = false;
+    if (active) showError(value, "配置组已保存，但列表刷新失败，请手动刷新页面。");
   }
 }
 
@@ -892,6 +915,8 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
     </el-dialog>
     <!-- 新增/编辑配置组 -->
     <el-dialog v-model="groupDialog" :title="groupEditingID ? '编辑配置组' : '新增配置组'" width="520px">
+      <!-- 错误必须落在弹窗里：页面顶部的 error 区域会被遮罩完全挡住。 -->
+      <el-alert v-if="groupError" :title="groupError" type="error" show-icon :closable="false" class="group-dialog-error" />
       <el-form label-width="110px">
         <el-form-item label="组名" required>
           <el-input v-model="groupForm.name" maxlength="64" placeholder="如：原单组配置 / 华东通道" :disabled="groupSaving" />
@@ -937,6 +962,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
 .group-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .group-actions { display: flex; gap: 2px; }
 .warn-text { color: #b42318; font-size: 12px; display: block; margin-top: 2px; }
+.group-dialog-error { margin-bottom: 12px; }
 .batch-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .batch-hint { color: var(--app-text-muted); font-size: 12px; }
 .submission-table :deep(.el-select) { width: 100%; }

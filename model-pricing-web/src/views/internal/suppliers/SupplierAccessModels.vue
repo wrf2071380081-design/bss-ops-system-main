@@ -5,10 +5,9 @@ import { useRoute, useRouter } from "vue-router";
 import { supplierEntitiesApi } from "../../../api/supplierEntities";
 import type { SupplierEntityDTO, SupplierEntityForm, SupplierQualificationDTO } from "../../../api/supplierEntities.contract";
 import { resourcesApi } from "../../../api/resources";
-import { resourceOperationsApi } from "../../../api/resourceOperations";
-import type { FormalConfigOption } from "../../../api/resourceOperations.contract";
 import { buildResourceQuery, resourceCacheDisplay, resourceMetricDisplay, resourceRegionLabels, resourceStateLabels } from "../../../api/resources.contract";
 import {submissionFlowsApi,type SubmissionFlowView,type SupplierProgressNode} from '../../../api/submissionFlows';
+import type { F12FlowWriteContext } from "../../../api/f12SupplierRecords";
 import { supplierSourceOperationsApi } from "../../../api/supplierSourceOperations";
 import type { SourceOperation } from "../../../api/sourceOperations.contract";
 import { sourceOperationLocation, supplierOperationCategories, supplierOperationCategoryLabels, supplierOperationLabel, type SourceOperationType } from "../../../api/sourceOperations.contract";
@@ -22,6 +21,7 @@ import ResourceStateRegisterDialog from "../resources/ResourceStateRegisterDialo
 import ResourceReportsPanel from "../resources/ResourceReportsPanel.vue";
 import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
 import SupplierAccessBatchPanel from './SupplierAccessBatchPanel.vue';
+import SubmissionFlowDialog from '../workbench/SubmissionFlowDialog.vue';
 const batchSelected=ref<ResourceRow[]>([]);
 // 原型「接入模型」的四个筛选：模型公司 / 模型类型 / 状态 + 关键词（平台模型名称或接口模型 ID）。
 const modelFilters=reactive({ company: "", modelType: "", state: "", keyword: "" });
@@ -129,19 +129,9 @@ function resetQuoteFilters() { Object.assign(quoteFilters, { kind: "", status: "
 function resourceNodes(id:string){return progress.value.filter(n=>n.resource_id===id);}
 // 原型「接口配置」是页内弹窗（接口模型 ID / Base URL / API Key + 复制 + 历史版本与证据），
 // 不再跳走单条资源的详情抽屉——那样看不到同批其他模型，也没法对照办理进度。
-const ifaceOpen = ref(false), ifaceRow = ref<ResourceRow>(), ifaceConfigs = ref<FormalConfigOption[]>([]), ifaceLoading = ref(false);
-const ifaceConfig = computed(() => (ifaceRow.value ? ifaceConfigs.value.find(item => item.id === ifaceRow.value?.formal_config_id) : undefined));
-async function openInterfaceConfig(row: ResourceRow) {
-  ifaceRow.value = row; ifaceOpen.value = true; ifaceConfigs.value = []; ifaceLoading.value = true;
-  try { ifaceConfigs.value = await resourceOperationsApi.formalConfigs(supplierID.value, row.region); }
-  catch { ifaceConfigs.value = []; }
-  finally { ifaceLoading.value = false; }
-}
-async function copyText(value: string, label: string) {
-  if (!value) { ElMessage.info(`${label}尚未登记`); return; }
-  try { await navigator.clipboard.writeText(value); ElMessage.success(`${label}已复制`); }
-  catch { ElMessage.warning("浏览器未授权剪贴板，请手动选择复制"); }
-}
+// 三个字段与「完成当前模型技术登记」都由 ResourceOperationsPanel 渲染，这里只维护开关与当前行。
+const ifaceOpen = ref(false), ifaceRow = ref<ResourceRow>();
+function openInterfaceConfig(row: ResourceRow) { ifaceRow.value = row; ifaceOpen.value = true; }
 /** 配置登记/接入完成后刷新列表与进度（弹窗不关，方便接着看下一项）。 */
 function afterInterfaceChange() { void load(); }
 // 原型：勾选行 → 顶部「上架 / 下架」。与模型广场用同一张登记单（一次点击即登记完成）。
@@ -176,8 +166,36 @@ const openNode = computed(() => progress.value.find(node => node.status !== "COM
 const hasOpenOnboarding = computed(() => Boolean(openNode.value));
 // 原型：首次接入的两个模块没办完之前，「新增」只提示不给开单。
 const addBlockedReason = computed(() => hasOpenOnboarding.value ? "请先在首次接入流程完成两个模块，再新增后续资料" : "");
+// 「合同与授信」办理上下文：从工作台待办点「详情」进来时带 ?contract_flow=<节点 id>。
+// 原型 20261104 的路径是 详情 → 本页「档案与办理」→ 页面底部「当前办理范围」→ 办理弹窗，
+// 这里就落在同一个位置；资料写入仍由办理弹窗的 flowContext 绑定到本批次。
+const contractFlowID = ref("");
+const contractFlow = ref<SubmissionFlowView>();
+const contractFlowLoading = ref(false), contractFlowError = ref("");
+const contractDialogOpen = ref(false);
+const contractAnchor = ref<HTMLElement>();
+let contractSequence = 0;
+// 与办理弹窗同一套字段：flowID + moduleKey + expectedRevision，缺一不可，
+// 缺了写库就不带流程锚点，资料会被记到主体档案而不是本批次。
+const contractFlowContext = computed<F12FlowWriteContext | undefined>(() => {
+  const view = contractFlow.value;
+  if (!view?.flow_id || !view.flow_revision) return undefined;
+  const revision = Number(view.flow_revision);
+  if (!Number.isSafeInteger(revision) || revision <= 0 || revision > 2147483647) return undefined;
+  return { flowID: view.flow_id, moduleKey: "CONTRACT", expectedRevision: revision };
+});
+const contractNode = computed(() => contractFlow.value?.nodes?.find(node => node.key === "CONTRACT"));
+const contractDone = computed(() => ["COMPLETED", "DONE"].includes(contractNode.value?.status || ""));
+const contractAssignee = computed(() => contractNode.value?.assignee_name || flowSummary.value.contractAssignee || "");
+const contractCanHandle = computed(() => Boolean(contractFlow.value?.can_handle_contract));
+// 合同/授信只看币种标签（原型不在表单里选），来源依次是主体结算币种、主体地域。
+const f12Currency = computed(() => {
+  const code = (profile.value?.settlement_currency || "").toUpperCase();
+  if (code === "USD" || code === "CNY") return code;
+  const region = profile.value?.region || contractFlow.value?.region;
+  return region === "OVERSEAS" ? "USD" : "CNY";
+});
 /** API Key 一律不回显：库里只有密文，界面只能告诉你"设没设"。 */
-function copyKey() { ElMessage.info("API Key 不回显；需要更换请在下方正式配置里重置。"); }
 // 原型那条进度：技术完成 x/y · 已取消 · 尚待配置 · 当前可办理 · 商务待完成 · 办理人
 const flowSummary=computed(()=>{
   const total=rows.value.length;
@@ -189,6 +207,42 @@ const flowSummary=computed(()=>{
 });
 function rowHandling(id:string){const state=resourceNodes(id).find(n=>n.key==='CONFIG')?.row_status;return state==='CANCELED'?'本次办理已取消':state==='CONFIGURED'?'配置已完成，待确认开通':'';}
 async function loadProgress(){const id=supplierID.value,epoch=supplierEpoch,sequence=++progressSequence;progressError.value='';try{const result=await submissionFlowsApi.supplierProgress(id);if(isCurrentSupplier(id,epoch)&&sequence===progressSequence){if(result.supplier_id!==id)throw new Error('办理主体不匹配');progress.value=result.list;}}catch(e){if(isCurrentSupplier(id,epoch)&&sequence===progressSequence){progress.value=[];progressError.value=e instanceof Error?e.message:'办理进度加载失败';}}}
+
+/** 拉取这条合同授信待办的节点视图：供应商、批次进度、能否办理、流程版本都在里面。 */
+async function loadContractFlow() {
+  const id = contractFlowID.value;
+  if (!id) { contractFlow.value = undefined; contractFlowError.value = ""; contractFlowLoading.value = false; return; }
+  const epoch = supplierEpoch, sequence = ++contractSequence;
+  contractFlowLoading.value = true; contractFlowError.value = "";
+  try {
+    const view = await submissionFlowsApi.get(id, true);
+    if (!isCurrentSupplier(supplierID.value, epoch) || sequence !== contractSequence) return;
+    if (view.supplier_id !== supplierID.value) throw new Error("该办理事项不属于当前供应商，请从工作台重新进入。");
+    contractFlow.value = view;
+  } catch (value) {
+    if (!isCurrentSupplier(supplierID.value, epoch) || sequence !== contractSequence) return;
+    contractFlow.value = undefined;
+    contractFlowError.value = value instanceof Error ? value.message : "办理事项加载失败。";
+  } finally {
+    if (isCurrentSupplier(supplierID.value, epoch) && sequence === contractSequence) contractFlowLoading.value = false;
+  }
+}
+
+/** 办理弹窗关掉之后：批次状态、页签进度、档案都可能变了，一起刷新。 */
+function onContractChanged() {
+  void loadContractFlow();
+  void loadProgress();
+  void loadProfile();
+}
+
+/** 从工作台跳进来时把视线送到「当前办理范围」。 */
+async function focusContractScope() {
+  activeTab.value = "profile";
+  await nextTick();
+  await Promise.all([loadProfile(), loadQualifications(), loadProgress(), loadContractFlow()]);
+  await nextTick();
+  contractAnchor.value?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
 let request: AbortController | undefined;
 let profileRequest: AbortController | undefined, qualificationRequest: AbortController | undefined, operationRequest: AbortController | undefined, quoteRequest: AbortController | undefined;
 let active = true;
@@ -593,8 +647,9 @@ function onSupplierChanged() {
   operationRows.value = []; operationPage.value = 1; operationTotal.value = 0; operationLoading.value = false; operationError.value = "";
   operationCategory.value = ""; operationDetail.value = undefined; operationDetailOpen.value = false;
   pendingQuotes.value = []; quoteRows.value = []; quotePage.value = 1; quoteTotal.value = 0; quoteLoading.value = false; quoteError.value = "";
+  contractFlow.value = undefined; contractFlowError.value = ""; contractFlowLoading.value = false; contractDialogOpen.value = false;
   void load();
-  if (activeTab.value === "profile") { void loadProfile(); void loadQualifications(1); }
+  if (activeTab.value === "profile") { void loadProfile(); void loadQualifications(1); void loadContractFlow(); }
   else if (activeTab.value === "operations") void loadOperations();
   else if (activeTab.value === "quotes") void loadQuotes();
 }
@@ -609,10 +664,29 @@ onMounted(() => {
     if (tab === "operations") void loadOperations();
   }
   void load();
+  // 工作台「合同与授信」详情跳进来：落到档案与办理并滚到「当前办理范围」。
+  const contractFlowParam = queryString(route.query.contract_flow);
+  if (contractFlowParam) {
+    contractFlowID.value = contractFlowParam;
+    void focusContractScope();
+    return;
+  }
   if (tab === "profile") void showBusinessSection(queryString(route.query.section));
 });
 watch(supplierID, onSupplierChanged);
-onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(); qualificationRequest?.abort(); operationRequest?.abort(); quoteRequest?.abort(); });
+// 同一供应商可能有多批合同授信待办：只换 query 不换路由参数时也要重新定位。
+watch(
+  () => queryString(route.query.contract_flow),
+  (value) => {
+    const next = value || "";
+    if (next === contractFlowID.value) return;
+    contractFlowID.value = next;
+    contractDialogOpen.value = false;
+    if (next) void focusContractScope();
+    else { contractFlow.value = undefined; contractFlowError.value = ""; }
+  },
+);
+onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(); qualificationRequest?.abort(); operationRequest?.abort(); quoteRequest?.abort(); --contractSequence; });
 </script>
 
 <template>
@@ -628,10 +702,6 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
     <section class="panel supplier-model-panel" v-loading="loading">
       <el-tabs v-model="activeTab" @tab-change="onTabChange">
         <el-tab-pane label="接入模型" name="models">
-          <div class="model-context" v-if="selected">
-            <div><span class="muted">当前选中来源</span><strong>{{ selected.model_name }} · {{ selected.supplier_model_id }}</strong></div>
-            <el-tag>{{ regionLabel(selected.region) }}</el-tag>
-          </div>
           <p v-if="rows.length" class="flow-summary">
             <span>技术完成 {{ flowSummary.admitted }}/{{ flowSummary.total }}</span>
             <span v-if="flowSummary.canceled">已取消 {{ flowSummary.canceled }} 个</span>
@@ -640,6 +710,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <span>商务：{{ flowSummary.contractDone ? '已完成' : '待完成' }}<template v-if="!flowSummary.contractDone && flowSummary.contractAssignee"> · {{ flowSummary.contractAssignee }}</template></span>
             <span v-if="flowSummary.configAssignee">技术办理 · {{ flowSummary.configAssignee }}</span>
           </p>
+          <SupplierAccessBatchPanel :supplier-id="supplierID" :supplier-name="supplierName" :selected="batchSelected" @changed="load();loadProgress()" @register="openRegister"/>
           <div class="model-filters">
             <label>模型公司<el-select v-model="modelFilters.company" clearable placeholder="全部" aria-label="模型公司" style="width:150px"><el-option v-for="company in modelCompanies" :key="company" :label="company" :value="company"/></el-select></label>
             <label>模型类型<el-select v-model="modelFilters.modelType" clearable placeholder="全部" aria-label="模型类型" style="width:130px"><el-option v-for="(name,key) in modelTypeLabels" :key="key" :label="name" :value="key"/></el-select></label>
@@ -648,7 +719,6 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-button @click="resetModelFilters">重置</el-button>
             <span v-if="rows.length" class="muted">共 {{ filteredRows.length }} / {{ rows.length }} 条</span>
           </div>
-          <SupplierAccessBatchPanel :supplier-id="supplierID" :selected="batchSelected" @changed="load();loadProgress()" @register="openRegister"/>
           <el-table :data="filteredRows" row-key="id" highlight-current-row :current-row-key="selectedID" style="width:100%" @selection-change="batchSelected=$event" @row-click="focus">
             <el-table-column type="selection" width="45"/>
             <el-table-column label="标准模型 / 官方 ID" min-width="190"><template #default="{ row }"><strong>{{ row.model_name }}</strong><span class="muted">{{ row.official_id }}</span></template></el-table-column>
@@ -707,8 +777,10 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
                 <span v-else-if="latestQualification?.has_attachment" class="muted">{{ profile.can_edit ? '附件暂不可下载（文件不可用或已归档）' : '需归属采购人或维护人下载' }}</span>
               </div>
               <el-alert v-if="qualificationError" :title="qualificationError" type="error" :closable="false"><el-button text @click="loadQualifications">重试</el-button></el-alert>
-              <!-- 合同与授信紧跟基础资料（原型顺序）；接入模型与办理状态在「接入模型」页签，这里不再重复。 -->
-              <div ref="f12Anchor"><F12SubjectPanel v-if="profile" subject-type="SUPPLIER" :subject-id="profile.id" :can-manage="profile.can_edit" layout="merged" :add-blocked-reason="addBlockedReason" @changed="loadProfile" /></div>
+              <!-- 合同与授信紧跟基础资料（原型顺序）；接入模型与办理状态在「接入模型」页签，这里不再重复。
+                   从工作台合同授信待办进来时带上 flowContext：此时这里上传的资料绑定本批次，
+                   并对非本批办理人自动转为只读（权限由 F12 面板按 flowContext 判定）。 -->
+              <div ref="f12Anchor"><F12SubjectPanel v-if="profile" subject-type="SUPPLIER" :subject-id="profile.id" :can-manage="profile.can_edit" :flow-context="contractFlowContext" :flow-can-manage="contractCanHandle" :currency="f12Currency" layout="merged" :add-blocked-reason="addBlockedReason" @changed="loadProfile" /></div>
 
               <!-- 原型页脚的「未完成申请」：还在办理中的开通流程，可跳审批记录与操作流水。 -->
               <template v-if="hasOpenOnboarding">
@@ -727,6 +799,55 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
                   </span>
                 </div>
               </template>
+            </template>
+            <!-- 档案接口异常时的兜底：合同与授信是按主体 id 独立取数的，
+                 不该被基础资料的加载失败连坐——从待办进来的人要的是先把商务办完。 -->
+            <template v-else-if="contractFlowID">
+              <div ref="f12Anchor">
+                <F12SubjectPanel
+                  v-if="contractFlow"
+                  subject-type="SUPPLIER"
+                  :subject-id="contractFlow.supplier_id || supplierID"
+                  :can-manage="false"
+                  :flow-context="contractFlowContext"
+                  :flow-can-manage="contractCanHandle"
+                  :currency="f12Currency"
+                  layout="merged"
+                  @changed="loadContractFlow"
+                />
+              </div>
+            </template>
+
+            <!-- 原型的「当前办理范围」：从工作台合同授信待办进来的落点，也是办理入口。
+                 放在档案模板之外：档案接口异常时办理入口仍要在，否则待办点进来是一片错误提示。 -->
+            <template v-if="contractFlowID">
+              <h3 ref="contractAnchor" class="open-flow-title">当前办理范围</h3>
+              <div v-loading="contractFlowLoading" class="contract-scope">
+                <el-alert v-if="contractFlowError" :title="contractFlowError" type="error" show-icon :closable="false">
+                  <el-button text @click="loadContractFlow">重试</el-button>
+                </el-alert>
+                <template v-else-if="contractFlow">
+                  <p class="contract-scope-text">
+                    申请 {{ contractFlow.id }}
+                    · 技术 {{ flowSummary.admitted }}/{{ flowSummary.total }}
+                    · 已接入 {{ flowSummary.admitted }}/{{ flowSummary.total }}
+                    · 已取消 {{ flowSummary.canceled }}
+                    · 商务：{{ contractDone ? "已完成" : "待完成" }}<template v-if="!contractDone && contractAssignee"> · 办理人 {{ contractAssignee }}</template>
+                  </p>
+                  <p class="contract-scope-hint">
+                    本平台只登记办理结果：合同签署与授信开立在主体侧完成后，在这里上传资料并登记完成。
+                    <template v-if="contractFlowContext">资料会记录到本批次（流程 R{{ contractFlowContext.expectedRevision }}）。</template>
+                  </p>
+                  <div class="contract-scope-actions">
+                    <el-button v-if="!contractDone" type="primary" :disabled="!contractCanHandle" @click="contractDialogOpen = true">办理原商务事项</el-button>
+                    <el-button v-else type="success" plain disabled>商务已完成</el-button>
+                    <el-button link type="primary" @click="router.push({ path: `/internal/suppliers/${supplierID}/models`, query: { tab: 'operations' } })">查看办理记录</el-button>
+                  </div>
+                  <p v-if="!contractDone && !contractCanHandle" class="contract-scope-hint">
+                    当前账号不是本批次商务办理人，只读查看；办理入口只对指定办理人开放。
+                  </p>
+                </template>
+              </div>
             </template>
           </div>
         </el-tab-pane>
@@ -796,6 +917,16 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
     <p v-if="operationDetail?.entity_type === 'supplier_formal_config'" class="muted">正式配置维护请从接入模型的配置入口进入。</p>
     <template #footer><el-button @click="operationDetailOpen = false">关闭</el-button><el-button v-if="operationDetail && operationDetail.entity_type !== 'supplier_formal_config'" type="primary" @click="openOperationBusiness(operationDetail)">{{ operationDetail.resource_id ? '查看关联资源 / 计划' : '查看业务资料' }}</el-button></template>
   </el-dialog>
+  <!-- 原型的「办理原商务事项」弹窗：上传合同/授信资料 + 完成说明 + 登记完成，
+       与工作台原来的办理弹窗是同一个组件，保证两条入口的行为一致。 -->
+  <SubmissionFlowDialog
+    v-if="contractDialogOpen && contractFlowID"
+    :key="`${contractFlowID}:${contractFlowContext?.expectedRevision ?? 0}`"
+    :id="contractFlowID"
+    node
+    @close="contractDialogOpen = false"
+    @changed="onContractChanged"
+  />
   <el-dialog v-model="qualificationDialogOpen" append-to-body :title="editingQualification ? '维护供应商资质' : '上传供应商资质'" width="min(560px, 94vw)" :close-on-click-modal="false" :close-on-press-escape="!qualificationSaving && !qualificationReloading" :show-close="!qualificationSaving && !qualificationReloading">
     <el-form label-position="top" :disabled="qualificationSaving || qualificationReloading">
       <el-form-item label="资质名称"><el-input v-model="qualificationName" maxlength="128" :disabled="qualificationSaving" /></el-form-item>
@@ -813,27 +944,9 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
     <template #footer><el-button :disabled="qualificationSaving || qualificationReloading" @click="qualificationDialogOpen = false">取消</el-button><el-button type="primary" :loading="qualificationSaving" :disabled="qualificationSaving || qualificationReloading || qualificationConflict && !qualificationConflictReady" @click="saveQualification">{{ qualificationConflictReady ? '按最新修订重试' : '保存资质' }}</el-button></template>
   </el-dialog>
 
-    <!-- 原型「接口配置 · 模型名」：接口模型 ID / Base URL / API Key + 复制，下面接登记与接入。 -->
+    <!-- 原型「接口配置 · 模型名」：三个字段与登记动作都由下面的面板渲染，弹窗只负责标题与证据入口。 -->
     <el-dialog v-if="ifaceRow" v-model="ifaceOpen" class="iface-dialog" :title="`接口配置 · ${ifaceRow.model_name}`" width="min(940px, 96vw)" top="6vh" append-to-body :close-on-click-modal="false">
-      <el-alert type="info" :closable="false" show-icon title="生产配置待登记；申报时用的准入测试 Key 不会自动带入，生产 Key 需要单独登记。" />
-      <el-form label-position="top" class="iface-form" v-loading="ifaceLoading">
-        <el-form-item label="接口模型 ID">
-          <el-input :model-value="ifaceRow.supplier_model_id" readonly>
-            <template #append><el-button @click="copyText(ifaceRow.supplier_model_id, '接口模型 ID')">复制</el-button></template>
-          </el-input>
-        </el-form-item>
-        <el-form-item label="Base URL">
-          <el-input :model-value="ifaceConfig?.base_url || ''" readonly placeholder="未登记正式配置">
-            <template #append><el-button @click="copyText(ifaceConfig?.base_url || '', 'Base URL')">复制</el-button></template>
-          </el-input>
-        </el-form-item>
-        <el-form-item label="API Key">
-          <el-input :model-value="ifaceConfig ? (ifaceConfig.has_api_key ? '已登记（不回显）' : '未设置') : ''" readonly placeholder="未登记正式配置">
-            <template #append><el-button @click="copyKey">复制</el-button></template>
-          </el-input>
-        </el-form-item>
-      </el-form>
-      <ResourceOperationsPanel :resource="ifaceRow" @updated="afterInterfaceChange" />
+      <ResourceOperationsPanel :resource="ifaceRow" variant="plain" @updated="afterInterfaceChange" />
       <template #footer>
         <el-button @click="ifaceOpen = false">关闭</el-button>
         <el-button @click="openReports(ifaceRow)">历史版本与证据</el-button>
@@ -853,7 +966,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
 
 <style scoped>
 .flow-summary{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 12px;padding:10px 12px;border:1px solid #e6ebee;border-radius:6px;background:#f8fafb;font-size:12px;color:#5b6270}
-.supplier-access-page{color:var(--app-text-primary)}.back-button{margin-bottom:10px}.page-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:18px}.page-heading h1{margin:7px 0;font-size:26px}.page-heading p,.muted{color:var(--app-text-muted);font-size:12px}.eyebrow{color:var(--app-text-muted);font-size:11px;letter-spacing:.14em}.supplier-model-panel{padding:18px 20px}.model-context{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 14px;margin-bottom:12px;background:#f6f8fb;border:1px solid #e6e8ed;border-radius:8px}.model-context strong,.model-context .muted{display:block}.model-context strong{margin-top:4px}.muted{display:block;margin-top:4px}.supplier-tab-content{min-height:220px;padding:12px 0}.supplier-tab-content h3{margin:20px 0 10px;font-size:16px}.supplier-tab-content h4{margin:18px 0 8px}.supplier-profile{display:grid;grid-template-columns:160px minmax(0,1fr);gap:10px 20px;padding:12px 0}.supplier-profile dt{color:var(--app-text-muted)}.supplier-profile dd{margin:0;overflow-wrap:anywhere}.el-pagination{margin-top:18px;justify-content:flex-end}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}@media(max-width:640px){.page-heading{align-items:flex-start}.supplier-model-panel{padding:12px}.supplier-profile{grid-template-columns:1fr;gap:6px}.supplier-profile dd{margin-bottom:10px}}
+.supplier-access-page{color:var(--app-text-primary)}.back-button{margin-bottom:10px}.page-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:18px}.page-heading h1{margin:7px 0;font-size:26px}.page-heading p,.muted{color:var(--app-text-muted);font-size:12px}.eyebrow{color:var(--app-text-muted);font-size:11px;letter-spacing:.14em}.supplier-model-panel{padding:18px 20px}.muted{display:block;margin-top:4px}.supplier-tab-content{min-height:220px;padding:12px 0}.supplier-tab-content h3{margin:20px 0 10px;font-size:16px}.supplier-tab-content h4{margin:18px 0 8px}.supplier-profile{display:grid;grid-template-columns:160px minmax(0,1fr);gap:10px 20px;padding:12px 0}.supplier-profile dt{color:var(--app-text-muted)}.supplier-profile dd{margin:0;overflow-wrap:anywhere}.el-pagination{margin-top:18px;justify-content:flex-end}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}@media(max-width:640px){.page-heading{align-items:flex-start}.supplier-model-panel{padding:12px}.supplier-profile{grid-template-columns:1fr;gap:6px}.supplier-profile dd{margin-bottom:10px}}
 .supplier-profile-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.supplier-profile-heading h3{margin:20px 0 2px}
 /* 基础资料：原型是两列表单，字段宽度随容器收缩。 */
 .profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px;padding:10px 0 0}
@@ -868,6 +981,11 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
 .open-flow { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 14px 16px; border: 1px solid var(--el-border-color-light); border-radius: 8px; background: var(--el-fill-color-lighter); }
 .open-flow-text { font-size: 13px; color: var(--app-text-muted); }
 .open-flow-actions { display: flex; gap: 6px; }
+/* 「当前办理范围」：工作台合同授信待办的落地块，样式沿用上面的未完成申请，避免又一套观感。 */
+.contract-scope { padding: 14px 16px; border: 1px solid var(--el-border-color-light); border-radius: 8px; background: var(--el-fill-color-lighter); }
+.contract-scope-text { margin: 0 0 8px; font-size: 13px; color: var(--app-text-muted); }
+.contract-scope-hint { margin: 0 0 10px; font-size: 12px; color: var(--el-text-color-secondary); }
+.contract-scope-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .qualification-inline{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:44px;padding:4px 0}
 /* 合同与授信是独立区块，和上方营业执照留出间距（原型也是分开的两块）。 */
 .supplier-access-page :deep(.f12-subject-panel){margin-top:28px}

@@ -132,6 +132,12 @@ func RecordNativeApproval(ctx context.Context, tx *sql.Tx, state *ResourceStateS
 				if err != nil {
 					return err
 				}
+				// 这里**必须**写 NULL，不能改成「保留已有报告」：
+				// resource.latest_test_report_id 与 operation_log 里的控制快照由 reading 侧做
+				// 逐字段一致性校验（resource_read.go 的 resourceProjectionEqual / f.Report 比对），
+				// 只改列而不写快照会让整个资源列表返回 500（2026-11-08 踩过）。
+				// 供应商申报阶段的测试报告改由 resource_read 的 DisplayReport 兜底展示，
+				// 该路径只读 test_report、不参与快照校验，也不会放行准入。
 				if _, err := tx.ExecContext(ctx, `UPDATE `+state.table("resource")+` SET supplier_model_name=$2,coefficient=$3,buyer_id=$4,state='PENDING_TEST',latest_test_report_id=NULL,updated_at=$5,updated_by=$6,request_id=$7 WHERE id=$1 AND NOT ever_admitted`, r.ResourceID, r.Model, r.Coefficient, buyer, target.UpdatedAt, actor, requestID); err != nil {
 					return err
 				}

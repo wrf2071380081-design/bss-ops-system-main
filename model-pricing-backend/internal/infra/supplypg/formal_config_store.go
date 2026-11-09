@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -116,6 +117,18 @@ func formalFingerprint(wire string) string {
 	sum := sha256.Sum256([]byte(wire))
 	return hex.EncodeToString(sum[:])
 }
+
+// formalConfigNullableID 把领域层的可空 id 字符串转成可写进 bigint 列的值。
+func formalConfigNullableID(value string) any {
+	if !modelIdentity(value) {
+		return nil
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n <= 0 {
+		return nil
+	}
+	return n
+}
 func formalText(value string, limit int) bool {
 	return utf8.ValidString(value) && !strings.ContainsRune(value, 0) && strings.TrimSpace(value) != "" && utf8.RuneCountInString(value) <= limit
 }
@@ -181,24 +194,34 @@ func (s *FormalConfigStore) Current(ctx context.Context, tx *sql.Tx, supplier, i
 		return nil, supply.ErrDependencyUnavailable
 	}
 	var c supply.FormalConfig
-	var scope, createdBy, updatedBy, region sql.NullString
-	var wire string
+	var scope, createdBy, updatedBy, region, confirmedBy sql.NullString
+	var wire, status string
+	var revision, confirmedRevision int64
+	var confirmedAt sql.NullTime
+	// 000059：状态类字段直接从表读，表是唯一事实源。
+	// 此前 region/status/revision/confirmed_* 只存在于审计快照里，
+	// 读的时候要「查表 + 查日志 + 拼装 + 全字段比对」，任一处精度差异都变成 500。
 	// The shared schema still names this column api_key_enc; current writes store
 	// the supplied key as entered under the latest formal-config decision.
-	err := tx.QueryRowContext(ctx, `SELECT c.id::text,c.supplier_id::text,c.scope,c.base_url,c.api_key_enc,c.created_by::text,c.updated_by::text,c.created_at,c.updated_at,s.region FROM `+s.table("supplier_formal_config")+` c LEFT JOIN `+s.table("supplier")+` s ON s.id=c.supplier_id WHERE c.id=$1 AND c.supplier_id=$2`, id, supplier).Scan(&c.ID, &c.SupplierID, &scope, &c.BaseURL, &wire, &createdBy, &updatedBy, &c.CreatedAt, &c.UpdatedAt, &region)
+	err := tx.QueryRowContext(ctx, `SELECT c.id::text,c.supplier_id::text,c.scope,c.base_url,c.api_key_enc,c.created_by::text,c.updated_by::text,c.created_at,c.updated_at,c.region,c.status,c.revision,c.confirmed_by::text,c.confirmed_at,c.confirmed_revision FROM `+s.table("supplier_formal_config")+` c WHERE c.id=$1 AND c.supplier_id=$2`, id, supplier).Scan(&c.ID, &c.SupplierID, &scope, &c.BaseURL, &wire, &createdBy, &updatedBy, &c.CreatedAt, &c.UpdatedAt, &region, &status, &revision, &confirmedBy, &confirmedAt, &confirmedRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	if !scope.Valid || !createdBy.Valid || !updatedBy.Valid || !region.Valid {
+	if !scope.Valid || !createdBy.Valid || !updatedBy.Valid || !region.Valid || !confirmedBy.Valid || !confirmedAt.Valid || revision <= 0 || confirmedRevision <= 0 {
 		return nil, supply.ErrReadContract
 	}
 	c.Scope = scope.String
 	c.CreatedBy = createdBy.String
 	c.UpdatedBy = updatedBy.String
 	c.Region = region.String
+	c.Status = status
+	c.Revision = uint64(revision)
+	c.ConfirmedBy = confirmedBy.String
+	c.ConfirmedAt = confirmedAt.Time
+	c.ConfirmedRevision = uint64(confirmedRevision)
 	if isLegacySealedFormalAPIKey(wire) {
 		c.APIKey = wire
 		c.LegacyEncrypted = true
@@ -227,28 +250,21 @@ func (s *FormalConfigStore) Current(ctx context.Context, tx *sql.Tx, supplier, i
 	if err := d.Decode(&extra); err != io.EOF {
 		return nil, supply.ErrReadContract
 	}
-	if e.Contract != "supply.formal_config" || e.SchemaVersion != 1 || !slices.Contains([]string{"CREATE", "UPDATE", "DISABLE"}, e.Operation) || e.View == nil || e.keyFingerprint() != formalFingerprint(wire) {
+	// 审计留痕仍在，但只校验「这条配置确有对应审计、密钥指纹/写入者/时间/修订对得上」。
+	// 不再做 loggedView 与实体视图的全字段 DeepEqual：那本质是日志与自身比对
+	// （状态本来就从日志还原），既防不了篡改，又不停把精度差异放大成 500。
+	if e.Contract != "supply.formal_config" || e.SchemaVersion != 1 ||
+		!slices.Contains([]string{"CREATE", "UPDATE", "DISABLE"}, e.Operation) ||
+		e.View == nil || e.keyFingerprint() != formalFingerprint(wire) {
 		return nil, supply.ErrReadContract
 	}
-	v := e.View
-	c.Status = v.Status
-	c.Revision = v.Revision
-	c.ConfirmedBy = v.ConfirmedBy
-	c.ConfirmedAt = v.ConfirmedAt
-	c.ConfirmedRevision = v.ConfirmedRevision
+	if e.View.ID != c.ID || e.View.SupplierID != c.SupplierID || e.View.Revision != c.Revision ||
+		!at.Equal(c.UpdatedAt) || actor.String != c.UpdatedBy ||
+		validateResourceControlMeta(supply.WriteMeta{ActorID: actor.String, Reason: reason.String, RequestID: request.String}, e.Operation) != nil {
+		return nil, supply.ErrReadContract
+	}
 	stored, err := canonicalFormalConfig(&c)
 	if err != nil {
-		return nil, supply.ErrReadContract
-	}
-	loggedView := stored.View()
-	if stored.LegacyEncrypted {
-		// Earlier audit rows reported encrypted credentials as configured. Keep
-		// validating those old rows while current reads ask the operator to enter
-		// a usable plaintext key again.
-		loggedView.HasAPIKey = true
-		loggedView.APIKeyMask = "********"
-	}
-	if !reflect.DeepEqual(loggedView, v) || !at.Equal(stored.UpdatedAt) || actor.String != stored.UpdatedBy || validateResourceControlMeta(supply.WriteMeta{ActorID: actor.String, Reason: reason.String, RequestID: request.String}, e.Operation) != nil {
 		return nil, supply.ErrReadContract
 	}
 	return stored, nil
@@ -382,7 +398,10 @@ func (t *formalConfigTransaction) CreateConfig(ctx context.Context, input *suppl
 		return supply.ErrReadContract
 	}
 	wire := c.APIKey
-	_, err = t.tx.ExecContext(ctx, `INSERT INTO `+t.store.table("supplier_formal_config")+` (id,supplier_id,scope,base_url,api_key_enc,created_by,updated_by,created_at,updated_at) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, c.ID, c.SupplierID, c.Scope, c.BaseURL, wire, c.CreatedBy, c.UpdatedBy, c.CreatedAt, c.UpdatedAt)
+	// 000059：状态类字段落表，表成为唯一事实源（此前只存在于审计快照里）。
+	_, err = t.tx.ExecContext(ctx, `INSERT INTO `+t.store.table("supplier_formal_config")+` (id,supplier_id,scope,base_url,api_key_enc,created_by,updated_by,created_at,updated_at,region,status,revision,confirmed_by,confirmed_at,confirmed_revision) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		c.ID, c.SupplierID, c.Scope, c.BaseURL, wire, c.CreatedBy, c.UpdatedBy, c.CreatedAt, c.UpdatedAt,
+		c.Region, c.Status, int64(c.Revision), formalConfigNullableID(c.ConfirmedBy), c.ConfirmedAt, int64(c.ConfirmedRevision))
 	if err != nil {
 		return modelUniqueError(err, supply.ErrIdentityConflict)
 	}
@@ -405,7 +424,10 @@ func (t *formalConfigTransaction) UpdateConfig(ctx context.Context, input *suppl
 		return supply.ErrReadContract
 	}
 	wire := c.APIKey
-	result, err := t.tx.ExecContext(ctx, `UPDATE `+t.store.table("supplier_formal_config")+` SET scope=$1,base_url=$2,api_key_enc=$3,updated_by=$4,updated_at=$5 WHERE id=$6 AND supplier_id=$7 AND created_at=$8 AND updated_at=$9`, c.Scope, c.BaseURL, wire, c.UpdatedBy, c.UpdatedAt, c.ID, c.SupplierID, c.CreatedAt, b.UpdatedAt)
+	result, err := t.tx.ExecContext(ctx, `UPDATE `+t.store.table("supplier_formal_config")+` SET scope=$1,base_url=$2,api_key_enc=$3,updated_by=$4,updated_at=$5,region=$6,status=$7,revision=$8,confirmed_by=$9,confirmed_at=$10,confirmed_revision=$11 WHERE id=$12 AND supplier_id=$13 AND created_at=$14 AND updated_at=$15`,
+		c.Scope, c.BaseURL, wire, c.UpdatedBy, c.UpdatedAt,
+		c.Region, c.Status, int64(c.Revision), formalConfigNullableID(c.ConfirmedBy), c.ConfirmedAt, int64(c.ConfirmedRevision),
+		c.ID, c.SupplierID, c.CreatedAt, b.UpdatedAt)
 	if err != nil {
 		return err
 	}

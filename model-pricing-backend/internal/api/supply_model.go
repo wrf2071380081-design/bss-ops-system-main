@@ -86,6 +86,13 @@ func supplyHTTPError(c *gin.Context, err error) {
 	var field *supply.FieldError
 	switch {
 	case errors.As(err, &field):
+		// base_url 的校验来自两处（publicURL 的语法检查 + FormalURLPolicy 的环境策略：
+		// 必须 https、不能带 query/fragment/内嵌凭据、域名要能解析到公网 IP）。
+		// 对用户来说结论一致，没必要把英文 reason 甩给前端——直接给可执行的提示。
+		if field.Path == "base_url" {
+			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "接口地址必须是可公网解析的 https 地址", 400))
+			return
+		}
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "字段校验失败："+field.Path, 400))
 	case errors.Is(err, supply.ErrIncomplete):
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "官方资料尚未补齐，无法核验", 400))

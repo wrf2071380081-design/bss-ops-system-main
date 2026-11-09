@@ -213,6 +213,13 @@ func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, 
 			if f.Report != nil || f.LatestReportSequence != 0 {
 				return nil, supply.ErrReadContract
 			}
+			// 没有生效证据时，仍把「最近一次实际测试」带给前端展示；
+			// 它不参与准入判定（resource.go 里依旧 block TESTS_REQUIRED）。
+			display, err := s.latestDisplayReport(ctx, tx, p.ID)
+			if err != nil {
+				return nil, err
+			}
+			record.DisplayReport = display
 		} else {
 			ref := f.Report
 			if ref == nil || ref.ReportID != p.LatestReportID || ref.ResourceID != p.ID || ref.SupplierID != p.SupplierID || ref.StandardModelID != p.StandardModelID || ref.Region != p.Region || ref.OriginRowID != f.OriginRowID || ref.Sequence != f.LatestReportSequence {
@@ -230,6 +237,67 @@ func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, 
 		entries = append(entries, resourceReadEntry{record, view})
 	}
 	return entries, nil
+}
+
+// latestDisplayReport 取该资源「最近一次实际跑过」的测试证据，**仅用于展示**。
+//
+// 为什么不能直接用 latest_test_report_id：那是「当前生效、可作为准入依据」的指针，
+// 审批正式化资源或办理重开时会被清空（见 native_handling_approval.go 的注释），
+// 于是「明明测过」的资源在列表里显示成「未测试」（2026-11-08 供应商接入页反馈）。
+//
+// 平台把连通与压测拆成两个 test_job / 两份 test_report，单取一行只有一半指标，
+// 所以这里取最近两份并按字段合并：连通取 connection_ms，压测取 rps/tps。
+func (s *ResourceReadStore) latestDisplayReport(ctx context.Context, tx *sql.Tx, resourceID string) (*supply.ResourceReportSummary, error) {
+	if !modelIdentity(resourceID) {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id::text,connection_ms::text,rps::text,tps::text,connection_passed,stress_passed,coalesce(cache_hit_tokens::text,''),coalesce(cache_input_tokens::text,'')
+FROM `+s.table("test_report")+` WHERE resource_id=$1 ORDER BY tested_at DESC NULLS LAST, id DESC LIMIT 2`, resourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var summary *supply.ResourceReportSummary
+	// 连通与压测是两份报告，结论必须各取「带该项指标的那一份」，不能都取最新一份：
+	// 否则压测报告的 connection_passed=false 会把已经通过的连通测试显示成未通过。
+	var connectivityDecided, pressureDecided bool
+	for rows.Next() {
+		var id string
+		var connectionMS, rps, tps, hitTokens, inputTokens sql.NullString
+		var connectionPassed, stressPassed sql.NullBool
+		if err := rows.Scan(&id, &connectionMS, &rps, &tps, &connectionPassed, &stressPassed, &hitTokens, &inputTokens); err != nil {
+			return nil, err
+		}
+		if summary == nil {
+			// 最新那份报告决定展示用的 report_id。
+			summary = &supply.ResourceReportSummary{ID: id, Valid: true}
+		}
+		if !connectivityDecided && connectionMS.Valid && connectionMS.String != "" {
+			summary.ConnectivityPassed = connectionPassed.Valid && connectionPassed.Bool
+			connectivityDecided = true
+		}
+		if !pressureDecided && rps.Valid && rps.String != "" {
+			summary.PressurePassed = stressPassed.Valid && stressPassed.Bool
+			pressureDecided = true
+		}
+		takeMetric := func(target **string, value sql.NullString) {
+			if *target != nil || !value.Valid || value.String == "" {
+				return
+			}
+			copied := value.String
+			*target = &copied
+		}
+		takeMetric(&summary.Metrics.ConnectionMS, connectionMS)
+		takeMetric(&summary.Metrics.RPS, rps)
+		takeMetric(&summary.Metrics.TPS, tps)
+		if summary.Cache == nil && hitTokens.Valid && inputTokens.Valid && hitTokens.String != "" && inputTokens.String != "" {
+			summary.Cache = &supply.ReportCacheCounters{Status: "PROVIDED", HitTokens: hitTokens.String, InputTokens: inputTokens.String}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return summary, nil
 }
 
 // Supplier state may change independently. Resource columns must agree with

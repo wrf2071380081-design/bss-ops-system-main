@@ -699,7 +699,8 @@ SELECT r.id, r.submission_id, r.standard_model_id, COALESCE(m.official_id,''), r
        COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = cj.id ORDER BY tr.id DESC LIMIT 1),''),
 		COALESCE(sj.status,''), COALESCE(sj.target_fingerprint,''),
 		COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id ORDER BY tr.id DESC LIMIT 1),''),
-		COALESCE(cred.base_url,''), COALESCE(cred.api_key_enc,''),
+		COALESCE(g.base_url,''), COALESCE(g.api_key_enc,''),
+		COALESCE(g.id,0), COALESCE(g.name,''), COALESCE(g.enabled,false),
 		EXISTS(SELECT 1 FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = cj.id),
 		EXISTS(SELECT 1 FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id)
 FROM `+s.table("submission_row")+` r

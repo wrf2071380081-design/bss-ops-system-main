@@ -24,15 +24,15 @@ export function canBindFormalConfig(resource: ResourceRow): boolean {
 }
 
 export function canAdmitResource(resource: ResourceRow): boolean {
-  return !resource.ever_admitted && resource.state === "PENDING_ACCESS" &&
-    resource.test.status === "COMPLETED" && resource.test.valid &&
-    // 压力测试不参与准入判定：平台不给压测结论，pressure_passed 恒为 false。
-    resource.test.connectivity_passed &&
+  // 测试（连通/压测）不是接入前置：供应商申报阶段已跑过，内部复测只是可选动作。
+  // 接入只要求「未接入过 + 正式配置已绑定」。
+  return !resource.ever_admitted &&
+    ["PENDING_TEST", "PENDING_ACCESS"].includes(resource.state) &&
     Boolean(resource.formal_config_id) && BigInt(standardModelVersion(resource.formal_config_revision)) > 0n;
 }
 
 export function buildResourceAdmission(resource: ResourceRow, input: ResourceAdmissionInput) {
-  if (!canAdmitResource(resource)) throw new Error("资源自身的连通测试、正式配置尚未就绪，暂不能登记接入。");
+  if (!canAdmitResource(resource)) throw new Error("资源尚未绑定正式配置，暂不能登记接入。");
   const completionNote = input.completionNote.trim(), reason = input.reason.trim();
   if (input.externalConfirmed !== true || !completionNote || !reason) throw new Error("请确认外部实际配置并填写完成依据和操作原因。");
   return {

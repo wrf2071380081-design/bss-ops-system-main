@@ -130,7 +130,7 @@ onBeforeUnmount(() => { active = false; listRequest?.abort(); });
   <SupplierMergePreviewDialog v-model="mergePreviewOpen" :source="mergePreviewSource" />
 
   <el-dialog v-model="f12Open" :title="`${f12Supplier?.name || '供应商'} · 合同与授信`" width="min(900px, 96vw)" destroy-on-close>
-    <F12SubjectPanel v-if="f12Supplier" subject-type="SUPPLIER" :subject-id="f12Supplier.id" :can-manage="f12Supplier.can_edit" @changed="load" />
+    <F12SubjectPanel v-if="f12Supplier" subject-type="SUPPLIER" :subject-id="f12Supplier.id" :can-manage="f12Supplier.can_edit" :currency="f12Supplier.settlement_currency" @changed="load" />
   </el-dialog>
 </template>
 
