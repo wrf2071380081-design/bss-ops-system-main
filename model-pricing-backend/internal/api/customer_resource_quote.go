@@ -36,6 +36,8 @@ type resourceQuoteItemBody struct {
 type resourceQuoteBody struct {
 	CustomerID int64                   `json:"customer_id" binding:"required"`
 	ValidTo    *time.Time              `json:"valid_to,omitempty"`
+	// OurCompany 我方签约主体：报价信息里手填，随单存下来（老单可为空）。
+	OurCompany string `json:"our_company,omitempty"`
 	Items      []resourceQuoteItemBody `json:"items" binding:"required"`
 }
 
@@ -99,7 +101,7 @@ func (h *CustomerHandler) GenerateResourceQuote(c *gin.Context) {
 		})
 	}
 	res, err := h.svc.GenerateResourceQuote(c.Request.Context(), customer.GenerateResourceQuoteInput{
-		CustomerID: body.CustomerID, ValidTo: body.ValidTo, Items: items,
+		CustomerID: body.CustomerID, ValidTo: body.ValidTo, OurCompany: body.OurCompany, Items: items,
 	}, scopeOf(op), op.OperatorID, requestIDOf(c))
 	if err != nil {
 		var floorErr *customer.ResourceQuoteFloorError
@@ -144,4 +146,34 @@ func (h *CustomerHandler) ListResourceAffectedCustomers(c *gin.Context) {
 		return
 	}
 	response.Success(c, result)
+}
+
+// GetQuoteForEdit 读一张报价单用于「继续编辑」回填（M9:V）。
+//
+// @Summary 读取报价单用于继续编辑
+// @Description 返回报价单头（客户/版本/状态/我方主体）+ 按供应来源分组的明细（官方价项 + 已存单价与地板价）。SKU 口径的老明细无法在资源口径编辑器里表达，计入 skipped_items。
+// @Tags 客户报价
+// @Produce json
+// @Security BearerAuth
+// @Param id path int64 true "customer_quote.id"
+// @Success 200 {object} response.Body "code=0；data={id,customer_id,customer_name,version_no,status,our_company,valid_until,lines[],skipped_items}"
+// @Failure 400,401,403,404 {object} response.Body
+// @Router /api/internal/customer-quotes/{id} [get]
+func (h *CustomerHandler) GetQuoteForEdit(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "id 非法", apperr.ErrInvalidParams.Status))
+		return
+	}
+	quote, err := h.svc.GetQuoteForEdit(c.Request.Context(), id, scopeOf(op))
+	if err != nil {
+		response.Error(c, customerErrToAppErr(err))
+		return
+	}
+	response.Success(c, quote)
 }

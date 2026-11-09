@@ -92,6 +92,13 @@ function validateCandidate(value: unknown): ResourceQuoteCandidate {
     region: String(row.region ?? ""),
     supplier_model_id: String(row.supplier_model_id ?? ""),
     coefficient: String(row.coefficient ?? ""),
+    // 来源最近一次测试结果：原型报价行/对比来源要直接摆出来。
+    // 这几个字段之前漏映射了，接口明明有值，界面上却一律显示「未测试」。
+    test_connection_ms: optionalText(row.test_connection_ms),
+    test_rps: optionalText(row.test_rps),
+    test_tps: optionalText(row.test_tps),
+    test_cache_hit_rate: optionalText(row.test_cache_hit_rate),
+    test_cache_status: optionalText(row.test_cache_status),
     blocked_reasons: Array.isArray(row.blocked_reasons) ? row.blocked_reasons.map(String) : [],
     price_items: items.map(item => {
       const price = (item ?? {}) as Record<string, unknown>;
@@ -107,6 +114,12 @@ function validateCandidate(value: unknown): ResourceQuoteCandidate {
       };
     }),
   };
+}
+
+/** 可空文本：后端用 omitempty，缺字段与空串都当「未记录」，不要变成字符串 "undefined"。 */
+function optionalText(value: unknown): string | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  return String(value);
 }
 
 export const quoteCandidatesApi = {

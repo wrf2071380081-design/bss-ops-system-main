@@ -8,6 +8,8 @@ export interface LoginResult {
     portal_type: string;
     operator_id: number | string;
     can_approve_supplier?: boolean;
+    /** 客户报价审批权（迁移 000066）：超管/领导 true。有 M9:A 的销售为 false。 */
+    can_approve_customer_quote?: boolean;
     /** 内部人员姓名（顶栏展示用，如「林舟」）。 */
     staff_name?: string;
     supplier_name?: string;

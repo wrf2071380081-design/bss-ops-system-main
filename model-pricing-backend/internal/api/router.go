@@ -451,6 +451,11 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			ch.GenerateResourceQuote,
 		)
+		// 「继续编辑」回填：报价单头 + 按来源分组的明细（含官方价与已存单价）。
+		protected.GET("/customer-quotes/:id",
+			middleware.RequirePerm(perm.M9View),
+			ch.GetQuoteForEdit,
+		)
 		// 这条供应资源影响哪些客户（改价/上下架前的影响面）。
 		protected.GET("/resources/:id/affected-customers",
 			middleware.RequirePerm(perm.M8View),
@@ -619,6 +624,12 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 			middleware.RequirePerm(perm.M9Approve),
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			qah.DecideQuoteApproval,
+		)
+		// 保存进度（原型弹窗的「保存进度」）：只写草稿，不改审批状态。
+		protected.POST("/customer-quote-approvals/:id/draft",
+			middleware.RequirePerm(perm.M9Approve),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			qah.SaveQuoteApprovalDraft,
 		)
 		protected.POST("/customer-quote-approvals/:id/withdraw",
 			middleware.RequirePerm(perm.M9Edit),

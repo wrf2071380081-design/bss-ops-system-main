@@ -55,6 +55,9 @@ const (
 	QuoteStatusDraft     = "DRAFT"
 	QuoteStatusPending   = "PENDING"
 	QuoteStatusApproved  = "APPROVED"
+	// QuoteStatusPartial：部分批准（000063）。原型里「批的模型先办、驳的可重报」，
+	// 所以报价单不能整体退回草稿，也不能假装全部批准。无 CHECK 约束，仅此常量约束。
+	QuoteStatusPartial   = "PARTIAL"
 	QuoteStatusEffective = "EFFECTIVE"
 	QuoteStatusExpired   = "EXPIRED"
 	QuoteStatusRejected  = "REJECTED"
@@ -212,7 +215,9 @@ type GeneratedQuote struct {
 	PriceBookVersion int              `json:"price_book_version"`
 	ValidUntil       *time.Time       `json:"valid_until,omitempty"`
 	OwnerSalesID     int64            `json:"owner_sales_operator_id"`
-	CreatedAt        time.Time        `json:"created_at"`
+	// OurCompany 我方签约主体（报价单上填的那个）。
+	OurCompany string    `json:"our_company"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // QuotePreviewItem 是内部销售在提交前可查看的售价明细；不含成本、floor 或毛利。
@@ -351,6 +356,9 @@ type Store interface {
 	LoadPriceBookItemsForSKUs(ctx context.Context, bookID int64, skuIDs []int64) ([]PriceBookItemRow, error)
 	// LoadQuoteItems 读既有 customer_quote_item（CLONE 用）。
 	LoadQuoteItems(ctx context.Context, quoteID int64) ([]QuoteItemRow, error)
+	// LoadQuoteForEdit 读「继续编辑」回填所需：报价单头 + 按供应来源分组的明细
+	// （官方价项 + 已存单价/地板价）。不存在时返回 (nil, nil)，由调用方翻成 404。
+	LoadQuoteForEdit(ctx context.Context, quoteID int64) (*QuoteForEdit, error)
 	// LoadQuoteOwner 读 customer_quote 的 customer_id + owner_sales_operator_id（CLONE 跨客户校验）。
 	LoadQuoteOwner(ctx context.Context, quoteID int64) (customerID int64, ownerSalesID int64, found bool, err error)
 	// LoadCurrentUnitCosts 读 cost_baseline 的 unit_cost（floor 校验）；
@@ -405,7 +413,9 @@ type GenerateQuoteTxInput struct {
 	ValidUntil       *time.Time
 	PriceBookVersion int
 	OwnerSalesID     int64
-	Items            []GenerateQuoteItemRow
+	// OurCompany 是我方签约主体：随单存下来，导出与回看都用它（老单为空串）。
+	OurCompany string
+	Items      []GenerateQuoteItemRow
 }
 
 // GenerateQuoteItemRow 是落库的明细行（价格 + floor 快照）。

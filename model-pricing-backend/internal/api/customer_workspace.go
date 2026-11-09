@@ -73,7 +73,9 @@ type CustomerQuoteRow struct {
 	ValidUntil       string `json:"valid_until"`
 	OwnerName        string `json:"owner_name"`
 	ItemCount        int    `json:"item_count"`
-	CreatedAt        string `json:"created_at"`
+	// OurCompany 我方签约主体：报价记录里回填「继续编辑」时要用它，不能丢。
+	OurCompany string `json:"our_company"`
+	CreatedAt  string `json:"created_at"`
 }
 
 // CustomerApprovalRow 特价审批记录行。
@@ -273,7 +275,7 @@ func (rt *CustomerWorkspaceRuntime) ListQuotes(ctx context.Context, op *middlewa
 		SELECT cq.id, cq.customer_id, ls.legal_name, cq.version_no, cq.quote_type, cq.status,
 		       cq.price_book_version, cq.valid_until, st.name,
 		       (SELECT COUNT(*) FROM customer_quote_item i WHERE i.customer_quote_id = cq.id),
-		       cq.created_at`+from+`
+		       cq.our_company, cq.created_at`+from+`
 		 ORDER BY cq.created_at DESC, cq.id DESC
 		 LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)),
 		args...)
@@ -288,7 +290,7 @@ func (rt *CustomerWorkspaceRuntime) ListQuotes(ctx context.Context, op *middlewa
 		var validUntil sql.NullTime
 		var created sql.NullTime
 		if err := rows.Scan(&row.ID, &row.CustomerID, &row.CustomerName, &row.VersionNo, &row.QuoteType,
-			&row.Status, &row.PriceBookVersion, &validUntil, &row.OwnerName, &row.ItemCount, &created); err != nil {
+			&row.Status, &row.PriceBookVersion, &validUntil, &row.OwnerName, &row.ItemCount, &row.OurCompany, &created); err != nil {
 			return nil, 0, err
 		}
 		row.ValidUntil = timeText(validUntil)

@@ -165,21 +165,21 @@ func (s *InboxService) Inbox(ctx context.Context, q InboxQuery, viewerID int64) 
 // 待办列表上就显示成「CONFIG」。原型 3.9c 的写法是「客户模型开通 / 客户名」。
 // 改视图会牵动 `workbench_inbox.go` 里按 `title IN ('CONFIG','CONTRACT')` 写的排除
 // SQL，所以只在**显示值**上翻译，不动视图与那条件。
+//
+// 客户流程节点不再有任何显示名映射：这类节点已在 `workbench_inbox.go` 的来源 SQL 里
+// 整体排除出收件箱（客户侧要办的两件事由报价审批派发的 todo_task 承载，
+// 即「客户模型开通」「合同与授信」）。此前给客户 CONTRACT 节点起的「客户商务办理」
+// 是代码自造词，原型与前端都叫「合同与授信」，已随这次排除一并删除。
 func inboxTitle(item InboxItem) string {
 	if item.BizType != "ONBOARDING_NODE" {
 		return item.Title
 	}
-	customer := item.FlowKind == "CUSTOMER"
+	// 能走到这里的只有供应商节点：CONFIG / CONTRACT 两个主要节点另有专门分支
+	// （SUBMISSION_HANDLING / SUBMISSION_CONTRACT）负责拼标题，这里是兜底。
 	switch item.Title {
 	case "CONFIG":
-		if customer {
-			return "客户模型开通"
-		}
 		return "供应资源接入"
 	case "CONTRACT":
-		if customer {
-			return "客户商务办理"
-		}
 		return "合同与授信办理"
 	}
 	return item.Title
@@ -225,7 +225,7 @@ func inboxAssigneeRole(item InboxItem) string {
 	switch item.BizType {
 	case "NOTICE":
 		return "阅读接收人"
-	case "SUBMISSION_APPROVAL", "QUOTE_APPROVAL":
+	case "SUBMISSION_APPROVAL", "QUOTE_APPROVAL", "CUSTOMER_QUOTE_APPROVAL":
 		return "审批人"
 	case "SUBMISSION_HANDLING", "SUBMISSION_CONTRACT", "ONBOARDING_NODE":
 		return "办理人"
@@ -305,11 +305,28 @@ func inboxDeeplink(item InboxItem) string {
 		if item.FlowKind == "CUSTOMER" && item.FlowOwnerID > 0 {
 			return fmt.Sprintf("/internal/customers/%d?tab=models", item.FlowOwnerID)
 		}
-		// 供应商节点（以及取不到 kind 的防御分支）保持原有行为，一字不改。
-		// 旧版通用办理节点没有独立页面，落到供应商列表并按供应商名过滤。
+		// 供应商节点：落到该供应商的「接入模型」页。
+		// 供应商现在有独立的接入页（接入 / 上架 / 下架 + 本批办理进度），
+		// 从「供应资源接入」待办点进来就是要看"这批还差哪些模型没接上"，
+		// 再回供应商列表按名字搜一次纯属多绕一步。
+		if item.FlowKind == "SUPPLIER" && item.FlowOwnerID > 0 {
+			return fmt.Sprintf("/internal/suppliers/%d/models", item.FlowOwnerID)
+		}
+		// 取不到 kind 的防御分支保持原有行为：落到供应商列表并按供应商名过滤。
 		return "/internal/suppliers?keyword=" + url.QueryEscape(item.BizObject)
 	case "QUOTE_APPROVAL":
 		return fmt.Sprintf("/internal/supplier-quotes?quote_id=%d", item.BizID)
+	case "CUSTOMER_QUOTE_APPROVAL":
+		// 客户报价审批：直接落到「客户报价单 → 报价审批」里这张单的详情页，
+		// 和列表里点「查看」是同一个落点（biz_id 是审批单 id，不是报价单 id）。
+		return fmt.Sprintf("/internal/customers?tab=quote&approval=%d", item.BizID)
+	case "CUSTOMER_MODELS":
+		// 客户报价审批通过后派的技术待办（000063）：落到客户详情「接入模型」，
+		// 和「客户模型开通」在建流程后的落点保持一致。
+		return fmt.Sprintf("/internal/customers/%d?tab=models", item.BizID)
+	case "CUSTOMER_CONTRACT":
+		// 商务待办：合同与授信在「档案与办理」页签。
+		return fmt.Sprintf("/internal/customers/%d?tab=onboarding", item.BizID)
 	default:
 		return ""
 	}

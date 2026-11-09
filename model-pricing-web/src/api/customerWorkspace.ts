@@ -46,6 +46,8 @@ export interface CustomerQuoteRow {
   valid_until: string;
   owner_name: string;
   item_count: number;
+  /** 我方签约主体：报价时手填的那个，用于「继续编辑」回填（老单可能为空串）。 */
+  our_company?: string;
   created_at: string;
 }
 

@@ -13,7 +13,7 @@ import (
 //
 // 本文件钉三件事：
 //  1. CUSTOMER 节点 → 客户详情「接入模型」Tab（走查手册 3.9c）
-//  2. SUPPLIER 节点 → **逐字保持**原实现（回归断言）
+//  2. SUPPLIER 节点 → 供应商「接入模型」页（原先落到供应商列表按名字搜，多绕一步）
 //  3. 查询次数与行数无关：一页 N 条节点只说 1 次 FlowOwners；无节点时 0 次
 
 func TestInboxDeeplinkDispatchesOnboardingNodeByKind(t *testing.T) {
@@ -28,9 +28,11 @@ func TestInboxDeeplinkDispatchesOnboardingNodeByKind(t *testing.T) {
 			want: "/internal/customers/5?tab=models",
 		},
 		{
-			name: "供应商节点保持原行为（逐字）",
+			// 供应商有独立的接入页（接入/上架/下架 + 本批办理进度），从「供应资源接入」
+			// 待办点进来就是要看"这批还差哪些模型没接上"，落列表再按名字搜纯属多绕一步。
+			name: "供应商节点落供应链接入页",
 			item: InboxItem{BizType: "ONBOARDING_NODE", BizID: 12, BizObject: "示例供应商", FlowKind: "SUPPLIER", FlowOwnerID: 9},
-			want: "/internal/suppliers?keyword=%E7%A4%BA%E4%BE%8B%E4%BE%9B%E5%BA%94%E5%95%86",
+			want: "/internal/suppliers/9/models",
 		},
 		{
 			name: "取不到 kind 时回落到原行为（防御分支）",

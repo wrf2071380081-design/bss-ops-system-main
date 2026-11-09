@@ -54,6 +54,24 @@ SELECT assignee_id, item_type, state, biz_type, biz_id, title, biz_object, regio
 FROM v_work_item
 WHERE biz_type <> 'PLAN'
   AND NOT (biz_type='ONBOARDING_NODE' AND title IN ('CONFIG','CONTRACT') AND EXISTS(SELECT 1 FROM operation_log l WHERE l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'flow_id'=v_work_item.biz_id::text))
+  -- 客户开通流程的节点不进收件箱（2026-11-08 走查结论）。
+  --
+  -- 客户侧要办的就两件事，已经由「报价审批通过即派单」写进 todo_task：
+  -- 技术拿 CUSTOMER_MODELS（显示「客户模型开通」）、商务拿 CUSTOMER_CONTRACT（显示「合同与授信」）。
+  -- 而审批同时会建客户开通流程并给 CONTRACT / CONFIG 节点指派办理人，节点因此也会在
+  -- v_work_item 里各出一行——同一个人、同一个客户就是 4 条待办（两条「客户模型开通」、
+  -- 「合同与授信」和它的节点显示名「客户商务办理」各一条）。
+  --
+  -- 为什么只排除 CUSTOMER：供应商侧的 CONFIG / CONTRACT 有自己的专门分支（带申报单号），
+  -- 且上面那条 NOT 条件只排除带审批留痕的节点；供应商其他节点（PREP 等）仍要留在收件箱。
+  --
+  -- 为什么不动 onboarding_node 数据：节点是流程状态的载体，todo_task 的 state 还要靠
+  -- 「对应节点 COMPLETED」算成 DONE，客户详情「接入模型」页也读它。这里只改**显示口径**。
+  AND NOT (biz_type = 'ONBOARDING_NODE'
+           AND EXISTS (
+               SELECT 1 FROM onboarding_flow cf
+                WHERE cf.id = v_work_item.biz_id AND cf.kind = 'CUSTOMER'
+           ))
   AND NOT EXISTS (
       SELECT 1
       FROM todo_task t
@@ -62,6 +80,66 @@ WHERE biz_type <> 'PLAN'
         AND t.biz_type = 'QUOTE'
         AND qs.status = 'APPROVING'
   )
+  -- 客户报价审批通过后派发的两类待办走下面专门的分支（要带客户名/区域与可跳转的 deeplink），
+  -- 这里排除掉，避免同一条待办在收件箱里出现两次。
+  AND NOT (biz_type = 'TODO_TASK' AND biz_id IN (
+      SELECT t.id FROM todo_task t WHERE t.biz_type IN ('CUSTOMER_MODELS', 'CUSTOMER_CONTRACT')
+  ))
+UNION ALL
+-- 客户报价审批派发的办理待办（000063）：审批通过即派人，技术拿「客户模型开通」、商务拿「合同与授信」。
+-- state 不落表而是算出来的：对应节点完成后自动变 DONE，不用写回路径再同步一遍状态。
+SELECT t.assignee_id,
+       'TODO'::varchar(8) AS item_type,
+       CASE
+         WHEN t.status <> 'OPEN' THEN 'DONE'
+         WHEN EXISTS (
+           SELECT 1 FROM onboarding_node n
+             JOIN onboarding_flow f ON f.id = n.flow_id
+            WHERE f.kind = 'CUSTOMER' AND f.owner_id = t.biz_id
+              AND n.node_key = CASE WHEN t.biz_type = 'CUSTOMER_CONTRACT' THEN 'CONTRACT' ELSE 'CONFIG' END
+              AND n.status = 'COMPLETED'
+              AND n.completed_at >= t.created_at
+         ) THEN 'DONE'
+         ELSE 'TODO'
+       END::varchar(16) AS state,
+       t.biz_type::varchar(32) AS biz_type,
+       t.biz_id,
+       t.title::varchar(256) AS title,
+       COALESCE(ls.legal_name, '')::varchar AS biz_object,
+       cp.region AS region,
+       t.priority::varchar(8) AS priority,
+       t.created_at AS occurred_at,
+       NULL::bigint AS plan_id
+FROM todo_task t
+JOIN customer_profile cp ON cp.id = t.biz_id
+LEFT JOIN legal_subject ls ON ls.id = cp.subject_id
+WHERE t.biz_type IN ('CUSTOMER_MODELS', 'CUSTOMER_CONTRACT')
+UNION ALL
+-- 客户报价审批（000057/000063）：只有「超管」的工作台出现「报价审批」待办。
+-- 口径不是权限点 M9:A（销售也持着它），而是 internal_staff.can_approve_customer_quote
+-- （迁移 000066，按平台管理员/领导回填）——谁能审是配置出来的，不是角色顺带给的。
+-- 再**排除提交人本人**：后端 Decide 会拦自审，派给他只会让他点进去挨一句错。
+-- 已处理的只回到处理人自己的「已办」，不把全平台的审批历史摊给每个审批人。
+SELECT DISTINCT
+       st.id AS assignee_id,
+       'TODO'::varchar(8) AS item_type,
+       CASE WHEN a.status = 'PENDING' THEN 'TODO' ELSE 'DONE' END::varchar(16) AS state,
+       'CUSTOMER_QUOTE_APPROVAL'::varchar(32) AS biz_type,
+       a.id AS biz_id,
+       '客户报价审批'::varchar(256) AS title,
+       (COALESCE(ls.legal_name, '') || ' · ' || a.model_count::text || ' 个模型')::varchar AS biz_object,
+       cp.region AS region,
+       'MID'::varchar(8) AS priority,
+       CASE WHEN a.status = 'PENDING' THEN a.submitted_at
+            ELSE COALESCE(a.decided_at, a.submitted_at) END AS occurred_at,
+       NULL::bigint AS plan_id
+  FROM customer_quote_approval a
+  JOIN customer_quote q ON q.id = a.customer_quote_id
+  JOIN customer_profile cp ON cp.id = q.customer_id
+  LEFT JOIN legal_subject ls ON ls.id = cp.subject_id
+  JOIN internal_staff st ON st.status = 'ACTIVE' AND st.can_approve_customer_quote = true
+ WHERE (a.status = 'PENDING' AND st.id <> a.submitted_by)
+    OR (a.status <> 'PENDING' AND a.decided_by = st.id)
 UNION ALL
 SELECT st.id AS assignee_id,
        'TODO'::varchar(8) AS item_type,

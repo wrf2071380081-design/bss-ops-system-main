@@ -56,3 +56,27 @@ func TestBuildResourceQuoteFloorMatchesSKUFormula(t *testing.T) {
 		t.Fatalf("资源口径 floor %s 与 SKU 口径 %s 不一致", got, skuFloor)
 	}
 }
+
+// 报价系数 = 客户单价 ÷ 官方价：审批详情靠它判断「这次报价打了几折」。
+func TestQuoteCoefficient(t *testing.T) {
+	cases := []struct {
+		name   string
+		price  string
+		amount string
+		want   string
+	}{
+		{"折扣价", "2.266668", "3", "0.7556"}, // 与库里 Claude Sonnet 4 输入价一致
+		{"原价", "15", "15", "1"},
+		{"高于官方价", "18", "15", "1.2"},
+		{"官方价缺失", "2.266668", "", ""},
+		{"官方价为 0", "1", "0", ""},
+		{"官方价非法", "1", "abc", ""},
+		{"单价非法", "abc", "3", ""},
+		{"带空格", " 2.266668 ", " 3 ", "0.7556"},
+	}
+	for _, c := range cases {
+		if got := QuoteCoefficient(c.price, c.amount); got != c.want {
+			t.Fatalf("%s: QuoteCoefficient(%q,%q)=%q want %q", c.name, c.price, c.amount, got, c.want)
+		}
+	}
+}

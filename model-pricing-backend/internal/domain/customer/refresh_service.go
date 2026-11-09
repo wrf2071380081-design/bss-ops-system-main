@@ -104,7 +104,7 @@ func (s *RefreshService) Refresh(ctx context.Context, scope OwnerScope, in Refre
 	switch quote.Status {
 	case QuoteStatusDraft, QuoteStatusPending:
 		// OK 可刷新
-	case QuoteStatusApproved, QuoteStatusEffective, QuoteStatusExpired, QuoteStatusRejected:
+	case QuoteStatusApproved, QuoteStatusPartial, QuoteStatusEffective, QuoteStatusExpired, QuoteStatusRejected:
 		return nil, ErrQuoteTerminal
 	default:
 		return nil, fmt.Errorf("未知报价状态：%s", quote.Status)

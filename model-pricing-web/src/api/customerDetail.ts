@@ -77,6 +77,12 @@ export interface CustomerModelServiceRow {
    * 批量「配置资源」把它们指回开通流程的 CONFIG 节点，不参与禁用/启用。
    */
   pending_config?: boolean;
+  /**
+   * 客户报价区间：只有「已批准、待配置」的行才有值（来源是审批通过时的价目快照）。
+   * 原型这里显示「客户报价系数」，我们是按单价报价，所以给的是价格区间而不是编一个系数。
+   */
+  quote_price_min?: string;
+  quote_price_max?: string;
   bound_count: number;
   available_count: number;
   risk_flags: string[];
@@ -172,6 +178,16 @@ export interface OnboardingLinkDTO {
   archived: boolean;
   activation_note?: string;
   activated_at?: string;
+}
+
+/** 配置资源时的生产侧操作登记（三项都选填；填了会写进流程节点说明与审计）。 */
+export interface OnboardingOperationRecord {
+  /** 实际操作时间（北京时间，原样留痕，后端不解析）。 */
+  executed_at?: string;
+  /** 实际操作人员，可以与登录人不同。 */
+  executed_by?: string;
+  /** 完成依据：工单号 / 变更单号 / 操作截图链接。 */
+  evidence?: string;
 }
 
 export interface OnboardingFlowDTO {
@@ -304,6 +320,36 @@ export const customerDetailApi = {
       idempotency: { scope: `customer:onboarding:${customerId}`, payload },
     }),
 
+  /**
+   * 兜底补建开通流程：审批已经派了「客户模型开通 / 合同与授信」待办，
+   * 但客户名下还没有进行中的流程时，由后端按待办责任人把流程补出来（不写模型明细）。
+   * 已有流程时幂等返回，不会重复建。
+   */
+  ensureOnboardingFlow: (customerId: string) =>
+    apiRequest<OnboardingFlowDTO>({
+      url: `${basePath}/${customerIdParam(customerId)}/onboarding/ensure`, method: "POST", data: {},
+      idempotency: { scope: `customer:onboarding:${customerId}:ensure`, payload: {} },
+    }),
+
+  /**
+   * 给进行中的开通流程追加「模型 × 资源」（原型行内「配置资源」的增量路径）。
+   * 只要本次开通的 CONFIG 还没完成，就能一个个模型补来源。
+   *
+   * `operation` 是可选的生产侧操作登记（对齐原型「配置资源」弹窗的那三个字段）：
+   * 实际操作时间 / 实际操作人员 / 完成依据。BSS 自己写绑定，但生产平台上动手的
+   * 可能是别人、在别的时间，所以这三项只做留痕（写进节点说明与审计），不参与校验。
+   */
+  addOnboardingModels: (
+    customerId: string,
+    models: Array<{ standard_model_id: number; resource_id: number }>,
+    operation?: OnboardingOperationRecord,
+  ) =>
+    apiRequest<OnboardingFlowDTO>({
+      url: `${basePath}/${customerIdParam(customerId)}/onboarding/models`, method: "POST",
+      data: { models, operation },
+      idempotency: { scope: `customer:onboarding:${customerId}:models`, payload: { models, operation } },
+    }),
+
   completeNode: (nodeId: string | number, payload: CompleteNodePayload) =>
     apiRequest<OnboardingFlowDTO>({
       url: `/internal/customer-nodes/${idParam(nodeId, "节点 ID ")}/complete`, method: "POST", data: payload,
@@ -324,6 +370,34 @@ export const customerDetailApi = {
     const result = await resourcesApi.rows({
       view: "flat", page, size, sort_by: "coefficient", order: "asc",
       region: region || undefined, state: "ADMITTED", keyword: keyword || undefined,
+    }, signal);
+    return {
+      list: result.list.map((row): OnboardingCandidate => ({
+        standard_model_id: Number(row.standard_model_id),
+        model_name: row.model_name,
+        resource_id: Number(row.id),
+        supplier_name: row.supplier_name,
+        region: row.region,
+        coefficient: row.coefficient,
+      })),
+      total: result.total,
+      page: result.page,
+      size: result.size,
+    };
+  },
+
+  /**
+   * 按**单个标准模型**取开通候选来源。
+   *
+   * 从「接入模型」的待配置行进来时用：原型只允许给已批准的模型配来源，
+   * 所以候选必须按模型收窄，不能把该区域所有已准入资源都摆出来
+   * （那等于允许给一个从没报过价的模型开客户）。
+   */
+  async onboardingCandidatesForModel(region: string, standardModelId: number, keyword = "", page = 1, size = 20, signal?: AbortSignal) {
+    const result = await resourcesApi.rows({
+      view: "flat", page, size, sort_by: "coefficient", order: "asc",
+      region: region || undefined, state: "ADMITTED", keyword: keyword || undefined,
+      standard_model_id: String(standardModelId),
     }, signal);
     return {
       list: result.list.map((row): OnboardingCandidate => ({

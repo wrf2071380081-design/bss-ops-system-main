@@ -260,6 +260,7 @@ func (s *Service) buildSnapshot(ctx context.Context, acct *Account) (*Snapshot, 
 			snap.MyOrgID = staff.OrgUnitID
 			snap.StaffName = staff.Name
 			snap.CanApproveSupplier = staff.CanApproveSupplier
+			snap.CanApproveCustomerQuote = staff.CanApproveCustomerQuote
 		}
 	}
 
