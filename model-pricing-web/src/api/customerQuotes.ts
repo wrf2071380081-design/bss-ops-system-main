@@ -47,6 +47,54 @@ const mapPreviewItem = (item: QuotePreviewItemWireDTO): CustomerQuotePreviewItem
   skuId: responseId(item.sku_id), skuCode: item.sku_code, currency: item.currency, unitPrice: item.unit_price,
 });
 
+/** 「继续编辑」回填：一条价项（官方价 + 已存单价）。 */
+export interface QuoteForEditPriceItemDTO {
+  item_key: string;
+  label: string;
+  amount: string;
+  currency: string;
+  unit_code: string;
+  unit_quantity: string;
+  unit_price: string;
+  floor_price: string;
+}
+
+/** 「继续编辑」回填：一行 = 一个模型 + 一个供应来源。 */
+export interface QuoteForEditLineDTO {
+  resource_id: number;
+  standard_model_id: number;
+  model_name: string;
+  official_id: string;
+  company: string;
+  model_type: string;
+  supplier_id: number;
+  supplier_name: string;
+  supplier_model: string;
+  region: string;
+  /** 采购系数（成本折扣），不是客户报价系数。 */
+  coefficient: string;
+  /** 来源最近一次实测：连通(ms) / RPS / TPS / 缓存命中率(%)；没有报告的来源为空串。 */
+  test_connection_ms: string;
+  test_rps: string;
+  test_tps: string;
+  test_cache_hit_rate: string;
+  price_items: QuoteForEditPriceItemDTO[];
+}
+
+/** 「继续编辑」回填的整张单。 */
+export interface QuoteForEditDTO {
+  id: number;
+  customer_id: number;
+  customer_name: string;
+  version_no: number;
+  status: string;
+  our_company: string;
+  valid_until: string | null;
+  lines: QuoteForEditLineDTO[];
+  /** SKU 口径的老明细条数：资源口径编辑器表达不了，未带出。 */
+  skipped_items: number;
+}
+
 export const customerQuotesApi = {
   context: (customerId: string, page = 1, size = 100) => apiRequest<{
     customer_id: string | number;
@@ -84,10 +132,16 @@ export const customerQuotesApi = {
       }));
   },
   // 资源口径出单（quote_type=RESOURCE）：候选与成本口径来自供应域资源。
-  generateResource: (draft: { customerId: string; validTo?: string; items: Array<{ resourceId: string; priceItemKey: string; unitPrice: string }> }) => {
+  // ourCompany 是我方签约主体：随单落库，导出与「继续编辑」回填都靠它。
+  /** 读一张报价单用于继续编辑：头 + 按来源分组的明细（含官方价与已存单价）。 */
+  getForEdit: (quoteID: string | number) =>
+    apiRequest<QuoteForEditDTO>({ url: `${basePath}/${requestId(String(quoteID))}`, method: "GET" }),
+
+  generateResource: (draft: { customerId: string; validTo?: string; ourCompany?: string; items: Array<{ resourceId: string; priceItemKey: string; unitPrice: string }> }) => {
     const payload = {
       customer_id: requestId(draft.customerId),
       ...(draft.validTo ? { valid_to: draft.validTo } : {}),
+      ...(draft.ourCompany ? { our_company: draft.ourCompany } : {}),
       items: draft.items.map(item => ({
         resource_id: requestId(item.resourceId), price_item_key: item.priceItemKey, unit_price: item.unitPrice,
       })),

@@ -192,8 +192,14 @@ func TestBuildSupplierModelDTO(t *testing.T) {
 	if dto.Test.ConnectionMS == nil || *dto.Test.ConnectionMS != "87.00" || dto.Test.TPS == nil {
 		t.Fatalf("指标未带出：%+v", dto.Test)
 	}
-	if dto.QuoteReadiness.Eligible || len(dto.QuoteReadiness.BlockedReasons) != 1 || dto.QuoteReadiness.BlockedReasons[0] != "TESTS_NOT_PASSED" {
-		t.Fatalf("报价阻断原因不符：%+v", dto.QuoteReadiness)
+	// 压力未判定（平台对 stress 不返回 verdict）不再阻断报价，只有连通失败才阻断。
+	if !dto.QuoteReadiness.Eligible || len(dto.QuoteReadiness.BlockedReasons) != 0 {
+		t.Fatalf("压力未判定不应阻断报价：%+v", dto.QuoteReadiness)
+	}
+	connectionFailed := tested
+	connectionFailed.ConnectionPassed = false
+	if got := buildSupplierModelDTO(connectionFailed); got.QuoteReadiness.Eligible || len(got.QuoteReadiness.BlockedReasons) != 1 || got.QuoteReadiness.BlockedReasons[0] != "TESTS_NOT_PASSED" {
+		t.Fatalf("连通未通过应阻断报价：%+v", got.QuoteReadiness)
 	}
 
 	// 已接入 + 测试双通过 → 可供报价

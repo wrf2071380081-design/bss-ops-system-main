@@ -47,9 +47,13 @@ type Deps struct {
 	TestCallbacks TestCallbackReceiver
 	// SupplierSubmissions 是供应商申报（B-1）服务；未配置时申报路由不注册。
 	SupplierSubmissions *SupplierSubmissionService
-	// SupplierCredentials 是供应商**主体级**准入测试凭据（000046，原型对齐）。
-	// nil 时 /supplier/test-credential 不注册（同一条纪律：没接仓储就不暴露能力）。
+	// SupplierCredentials 是供应商**主体级**准入测试凭据（000046）。
+	// ⚠️ 000052 起由 SupplierTestConfigGroups（多组）取代，本字段仅为兼容旧路由保留；
+	// 新代码不要再按 supplier_id 取凭据，否则多组会被压回一组。
 	SupplierCredentials *SupplierCredentialService
+	// SupplierTestConfigGroups 是供应商准入测试**配置组**（000052，原型对齐）。
+	// nil 时 /supplier/test-config-groups 不注册（同一条纪律：没接仓储就不暴露能力）。
+	SupplierTestConfigGroups *SupplierTestConfigGroupService
 	// SupplierModels 是供应商门户「模型管理」列表（2026-10-28）。
 	// nil 时 /supplier/models 不注册（同一条纪律：没接仓储就不暴露能力）。
 	SupplierModels *SupplierModelService
@@ -74,10 +78,22 @@ type Deps struct {
 	PricingUpconductionSvc *pricing.UpconductionService
 	// 阶段 9a：客户域（09-customer-quote.md §1/§2）。
 	CustomerSvc *customer.Service
+	// G4 地基（000049）：客户「接入模型」绑定（状态机 + 投影 + 动作接口）。
+	// nil 时 /customers/:id/resource-links 与 /resource-links* 不注册
+	// （同既有纪律：没接仓储就不暴露能力）。
+	CustomerResourceLinkSvc *customer.ResourceLinkService
+	// G4-B1：客户创建与基础档案（POST /customers、GET /customers/:id）。
+	// nil 时两条路由不注册（同一条纪律）。
+	CustomerRegistrySvc *customer.RegistryService
+	// G4-B2：客户开通流程（发起 / 读进度 / 完成节点）。
+	// nil 时 /customers/:id/onboarding 与 /customer-nodes/:id/complete 不注册。
+	CustomerOnboardingSvc *customer.OnboardingService
 	// 阶段 9b：特价审批 + 刷新 + 导出（09-customer-quote.md §3/§4/§5）。
 	CustomerSpecialSvc *customer.SpecialPriceService
 	CustomerRefreshSvc *customer.RefreshService
 	CustomerExportSvc  *customer.ExportService
+	// 2026-11-05：报价单审批（原型「提交审批 → 超管逐模型批准」，迁移 000057）。
+	CustomerQuoteApprovalSvc *customer.QuoteApprovalService
 	// 阶段 9c：客户门户（09-customer-quote.md §6）。
 	CustomerPortalSvc *customer.PortalService
 	// 阶段 10a：工作台（10-workbench-audit.md §2/§3）。
@@ -435,6 +451,11 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			ch.GenerateResourceQuote,
 		)
+		// 「继续编辑」回填：报价单头 + 按来源分组的明细（含官方价与已存单价）。
+		protected.GET("/customer-quotes/:id",
+			middleware.RequirePerm(perm.M9View),
+			ch.GetQuoteForEdit,
+		)
 		// 这条供应资源影响哪些客户（改价/上下架前的影响面）。
 		protected.GET("/resources/:id/affected-customers",
 			middleware.RequirePerm(perm.M8View),
@@ -584,6 +605,41 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 		protected.GET("/customer-workspace/customers", middleware.RequirePerm(perm.M8View), cwh.ListCustomers)
 		protected.GET("/customer-workspace/quotes", middleware.RequirePerm(perm.M9View), cwh.ListQuotes)
 		protected.GET("/customer-workspace/approvals", middleware.RequirePerm(perm.M9View), cwh.ListApprovals)
+	}
+
+	// 报价单审批（原型「提交审批 → 超管逐模型批准/驳回」，迁移 000057）。
+	// 与特价审批（change_request[SPECIAL_PRICE]）并存：特价批「允许破线」，这里批「这批模型可以对外」。
+	if portal == "internal" && deps.CustomerQuoteApprovalSvc != nil {
+		qah := NewQuoteApprovalHandler(deps.CustomerQuoteApprovalSvc)
+		protected.POST("/customer-quotes/:id/submit-approval",
+			middleware.RequirePerm(perm.M9Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			qah.SubmitQuoteApproval,
+		)
+		protected.GET("/customer-quote-approvals/:id",
+			middleware.RequirePerm(perm.M9View),
+			qah.GetQuoteApproval,
+		)
+		protected.POST("/customer-quote-approvals/:id/decision",
+			middleware.RequirePerm(perm.M9Approve),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			qah.DecideQuoteApproval,
+		)
+		// 保存进度（原型弹窗的「保存进度」）：只写草稿，不改审批状态。
+		protected.POST("/customer-quote-approvals/:id/draft",
+			middleware.RequirePerm(perm.M9Approve),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			qah.SaveQuoteApprovalDraft,
+		)
+		protected.POST("/customer-quote-approvals/:id/withdraw",
+			middleware.RequirePerm(perm.M9Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			qah.WithdrawQuoteApproval,
+		)
+		protected.GET("/customer-workspace/quote-approvals",
+			middleware.RequirePerm(perm.M9View),
+			qah.ListQuoteApprovals,
+		)
 	}
 
 	// 业务接口：客户门户（09-customer-quote.md §6）。

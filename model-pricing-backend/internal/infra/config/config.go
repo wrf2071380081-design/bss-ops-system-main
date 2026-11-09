@@ -37,6 +37,13 @@ type TestPlatform struct {
 	// Internal retests use the platform pool/quota, separate from supplier credentials.
 	InternalBaseURL string `mapstructure:"internal_base_url"`
 	InternalAPIKey  string `mapstructure:"internal_api_key"`
+	// InternalModel 是内部补测时传给平台的模型名。
+	//
+	// 平台要求 `vendor/model` 形式，而且 `base_url=demo` 只接受平台预置的
+	// demo 模型（如 `demo/deepseek-v4`）。BSS 侧标准模型的 official_id
+	// 通常是 `claude-sonnet-4` 这种没有厂商前缀的名字，直接传会被平台
+	// 判 400「非 demo 模型不能使用 demo 地址」。留空表示沿用 official_id。
+	InternalModel string `mapstructure:"internal_model"`
 	Enable          bool   `mapstructure:"enable"`
 	BaseURL         string `mapstructure:"base_url"`
 	Token           string `mapstructure:"token"`

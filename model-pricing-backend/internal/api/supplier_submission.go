@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -44,17 +45,20 @@ const (
 // 列名仍为 test_api_key_enc（历史命名）。加密层已随 A 侧重构移除，
 // 因此这里不再做封装/解密；安全改进见交接文档的待办项。
 type SupplierSubmissionService struct {
-	store   *supplypg.SubmissionStore
+	store *supplypg.SubmissionStore
+	// groups 是准入测试配置组仓储（000052）：发单取凭据、算指纹、判失效、
+	// 提交门槛按组校验，都从这里取。主体级单条凭据已废弃（见 TestCredentialLegacy）。
+	groups  *supplypg.TestConfigGroupStore
 	starter TestJobStarter
 	clock   func() time.Time
 }
 
 // NewSupplierSubmissionService 构造服务。
-func NewSupplierSubmissionService(store *supplypg.SubmissionStore, starter TestJobStarter, clock func() time.Time) *SupplierSubmissionService {
+func NewSupplierSubmissionService(store *supplypg.SubmissionStore, groups *supplypg.TestConfigGroupStore, starter TestJobStarter, clock func() time.Time) *SupplierSubmissionService {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &SupplierSubmissionService{store: store, starter: starter, clock: clock}
+	return &SupplierSubmissionService{store: store, groups: groups, starter: starter, clock: clock}
 }
 
 // now 取当前时间（测试可注入）。
@@ -92,6 +96,11 @@ type submissionRowDTO struct {
 	OfficialID        string `json:"official_id"`
 	Coefficient       string `json:"coefficient"`
 	TestBaseURL       string `json:"test_base_url"`
+	// TestConfigGroupID / Name / Enabled 是「准入配置组」列（000052）。
+	// ID 用字符串（与其它 ID 字段一致，避免 JS 精度问题）；未挂组时为空串。
+	TestConfigGroupID      string `json:"test_config_group_id"`
+	TestConfigGroupName    string `json:"test_config_group_name"`
+	TestConfigGroupEnabled bool   `json:"test_config_group_enabled"`
 	// ParticipateTest 是压力测试勾选（原型「压力测试」列）。
 	ParticipateTest bool `json:"participate_test"`
 	// SupplementRequired 表示该行已提交但仍未通过（原型「待补」）。
@@ -118,6 +127,8 @@ type submissionDTO struct {
 	Region        string   `json:"region"`
 	RowCount      int      `json:"row_count"`
 	ModelNames    []string `json:"model_names"`
+	// UntestedModelCount 是「还没有连通结果」的行数：提交放行时给审批侧看覆盖有多薄。
+	UntestedModelCount int `json:"untested_model_count"`
 	// PendingRowCount 是「提交后仍未通过」的行数，前端用于显示"待补 N 个"。
 	PendingRowCount int                      `json:"pending_row_count"`
 	Kind            string                   `json:"kind"`
@@ -137,8 +148,11 @@ type submissionWriteRow struct {
 	InterfaceModelID string `json:"interface_model_id"`
 	StandardModelID  string `json:"standard_model_id"`
 	Coefficient      string `json:"coefficient"`
-	TestBaseURL      string `json:"test_base_url"`
-	TestAPIKey       string `json:"test_api_key"`
+	// TestConfigGroupID 是必填的准入配置组（000052）。URL/Key 由服务端按组回填。
+	TestConfigGroupID string `json:"test_config_group_id"`
+	// 旧前端仍会带这两个字段，服务端忽略（保留字段名只为不 400）。
+	TestBaseURL string `json:"test_base_url"`
+	TestAPIKey  string `json:"test_api_key"`
 }
 
 type submissionWrite struct {
@@ -213,15 +227,15 @@ func (h *supplierSubmissionHandler) list(c *gin.Context) {
 		writeSubmissionError(c, err)
 		return
 	}
-	// 列表里所有申报都属于同一主体，凭据只取一次。
-	credential, err := h.svc.store.TestCredential(c.Request.Context(), supplierID)
+	// 列表里所有申报都属于同一主体，配置组凭据只取一次（按 groupID 索引，避免 N+1）。
+	groups, err := h.svc.groups.ListCredentials(c.Request.Context(), supplierID)
 	if err != nil {
 		writeSubmissionError(c, err)
 		return
 	}
 	list := make([]submissionDTO, 0, len(headers))
 	for _, header := range headers {
-		list = append(list, buildSubmissionDTO(header, applyCredential(rows[header.ID], credential)))
+		list = append(list, buildSubmissionDTO(header, applyConfigGroups(rows[header.ID], groups)))
 	}
 	response.Success(c, gin.H{"list": list, "total": total, "page": page, "size": size})
 }
@@ -268,12 +282,12 @@ func (h *supplierSubmissionHandler) detail(c *gin.Context) {
 		writeSubmissionError(c, err)
 		return
 	}
-	credential, err := h.svc.store.TestCredential(c.Request.Context(), supplierID)
+	groups, err := h.svc.groups.ListCredentials(c.Request.Context(), supplierID)
 	if err != nil {
 		writeSubmissionError(c, err)
 		return
 	}
-	response.Success(c, buildSubmissionDTO(*header, applyCredential(rows[id], credential)))
+	response.Success(c, buildSubmissionDTO(*header, applyConfigGroups(rows[id], groups)))
 }
 
 func (h *supplierSubmissionHandler) modelOptions(c *gin.Context) {
@@ -478,8 +492,11 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 	if platformCategory == "stress" && !row.ParticipateTest {
 		return "", actionNotSelected, nil
 	}
-	// 000046：URL/Key 统一取**主体**凭据；行上的两列只是快照。
-	// 未登记凭据时直接给出可操作的提示，别让平台侧报 400。
+	// 000052：URL/Key 取**该行所挂配置组**的当前值；行上的两列只是快照。
+	// 组被停用也允许发单（在途申报不能被卡死），只在 UI 上标注。
+	if row.TestConfigGroupID <= 0 {
+		return "", actionFailed, errTestConfigGroupMissing
+	}
 	baseURL, apiKey := supplypg.CredentialForTest(&supplypg.SupplierTestCredential{BaseURL: row.EffectiveBaseURL, APIKey: row.EffectiveAPIKey})
 	if strings.TrimSpace(baseURL) == "" {
 		return "", actionFailed, errCredentialMissing
@@ -899,43 +916,127 @@ func testFailureReason(err error) string {
 	}
 }
 
-// evaluateSubmitGate 按**原型口径**判断是否允许提交（2026-10-27 确认）。
+// evaluateSubmitGate 按**原型口径**判断是否允许提交（000052 多配置组口径）。
 //
-// 原型的规则只有两条，且都写在申报页底部那句话里：
-//   - 所有模型均执行连通性测试；
-//   - 至少勾选一个压力测试模型（勾选的行要有压力结果）。
+// 规则的演进（写清楚，免得被"改回去"）：
+//   - 000046 时代：主体只有一条凭据，规则是「所有模型都要有连通结果 + 至少一个压测」，
+//     且**不看 verdict**（原型原话「结果不达标也属于有效结果」）。
+//   - 000052：一行模型挂一个配置组，规则变成**按组**：
+//     ① 本次申报**用到的每个组**，至少一个模型连通 verdict 通过；
+//     ② 整批至少一个模型勾选了压力测试且有压测结果；
+//     ③ 每一行都必须挂组。
 //
-// **不看 verdict**——原型明确「结果不达标也属于有效结果」，
-// 未通过的行提交后由 supplement_required 标成「待补」，而不是拦在门口。
+// ① 是**变严**：以前"有结果"就行，现在通道里至少要有一个模型真连得上——
+// 否则一组全挂的地址也能把申报推进审批，等于把问题丢给下游。
+// 但「未通过的行」仍不拦（补测/待补由 supplement_required 处理），只要求每组有一个能通。
 //
-// 失效（改了主体凭据 / 改了接口模型）的旧结果不算覆盖：那是旧配置的报告。
-// 这类判断必须用主体当前凭据重算，否则供应商改了凭据还能拿旧结果过门禁。
+// ② 只校验"本次申报用到的组"：供应商建了 3 个组、这次只用了 1 个，
+// 另外 2 个空组不能把他拦住（那不是他的漏测，是不相关的配置）。
+//
+// ③ 失效（换组/改地址/改模型）的旧结果不算数：按行所属组的**当前**凭据重算指纹比对。
+
+// groupGateOrder 把本次申报用到的组按「卡片顺序」排好，用于文案里的「第 N 组」。
+//
+// 编号必须与前端卡片顺序一致（sort_order, id），否则用户照着提示去数卡片会数错。
+func groupGateOrder(groups map[int64]supplypg.TestConfigGroupCredential) []supplypg.TestConfigGroupCredential {
+	ordered := make([]supplypg.TestConfigGroupCredential, 0, len(groups))
+	for _, group := range groups {
+		ordered = append(ordered, group)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].SortOrder != ordered[j].SortOrder {
+			return ordered[i].SortOrder < ordered[j].SortOrder
+		}
+		return ordered[i].ID < ordered[j].ID
+	})
+	return ordered
+}
+
 func (h *supplierSubmissionHandler) evaluateSubmitGate(ctx context.Context, supplierID, submissionID int64) error {
 	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
 	if err != nil {
 		return err
 	}
-	credential, err := h.svc.store.TestCredential(ctx, supplierID)
+	groups, err := h.svc.groups.ListCredentials(ctx, supplierID)
 	if err != nil {
 		return err
 	}
-	list := applyCredential(rows[submissionID], credential)
+	list := applyConfigGroups(rows[submissionID], groups)
 	if len(list) == 0 {
 		return errGateNoRows
 	}
-	return checkSubmissionCoverage(list)
+	return checkSubmissionCoverage(list, groups)
 }
 
 // checkSubmissionCoverage 是门禁的纯规则部分（不碰数据库，便于单测）。
 //
-// 返回的 apperr 直接对前端展示，所以文案要带计数——只报 409 不告诉供应商
-// 「还差几个模型」，页面上的提示语就只能是干巴巴的「不能提交」。
-func checkSubmissionCoverage(list []supplypg.SubmissionRowRecord) error {
-	missingConnectivity, selected, pendingStress := 0, 0, 0
+// 返回的 apperr 直接对前端展示，所以文案要带**组名与序号**——只说「还差几个模型」，
+// 供应商在一屏多组的情况下根本不知道该去补哪一组。
+func checkSubmissionCoverage(list []supplypg.SubmissionRowRecord, groups map[int64]supplypg.TestConfigGroupCredential) error {
+	if len(list) == 0 {
+		return errGateNoRows
+	}
+
+	// ③ 每一行都必须挂组：没挂组的行既不能测也不能判覆盖。
 	for _, row := range list {
-		if row.ConnectivityStatus == nil || row.ConnectivityStale || !isTerminalStatus(*row.ConnectivityStatus) {
-			missingConnectivity++
+		if row.TestConfigGroupID == nil || *row.TestConfigGroupID <= 0 {
+			return apperr.New(apperr.ErrInvalidParams.Code,
+				"每个模型都必须选择准入配置组后再提交", 400)
 		}
+	}
+
+	// ① 按组聚合：只统计本次申报里**有行挂载**的组。
+	type groupCoverage struct {
+		passed bool
+		rows   int
+	}
+	coverage := make(map[int64]*groupCoverage, len(groups))
+	for _, row := range list {
+		groupID := *row.TestConfigGroupID
+		bucket, ok := coverage[groupID]
+		if !ok {
+			bucket = &groupCoverage{}
+			coverage[groupID] = bucket
+		}
+		bucket.rows++
+		if bucket.passed {
+			continue
+		}
+		if row.ConnectivityStale { // 换组/改地址后旧连通结果不算数
+			continue
+		}
+		if row.ConnectivityStatus == nil || !isTerminalStatus(*row.ConnectivityStatus) {
+			continue
+		}
+		if verdictOK(row.ConnectivityVerdict) {
+			bucket.passed = true
+		}
+	}
+
+	// 按**卡片顺序**逐个校验。
+	//
+	// 序号口径（2026-11-03 修正）：用下标 i+1，即「该组在全部组里是第几张卡片」，
+	// 而不是"第几个用到的组"。原因：页面上卡片是按全部组编号展示的（第 1/2/3 组），
+	// 若这里按"用到的组"重新计数，会出现「第 1 组「华南通道」」这种
+	// **文案对、指向错**的提示——用户会去数第一张卡片（华东）。停用组、未被使用的组照样占号。
+	for i, group := range groupGateOrder(groups) {
+		if _, used := coverage[group.ID]; !used {
+			continue // 未被本次申报使用的组不参与校验（但仍占用卡片序号）
+		}
+		if coverage[group.ID].passed {
+			continue
+		}
+		note := ""
+		if !group.Enabled {
+			note = "（该组已停用，可改挂其它组）"
+		}
+		return apperr.New(apperr.ErrIdempotency.Code, fmt.Sprintf(
+			"第 %d 组「%s」还没有连通成功的模型，请先在该组发起连通性测试%s", i+1, group.Name, note), 409)
+	}
+
+	// ② 整批至少一个压测模型，且勾选的行要有压测结果。
+	selected, pendingStress := 0, 0
+	for _, row := range list {
 		if !row.ParticipateTest {
 			continue
 		}
@@ -945,9 +1046,6 @@ func checkSubmissionCoverage(list []supplypg.SubmissionRowRecord) error {
 		}
 	}
 	switch {
-	case missingConnectivity > 0:
-		return apperr.New(apperr.ErrIdempotency.Code,
-			fmt.Sprintf("还有 %d 个模型没有连通性测试结果，请先发起测试", missingConnectivity), 409)
 	case selected == 0:
 		return apperr.New(apperr.ErrIdempotency.Code, "请至少勾选一个压力测试模型后再提交", 409)
 	case pendingStress > 0:
@@ -957,8 +1055,25 @@ func checkSubmissionCoverage(list []supplypg.SubmissionRowRecord) error {
 	return nil
 }
 
+// untestedRowCount 统计「还没有连通结果」的行数，提交放行时一并回给前端提示。
+//
+// 为什么放行还报：门禁只保证「每组有一个能通」，剩下的模型可能一个都没测；
+// 审批侧需要知道这份申报的覆盖有多薄（原型页面底部也提示「共 N 个模型未测」）。
+func untestedRowCount(list []supplypg.SubmissionRowRecord) int {
+	count := 0
+	for _, row := range list {
+		if row.ConnectivityStatus == nil || row.ConnectivityStale || !isTerminalStatus(*row.ConnectivityStatus) {
+			count++
+		}
+	}
+	return count
+}
+
 var (
 	errGateNoRows = errors.New("submission has no rows")
+	// errTestConfigGroupMissing：该行还没选准入配置组（000052）。
+	errTestConfigGroupMissing = apperr.New(apperr.ErrInvalidParams.Code,
+		"该模型还没有选择准入配置组，请先在上方选择或新建配置组", 400)
 	// 下面几个保留作语义锚点：日志、单测与后续「等待测试补齐」环节会用到，
 	// 当前门禁直接返回带计数的 apperr，不再靠它们分支。
 	errGateNoPassedRow         = errors.New("no row has a passed connectivity test")
@@ -984,25 +1099,23 @@ func resolveTestCategory(raw string) (string, string, bool) {
 	return category, platformCategory, ok && category != ""
 }
 
-// buildRows 校验行并把主体凭据写进快照；失败时已写好响应。
+// buildRows 校验行并把**该行所挂配置组**的 URL/Key 写进行快照；失败时已写好响应。
 //
-// 000046 起 rows[].test_base_url / test_api_key **不再由前端提供**：
-// 凭据是主体资源（/supplier/test-credential），这里统一取主体值做快照。
-// 旧前端仍会带上这两个字段，收到也忽略，避免直接 400 把页面打挂。
+// 000052 起 rows[] 必须带 test_config_group_id：
+//   - 组必须属于本主体（越权防护，供应商门户不挂 RequirePerm）；
+//   - 组不存在 / 不属于本主体 → 400 可读文案，不静默存 NULL；
+//   - 组已停用**不拦**：在途申报里的行可能仍挂在停用组上，
+//     允许继续保存与测试（提交门槛会提示「该组已停用」，供应商自己决定要不要改挂）。
+// 行快照里的 URL/Key 一律取该组当前值，前端传的 test_base_url / test_api_key 忽略。
 func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, input []submissionWriteRow) ([]supplypg.SubmissionRowInput, bool) {
 	if len(input) == 0 {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "至少需要一行模型", 400))
 		return nil, false
 	}
-	// 未登记凭据不拦：原型允许先把申报行填好、后补凭据，真拦在发测试那一步。
-	credential, err := h.svc.store.TestCredential(c.Request.Context(), supplierID)
+	groups, err := h.svc.groups.ListCredentials(c.Request.Context(), supplierID)
 	if err != nil {
 		writeSubmissionError(c, err)
 		return nil, false
-	}
-	snapshotURL, snapshotKey := "", ""
-	if credential != nil {
-		snapshotURL, snapshotKey = credential.BaseURL, credential.APIKey
 	}
 	rows := make([]supplypg.SubmissionRowInput, 0, len(input))
 	for _, row := range input {
@@ -1015,8 +1128,20 @@ func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, 
 			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "interface_model_id 必填", 400))
 			return nil, false
 		}
-		// 路线 A：按原样保存（与 A 侧正式配置口径一致）。
-		storedKey := strings.TrimSpace(snapshotKey)
+		groupID, err := positiveID(strings.TrimSpace(row.TestConfigGroupID))
+		if err != nil {
+			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code,
+				fmt.Sprintf("模型「%s」还没有选择准入配置组", strings.TrimSpace(row.InterfaceModelID)), 400))
+			return nil, false
+		}
+		group, ok := groups[groupID]
+		if !ok {
+			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code,
+				"选择的准入配置组不存在或不属于当前供应商，请刷新后重试", 400))
+			return nil, false
+		}
+		// 路线 A：按原样保存（与 A 侧正式配置口径一致），Key 取自组当前值。
+		storedKey := strings.TrimSpace(group.APIKey)
 		if len(storedKey) > 512 {
 			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "测试 Key 超出长度上限", 400))
 			return nil, false
@@ -1024,8 +1149,8 @@ func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, 
 		rowID, _ := strconv.ParseInt(strings.TrimSpace(row.ID), 10, 64)
 		rows = append(rows, supplypg.SubmissionRowInput{
 			ID: rowID, StandardModelID: modelID, SupplierModelName: strings.TrimSpace(row.InterfaceModelID),
-			Coefficient: strings.TrimSpace(row.Coefficient), TestBaseURL: strings.TrimSpace(snapshotURL),
-			SealedAPIKey: storedKey, ParticipateTest: row.ParticipateTest,
+			Coefficient: strings.TrimSpace(row.Coefficient), TestBaseURL: strings.TrimSpace(group.BaseURL),
+			SealedAPIKey: storedKey, TestConfigGroupID: groupID, ParticipateTest: row.ParticipateTest,
 		})
 	}
 	return rows, true
@@ -1044,25 +1169,46 @@ func (h *supplierSubmissionHandler) respondWithDTO(c *gin.Context, supplierID, i
 		writeSubmissionError(c, err)
 		return false
 	}
-	credential, err := h.svc.store.TestCredential(ctx, supplierID)
+	groups, err := h.svc.groups.ListCredentials(ctx, supplierID)
 	if err != nil {
 		writeSubmissionError(c, err)
 		return false
 	}
-	response.Success(c, buildSubmissionDTO(*header, applyCredential(rows[id], credential)))
+	response.Success(c, buildSubmissionDTO(*header, applyConfigGroups(rows[id], groups)))
 	return true
 }
 
-// applyCredential 用主体当前凭据重算每行的「结果是否失效」并同步展示用地址。
-// cred 为 nil 时原样返回（退化成按行快照判定，历史数据不会被一片判红）。
-func applyCredential(rows []supplypg.SubmissionRowRecord, cred *supplypg.SupplierTestCredential) []supplypg.SubmissionRowRecord {
-	if cred == nil {
+// applyConfigGroups 用**每行自己所挂配置组**的当前凭据重算「结果是否失效」并同步展示用地址。
+//
+// 为什么按行而不是按主体：000052 起一个主体有多组 URL/Key，用主体级一条会把
+// 多组压回一组——A 组的模型会被 B 组的地址判失效（或反过来）。
+// groups 为空时原样返回（退化成按行快照判定，历史数据不会被一片判红）。
+func applyConfigGroups(rows []supplypg.SubmissionRowRecord, groups map[int64]supplypg.TestConfigGroupCredential) []supplypg.SubmissionRowRecord {
+	if len(groups) == 0 {
 		return rows
 	}
 	for i := range rows {
-		rows[i].ApplyCredential(cred)
+		if rows[i].TestConfigGroupID == nil {
+			continue
+		}
+		group, ok := groups[*rows[i].TestConfigGroupID]
+		if !ok {
+			continue
+		}
+		rows[i].ApplyConfigGroup(&group)
 	}
 	return rows
+}
+
+// formatOptionalID 把可空 ID 转成 DTO 的字符串（nil → 空串，不 panic）。
+//
+// 行的 test_config_group_id 历史上可能为空（000052 之前的行未被回填覆盖到、
+// 或组被物理删除），所以这里必须容忍 nil。
+func formatOptionalID(value *int64) string {
+	if value == nil {
+		return ""
+	}
+	return strconv.FormatInt(*value, 10)
 }
 
 // buildSubmissionDTO 组装前端契约；顺带推导测试状态与权限。
@@ -1078,12 +1224,19 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 		ModelNames: make([]string, 0, len(rows)),
 	}
 	dto.RowCount = len(rows)
+	dto.UntestedModelCount = untestedRowCount(rows)
 	for _, row := range rows {
 		item := submissionRowDTO{
 			ID: strconv.FormatInt(row.ID, 10), InterfaceModelID: row.SupplierModelName,
 			StandardModelID: strconv.FormatInt(row.StandardModelID, 10), StandardModelName: row.StandardModelName,
 			OfficialID: row.OfficialID, Coefficient: row.Coefficient, TestBaseURL: row.TestBaseURL,
 			ParticipateTest: row.ParticipateTest,
+			// 000052：这三列仓储已经 SELECT+Scan 进来了，这里必须**搬进 DTO**。
+			// 漏搬不会编译报错、不会类型报错，但会让前端「准入配置组」下拉全空、
+			// rowsWithoutGroup 恒真 → 提交按钮永久禁用（QA 报的 P0 就是这个）。
+			TestConfigGroupID:      formatOptionalID(row.TestConfigGroupID),
+			TestConfigGroupName:    row.TestConfigGroupName,
+			TestConfigGroupEnabled: row.TestConfigGroupEnabled,
 		}
 		dto.ModelNames = append(dto.ModelNames, row.StandardModelName)
 		if row.ConnectivityStatus != nil {

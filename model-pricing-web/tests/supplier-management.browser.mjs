@@ -365,7 +365,7 @@ try {
   await page.getByRole("tab", { name: "接入模型", exact: true }).waitFor();
   await page.getByRole("tab", { name: "档案与办理", exact: true }).waitFor();
   await page.getByRole("tab", { name: "操作记录", exact: true }).waitFor();
-  await page.getByRole("tab", { name: "该供应商报价", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "申报与审批记录", exact: true }).waitFor();
   await page.getByText("该供应商暂无接入模型", { exact: true }).waitFor();
   assert.equal(await page.getByText("当前供应来源已变化或与供应商不匹配，请从模型广场重新打开。", { exact: true }).count(), 0);
 
@@ -434,7 +434,7 @@ try {
 
   await page.getByRole("tab", { name: "操作记录", exact: true }).click();
   await page.getByText("暂无操作记录", { exact: true }).waitFor();
-  await page.getByRole("tab", { name: "该供应商报价", exact: true }).click();
+  await page.getByRole("tab", { name: "申报与审批记录", exact: true }).click();
   await page.getByText("暂无报价申报历史", { exact: true }).waitFor();
   assert.equal(requests.some(item => item.path === `/api/internal/suppliers/${supplierID}/operations`), true);
   assert.equal(requests.some(item => item.path === `/api/internal/flows/suppliers/${supplierID}/submissions`), true);

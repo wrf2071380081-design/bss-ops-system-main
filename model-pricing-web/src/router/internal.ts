@@ -14,11 +14,14 @@ import PriceBookList from "../views/internal/pricing/PriceBookList.vue";
 import PricingPolicyList from "../views/internal/pricing/PricingPolicyList.vue";
 import SupplierWorkspace from "../views/internal/suppliers/SupplierWorkspace.vue";
 import SupplierAccessModels from "../views/internal/suppliers/SupplierAccessModels.vue";
+import SupplierSubmissionReview from "../views/internal/suppliers/SupplierSubmissionReview.vue";
 import SupplierEntityList from "../views/internal/suppliers/SupplierEntityList.vue";
 import CustomerWorkspace from "../views/internal/customers/CustomerWorkspace.vue";
+import CustomerDetail from "../views/internal/customers/CustomerDetail.vue";
 import FinanceCenter from "../views/internal/finance/FinanceCenter.vue";
 import InternalWorkbench from "../views/internal/workbench/InternalWorkbench.vue";
 import OrgPermissionCenter from "../views/internal/orgPermissions/OrgPermissionCenter.vue";
+import AccountList from "../views/internal/orgPermissions/AccountList.vue";
 import IntegrationCenter from "../views/internal/integration/IntegrationCenter.vue";
 import { ROUTE_REQUIREMENTS } from "../domain/permissions";
 
@@ -128,6 +131,22 @@ export const internalRoutes: RouteRecordRaw = {
       },
     },
     {
+      // 申报审批独立页（原型：工作台待办 → 供应商管理 / {供应商} / 申报与审批记录 / {类型}申请）。
+      // routeKey 用 internal.workbench（无模块权限点）：审批人只要能看到待办，就必须打得开这一页；
+      // 挂 M3:V 会把「有 can_approve_supplier 但没有供应商模块权限」的账号挡在门外。
+      path: "submissions/:submissionId",
+      component: SupplierSubmissionReview,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.workbench",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.workbench"],
+        title: "申报审批",
+        menu: false,
+        order: 53,
+      },
+    },
+    {
       path: "suppliers/:supplierId/models",
       component: SupplierAccessModels,
       meta: {
@@ -140,6 +159,12 @@ export const internalRoutes: RouteRecordRaw = {
         order: 52,
       },
     },
+    // 说明：该路由必须保持为独立入口，不要合并进 /internal/suppliers 的 Tab（不要再改成 redirect）。
+    // 理由：本路由只要 M4:V，而 /internal/suppliers 要求 M3:V；补录员（RETRO_OP: M4:V + M4:P）
+    // 没有 M3:V，合并后会被路由守卫打到 /403，「特权补录」对该角色直接不可达（G1 曾因此回归）。
+    // 工作台待办也统一落到这里：待办卡的 routeKey 是 internal.supplierQuotes（M4:V），
+    // 若指向供应商管理 Tab，只有 M4:V 的账号点开同样 403。
+    // 有 M3:V 的账号另可从「供应商管理 · 供应商报价」Tab 进入嵌入版；两条路径共用 SupplierQuoteList。
     {
       path: "supplier-quotes",
       component: SupplierQuoteList,
@@ -206,6 +231,20 @@ export const internalRoutes: RouteRecordRaw = {
       },
     },
     {
+      // 客户详情整页（B3b）：routeKey **复用 internal.customers**（M8:V），
+      // 不新增 routeKey —— 新增要同步 ROUTE_REQUIREMENTS，漏配会变成"无权限直接 403"。
+      path: "customers/:id",
+      component: CustomerDetail,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.customers",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.customers"],
+        title: "客户详情",
+        menu: false,
+      },
+    },
+    {
       path: "finance",
       component: FinanceCenter,
       meta: {
@@ -242,6 +281,22 @@ export const internalRoutes: RouteRecordRaw = {
         title: "审计日志",
         menu: false,
         order: 120,
+      },
+    },
+    {
+      // 账号管理：后端 7 个写接口（建人 / 改人 / 重置口令 / 授·回收角色）已就绪，
+      // 真正的门槛是**角色**而非权限点——见 ROLE_REQUIREMENTS["internal.accounts"]。
+      // 只有 PLATFORM_ADMIN 能看到本菜单；LEADER 虽持 M11:E，也被 canRoute 拦在门外。
+      path: "accounts",
+      component: AccountList,
+      meta: {
+        requiresAuth: true,
+        portal: "internal",
+        routeKey: "internal.accounts",
+        requiredPermission: ROUTE_REQUIREMENTS["internal.accounts"],
+        title: "账号管理",
+        menu: true,
+        order: 125,
       },
     },
     {

@@ -21,6 +21,8 @@ type SupplierData struct {
 	Phone              string  `json:"phone"`
 	TaxRate            *string `json:"tax_rate"`
 	SettlementCurrency string  `json:"settlement_currency"`
+	// Remark 是主体档案的自述备注（原型「基础资料」最后一行），与合同/授信的备注无关。
+	Remark string `json:"remark"`
 }
 type Supplier struct {
 	ID          string       `json:"id"`
@@ -79,6 +81,7 @@ func canonicalSupplierData(data SupplierData) (SupplierData, error) {
 	data.RegistrationNo = strings.TrimSpace(data.RegistrationNo)
 	data.Contact = strings.TrimSpace(data.Contact)
 	data.Phone = strings.TrimSpace(data.Phone)
+	data.Remark = strings.TrimSpace(data.Remark)
 	if data.Name == "" {
 		return data, invalid("name", "supplier name is required")
 	}

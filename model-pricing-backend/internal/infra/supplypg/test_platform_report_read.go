@@ -304,3 +304,41 @@ func decimalPtr(value sql.NullString) *string {
 	trimmed := value.String
 	return &trimmed
 }
+
+// UploadedReportView 是外部上传的专项报告（没有平台测试任务）。
+type UploadedReportView struct {
+	ID           string    `json:"id"`
+	FileName     string    `json:"file_name"`
+	Format       string    `json:"format"`
+	Scene        string    `json:"scene"`
+	UploadedAt   time.Time `json:"uploaded_at"`
+	OperatorName string    `json:"operator_name"`
+}
+
+// ListUploadedReports 只列 source='UPLOADED' 的报告。它们不参与准入判定，
+// 因此与基于 test_job 的测试报告历史分开返回。
+func (r *TestReportReader) ListUploadedReports(ctx context.Context, resourceID string) ([]UploadedReportView, error) {
+	if r == nil || r.db == nil {
+		return nil, supply.ErrDependencyUnavailable
+	}
+	if _, err := parseID(resourceID); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT p.id::text,coalesce(p.report_file,''),coalesce(p.report_format,''),coalesce(p.scene,''),p.tested_at,COALESCE(st.name,'')
+FROM `+r.table("test_report")+` p LEFT JOIN `+r.table("internal_staff")+` st ON st.id=p.tested_by
+WHERE p.resource_id=$1::bigint AND p.source='UPLOADED' ORDER BY p.tested_at DESC,p.id DESC LIMIT 100`, resourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []UploadedReportView{}
+	for rows.Next() {
+		var item UploadedReportView
+		if err := rows.Scan(&item.ID, &item.FileName, &item.Format, &item.Scene, &item.UploadedAt, &item.OperatorName); err != nil {
+			return nil, err
+		}
+		item.UploadedAt = item.UploadedAt.UTC()
+		list = append(list, item)
+	}
+	return list, rows.Err()
+}

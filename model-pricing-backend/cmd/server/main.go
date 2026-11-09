@@ -144,6 +144,9 @@ func main() {
 	customerSpecialSvc := customer.NewSpecialPriceService(customerSpecialRepo)
 	customerRefreshSvc := customer.NewRefreshService(customerSpecialRepo, nil)
 	customerExportSvc := customer.NewExportService(customerSpecialRepo, nil, nil)
+	// 2026-11-05：报价单审批（原型「提交审批 → 超管逐模型批准」）。
+	// 复用 customerSpecialRepo：它已实现 CheckQuoteOwnerScope 与事务/审计能力。
+	customerQuoteApprovalSvc := customer.NewQuoteApprovalService(customerSpecialRepo)
 
 	// 阶段 9c：客户门户（09-customer-quote.md §6）。
 	customerPortalRepo := repo.NewCustomerPortalRepo(dbClient.DB)
@@ -255,11 +258,35 @@ func main() {
 		log.Warn("initialize supplier model service", zap.Error(err))
 		supplierModelSvc = nil
 	}
-	// 供应商主体级测试凭据（000046，原型对齐）。
+	// 供应商主体级测试凭据（000046）：已被 000052 的多配置组取代，仅为兼容旧路由保留。
 	credentialSvc, err := newSupplierCredentialService(dbClient.DB)
 	if err != nil {
 		log.Warn("initialize supplier credential service", zap.Error(err))
 		credentialSvc = nil
+	}
+	// 供应商准入测试配置组（000052，原型对齐：一个主体多组 URL/Key）。
+	testConfigGroupSvc, err := newSupplierTestConfigGroupService(dbClient.DB)
+	if err != nil {
+		log.Warn("initialize supplier test config group service", zap.Error(err))
+		testConfigGroupSvc = nil
+	}
+	// G4 地基（000049）：客户「接入模型」绑定（状态机 + 投影 + 动作接口）。
+	customerResourceLinkSvc, err := newCustomerResourceLinkService(dbClient.DB)
+	if err != nil {
+		log.Warn("initialize customer resource link service", zap.Error(err))
+		customerResourceLinkSvc = nil
+	}
+	// G4-B1：客户创建与基础档案。
+	customerRegistrySvc, err := newCustomerRegistryService(dbClient.DB)
+	if err != nil {
+		log.Warn("initialize customer registry service", zap.Error(err))
+		customerRegistrySvc = nil
+	}
+	// G4-B2：客户开通流程（不接 F12 就绪：该快照只覆盖供应商）。
+	customerOnboardingSvc, err := newCustomerOnboardingService(dbClient.DB)
+	if err != nil {
+		log.Warn("initialize customer onboarding service", zap.Error(err))
+		customerOnboardingSvc = nil
 	}
 	router := api.New(api.Deps{
 		Config:              cfg,
@@ -273,7 +300,8 @@ func main() {
 		ResourceTestTargets: testTargets(testPlatform),
 		SupplyRoutes:        &supplyRoutes,
 		SupplierSubmissions: submissionSvc,
-		SupplierCredentials: credentialSvc,
+		SupplierCredentials:      credentialSvc,
+		SupplierTestConfigGroups: testConfigGroupSvc,
 		SupplierModels:      supplierModelSvc,
 		SupplierAccount:     accountSvc,
 		UploadDir:           cfg.Uploads.Dir,
@@ -298,9 +326,13 @@ func main() {
 		PricingPublishSvc:        pricingPublishSvc,
 		PricingUpconductionSvc:   pricingUpconductionSvc,
 		CustomerSvc:              customerSvc,
+		CustomerResourceLinkSvc:  customerResourceLinkSvc,
+		CustomerRegistrySvc:      customerRegistrySvc,
+		CustomerOnboardingSvc:    customerOnboardingSvc,
 		CustomerSpecialSvc:       customerSpecialSvc,
 		CustomerRefreshSvc:       customerRefreshSvc,
 		CustomerExportSvc:        customerExportSvc,
+		CustomerQuoteApprovalSvc: customerQuoteApprovalSvc,
 		CustomerPortalSvc:        customerPortalSvc,
 		WorkbenchSvc:             workbenchSvc,
 		WorkbenchInboxSvc:        workbenchInboxSvc,
@@ -322,7 +354,7 @@ func main() {
 		loc = time.FixedZone("CST", 8*3600) // Asia/Shanghai 兜底
 	}
 	sched := worker.NewScheduler(worker.NewCronLocker(dbClient.DB), log, loc)
-	nJobs := worker.RegisterJobs(sched, cfg.Worker, approveSvc, lifecycleSvc, costSvc, costJobs, eventJobs)
+	nJobs := worker.RegisterJobs(sched, cfg.Worker, approveSvc, lifecycleSvc, costSvc, costJobs, eventJobs, customerResourceLinkSvc)
 	nJobs += worker.RegisterPlanReminderJob(sched, cfg.Worker, planReminderStore, log)
 	if testPlatform != nil && testPlatform.Service != nil {
 		nJobs += worker.RegisterTestPlatformPollJob(sched, cfg.Worker, cfg.TestPlatform, testPlatform.Service, log)

@@ -34,10 +34,11 @@ type accountRow struct {
 func (accountRow) TableName() string { return "account" }
 
 type staffRow struct {
-	ID                 int64 `gorm:"primaryKey"`
-	OrgUnitID          int64
-	Name               string
-	CanApproveSupplier bool
+	ID                      int64 `gorm:"primaryKey"`
+	OrgUnitID               int64
+	Name                    string
+	CanApproveSupplier      bool
+	CanApproveCustomerQuote bool
 }
 
 func (staffRow) TableName() string { return "internal_staff" }
@@ -193,6 +194,7 @@ func (r *AuthRepo) ListRolesByOperator(ctx context.Context, operatorType string,
 		out = append(out, auth.RoleGranted{Role: auth.RoleRow{
 			ID:           row.ID,
 			Code:         row.Code,
+			Name:         row.Name,
 			DataScope:    auth.DataScope(row.DataScope),
 			FieldMask:    parseFieldMask(row.FieldMask),
 			IsFunctional: row.IsFunctional,
@@ -254,7 +256,11 @@ func (r *AuthRepo) FindStaff(ctx context.Context, staffID int64) (*auth.StaffRow
 	if err != nil {
 		return nil, fmt.Errorf("take staff: %w", err)
 	}
-	return &auth.StaffRow{ID: row.ID, OrgUnitID: row.OrgUnitID, CanApproveSupplier: row.CanApproveSupplier}, nil
+	return &auth.StaffRow{
+		ID: row.ID, OrgUnitID: row.OrgUnitID, Name: row.Name,
+		CanApproveSupplier:      row.CanApproveSupplier,
+		CanApproveCustomerQuote: row.CanApproveCustomerQuote,
+	}, nil
 }
 
 // CreateSession 落库会话（role_snapshot 以 jsonb 存入）。

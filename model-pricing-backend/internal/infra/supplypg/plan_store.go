@@ -123,7 +123,9 @@ func canonicalStatePlan(input *supply.StatePlan) (*supply.StatePlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if b.ID != p.ResourceID || b.Region != p.Region || (p.Kind != "PRICE_CHANGE" && b.BuyerID != p.CreatedBy) || b.Revision != p.ExpectedResourceRevision || !b.EverAdmitted || b.UpdatedAt.After(p.CreatedAt) {
+	// 不再要求"发起人必须是归属采购人"：授权在服务层按 M3:E / 归属人判定，
+	// 这里只校验资源快照与计划内容一致（否则持有模块权限的维护人建计划会报数据不一致）。
+	if b.ID != p.ResourceID || b.Region != p.Region || b.Revision != p.ExpectedResourceRevision || !b.EverAdmitted || b.UpdatedAt.After(p.CreatedAt) {
 		return nil, supply.ErrReadContract
 	}
 	forecast := *b
@@ -571,7 +573,10 @@ func (t *planMaintenanceTransaction) AppendPlanMaintenanceEffect(ctx context.Con
 		if c.Kind == "PRICE_CHANGE" {
 			expected, err = supply.NewPriceChangePlan(c.ID, e.ActorID, c.AssigneeID, c.SupplierModelID, t.resource, c.AfterCoefficient, c.DueAt, e.Reason, c.CreatedAt)
 		} else {
-			expected, err = supply.NewStatePlan(c.ID, e.ActorID, t.resource, c.Kind, c.DueAt, e.Reason, c.CreatedAt)
+			// 适配器只做「重算一遍确认落库内容没被篡改」，授权已在服务层完成：
+		// 计划创建人必须等于经手人（见上方 e.ActorID != c.CreatedBy 的校验），
+		// 所以这里不再重复要求 buyer，否则 M3:E 维护人建的计划会被判成数据不一致。
+		expected, err = supply.NewStatePlan(c.ID, e.ActorID, t.resource, c.Kind, c.DueAt, e.Reason, c.CreatedAt, true)
 		}
 	case "REVISE":
 		if t.before == nil {

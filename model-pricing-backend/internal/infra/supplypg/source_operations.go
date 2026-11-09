@@ -43,15 +43,26 @@ func (s *ModelReadStore) ListSourceOperations(ctx context.Context, q supply.Sour
 				return supply.ErrNotFound
 			}
 		}
-		from := ` FROM ` + s.table("operation_log") + ` l LEFT JOIN ` + s.table("plan") + ` p ON l.entity_type='plan' AND p.id=l.entity_id JOIN ` + s.table("resource") + ` r ON (l.entity_type='resource' AND l.entity_id=r.id) OR (l.entity_type='plan' AND p.resource_id=r.id) JOIN ` + s.table("supplier") + ` s ON s.id=r.supplier_id WHERE ` + scopeColumn + `=$1 AND ($2::bigint IS NULL OR r.id=$2::bigint)`
-		var resourceID any
+		from := ` FROM ` + s.table("operation_log") + ` l LEFT JOIN ` + s.table("plan") + ` p ON l.entity_type='plan' AND p.id=l.entity_id JOIN ` + s.table("resource") + ` r ON (l.entity_type='resource' AND l.entity_id=r.id) OR (l.entity_type='plan' AND p.resource_id=r.id) JOIN ` + s.table("supplier") + ` s ON s.id=r.supplier_id WHERE ` + scopeColumn + `=$1 AND ($2::bigint IS NULL OR r.id=$2::bigint)` +
+			` AND ($3::text='' OR coalesce(l.operator_name_snapshot,'')=$3)` +
+			` AND ($4::text='' OR l.action=$4)` +
+			` AND ($5::timestamptz IS NULL OR l.created_at >= $5)` +
+			` AND ($6::timestamptz IS NULL OR l.created_at < $6)`
+		var resourceID, fromArg, toArg any
 		if q.ResourceID != "" {
 			resourceID = q.ResourceID
 		}
-		if err := tx.QueryRowContext(ctx, `SELECT count(*)`+from, scopeID, resourceID).Scan(&total); err != nil {
+		if q.From != nil {
+			fromArg = *q.From
+		}
+		if q.To != nil {
+			toArg = *q.To
+		}
+		args := []any{scopeID, resourceID, q.Operator, q.Action, fromArg, toArg}
+		if err := tx.QueryRowContext(ctx, `SELECT count(*)`+from, args...).Scan(&total); err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT l.id::text,l.entity_type,l.entity_id::text,r.id::text,r.supplier_id::text,s.name,r.supplier_model_name,r.region,CASE WHEN l.entity_type='plan' AND l.action='PLAN_REVISION' THEN coalesce(l."after"->>'operation',l.action) ELSE l.action END,coalesce(l.operator_name_snapshot,''),coalesce(l.reason,''),l.created_at`+from+` ORDER BY l.created_at DESC,l.id DESC LIMIT $3 OFFSET $4`, scopeID, resourceID, q.Size, (q.Page-1)*q.Size)
+		rows, err := tx.QueryContext(ctx, `SELECT l.id::text,l.entity_type,l.entity_id::text,r.id::text,r.supplier_id::text,s.name,r.supplier_model_name,r.region,CASE WHEN (l.entity_type='plan' AND l.action='PLAN_REVISION') OR (l.entity_type='resource' AND l.action='RESOURCE_REVISION') THEN coalesce(l."after"->>'operation',l.action) ELSE l.action END,coalesce(l.operator_name_snapshot,''),coalesce(l.reason,''),l.created_at`+from+` ORDER BY l.created_at DESC,l.id DESC LIMIT $7 OFFSET $8`, append(args, q.Size, (q.Page-1)*q.Size)...)
 		if err != nil {
 			return err
 		}
@@ -105,11 +116,23 @@ WHERE (l.entity_type='supplier' AND l.entity_id=s.id)
  OR (l.entity_type='supplier_formal_config' AND EXISTS(SELECT 1 FROM ` + s.table("supplier_formal_config") + ` f WHERE f.id=l.entity_id AND f.supplier_id=s.id))
  OR (l.entity_type='contract' AND EXISTS(SELECT 1 FROM ` + s.table("contract") + ` c WHERE c.id=l.entity_id AND c.subject_type='SUPPLIER' AND c.subject_id=s.id))
  OR (l.entity_type='credit_line' AND EXISTS(SELECT 1 FROM ` + s.table("credit_line") + ` c WHERE c.id=l.entity_id AND c.subject_type='SUPPLIER' AND c.subject_id=s.id))`
-		from := ` FROM (` + projection + `) op WHERE ($2::text='' OR op.entity_type=$2)`
-		if err := tx.QueryRowContext(ctx, `SELECT count(*)`+from, q.SupplierID, q.EntityType).Scan(&total); err != nil {
+		from := ` FROM (` + projection + `) op WHERE ($2::text='' OR op.entity_type=$2)` +
+			` AND ($3::text='' OR op.operator_name=$3)` +
+			` AND ($4::text='' OR op.action=$4)` +
+			` AND ($5::timestamptz IS NULL OR op.created_at >= $5)` +
+			` AND ($6::timestamptz IS NULL OR op.created_at < $6)`
+		var fromArg, toArg any
+		if q.From != nil {
+			fromArg = *q.From
+		}
+		if q.To != nil {
+			toArg = *q.To
+		}
+		args := []any{q.SupplierID, q.EntityType, q.Operator, q.Action, fromArg, toArg}
+		if err := tx.QueryRowContext(ctx, `SELECT count(*)`+from, args...).Scan(&total); err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT op.id::text,op.entity_type,op.entity_id::text,op.resource_id,op.supplier_id,op.supplier_name,op.supplier_model_id,op.region,op.action,op.operator_name,op.reason,op.created_at`+from+` ORDER BY op.created_at DESC,op.id DESC LIMIT $3 OFFSET $4`, q.SupplierID, q.EntityType, q.Size, (q.Page-1)*q.Size)
+		rows, err := tx.QueryContext(ctx, `SELECT op.id::text,op.entity_type,op.entity_id::text,op.resource_id,op.supplier_id,op.supplier_name,op.supplier_model_id,op.region,op.action,op.operator_name,op.reason,op.created_at`+from+` ORDER BY op.created_at DESC,op.id DESC LIMIT $7 OFFSET $8`, append(args, q.Size, (q.Page-1)*q.Size)...)
 		if err != nil {
 			return err
 		}
@@ -127,4 +150,53 @@ WHERE (l.entity_type='supplier' AND l.entity_id=s.id)
 		return nil, 0, err
 	}
 	return result, total, nil
+}
+
+// ListSourceOperationOptions 只做筛选候选值去重，不分页；上限 200 条，
+// 避免大模型下把下拉撑爆。作用域与 ListSourceOperations 完全一致。
+func (s *ModelReadStore) ListSourceOperationOptions(ctx context.Context, q supply.SourceOperationQuery) (supply.SourceOperationOptions, error) {
+	options := supply.SourceOperationOptions{Operators: []string{}, Actions: []string{}}
+	if q.ModelID == "" || !modelIdentity(q.ModelID) {
+		return options, supply.ErrReadContract
+	}
+	err := s.within(ctx, func(tx *sql.Tx) error {
+		from := ` FROM ` + s.table("operation_log") + ` l LEFT JOIN ` + s.table("plan") + ` p ON l.entity_type='plan' AND p.id=l.entity_id JOIN ` + s.table("resource") + ` r ON (l.entity_type='resource' AND l.entity_id=r.id) OR (l.entity_type='plan' AND p.resource_id=r.id) WHERE r.standard_model_id=$1`
+		args := []any{q.ModelID}
+		if q.ResourceID != "" {
+			from += ` AND r.id=$2`
+			args = append(args, q.ResourceID)
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT coalesce(l.operator_name_snapshot,'')`+from+` AND coalesce(l.operator_name_snapshot,'') <> '' ORDER BY 1 LIMIT 200`, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return err
+			}
+			options.Operators = append(options.Operators, name)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows, err = tx.QueryContext(ctx, `SELECT DISTINCT l.action`+from+` AND l.action <> '' ORDER BY 1 LIMIT 200`, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var action string
+			if err := rows.Scan(&action); err != nil {
+				return err
+			}
+			options.Actions = append(options.Actions, action)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return supply.SourceOperationOptions{Operators: []string{}, Actions: []string{}}, err
+	}
+	return options, nil
 }

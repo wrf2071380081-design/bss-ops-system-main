@@ -135,10 +135,12 @@ func (r *SupplyChainRuntime) ListApprovals(ctx context.Context) ([]ApprovalRow, 
 	rows, err := r.raw.QueryContext(ctx, `SELECT s.id,s.supplier_id,sp.name,s.region,s.status,s.kind,
        (SELECT count(*) FROM public.submission_row r WHERE r.submission_id=s.id),
        NOT EXISTS (SELECT 1 FROM public.resource res WHERE res.supplier_id=s.supplier_id AND res.ever_admitted=true),
-       to_char(s.submitted_at,'YYYY-MM-DD"T"HH24:MI:SSOF'),
+       to_char(s.submitted_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
        COALESCE(NULLIF(sp.contact,''),sp.phone,'—'), s.revision
 FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id
-WHERE s.status IN ('PENDING_APPROVAL','PROCESSING','PENDING_TEST') ORDER BY s.id DESC`)
+-- 待审批只放「等审批」与「等测试补齐」两类；PROCESSING 是已审批、正在办理，
+-- 不属于待办，归到「审批记录」里。原型待审批列表里也只有待审核/待核对两类。
+WHERE s.status IN ('PENDING_APPROVAL','PENDING_TEST') ORDER BY s.id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +177,7 @@ func (r *SupplyChainRuntime) ListApprovalHistory(ctx context.Context) ([]Approva
        COALESCE((SELECT operator_name_snapshot FROM public.operation_log l
          WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),''),
        COALESCE(to_char((SELECT created_at FROM public.operation_log l
-         WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),'YYYY-MM-DD"T"HH24:MI:SSOF'),''),
+         WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),''),
        COALESCE((SELECT action FROM public.operation_log l
          WHERE l.entity_type='submission' AND l.entity_id=s.id AND l.action IN ('APPROVE','REJECT') ORDER BY l.id DESC LIMIT 1),''),
        COALESCE((SELECT reason FROM public.operation_log l
@@ -323,13 +325,32 @@ func supplierWorkspaceListQuery(aliasTableAvailable bool) string {
 	return `SELECT s.id,s.name,` + aliases + `,s.region,COALESCE(s.phone,''),
        (SELECT count(*) FROM public.resource res WHERE res.supplier_id=s.id),
        COALESCE(current_credit.amount,''),current_credit.status,COALESCE(s.settlement_currency,''),COALESCE(s.tax_rate::text,''),
+       -- 合同状态三档优先级（从高到低，不要随意调换）：
+       --   1) 「办理中」：存在 enabled 且未完成的 CONTRACT 节点（IN_PROGRESS / WAITING_PREDECESSOR），
+       --      或 contract 表里有 PROCESSING 记录
+       --   2) 「已归档」：没有在办的，且存在 enabled 且已完成的 CONTRACT 节点
+       --      （COMPLETED；历史词 DONE 由 000051 一并兼容），或 contract 表里有 ARCHIVED 记录
+       --   3) 「未登记」：以上都没有
+       --
+       -- 为什么「办理中」必须压过「已归档」：
+       -- 「已归档」是个"结案"信号，运营看到会以为这单已经结束、不再推进；
+       -- 只要还有流程在办却显示「已归档」，事情就会卡在那里没人管。
+       -- 显示「办理中」才能驱动"还有事要做"的正确行为——这不是技术偏好，是行为引导。
+       -- 因此判据不是"任意一条已完成即已归档"，而是"没有在办的 + 至少一条已完成的"。
+       --
+       -- 已知边界（刻意接受，不做特判）：
+       -- 同一供应商有多条历史 flow 时，只要**任意一条** enabled 的 CONTRACT 节点已完成，
+       -- 即使最新一单的 CONTRACT 节点被 CANCELED（enabled=false，整单取消那支），
+       -- 也会显示「已归档」——因为老单确实办过合同，这个结论不算错。
+       -- 若将来要求"以最新流程为准"，需要加 ORDER BY flow.id DESC LIMIT 1 的相关子查询，
+       -- 那就不再是一行修复，需单独立项并单独验证。
        CASE
          WHEN EXISTS (SELECT 1 FROM public.onboarding_flow f JOIN public.onboarding_node n ON n.flow_id=f.id
                       WHERE f.kind='SUPPLIER' AND f.owner_id=s.id AND n.node_key='CONTRACT' AND n.enabled
                         AND n.status IN ('IN_PROGRESS','WAITING_PREDECESSOR')) THEN '办理中'
          WHEN EXISTS (SELECT 1 FROM public.contract c WHERE c.subject_type='SUPPLIER' AND c.subject_id=s.id AND c.status='PROCESSING') THEN '办理中'
          WHEN EXISTS (SELECT 1 FROM public.onboarding_flow f JOIN public.onboarding_node n ON n.flow_id=f.id
-                      WHERE f.kind='SUPPLIER' AND f.owner_id=s.id AND n.node_key='CONTRACT' AND n.enabled AND n.status='DONE') THEN '已归档'
+                      WHERE f.kind='SUPPLIER' AND f.owner_id=s.id AND n.node_key='CONTRACT' AND n.enabled AND n.status IN ('DONE','COMPLETED')) THEN '已归档'
          WHEN EXISTS (SELECT 1 FROM public.contract c WHERE c.subject_type='SUPPLIER' AND c.subject_id=s.id AND c.status='ARCHIVED') THEN '已归档'
          ELSE '未登记'
        END,
@@ -403,19 +424,23 @@ func (r *SupplyChainRuntime) isApprover(ctx context.Context, staffID int64) (boo
 }
 
 // Approve 领导通过申报并分配测试/合同办理人。
-func (r *SupplyChainRuntime) Approve(ctx context.Context, submissionID, actorID, testAssignee, contractAssignee int64, reason string) error {
-	return r.approve(ctx, submissionID, 0, actorID, testAssignee, contractAssignee, reason, fmt.Sprintf("approve-%d", submissionID))
+//
+// decisions 是原型「逐模型决定」的落点：key=submission_row.id，true=通过、false=不通过。
+// 没有出现在 map 里的行按原型口径当作「不勾=不通过」；decisions 为 nil 时视为整单通过，
+// 兼容尚未升级的调用方（老接口/老测试）。
+func (r *SupplyChainRuntime) Approve(ctx context.Context, submissionID, actorID, testAssignee, contractAssignee int64, reason string, decisions map[int64]bool) error {
+	return r.approve(ctx, submissionID, 0, actorID, testAssignee, contractAssignee, reason, fmt.Sprintf("approve-%d", submissionID), decisions)
 }
 
 // ApproveVersioned joins the public idempotency transaction. The decision and
 // task assignment are the same implementation used by native A handling.
-func (r *SupplyChainRuntime) ApproveVersioned(ctx context.Context, submissionID, expected, actorID, testAssignee, contractAssignee int64, reason, requestID string) error {
-	if expected <= 0 || strings.TrimSpace(reason) == "" || len(reason) > 2000 {
+func (r *SupplyChainRuntime) ApproveVersioned(ctx context.Context, submissionID, expected, actorID, testAssignee, contractAssignee int64, reason, requestID string, decisions map[int64]bool) error {
+	if expected <= 0 || len(reason) > 2000 {
 		return supply.ErrReadContract
 	}
-	return r.approve(ctx, submissionID, expected, actorID, testAssignee, contractAssignee, reason, requestID)
+	return r.approve(ctx, submissionID, expected, actorID, testAssignee, contractAssignee, reason, requestID, decisions)
 }
-func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected, actorID, testAssignee, contractAssignee int64, reason, requestID string) error {
+func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected, actorID, testAssignee, contractAssignee int64, reason, requestID string, decisions map[int64]bool) error {
 	ok, err := r.isApprover(ctx, actorID)
 	if err != nil {
 		return err
@@ -468,6 +493,44 @@ func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected
 	if expected > 0 && revision != expected {
 		return supply.ErrRevisionConflict
 	}
+	// 逐模型决策：原型里勾=通过、不勾=不通过，因此没出现在 decisions 里的行按不通过处理。
+	// decisions == nil 表示调用方没启用途模型审批，等价于整单通过。
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "领导审批通过"
+	}
+	rowIDs, err := submissionRowIDs(ctx, tx, submissionID)
+	if err != nil {
+		return err
+	}
+	if len(rowIDs) == 0 {
+		return supply.ErrReadContract
+	}
+	approved := map[int64]bool{}
+	if decisions == nil {
+		for _, id := range rowIDs {
+			approved[id] = true
+		}
+	} else {
+		known := map[int64]bool{}
+		for _, id := range rowIDs {
+			known[id] = true
+		}
+		for id := range decisions {
+			if !known[id] {
+				return &supply.FieldError{Path: "rows", Reason: "decision row does not belong to this submission"}
+			}
+		}
+		for _, id := range rowIDs {
+			approved[id] = decisions[id]
+		}
+	}
+	approvedCount := 0
+	for _, id := range rowIDs {
+		if approved[id] {
+			approvedCount++
+		}
+	}
 	for _, staff := range []int64{testAssignee, contractAssignee} {
 		if staff <= 0 {
 			continue
@@ -487,6 +550,57 @@ func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected
 	if expected > 0 && firstModel && contractAssignee <= 0 {
 		return &supply.FieldError{Path: "contract_assignee_id", Reason: "first model requires a contract handler"}
 	}
+	// 校验全部通过后才落库：这道事务在 idempotency 中间件里提交，
+	// handler 返回错误并不会自动回滚，所以任何写操作都必须排在校验之后，
+	// 否则会出现「报错了但状态/决策已经改了」的半截数据。
+	var submissionKind string
+	if err := tx.QueryRowContext(ctx, `SELECT kind FROM public.submission WHERE id=$1`, submissionID).Scan(&submissionKind); err != nil {
+		return err
+	}
+	if approvedCount > 0 && submissionKind != "PRICE_CHANGE" {
+		// 新模型接入要求每行都有可用的测试指纹（与 RecordNativeApproval 同一门槛），
+		// 提前拦下来，避免先改状态再失败。
+		for _, id := range rowIDs {
+			if !approved[id] {
+				continue
+			}
+			var fingerprint string
+			if err := tx.QueryRowContext(ctx, `SELECT coalesce(test_fingerprint,'') FROM public.submission_row WHERE id=$1`, id).Scan(&fingerprint); err != nil {
+				return err
+			}
+			if fingerprint == "" {
+				return supply.ErrTestEvidenceRequired
+			}
+		}
+	}
+	for _, id := range rowIDs {
+		decision := "REJECTED"
+		if approved[id] {
+			decision = "APPROVED"
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE public.submission_row
+SET decision=$1, decided_at=now(), decided_by=$2 WHERE id=$3`, decision, actorID, id); err != nil {
+			return err
+		}
+	}
+	if approvedCount == 0 {
+		// 全部不通过 = 整单驳回：状态打到 REJECTED，不生成办理流程，也不分派办理人。
+		if _, err := tx.ExecContext(ctx, `UPDATE public.submission SET status='REJECTED',revision=revision+1,updated_at=now() WHERE id=$1`, submissionID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO public.operation_log
+(entity_type, entity_id, action, "after", reason, request_id, created_at, operator_id, operator_name_snapshot)
+VALUES ('submission', $1, 'REJECT', $2::jsonb, $3, $4, now(), $5, (SELECT name FROM public.internal_staff WHERE id=$5))`,
+			fmt.Sprintf("%d", submissionID),
+			fmt.Sprintf(`{"status":"REJECTED","revision":%d,"reason":%q,"approved":0}`, revision+1, reason),
+			reason, requestID, actorID); err != nil {
+			return err
+		}
+		if owned {
+			return tx.Commit()
+		}
+		return nil
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE public.submission SET status='PROCESSING',revision=revision+1,updated_at=now() WHERE id=$1`, submissionID); err != nil {
 		return err
 	}
@@ -500,8 +614,10 @@ VALUES($1,'CONFIG','IN_PROGRESS',$2)`, flowID, testAssignee); err != nil {
 		return err
 	}
 	if firstModel && contractAssignee > 0 {
+		// 技术（CONFIG）与商务（CONTRACT）是并行的两条腿，和原型一致：
+		// 审批一通过两条腿同时可办，谁先完成都可以，两个都完成才收口整单。
 		if _, err := tx.ExecContext(ctx, `INSERT INTO public.onboarding_node(flow_id,node_key,status,assignee_id)
-VALUES($1,'CONTRACT','WAITING_PREDECESSOR',$2)`, flowID, contractAssignee); err != nil {
+VALUES($1,'CONTRACT','IN_PROGRESS',$2)`, flowID, contractAssignee); err != nil {
 			return err
 		}
 	}
@@ -541,6 +657,24 @@ func (s *stageReportRefs) get(id string) *supplypg.ReportEvidenceRef {
 		return nil
 	}
 	return s.m[id]
+}
+
+// submissionRowIDs 读出一张申报单下所有行的 id（升序），用于逐模型决策。
+func submissionRowIDs(ctx context.Context, tx *sql.Tx, submissionID int64) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM public.submission_row WHERE submission_id=$1 ORDER BY id`, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, 8)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // SimulateAndAdmit 由办理人触发：mock 测试 + 创建资源 + 绑定正式配置 + 登记接入。
@@ -839,7 +973,8 @@ func (h *SupplyChainHandler) Approve(c *gin.Context) {
 		response.Error(c, apperr.ErrInvalidParams)
 		return
 	}
-	if err := h.rt.Approve(c.Request.Context(), id, op.StaffID, req.TestAssigneeID, req.ContractAssigneeID, req.Reason); err != nil {
+	// 旧入口不分行：nil decisions = 整单通过（逐模型决策走 /flows/submissions/:id/approve）。
+	if err := h.rt.Approve(c.Request.Context(), id, op.StaffID, req.TestAssigneeID, req.ContractAssigneeID, req.Reason, nil); err != nil {
 		if err == supply.ErrForbidden {
 			response.Error(c, apperr.ErrForbidden)
 			return

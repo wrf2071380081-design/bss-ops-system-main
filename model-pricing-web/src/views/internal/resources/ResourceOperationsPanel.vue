@@ -2,12 +2,13 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { resourceOperationsApi } from "../../../api/resourceOperations";
+import { completeResourceAccess } from "../../../api/resourceAccess";
 import { canAdmitResource, canBindFormalConfig, type FormalConfigOption } from "../../../api/resourceOperations.contract";
 import { resourceRegionLabels } from "../../../api/resources.contract";
 import type { ResourceRow } from "../../../api/resources.types";
 import type { ResourceWorkflowActions } from "../../../api/resourceWorkflow.contract";
 
-const props = defineProps<{ resource: ResourceRow }>();
+const props = defineProps<{ resource: ResourceRow; variant?: "card" | "plain" }>();
 const emit = defineEmits<{ updated: [] }>();
 const configs = ref<FormalConfigOption[]>([]), selectedConfigID = ref(""), loadingConfigs = ref(false), configError = ref("");
 const bindReason = ref(""), bindBusy = ref(false), bindMessage = ref(""), bindError = ref("");
@@ -46,6 +47,54 @@ const bindable = computed(() => canBindFormalConfig(props.resource));
 const admissible = computed(() => canAdmitResource(props.resource));
 const eligibleConfigs = computed(() => configs.value.filter(config => config.supplier_id === props.resource.supplier_id && config.region === props.resource.region && config.status === "ACTIVE" && config.has_api_key && config.revision === config.confirmed_revision));
 let active = true, configRequest: AbortController | undefined;
+
+// ---- 原型「接口配置」：接口模型 ID / Base URL / API Key 三个字段 + 一次「完成当前模型技术登记」----
+// 一个按钮内部依次完成「建或复用正式配置 → 关联 → 挂测试证据（尽力而为）→ 登记接入」，
+// 四步各自留审计；测试不是前置条件（申报阶段已跑过，这里只是把结果挂上）。
+const accessForm = reactive({ base_url: "", api_key: "" });
+const accessBusy = ref(false), accessError = ref(""), accessDone = ref(false);
+// 登记成功后父组件可能还没来得及刷新，这里先记住刚绑定的配置，避免摘要显示「未登记」。
+const accessResult = ref<FormalConfigOption>();
+const boundConfig = computed(() => accessResult.value ?? configs.value.find(item => item.id === props.resource.formal_config_id));
+// 只有该资源的指定技术办理人（服务端下发 can_bind / can_admit）才给可编辑表单，其余账号只读。
+const canHandleAccess = computed(() => Boolean(workflow.value?.can_bind || workflow.value?.can_admit));
+const showQuickAccess = computed(() => !props.resource.ever_admitted && !accessDone.value && canHandleAccess.value);
+const showAccessSummary = computed(() => !showQuickAccess.value &&
+  (Boolean(props.resource.formal_config_id) || props.resource.ever_admitted || accessDone.value ||
+   Boolean(workflow.value && !canHandleAccess.value)));
+// 该地址已有正式配置时可复用，API Key 可以留空（原型里同一供应商的配置也是复用的）。
+const reuseConfig = computed(() => eligibleConfigs.value.find(item => item.base_url === accessForm.base_url.trim()));
+// 能用「接口配置」一步走完时，分步面板收起；不能时自动展开，避免功能被藏起来。
+const advancedOpen = ref<string[]>([]);
+watch(showQuickAccess, (quick) => { advancedOpen.value = quick || accessDone.value ? [] : ["advanced"]; }, { immediate: true });
+watch(boundConfig, (config) => { if (config && !accessForm.base_url) accessForm.base_url = config.base_url; }, { immediate: true });
+
+async function copyField(value: string, label: string) {
+  if (!value) { ElMessage.info(`${label}尚未填写`); return; }
+  try { await navigator.clipboard.writeText(value); ElMessage.success(`${label}已复制`); }
+  catch { ElMessage.warning("浏览器未授权剪贴板，请手动选择复制"); }
+}
+function copyKeyHint() { ElMessage.info("API Key 不回显；需要更换请展开「分步办理与配置维护（高级）」重置。"); }
+
+async function completeAccess() {
+  if (accessBusy.value) return;
+  const baseURL = accessForm.base_url.trim(), apiKey = accessForm.api_key.trim();
+  accessError.value = "";
+  if (!baseURL) { accessError.value = "请填写 Base URL。"; return; }
+  accessBusy.value = true;
+  try {
+    const { config } = await completeResourceAccess(props.resource, { baseURL, apiKey });
+    accessDone.value = true;
+    accessResult.value = config;
+    accessForm.api_key = "";
+    ElMessage.success("当前模型技术登记已完成");
+    emit("updated");
+  } catch (error) {
+    accessError.value = error instanceof Error ? error.message : "接入失败，请重试。";
+  } finally {
+    if (active) accessBusy.value = false;
+  }
+}
 
 async function loadConfigs() {
   configRequest?.abort(); const request = configRequest = new AbortController();
@@ -141,18 +190,72 @@ async function admit() {
   finally { if (active) admissionBusy.value = false; }
 }
 
-onMounted(() => { void loadWorkflow(); if (bindable.value) void loadConfigs(); });
-watch(() => props.resource.revision, () => { void loadWorkflow(); if (bindable.value) void loadConfigs(); });
+// 配置列表始终加载：既用于「接口配置」预填/复用，也用于已接入资源的只读摘要。
+onMounted(() => { void loadWorkflow(); void loadConfigs(); });
+watch(() => props.resource.revision, () => { void loadWorkflow(); void loadConfigs(); });
 onBeforeUnmount(() => { active = false; configRequest?.abort(); workflowRequest?.abort(); });
 </script>
 
 <template>
-  <section class="resource-operations">
+  <section class="resource-operations" :class="{ 'is-plain': props.variant === 'plain' }">
     <p class="operation-context">{{ resource.supplier_name }} · {{ resource.model_name }} · {{ resourceRegionLabels[resource.region] }}</p>
-    <el-alert type="info" :closable="false" title="服务端将按当前流程节点校验办理人；此页面不指定办理人。" />
+    <el-alert v-if="props.variant !== 'plain'" type="info" :closable="false" title="服务端将按当前流程节点校验办理人；此页面不指定办理人。" />
     <el-alert v-if="workflowError" type="warning" :closable="false" :title="workflowError"><el-button text :loading="workflowBusy" @click="loadWorkflow">刷新办理信息</el-button></el-alert>
+    <!-- 原型「接口配置」：接口模型 ID / Base URL / API Key 三个字段，一次点击完成技术登记 -->
+    <section v-if="showQuickAccess" class="operation-card quick-access">
+      <h3>接口配置</h3>
+      <p class="muted">生产配置待登记；申报时用的准入测试 Key 不会自动带入，生产 Key 需要单独登记。</p>
+      <el-form label-position="top" @submit.prevent="completeAccess">
+        <el-form-item label="接口模型 ID">
+          <el-input :model-value="resource.supplier_model_id" readonly aria-label="接口模型 ID">
+            <template #append><el-button @click="copyField(resource.supplier_model_id, '接口模型 ID')">复制</el-button></template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="Base URL *">
+          <el-input v-model="accessForm.base_url" placeholder="https://api.example.com/v1" maxlength="512" aria-label="Base URL">
+            <template #append><el-button @click="copyField(accessForm.base_url, 'Base URL')">复制</el-button></template>
+          </el-input>
+        </el-form-item>
+        <el-form-item :label="reuseConfig ? 'API Key（沿用该地址已登记的 Key）' : 'API Key *'">
+          <el-input v-model="accessForm.api_key" type="password" show-password autocomplete="new-password"
+            :disabled="Boolean(reuseConfig)"
+            :placeholder="reuseConfig ? '该 Base URL 已有正式配置，Key 沿用；如需更换请到高级里重置' : '生产环境凭据，保存后不回显'"
+            maxlength="512" aria-label="API Key">
+            <template #append><el-button @click="copyField(accessForm.api_key, 'API Key')">复制</el-button></template>
+          </el-input>
+        </el-form-item>
+      </el-form>
+      <el-alert v-if="accessError" type="error" :closable="false" :title="accessError" />
+      <el-button type="primary" :loading="accessBusy" :disabled="accessBusy || !accessForm.base_url.trim()" @click="completeAccess">完成当前模型技术登记</el-button>
+    </section>
+
+    <!-- 已登记或非本人办理：同一组字段只读展示 -->
+    <section v-else-if="showAccessSummary" class="operation-card">
+      <h3>接口配置</h3>
+      <p class="muted">{{ resource.ever_admitted || accessDone ? '当前模型已有有效生产配置。' : '当前账号没有该资源的接入办理资格：要么不是这一批的指定技术办理人，要么该办理批次已经结束。' }}</p>
+      <el-form label-position="top">
+        <el-form-item label="接口模型 ID">
+          <el-input :model-value="resource.supplier_model_id" readonly aria-label="接口模型 ID">
+            <template #append><el-button @click="copyField(resource.supplier_model_id, '接口模型 ID')">复制</el-button></template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="Base URL">
+          <el-input :model-value="boundConfig?.base_url || ''" readonly placeholder="未登记正式配置" aria-label="Base URL">
+            <template #append><el-button @click="copyField(boundConfig?.base_url || '', 'Base URL')">复制</el-button></template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="API Key">
+          <el-input :model-value="boundConfig ? (boundConfig.has_api_key ? '已登记（不回显）' : '未设置') : ''" readonly placeholder="未登记正式配置" aria-label="API Key">
+            <template #append><el-button @click="copyKeyHint">复制</el-button></template>
+          </el-input>
+        </el-form-item>
+      </el-form>
+    </section>
+
+    <el-collapse v-model="advancedOpen" class="advanced-block">
+      <el-collapse-item title="分步办理与配置维护（高级）" name="advanced">
     <section v-if="workflow?.can_refresh_tests" class="operation-card">
-      <h3>同步办理测试结果</h3><p class="muted">读取此申报行指定的连通性、压力任务及报告。两项均通过且目标一致后，才可登记接入。</p>
+      <h3>同步办理测试结果</h3><p class="muted">把申报阶段跑出来的连通、压力结果挂到本资源上；这是可选动作，不挂也能登记接入。</p>
       <el-input v-model="evidenceReason" aria-label="同步测试原因" placeholder="填写同步原因" maxlength="300" :disabled="evidenceBusy" />
       <el-alert v-if="evidenceError" type="error" :closable="false" :title="evidenceError" />
       <el-button :loading="evidenceBusy" :disabled="!evidenceReason.trim()" @click="refreshEvidence">同步测试结果</el-button>
@@ -187,7 +290,7 @@ onBeforeUnmount(() => { active = false; configRequest?.abort(); workflowRequest?
 
     <section v-if="admissible" class="operation-card">
       <h3>登记资源接入</h3>
-      <p class="muted">仅当本资源自己的连通性和压力测试均通过、正式配置已关联时开放。页面记录外部实际操作依据，办理资格由服务端核验。</p>
+      <p class="muted">正式配置关联后即可登记；测试结果不作为前置条件。页面记录外部实际操作依据，办理资格由服务端核验。</p>
       <el-checkbox v-model="externalConfirmed" :disabled="admissionBusy">已在{{ resourceRegionLabels[resource.region] }} B 端完成该模型实际配置</el-checkbox>
       <el-form label-position="top" @submit.prevent="admit">
         <el-form-item label="完成依据"><el-input v-model="completionNote" aria-label="完成依据" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="admissionBusy" /></el-form-item>
@@ -197,6 +300,8 @@ onBeforeUnmount(() => { active = false; configRequest?.abort(); workflowRequest?
       <el-alert v-if="admissionError" type="error" :closable="false" :title="admissionError"><el-button text @click="emit('updated')">刷新资源后重试</el-button></el-alert>
       <el-button type="primary" :loading="admissionBusy" :disabled="!workflow?.can_admit || admissionBusy || !externalConfirmed || !completionNote.trim() || !admissionReason.trim()" @click="admit">登记接入</el-button>
     </section>
+      </el-collapse-item>
+    </el-collapse>
 
     <section v-if="workflow?.approved_prices.length" class="operation-card">
       <h3>供应商批准改价</h3>
@@ -211,7 +316,7 @@ onBeforeUnmount(() => { active = false; configRequest?.abort(); workflowRequest?
       <el-button type="primary" :loading="priceBusy" :disabled="!priceForm.source || !priceForm.confirmed || !priceForm.note.trim() || !priceForm.reason.trim()" @click="applyPrice">登记批准改价完成</el-button>
     </section>
 
-    <el-alert v-if="!bindable && !admissible && workflow && !workflow.approved_prices.length" type="info" :closable="false" title="当前账号没有此资源待执行的配置关联、接入或批准改价任务。" />
+    <el-alert v-if="!showQuickAccess && !showAccessSummary && workflow && !workflow.approved_prices.length" type="info" :closable="false" title="当前账号没有此资源待执行的配置关联、接入或批准改价任务。" />
   </section>
 
   <el-dialog v-model="configDialogOpen" append-to-body :title="editingConfig ? '修改正式配置' : '新建正式配置'" width="min(560px, 94vw)" :close-on-click-modal="false">
@@ -231,4 +336,7 @@ onBeforeUnmount(() => { active = false; configRequest?.abort(); workflowRequest?
 <style scoped>
 .resource-operations{display:grid;gap:18px;color:#1c1d1f;--el-color-primary:#315ee8}.operation-context,.muted{font-size:13px;line-height:1.75;color:#8a9099;margin:0}.operation-card{border:1px solid #e6e8ed;border-radius:8px;padding:18px}.operation-card h3{font-size:16px;margin:0 0 8px}.operation-card .el-form{margin-top:14px}.operation-card .el-select{width:100%}.operation-card .el-alert{margin:10px 0}.operation-card .el-checkbox{margin:10px 0}.operation-card>.el-button{margin-top:6px}
 .config-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.config-heading h3{margin:0}
+/* 嵌在「接口配置」弹窗里时不再套一层卡片边框，视觉上就是原型那张表单。 */
+.resource-operations.is-plain .operation-card{border:0;border-radius:0;padding:0}
+.resource-operations.is-plain .operation-card>.el-button{margin-top:4px}
 </style>

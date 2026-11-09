@@ -26,7 +26,12 @@ func newSupplierSubmissionService(db *gorm.DB, cfg *config.Config, starter api.T
 	if err != nil {
 		return nil, err
 	}
-	return api.NewSupplierSubmissionService(store, starter, time.Now), nil
+	// 000052：申报发单/门槛/失效判定都按「行所属配置组」取凭据。
+	groups, err := supplypg.NewTestConfigGroupStore(raw, "public")
+	if err != nil {
+		return nil, err
+	}
+	return api.NewSupplierSubmissionService(store, groups, starter, time.Now), nil
 }
 
 // newSupplierModelService 装配供应商门户「模型管理」列表（2026-10-28）。
@@ -67,4 +72,23 @@ func newSupplierCredentialService(db *gorm.DB) (*api.SupplierCredentialService, 
 		return nil, err
 	}
 	return api.NewSupplierCredentialService(store), nil
+}
+
+// newSupplierTestConfigGroupService 装配供应商准入测试配置组（000052）。
+//
+// 独立成函数：装配失败只让 /supplier/test-config-groups 不注册（同一条纪律：
+// 没接仓储就不暴露能力），不影响申报与其它门户能力。
+func newSupplierTestConfigGroupService(db *gorm.DB) (*api.SupplierTestConfigGroupService, error) {
+	if db == nil {
+		return nil, nil
+	}
+	raw, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	store, err := supplypg.NewTestConfigGroupStore(raw, "public")
+	if err != nil {
+		return nil, err
+	}
+	return api.NewSupplierTestConfigGroupService(store), nil
 }

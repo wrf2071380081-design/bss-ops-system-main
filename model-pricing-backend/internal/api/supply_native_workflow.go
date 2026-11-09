@@ -35,7 +35,8 @@ func (n *nativeWorkflowActions) GetResourceWorkflow(ctx context.Context, actor, 
 	if err == nil && proof.AssigneeID == actor && !resource.EverAdmitted {
 		result.CanBind = true
 		result.CanRefreshTests = true
-		result.CanAdmit = resource.State == "PENDING_ACCESS"
+		// 待测试也可直接接入：测试是可选的质量动作，不作为技术接入的前置条件。
+		result.CanAdmit = resource.State == "PENDING_TEST" || resource.State == "PENDING_ACCESS"
 	}
 	if err != nil && !errors.Is(err, supply.ErrForbidden) && !errors.Is(err, supply.ErrRevisionConflict) {
 		return nil, err

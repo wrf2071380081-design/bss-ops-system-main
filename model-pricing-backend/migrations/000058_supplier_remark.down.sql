@@ -1,0 +1,1 @@
+ALTER TABLE supplier DROP COLUMN IF EXISTS remark;

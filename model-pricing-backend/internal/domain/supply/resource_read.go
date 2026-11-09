@@ -15,19 +15,34 @@ type ResourceListQuery struct {
 	NullsLast                                                                                    bool
 	TieBreakBy                                                                                   string
 }
+// RegionCoefficient 是某部署节点内的采购系数区间。原型在列表里按节点分列展示
+// （如「国内：0.531–0.693；海外：0.486–0.8」），单一全局区间会被最便宜的节点带偏。
+type RegionCoefficient struct {
+	Region string `json:"region"`
+	Min    string `json:"min"`
+	Max    string `json:"max"`
+}
 type ResourceGroup struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	OfficialID     string         `json:"official_id"`
-	Company        string         `json:"company"`
-	ModelType      string         `json:"model_type"`
-	SupplierCount  int            `json:"supplier_count"`
-	ResourceCount  int            `json:"resource_count"`
-	AvailableCount int            `json:"available_count"`
-	CoefficientMin string         `json:"coefficient_min"`
-	CoefficientMax string         `json:"coefficient_max"`
-	Regions        []string       `json:"regions"`
-	StateCounts    map[string]int `json:"state_counts"`
+	ID                 string              `json:"id"`
+	Name               string              `json:"name"`
+	OfficialID         string              `json:"official_id"`
+	Company            string              `json:"company"`
+	ModelType          string              `json:"model_type"`
+	SupplierCount      int                 `json:"supplier_count"`
+	ResourceCount      int                 `json:"resource_count"`
+	AvailableCount     int                 `json:"available_count"`
+	CoefficientMin     string              `json:"coefficient_min"`
+	CoefficientMax     string              `json:"coefficient_max"`
+	Regions            []string            `json:"regions"`
+	RegionCoefficients []RegionCoefficient `json:"region_coefficients"`
+	StateCounts        map[string]int      `json:"state_counts"`
+}
+
+// ResourceGroupRows 是一个分组的成员资源。Model 只在没有货源时提供模型元信息
+// ——模型广场同时是招商清单，没有资源的模型也要占一行（供应来源 0 家、系数「—」）。
+type ResourceGroupRows struct {
+	Model   *ResourceGroup
+	Records []*ResourceRecord
 }
 type ResourceListResult struct {
 	View       string
@@ -40,7 +55,7 @@ type ResourceReadStore interface {
 	// Page distinct filtered model IDs first, then return complete members for
 	// those IDs. Domain filtering below protects aggregates from extra regions,
 	// but cannot repair missing members or an incorrect SQL total/order.
-	ListResourceGroups(context.Context, ResourceListQuery) ([][]*ResourceRecord, int64, error)
+	ListResourceGroups(context.Context, ResourceListQuery) ([]ResourceGroupRows, int64, error)
 	ListResourceRows(context.Context, ResourceListQuery) ([]*ResourceRecord, int64, error)
 	GetResource(context.Context, string) (*ResourceRecord, error)
 }
@@ -120,9 +135,10 @@ func resourceMatches(row *ResourceSnapshot, q ResourceListQuery) bool {
 	return resourceExtraMatches(row, q) && (q.Region == "" || row.Region == q.Region) && (q.SupplierID == "" || row.SupplierID == q.SupplierID) && (q.StandardModelID == "" || row.StandardModelID == q.StandardModelID) && (q.Company == "" || row.Company == q.Company) && (q.ModelType == "" || row.ModelType == q.ModelType) && (q.State == "" || row.State == q.State) && (q.Keyword == "" || strings.Contains(strings.ToLower(row.ModelName+" "+row.OfficialID+" "+row.SupplierName+" "+row.SupplierModelID), strings.ToLower(q.Keyword)))
 }
 func buildResourceGroup(records []*ResourceRecord, q ResourceListQuery) (*ResourceGroup, error) {
-	group := &ResourceGroup{Regions: []string{}, StateCounts: map[string]int{}}
+	group := &ResourceGroup{Regions: []string{}, StateCounts: map[string]int{}, RegionCoefficients: []RegionCoefficient{}}
 	suppliers := map[string]bool{}
 	ids := map[string]bool{}
+	byRegion := map[string]*RegionCoefficient{}
 	for _, record := range records {
 		row, err := BuildResourceSnapshot(record)
 		if err != nil {
@@ -154,13 +170,22 @@ func buildResourceGroup(records []*ResourceRecord, q ResourceListQuery) (*Resour
 		if !slices.Contains(group.Regions, row.Region) {
 			group.Regions = append(group.Regions, row.Region)
 		}
-		value, _ := resourceCoefficient(row.Coefficient)
+		value, err := resourceCoefficient(row.Coefficient)
+		if err != nil {
+			return nil, err
+		}
 		if group.CoefficientMin == "" {
 			group.CoefficientMin = row.Coefficient
 			group.CoefficientMax = row.Coefficient
 		} else {
-			minimum, _ := resourceCoefficient(group.CoefficientMin)
-			maximum, _ := resourceCoefficient(group.CoefficientMax)
+			minimum, err := resourceCoefficient(group.CoefficientMin)
+			if err != nil {
+				return nil, err
+			}
+			maximum, err := resourceCoefficient(group.CoefficientMax)
+			if err != nil {
+				return nil, err
+			}
 			if value.LessThan(minimum) {
 				group.CoefficientMin = row.Coefficient
 			}
@@ -168,13 +193,47 @@ func buildResourceGroup(records []*ResourceRecord, q ResourceListQuery) (*Resour
 				group.CoefficientMax = row.Coefficient
 			}
 		}
+		regional := byRegion[row.Region]
+		if regional == nil {
+			byRegion[row.Region] = &RegionCoefficient{Region: row.Region, Min: row.Coefficient, Max: row.Coefficient}
+			continue
+		}
+		minimum, err := resourceCoefficient(regional.Min)
+		if err != nil {
+			return nil, err
+		}
+		maximum, err := resourceCoefficient(regional.Max)
+		if err != nil {
+			return nil, err
+		}
+		if value.LessThan(minimum) {
+			regional.Min = row.Coefficient
+		}
+		if value.GreaterThan(maximum) {
+			regional.Max = row.Coefficient
+		}
 	}
 	if group.ID == "" {
 		return nil, ErrReadContract
 	}
 	group.SupplierCount = len(suppliers)
 	slices.Sort(group.Regions)
+	// 固定 CN 在前，与原型「国内：…；海外：…」的读法一致。
+	for _, region := range []string{"CN", "OVERSEAS"} {
+		if regional, ok := byRegion[region]; ok {
+			group.RegionCoefficients = append(group.RegionCoefficients, *regional)
+		}
+	}
 	return group, nil
+}
+
+// buildEmptyResourceGroup 把"没有货源的标准模型"变成一个正常的空分组：
+// 供应来源 0 家、系数留空、状态为空。模型广场因此同时充当招商清单。
+func buildEmptyResourceGroup(model *ResourceGroup) (*ResourceGroup, error) {
+	if model == nil || !validID(model.ID) || model.Name == "" || model.OfficialID == "" || model.Company == "" || model.ModelType == "" || model.ResourceCount != 0 || model.SupplierCount != 0 || model.AvailableCount != 0 || model.CoefficientMin != "" || model.CoefficientMax != "" || len(model.RegionCoefficients) != 0 || len(model.StateCounts) != 0 {
+		return nil, ErrReadContract
+	}
+	return &ResourceGroup{ID: model.ID, Name: model.Name, OfficialID: model.OfficialID, Company: model.Company, ModelType: model.ModelType, Regions: []string{}, RegionCoefficients: []RegionCoefficient{}, StateCounts: map[string]int{}}, nil
 }
 func (r *ResourceReader) List(ctx context.Context, q ResourceListQuery) (*ResourceListResult, error) {
 	if r == nil || r.store == nil {
@@ -195,8 +254,13 @@ func (r *ResourceReader) List(ctx context.Context, q ResourceListQuery) (*Resour
 		}
 		result.Total = total
 		seen := map[string]bool{}
-		for _, records := range groups {
-			group, err := buildResourceGroup(records, q)
+		for _, row := range groups {
+			var group *ResourceGroup
+			if len(row.Records) == 0 {
+				group, err = buildEmptyResourceGroup(row.Model)
+			} else {
+				group, err = buildResourceGroup(row.Records, q)
+			}
 			if err != nil {
 				return nil, err
 			}

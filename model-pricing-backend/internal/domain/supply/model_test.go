@@ -47,14 +47,14 @@ func TestCompleteModelRequiresHumanVerification(t *testing.T) {
 	if len(m.MissingFields()) != 0 || m.VerifyStatus != "UNVERIFIED" || m.Readiness().Ready {
 		t.Fatalf("completeness was treated as verification: %+v", m)
 	}
-	verified, changed, err := m.verified("7", 1, "2026-10-20", modelNow)
+	verified, changed, err := m.verified(WriteMeta{ActorID: "7"}, 1, "2026-10-20", modelNow)
 	if err != nil || !changed || verified.VerifyStatus != "VERIFIED" || !verified.Readiness().Ready || verified.CheckedBy != "7" {
 		t.Fatalf("human verification failed: %v %+v", err, verified)
 	}
 	if verified.VersionNo != 2 || verified.Revision != 2 || m.VersionNo != 1 {
 		t.Fatal("verification overwrote prior version")
 	}
-	again, changed, err := verified.verified("7", 2, "2026-10-20", modelNow)
+	again, changed, err := verified.verified(WriteMeta{ActorID: "7"}, 2, "2026-10-20", modelNow)
 	if err != nil || changed || again.VersionNo != 2 {
 		t.Fatal("unchanged verification created another version")
 	}
@@ -82,7 +82,7 @@ func TestModalitySpecificPricesAndUnknownFactsBlockVerification(t *testing.T) {
 			if !slices.Contains(m.MissingFields(), tc.missing) {
 				t.Fatalf("want %s in %v", tc.missing, m.MissingFields())
 			}
-			if _, _, err = m.verified("7", 1, "2026-10-20", modelNow); !errors.Is(err, ErrIncomplete) {
+			if _, _, err = m.verified(WriteMeta{ActorID: "7"}, 1, "2026-10-20", modelNow); !errors.Is(err, ErrIncomplete) {
 				t.Fatalf("incomplete model verified: %v", err)
 			}
 		})
@@ -124,23 +124,23 @@ func TestModelUpdateProtectsOwnerRevisionAndSnapshots(t *testing.T) {
 	if m.Data.PriceItems[0].Dimensions["context_tier"] != "standard" || m.Data.Capacity[0].Value != "128000 tokens" {
 		t.Fatal("model aliases caller input")
 	}
-	if _, _, err = m.Updated("8", 1, m.Data, modelNow); !errors.Is(err, ErrForbidden) {
+	if _, _, err = m.Updated(WriteMeta{ActorID: "8"}, 1, m.Data, modelNow); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("non-maintainer accepted: %v", err)
 	}
-	if _, _, err = m.Updated("7", 0, m.Data, modelNow); !errors.Is(err, ErrRevisionConflict) {
+	if _, _, err = m.Updated(WriteMeta{ActorID: "7"}, 0, m.Data, modelNow); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("stale write accepted: %v", err)
 	}
-	unchanged, changed, err := m.Updated("7", 1, m.Data, modelNow)
+	unchanged, changed, err := m.Updated(WriteMeta{ActorID: "7"}, 1, m.Data, modelNow)
 	if err != nil || changed || unchanged.Revision != 1 {
 		t.Fatal("no-op increased version")
 	}
-	verified, _, err := m.verified("7", 1, "2026-10-20", modelNow)
+	verified, _, err := m.verified(WriteMeta{ActorID: "7"}, 1, "2026-10-20", modelNow)
 	if err != nil {
 		t.Fatal(err)
 	}
 	replacement := cloneData(verified.Data)
 	replacement.PriceItems[0].Amount = "3.00000000"
-	next, changed, err := verified.Updated("7", 2, replacement, modelNow)
+	next, changed, err := verified.Updated(WriteMeta{ActorID: "7"}, 2, replacement, modelNow)
 	if err != nil || !changed || next.VerifyStatus != "UNVERIFIED" || next.Revision != 3 || next.VersionNo != 3 || next.CheckedBy != "" {
 		t.Fatalf("price change not invalidating verification: %v %+v", err, next)
 	}
@@ -156,7 +156,7 @@ func TestModelUpdateProtectsOwnerRevisionAndSnapshots(t *testing.T) {
 func TestInactiveModelCannotQuoteOrVerify(t *testing.T) {
 	m, _ := NewStandardModel("1", "7", completeModelData(), modelNow)
 	m.Status = "INACTIVE"
-	if _, _, err := m.verified("7", 1, "2026-10-20", modelNow); !errors.Is(err, ErrInactive) {
+	if _, _, err := m.verified(WriteMeta{ActorID: "7"}, 1, "2026-10-20", modelNow); !errors.Is(err, ErrInactive) {
 		t.Fatalf("inactive verified: %v", err)
 	}
 	m.VerifyStatus = "VERIFIED"
@@ -187,10 +187,46 @@ func TestNonTextModelsVerifyWithTheirOwnBillingTasks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			verified, _, err := m.verified("7", 1, "2026-10-20", modelNow)
+			verified, _, err := m.verified(WriteMeta{ActorID: "7"}, 1, "2026-10-20", modelNow)
 			if err != nil || !verified.Readiness().Ready || verified.Data.PriceItems[0].Amount != "0.00000000" || verified.Data.PriceItems[0].UnitCode != tc.unit {
 				t.Fatalf("valid modality-specific free price rejected: %v", err)
 			}
 		})
+	}
+}
+
+// 原型对齐（2026-11-05）：除维护人外，持有维护授权的人也能改资料，但不能核验。
+// 三条断言对应三个设计决定：
+//  1. CanMaintain=true 时编辑放行，false 时仍是 ErrForbidden；
+//  2. 非维护人把资料补齐后停在 UNVERIFIED（不能顺手把自己改的东西标成已核验）；
+//  3. verified() 只认维护人，CanMaintain 不生效。
+func TestDelegatedMaintainerCanEditButNotVerify(t *testing.T) {
+	data := completeModelData()
+	m, err := NewStandardModel("1", "7", data, modelNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegated := WriteMeta{ActorID: "9", CanMaintain: true}
+	if _, _, err := m.Updated(WriteMeta{ActorID: "9"}, 1, data, modelNow); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("no-permission actor accepted: %v", err)
+	}
+	next, changed, err := m.Updated(delegated, 1, data, modelNow)
+	if err != nil || changed || next.Revision != 1 {
+		t.Fatalf("delegated maintainer rejected a no-op edit: %v", err)
+	}
+	next, _, complete, err := m.ManuallySaved(delegated, 1, data, modelNow)
+	if err != nil || !complete {
+		t.Fatalf("delegated maintainer cannot save complete data: %v", err)
+	}
+	if next.VerifyStatus != "UNVERIFIED" || next.CheckedBy != "" {
+		t.Fatalf("delegated maintainer self-verified: %s / %q", next.VerifyStatus, next.CheckedBy)
+	}
+	if _, _, err := next.verified(delegated, next.Revision, "2026-10-21", modelNow); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("delegated maintainer verified: %v", err)
+	}
+	// 维护人本人保存同样的完整资料，才直接 VERIFIED。
+	own, _, complete, err := m.ManuallySaved(WriteMeta{ActorID: "7"}, 1, data, modelNow)
+	if err != nil || !complete || own.VerifyStatus != "VERIFIED" || own.CheckedBy != "7" {
+		t.Fatalf("maintainer save did not attest: %v %+v", err, own)
 	}
 }

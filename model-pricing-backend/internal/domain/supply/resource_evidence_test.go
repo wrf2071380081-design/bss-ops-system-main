@@ -88,12 +88,14 @@ func TestEvidenceRejectsAmbiguousOrderAndForeignOrFutureIdentity(t *testing.T) {
 		}
 	}
 }
+// 失败重测只按「连通」判定：平台对 stress 门类不返回 verdict，
+// pressure_passed 恒为 false，若拿它判降级等于每条资源重测后都掉回待测试。
 func TestEvidenceFailedRetestPreservesActualAdmittedAndOfflineState(t *testing.T) {
 	for _, state := range []string{"ADMITTED", "OFFLINE", "PENDING_ACCESS"} {
 		r, report := evidenceFixture(t)
 		r.State = state
 		r.EverAdmitted = state != "PENDING_ACCESS"
-		report.PressurePassed = false
+		report.ConnectivityPassed = false
 		change, err := ProposeTestEvidence(r, report, modelNow)
 		if err != nil {
 			t.Fatal(err)

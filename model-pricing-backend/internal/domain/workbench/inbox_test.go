@@ -13,6 +13,10 @@ type fakeInboxStore struct {
 	ops       []OperationItem
 	opTotal   int64
 	lastInbox InboxQuery
+	// owners 是 FlowOwners 的返回值；flowOwnerCalls 记录调用次数（用于断言"每页只 +1 次查询"）。
+	owners         map[int64]FlowOwner
+	flowOwnerCalls int
+	flowOwnerIDs   []int64
 }
 
 func TestNativeSubmissionTasksStayInsideWorkbench(t *testing.T) {
@@ -31,6 +35,14 @@ func TestNativeSubmissionTasksStayInsideWorkbench(t *testing.T) {
 func (f *fakeInboxStore) ListInbox(_ context.Context, q InboxQuery) ([]InboxItem, int64, error) {
 	f.lastInbox = q
 	return f.inbox, f.total, nil
+}
+func (f *fakeInboxStore) FlowOwners(_ context.Context, flowIDs []int64) (map[int64]FlowOwner, error) {
+	f.flowOwnerCalls++
+	f.flowOwnerIDs = append(f.flowOwnerIDs, flowIDs...)
+	if f.owners == nil {
+		return map[int64]FlowOwner{}, nil
+	}
+	return f.owners, nil
 }
 func (f *fakeInboxStore) ListPeople(context.Context) ([]Person, error) { return f.people, nil }
 func (f *fakeInboxStore) ListOperations(context.Context, OperationQuery) ([]OperationItem, int64, error) {

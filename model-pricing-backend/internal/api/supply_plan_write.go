@@ -86,6 +86,8 @@ func (h *supplyPlanWriteHandler) create(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
+	// 供应模块的维护权限看 M3:E（supplyWriteMeta 默认按 M1:E 填，会挡住运营领导）。
+	meta.CanMaintain = supplyCanEditSupplier(c)
 	result, err := h.writer.Create(c.Request.Context(), meta, req.ResourceID, expected, req.Kind, due)
 	if err == nil && (result == nil || result.ResourceID != req.ResourceID || result.Kind != req.Kind || result.CreatedBy != meta.ActorID || result.Status != "PENDING" || result.Revision != 1 || result.ExpectedResourceRevision != expected) {
 		err = supply.ErrReadContract
@@ -120,6 +122,8 @@ func (h *supplyPlanWriteHandler) revise(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
+	// 供应模块的维护权限看 M3:E（supplyWriteMeta 默认按 M1:E 填，会挡住运营领导）。
+	meta.CanMaintain = supplyCanEditSupplier(c)
 	result, err := h.writer.Revise(c.Request.Context(), meta, c.Param("id"), expected, due)
 	if err == nil && (result == nil || result.ID != c.Param("id") || result.Revision != expected+1 || result.Status != "PENDING" || result.CreatedBy != meta.ActorID) {
 		err = supply.ErrReadContract
@@ -149,6 +153,8 @@ func (h *supplyPlanWriteHandler) cancel(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
+	// 供应模块的维护权限看 M3:E（supplyWriteMeta 默认按 M1:E 填，会挡住运营领导）。
+	meta.CanMaintain = supplyCanEditSupplier(c)
 	result, err := h.writer.Cancel(c.Request.Context(), meta, c.Param("id"), expected)
 	if err == nil && (result == nil || result.ID != c.Param("id") || result.Revision != expected+1 || result.Status != "CANCELED" || result.CreatedBy != meta.ActorID) {
 		err = supply.ErrReadContract

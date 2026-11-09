@@ -4,7 +4,7 @@ import type { ResourceCache, ResourceGroup, ResourceQuery, ResourceRow } from ".
 
 export const resourceStateLabels: Record<string, string> = { PENDING_TEST: "待测试", PENDING_ACCESS: "待接入", ADMITTED: "已接入", OFFLINE: "已下架" };
 export const resourceRegionLabels: Record<string, string> = { CN: "国内", OVERSEAS: "海外" };
-export const resourceBlockLabels: Record<string, string> = { RESOURCE_NOT_ADMITTED: "资源尚未接入或已下架", SUPPLIER_INACTIVE: "供应商已停用", SUPPLIER_REGION_MISMATCH: "供应商区域不匹配", MODEL_NOT_READY: "标准模型资料或核验尚未就绪", FORMAL_CONFIG_UNAVAILABLE: "正式接口配置尚未就绪", FORMAL_CONFIG_CHANGED: "正式配置已变更，需重新确认绑定", TESTS_REQUIRED: "尚无该资源的有效测试报告", TEST_TARGET_CHANGED: "测试目标已变化，原报告不再适用", TEST_EVIDENCE_INVALID: "测试依据已失效", TESTS_NOT_PASSED: "自身连通或压力测试尚未通过" };
+export const resourceBlockLabels: Record<string, string> = { RESOURCE_NOT_ADMITTED: "资源尚未接入或已下架", SUPPLIER_INACTIVE: "供应商已停用", SUPPLIER_REGION_MISMATCH: "供应商区域不匹配", MODEL_NOT_READY: "标准模型资料或核验尚未就绪", FORMAL_CONFIG_UNAVAILABLE: "正式接口配置尚未就绪", FORMAL_CONFIG_CHANGED: "正式配置已变更，需重新确认绑定", TESTS_REQUIRED: "尚无该资源的有效测试报告", TEST_TARGET_CHANGED: "测试目标已变化，原报告不再适用", TEST_EVIDENCE_INVALID: "测试依据已失效", TESTS_NOT_PASSED: "自身连通测试尚未通过" };
 const groupedSort = ["id", "name", "company", "model_type", "supplier_count", "resource_count", "available_count", "coefficient_min", "coefficient_max"];
 const flatSort = ["id", "supplier_name", "region", "coefficient", "state", "updated_at", "admitted_at", "connection_ms", "rps", "tps", "cache_hit_rate"];
 function invalid(): never { throw new Error("供应资源响应不符合约定，请重新查询。"); }
@@ -72,9 +72,24 @@ export function validateResourceGroup(value: unknown): ResourceGroup {
   for (const key of ["name", "official_id", "company", "model_type"]) if (typeof row[key] !== "string") invalid();
   if (row.model_type && !modelTypeLabels[String(row.model_type)]) invalid();
   for (const key of ["supplier_count", "resource_count", "available_count"]) if (!integer(row[key])) invalid();
-  if ((row.resource_count as number) < 1 || (row.supplier_count as number) > (row.resource_count as number) || (row.available_count as number) > (row.resource_count as number)) invalid();
-  if (new Decimal(coefficient(row.coefficient_min)).gt(coefficient(row.coefficient_max))) invalid();
-  if (!Array.isArray(row.regions) || !row.regions.length || row.regions.some(region => !resourceRegionLabels[region])) invalid();
+  const resourceCount = row.resource_count as number;
+  if ((row.supplier_count as number) > resourceCount || (row.available_count as number) > resourceCount) invalid();
+  if (!Array.isArray(row.regions) || row.regions.some(region => !resourceRegionLabels[region])) invalid();
+  if (!Array.isArray(row.region_coefficients)) invalid();
+  const regional = row.region_coefficients as Record<string, unknown>[];
+  for (const item of regional) {
+    const entry = object(item);
+    if (!resourceRegionLabels[String(entry.region)] || new Decimal(coefficient(entry.min)).gt(coefficient(entry.max))) invalid();
+  }
+  // 没有货源的标准模型也要出现在模型广场（招商清单）：零资源、零供应商、系数与节点全空。
+  if (resourceCount === 0) {
+    if (row.supplier_count !== 0 || row.available_count !== 0 || row.coefficient_min !== "" || row.coefficient_max !== "" || (row.regions as unknown[]).length || regional.length) invalid();
+  } else {
+    if (new Decimal(coefficient(row.coefficient_min)).gt(coefficient(row.coefficient_max))) invalid();
+    if (!(row.regions as unknown[]).length) invalid();
+    if (new Set(regional.map(entry => entry.region)).size !== regional.length || regional.length !== (row.regions as unknown[]).length) invalid();
+    if (regional.some(entry => !(row.regions as string[]).includes(String(entry.region)))) invalid();
+  }
   const states = object(row.state_counts);
   if (Object.entries(states).some(([key, count]) => !resourceStateLabels[key] || !integer(count)) || Object.values(states).reduce<number>((total, count) => total + (count as number), 0) !== row.resource_count) invalid();
   return structuredClone(row) as unknown as ResourceGroup;
@@ -98,7 +113,8 @@ export function validateResourceRow(value: unknown, expectedID?: string): Resour
   if (test.status === "COMPLETED" && !["PROVIDED", "NOT_PROVIDED", "NOT_APPLICABLE"].includes(String(cache.status))) invalid();
   if (readiness.resource_revision !== row.revision || readiness.formal_config_revision !== row.formal_config_revision) invalid();
   standardModelVersion(readiness.model_version_no);
-  if (readiness.eligible && (readiness.blocked_reasons.length || row.state !== "ADMITTED" || !row.ever_admitted || test.status !== "COMPLETED" || !test.valid || !test.connectivity_passed || !test.pressure_passed)) invalid();
+  // 压力测试只作为事实返回，不再参与「能不能报价」的判定（平台对 stress 不返回 verdict）。
+  if (readiness.eligible && (readiness.blocked_reasons.length || row.state !== "ADMITTED" || !row.ever_admitted || test.status !== "COMPLETED" || !test.valid || !test.connectivity_passed)) invalid();
   resourceCacheDisplay(cache as unknown as ResourceCache, String(test.status));
   for (const key of ["connection_ms", "rps", "tps"]) resourceMetricDisplay(metrics[key] as string | null, String(test.status));
   if (!Array.isArray(row.official_price_items)) invalid();

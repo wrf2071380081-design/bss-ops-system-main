@@ -21,7 +21,11 @@ export function resourcePage(rows, query) {
     filtered = [...new Set(filtered.map(row => row.standard_model_id))].map(id => {
       const items = filtered.filter(row => row.standard_model_id === id), first = items[0];
       const coefficients = items.map(row => new Decimal(row.coefficient)).sort((a, b) => a.cmp(b));
-      return { id, name: first.model_name, official_id: first.official_id, company: first.company, model_type: first.model_type, supplier_count: new Set(items.map(row => row.supplier_id)).size, resource_count: items.length, available_count: items.filter(row => row.quote_readiness.eligible).length, coefficient_min: coefficients[0].toFixed(), coefficient_max: coefficients.at(-1).toFixed(), regions: [...new Set(items.map(row => row.region))], state_counts: items.reduce((counts, row) => ({ ...counts, [row.state]: (counts[row.state] || 0) + 1 }), {}) };
+      const regional = ["CN", "OVERSEAS"].flatMap(region => {
+        const values = items.filter(row => row.region === region).map(row => new Decimal(row.coefficient)).sort((a, b) => a.cmp(b));
+        return values.length ? [{ region, min: values[0].toFixed(), max: values.at(-1).toFixed() }] : [];
+      });
+      return { id, name: first.model_name, official_id: first.official_id, company: first.company, model_type: first.model_type, supplier_count: new Set(items.map(row => row.supplier_id)).size, resource_count: items.length, available_count: items.filter(row => row.quote_readiness.eligible).length, coefficient_min: coefficients[0].toFixed(), coefficient_max: coefficients.at(-1).toFixed(), regions: [...new Set(items.map(row => row.region))], region_coefficients: regional, state_counts: items.reduce((counts, row) => ({ ...counts, [row.state]: (counts[row.state] || 0) + 1 }), {}) };
     });
   }
   const key = query.sort_by || "id";

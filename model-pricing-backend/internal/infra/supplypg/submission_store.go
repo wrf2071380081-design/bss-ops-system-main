@@ -63,19 +63,31 @@ type SubmissionRowRecord struct {
 	// Stale 表示该测试目标的指纹与发单时不一致（改了地址/Key/模型）→ 结果不可用。
 	ConnectivityStale bool
 	StressStale       bool
-	// 发单时测试平台记录的指纹（000046 起用于按主体凭据重算「是否失效」）。
+	// 发单时测试平台记录的指纹（000046 起用于按当前配置组重算「是否失效」）。
 	ConnectivityJobFingerprint string
 	StressJobFingerprint       string
+	// TestConfigGroupID / Name / Enabled 是该行挂的准入配置组（000052）。
+	// 门槛按「组」校验、前端按组展示、发单按组取凭据，都靠这三个字段。
+	TestConfigGroupID      *int64
+	TestConfigGroupName    string
+	TestConfigGroupEnabled bool
 }
 
-// ApplyCredential 用**主体当前凭据**重算该行的「结果是否失效」，并同步展示用的测试地址。
+// ApplyConfigGroup 用**该行所挂配置组**的当前凭据重算「结果是否失效」，并同步展示用地址。
 //
 // 为什么不在 SQL 里做：指纹是 `tpdomain.TargetFingerprint` 算的 sha256，
 // 分隔符 `\x00`、大小写与尾部 `/` 的规整规则在 SQL 里复刻迟早漂移，只能放 Go 侧。
 //
-// cred 为 nil（主体还没登记凭据）时**什么都不改**：退化成按行快照判定，
-// 历史数据不会因为「没登记凭据」被一片判红。
-func (r *SubmissionRowRecord) ApplyCredential(cred *SupplierTestCredential) {
+// group 为 nil（该行没挂组 / 组已被物理删除）时**什么都不改**：退化成按行快照判定，
+// 历史数据不会因为「查不到组」被一片判红。
+//
+// 换组为什么天然失效：RefreshRowSnapshot/保存时会把**新组**的 URL/Key 写进行快照，
+// 指纹随之变化；这里用当前组重算指纹与发单时记录的指纹比较，不等即 stale。
+func (r *SubmissionRowRecord) ApplyConfigGroup(group *TestConfigGroupCredential) {
+	var cred *SupplierTestCredential
+	if group != nil {
+		cred = &SupplierTestCredential{BaseURL: group.BaseURL, APIKey: group.APIKey}
+	}
 	baseURL, apiKey := CredentialForTest(cred)
 	if r == nil || strings.TrimSpace(baseURL) == "" {
 		return
@@ -102,6 +114,8 @@ type SubmissionRowInput struct {
 	Coefficient       string
 	TestBaseURL       string
 	SealedAPIKey      string
+	// TestConfigGroupID 是该行挂的准入配置组（000052，必填）。
+	TestConfigGroupID int64
 	// ParticipateTest 表示该行参与压力测试。
 	ParticipateTest bool
 }
@@ -241,7 +255,8 @@ SELECT r.submission_id, r.id, r.standard_model_id, m.name, COALESCE(m.official_i
        r.coefficient::text, COALESCE(r.test_base_url,''), r.row_status, r.participate_test,
        COALESCE(m.company,''), COALESCE(m.model_type,''),
        r.test_fingerprint, cj.status, crep.verdict, crep.connection_ms::text, cj.target_fingerprint,
-       sj.status, srep.verdict, srep.rps::text, srep.tps::text, sj.target_fingerprint
+       sj.status, srep.verdict, srep.rps::text, srep.tps::text, sj.target_fingerprint,
+       r.test_config_group_id, COALESCE(g.name,''), COALESCE(g.enabled, false)
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
 LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
@@ -254,6 +269,7 @@ LEFT JOIN LATERAL (
   SELECT verdict, rps, tps FROM `+s.table("test_report")+`
   WHERE test_job_id = sj.id ORDER BY id DESC LIMIT 1
 ) srep ON TRUE
+LEFT JOIN `+s.table("supplier_test_config_group")+` g ON g.id = r.test_config_group_id
 WHERE r.submission_id IN (`+strings.Join(placeholders, ",")+`)
 ORDER BY r.submission_id, r.id`, args...)
 	if err != nil {
@@ -265,12 +281,18 @@ ORDER BY r.submission_id, r.id`, args...)
 		var item SubmissionRowRecord
 		var connStatus, connVerdict, conn, stressStatus, stressVerdict, rps, tps sql.NullString
 		var rowFP, connFP, stressFP sql.NullString
+		var groupID sql.NullInt64
 		if err := rows.Scan(&submissionID, &item.ID, &item.StandardModelID, &item.StandardModelName, &item.OfficialID,
 			&item.SupplierModelName, &item.Coefficient, &item.TestBaseURL, &item.RowStatus,
 			&item.ParticipateTest, &item.Company, &item.ModelType,
 			&rowFP, &connStatus, &connVerdict, &conn, &connFP,
-			&stressStatus, &stressVerdict, &rps, &tps, &stressFP); err != nil {
+			&stressStatus, &stressVerdict, &rps, &tps, &stressFP,
+			&groupID, &item.TestConfigGroupName, &item.TestConfigGroupEnabled); err != nil {
 			return nil, err
+		}
+		if groupID.Valid {
+			value := groupID.Int64
+			item.TestConfigGroupID = &value
 		}
 		item.TestFingerprint = rowFP.String
 		fingerprintChanged := func(jobFP sql.NullString) bool {
@@ -550,10 +572,11 @@ WHERE id=$1 AND submission_id=$2`, row.ID, submissionID).Scan(&existingKey); err
 			result, err := tx.ExecContext(ctx, `UPDATE `+table+`
 SET standard_model_id=$3, supplier_model_name=$4, coefficient=$5::numeric,
     test_base_url=NULLIF($6,''), test_api_key_enc=COALESCE(NULLIF($7,''), test_api_key_enc),
-    test_fingerprint=NULLIF($8,''), participate_test=$9
+    test_fingerprint=NULLIF($8,''), participate_test=$9, test_config_group_id=$10
 WHERE id=$1 AND submission_id=$2`,
 				row.ID, submissionID, row.StandardModelID, row.SupplierModelName,
-				row.Coefficient, row.TestBaseURL, row.SealedAPIKey, fingerprint, row.ParticipateTest)
+				row.Coefficient, row.TestBaseURL, row.SealedAPIKey, fingerprint, row.ParticipateTest,
+				nullableTestConfigGroupID(row.TestConfigGroupID))
 			if err != nil {
 				return err
 			}
@@ -567,11 +590,11 @@ WHERE id=$1 AND submission_id=$2`,
 		}
 		var newID int64
 		if err := tx.QueryRowContext(ctx, `INSERT INTO `+table+`
-(submission_id, standard_model_id, supplier_model_name, coefficient, test_base_url, test_api_key_enc, participate_test, row_status, test_fingerprint)
-VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),$8,'PENDING',$7) RETURNING id`,
+(submission_id, standard_model_id, supplier_model_name, coefficient, test_base_url, test_api_key_enc, participate_test, row_status, test_fingerprint, test_config_group_id)
+VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),$8,'PENDING',$7,$9) RETURNING id`,
 			submissionID, row.StandardModelID, row.SupplierModelName, row.Coefficient, row.TestBaseURL, row.SealedAPIKey,
 			tpdomain.TargetFingerprint(row.StandardModelID, row.SupplierModelName, row.TestBaseURL, row.SealedAPIKey),
-			row.ParticipateTest).Scan(&newID); err != nil {
+			row.ParticipateTest, nullableTestConfigGroupID(row.TestConfigGroupID)).Scan(&newID); err != nil {
 			return err
 		}
 		kept = append(kept, newID)
@@ -593,10 +616,10 @@ VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),$8,'PENDING',$7) RETURN
 func insertRows(ctx context.Context, tx *sql.Tx, table string, submissionID int64, rows []SubmissionRowInput) error {
 	for _, row := range rows {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO `+table+`
-(submission_id, standard_model_id, supplier_model_name, coefficient, test_base_url, test_api_key_enc, participate_test, row_status)
-VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),$7,'PENDING')`,
+(submission_id, standard_model_id, supplier_model_name, coefficient, test_base_url, test_api_key_enc, participate_test, row_status, test_config_group_id)
+VALUES ($1,$2,$3,$4::numeric,NULLIF($5,''),NULLIF($6,''),$7,'PENDING',$8)`,
 			submissionID, row.StandardModelID, row.SupplierModelName, row.Coefficient, row.TestBaseURL, row.SealedAPIKey,
-			row.ParticipateTest); err != nil {
+			row.ParticipateTest, nullableTestConfigGroupID(row.TestConfigGroupID)); err != nil {
 			return err
 		}
 	}
@@ -635,10 +658,15 @@ type TestRow struct {
 	ParticipateTest bool
 	TestBaseURL       string
 	SealedAPIKey      string
-	// EffectiveBaseURL / EffectiveAPIKey 是**主体当前凭据**（000046）。
+	// EffectiveBaseURL / EffectiveAPIKey 是**该行所挂配置组的当前凭据**（000052）。
 	// 发测试只用它们；上面两列只是行上的历史快照。
 	EffectiveBaseURL string
 	EffectiveAPIKey  string
+	// TestConfigGroupID / Name / Enabled 是行挂的组（000052）。
+	// 组已停用时 Enabled=false，但**仍允许发测试**（在途申报不能被卡死）。
+	TestConfigGroupID      int64
+	TestConfigGroupName    string
+	TestConfigGroupEnabled bool
 	Coefficient       string
 	Region            string
 	SupplierID        int64
@@ -671,14 +699,15 @@ SELECT r.id, r.submission_id, r.standard_model_id, COALESCE(m.official_id,''), r
        COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = cj.id ORDER BY tr.id DESC LIMIT 1),''),
 		COALESCE(sj.status,''), COALESCE(sj.target_fingerprint,''),
 		COALESCE((SELECT tr.verdict FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id ORDER BY tr.id DESC LIMIT 1),''),
-		COALESCE(cred.base_url,''), COALESCE(cred.api_key_enc,''),
+		COALESCE(g.base_url,''), COALESCE(g.api_key_enc,''),
+		COALESCE(g.id,0), COALESCE(g.name,''), COALESCE(g.enabled,false),
 		EXISTS(SELECT 1 FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = cj.id),
 		EXISTS(SELECT 1 FROM `+s.table("test_report")+` tr WHERE tr.test_job_id = sj.id)
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
 JOIN `+s.table("submission")+` sub ON sub.id = r.submission_id
 JOIN `+s.table("supplier")+` sp ON sp.id = sub.supplier_id
-LEFT JOIN `+s.table("supplier_test_credential")+` cred ON cred.supplier_id = sub.supplier_id
+LEFT JOIN `+s.table("supplier_test_config_group")+` g ON g.id = r.test_config_group_id
 LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
 LEFT JOIN `+s.table("test_job")+` sj ON sj.id = r.stress_job_id
 WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionID, supplierID).
@@ -688,6 +717,7 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 			&item.TestJobStatus, &item.TestJobFingerprint, &item.TestJobVerdict,
 			&item.StressJobStatus, &item.StressJobFingerprint, &item.StressJobVerdict,
 			&item.EffectiveBaseURL, &item.EffectiveAPIKey,
+			&item.TestConfigGroupID, &item.TestConfigGroupName, &item.TestConfigGroupEnabled,
 			&item.TestJobHasReport, &item.StressJobHasReport)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
@@ -846,7 +876,20 @@ WHERE r.id=$1 AND r.submission_id=$2 AND sub.supplier_id=$3`, rowID, submissionI
 //
 // 与 SupplierCredentialStore.Get 是同一份 SQL——这里只是给申报侧的调用方
 // 一个不必额外持有凭据仓储的入口。
-func (s *SubmissionStore) TestCredential(ctx context.Context, supplierID int64) (*SupplierTestCredential, error) {
+// nullableTestConfigGroupID 把 0 当成 SQL NULL（未挂组）。
+func nullableTestConfigGroupID(groupID int64) any {
+	if groupID <= 0 {
+		return nil
+	}
+	return groupID
+}
+
+// deprecatedTestCredentialRemoved 说明 TestCredential 的去向，仅供检索。
+//
+// 000052 起「主体级一条凭据」被「多配置组」取代，行级凭据统一按
+// submission_row.test_config_group_id 取（TestConfigGroupStore.GetForTest /
+// ListCredentials）。不要再从这里按 supplier_id 取凭据，否则多组会被压回一组。
+func (s *SubmissionStore) TestCredentialLegacy(ctx context.Context, supplierID int64) (*SupplierTestCredential, error) {
 	return (&SupplierCredentialStore{db: s.db, schema: s.schema}).Get(ctx, supplierID)
 }
 

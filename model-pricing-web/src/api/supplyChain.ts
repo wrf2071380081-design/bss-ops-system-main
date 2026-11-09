@@ -104,13 +104,13 @@ export const supplyChainApi = {
     return apiRequest<SupplierWorkspacePage>({ url: "/internal/supply/suppliers", method: "GET", params: query });
   },
 
-  approvalHistory: async (): Promise<ApprovalHistoryRow[]> => {
-    const data = await apiRequest<{ list: ApprovalHistoryRow[] }>({ url: "/internal/approvals/history", method: "GET" });
+  approvalHistory: async (signal?: AbortSignal): Promise<ApprovalHistoryRow[]> => {
+    const data = await apiRequest<{ list: ApprovalHistoryRow[] }>({ url: "/internal/approvals/history", method: "GET", signal });
     return data.list;
   },
 
-  approvals: async (): Promise<ApprovalRow[]> => {
-    const data = await apiRequest<{ list: ApprovalRow[] }>({ url: "/internal/approvals/submissions", method: "GET" });
+  approvals: async (signal?: AbortSignal): Promise<ApprovalRow[]> => {
+    const data = await apiRequest<{ list: ApprovalRow[] }>({ url: "/internal/approvals/submissions", method: "GET", signal });
     return data.list;
   },
 
@@ -131,15 +131,5 @@ export const supplyChainApi = {
       data,
       idempotency: { scope: `approval:reject:${id}`, payload: data },
     });
-  },
-
-  simulate: async (id: number): Promise<{ resource_id: string; state: string; revision: number }> => {
-    const data = await apiRequest<{ resource_id: string; state: string; revision: number }>({
-      url: `/internal/approvals/submissions/${id}/simulate`,
-      method: "POST",
-      data: {},
-      idempotency: { scope: `approval:simulate:${id}`, payload: { id } },
-    });
-    return data;
   },
 };

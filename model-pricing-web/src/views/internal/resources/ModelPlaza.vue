@@ -60,6 +60,15 @@ function apply() {
 function reset() { filters.value = emptySourceFilters(); sortBy.value = "name"; order.value = "asc"; apply(); }
 function sort(key: string) { order.value = sortBy.value === key && order.value === "asc" ? "desc" : "asc"; sortBy.value = key; page.value = 1; void load(); }
 function arrow(key: string) { return sortBy.value === key ? order.value === "asc" ? "↑" : "↓" : "↕"; }
+// 与详情页一致：系数按有效位展示（0.7200 → 0.72）。
+const coefficientText = (raw: string) => raw.includes(".") ? raw.replace(/0+$/, "").replace(/\.$/, "") : raw;
+const coefficientRange = (min: string, max: string) => min === max ? coefficientText(min) : `${coefficientText(min)}–${coefficientText(max)}`;
+// 原型按部署节点分别展示系数区间（国内：0.531–0.693；海外：0.486–0.8）。
+// 只给一个全局区间会把最便宜节点的价格当成整个模型的价，议价时看错对象。
+const coefficientByRegion = (row: ResourceGroup) => row.region_coefficients.length
+  ? row.region_coefficients.map(item => `${resourceRegionLabels[item.region] || item.region}：${coefficientRange(item.min, item.max)}`).join("；")
+  : "—";
+const regionText = (row: ResourceGroup) => row.regions.length ? row.regions.map(region => resourceRegionLabels[region]).join(" / ") : "—";
 function openDetail(row: PlazaGroup) {
   const query: Record<string, string> = { return_filters: encodeSourceFilters(applied.value), return_page: String(page.value), return_size: String(size.value), return_sort_by: sortBy.value, return_order: order.value };
   for (const key of ["keyword", "company", "model_type", "supplier_id", "supplier_name", "supplier_region", "region", "state"]) {
@@ -88,8 +97,8 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
             <th v-for="column in [{key:'name',label:'模型 / 官方 ID'},{key:'company',label:'模型公司'},{key:'model_type',label:'模型类型'}]" :key="column.key" :aria-sort="sortBy === column.key ? order === 'asc' ? 'ascending' : 'descending' : 'none'"><button type="button" @click="sort(column.key)">{{ column.label }} {{ arrow(column.key) }}</button></th>
             <th>部署节点</th><th :aria-sort="sortBy === 'supplier_count' ? order === 'asc' ? 'ascending' : 'descending' : 'none'"><button type="button" @click="sort('supplier_count')">供应来源 {{ arrow('supplier_count') }}</button></th><th :aria-sort="sortBy === 'coefficient_min' ? order === 'asc' ? 'ascending' : 'descending' : 'none'"><button type="button" @click="sort('coefficient_min')">采购系数 {{ arrow('coefficient_min') }}</button></th><th>资源状态</th><th>详情</th>
           </tr></thead><tbody>
-            <tr v-for="row in viewPage.list" :key="row.id"><td><strong>{{ row.name || '待补充名称' }}</strong><code>{{ row.official_id || '官方 ID 待补齐' }}</code></td><td>{{ row.company || '待补齐' }}</td><td>{{ modelTypeLabels[row.model_type] || '待补齐' }}</td><td>{{ row.regions.map(region => resourceRegionLabels[region]).join(' / ') }}</td><td>{{ row.supplier_count }} 家<span class="meta">{{ row.resource_count }} 条资源</span></td><td class="coefficient">{{ row.coefficient_min === row.coefficient_max ? row.coefficient_min : `${row.coefficient_min} – ${row.coefficient_max}` }}</td><td><el-tag :type="row.state_counts.ADMITTED ? 'success' : row.state_label === '资源待接入' ? 'warning' : 'info'" size="small">{{ row.state_label }}</el-tag><span class="meta">{{ row.available_count }} 条可报价</span></td><td><el-button size="small" @click="openDetail(row)">详情</el-button></td></tr>
-            <tr v-if="!loading && !error && !filterError && !viewPage.list.length"><td colspan="8" class="empty">当前筛选暂无供应资源</td></tr>
+            <tr v-for="row in viewPage.list" :key="row.id"><td><strong>{{ row.name || '待补充名称' }}</strong><code>{{ row.official_id || '官方 ID 待补齐' }}</code></td><td>{{ row.company || '待补齐' }}</td><td>{{ modelTypeLabels[row.model_type] || '待补齐' }}</td><td>{{ regionText(row) }}</td><td>{{ row.supplier_count }} 家<span class="meta">{{ row.resource_count }} 条资源</span></td><td class="coefficient">{{ coefficientByRegion(row) }}</td><td><el-tag :type="row.state_counts.ADMITTED ? 'success' : row.state_label === '资源待接入' ? 'warning' : 'info'" size="small">{{ row.state_label }}</el-tag></td><td><el-button size="small" @click="openDetail(row)">详情</el-button></td></tr>
+            <tr v-if="!loading && !error && !filterError && !viewPage.list.length"><td colspan="8" class="empty">当前筛选暂无模型</td></tr>
           </tbody></table>
         </div>
         <footer v-if="viewPage.total" class="plaza-pagination"><span>共 {{ viewPage.total }} 个模型</span><el-pagination v-model:current-page="page" v-model:page-size="size" :total="viewPage.total" :page-sizes="[10,20,50,100]" layout="sizes, prev, pager, next" @current-change="load" @size-change="page = 1; load()" /></footer>

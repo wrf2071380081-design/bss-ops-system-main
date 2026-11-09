@@ -98,8 +98,13 @@ func registerSubmissionRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, po
 	if portal == "supplier" && deps.SupplierSubmissions != nil && deps.IdemStore != nil {
 		registerSupplierSubmissionRoutes(protected, deps, middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey))
 	}
-	// 供应商门户：主体级测试凭据（000046，原型对齐）。
-	// 放在申报同一段：凭据是申报测试的前置条件，改它会刷新未提交申报的快照与指纹。
+	// 供应商门户：准入测试**配置组**（000052，原型对齐：一个主体多组 URL/Key）。
+	// 放在申报同一段：配置组是申报测试的前置条件，改组会刷新挂在该组上的未提交行快照。
+	if portal == "supplier" && deps.SupplierTestConfigGroups != nil && deps.IdemStore != nil {
+		registerSupplierTestConfigGroupRoutes(protected, deps, middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey))
+	}
+	// 供应商门户：主体级测试凭据（000046）。已被上面的多组取代，仅为兼容保留：
+	// 老页面/老调用方仍可读写，但**新代码不应再按 supplier_id 取凭据**。
 	if portal == "supplier" && deps.SupplierCredentials != nil && deps.IdemStore != nil {
 		registerSupplierCredentialRoutes(protected, deps, middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey))
 	}

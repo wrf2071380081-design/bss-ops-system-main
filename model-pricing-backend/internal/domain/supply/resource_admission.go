@@ -49,7 +49,7 @@ func ProposeResourceAdmission(record *ResourceRecord, proof *AdmissionProof, act
 	if !validID(proof.FlowID) || !validID(proof.NodeID) || proof.FlowRevision == 0 || proof.FlowRevision > math.MaxInt64 {
 		return nil, ErrReadContract
 	}
-	if r.Revision != cmd.ExpectedRevision || r.State != "PENDING_ACCESS" || r.EverAdmitted {
+	if r.Revision != cmd.ExpectedRevision || (r.State != "PENDING_TEST" && r.State != "PENDING_ACCESS") || r.EverAdmitted {
 		return nil, ErrRevisionConflict
 	}
 	if proof.ResourceID != r.ID || proof.SupplierID != r.SupplierID || proof.Region != r.Region || proof.OriginRowID != r.OriginRowID || proof.OriginRowVersion != r.OriginRowVersion || proof.TargetVersion != r.TargetVersion || !proof.FlowInProgress || !proof.NodeInProgress || !proof.PrerequisitesReady {
@@ -65,11 +65,16 @@ func ProposeResourceAdmission(record *ResourceRecord, proof *AdmissionProof, act
 		return nil, err
 	}
 	for _, reason := range snapshot.QuoteReadiness.BlockedReasons {
-		// Official-data verification governs quoting independently. Do not
-		// introduce an extra admission prerequisite beyond the agreed contract.
-		if reason != "MODEL_NOT_READY" {
-			return nil, ErrRevisionConflict
+		// 官方资料核验与测试证据都独立于「技术接入」这个动作：
+		//   - MODEL_NOT_READY：官方资料是否核验完，是报价口径，不拦接入；
+		//   - TESTS_*：测试是质量评估，供应商在申报阶段已经跑过，
+		//     内部复测只是可选动作，不能变成接入的前置条件（原型：填完 URL/Key 即可接入）。
+		// 真正拦接入的只有「主体不可用」和「正式配置没绑对」两类。
+		switch reason {
+		case "MODEL_NOT_READY", "TESTS_REQUIRED", "TEST_EVIDENCE_INVALID", "TEST_TARGET_CHANGED", "TESTS_NOT_PASSED":
+			continue
 		}
+		return nil, ErrRevisionConflict
 	}
 	copy.Revision++
 	copy.UpdatedAt = now.UTC()

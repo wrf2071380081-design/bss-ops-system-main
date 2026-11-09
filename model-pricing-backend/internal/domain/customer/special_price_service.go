@@ -115,6 +115,8 @@ type QuoteRow struct {
 	ValidUntil         *time.Time // 可空
 	PriceBookVersion   int
 	OwnerSalesID       int64
+	// OurCompany 我方签约主体（导出表头用；老单为空串）。
+	OurCompany string
 }
 
 // QuoteItemDetail 是 customer_quote_item 的明细。

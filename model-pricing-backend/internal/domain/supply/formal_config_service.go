@@ -35,7 +35,7 @@ func (s *FormalConfigService) checkWrite(meta WriteMeta, supplierID string) erro
 	}
 	return nil
 }
-func lockFormalSupplier(ctx context.Context, tx FormalConfigTransaction, supplierID, actorID string) (FormalConfigSupplier, error) {
+func lockFormalSupplier(ctx context.Context, tx FormalConfigTransaction, supplierID string, meta WriteMeta) (FormalConfigSupplier, error) {
 	if tx == nil {
 		return FormalConfigSupplier{}, ErrDependencyUnavailable
 	}
@@ -46,8 +46,16 @@ func lockFormalSupplier(ctx context.Context, tx FormalConfigTransaction, supplie
 	if supplier.ID != supplierID || !validID(supplier.BuyerID) || (supplier.Region != "CN" && supplier.Region != "OVERSEAS") {
 		return supplier, ErrReadContract
 	}
-	if supplier.BuyerID != actorID {
-		return supplier, ErrForbidden
+	// 允许三类人写：归属采购人、持 M3:E 的维护人（meta.CanMaintain）、
+	// 以及本供应商办理中节点分派给本人的办理人（技术办理人登记接口配置）。
+	if supplier.BuyerID != meta.ActorID && !meta.CanMaintain {
+		assigned, err := tx.HandlingAssigneeForSupplier(ctx, supplierID, meta.ActorID)
+		if err != nil {
+			return supplier, err
+		}
+		if !assigned {
+			return supplier, ErrForbidden
+		}
 	}
 	if supplier.Status != "ACTIVE" {
 		return supplier, ErrInactive
@@ -98,7 +106,7 @@ func (s *FormalConfigService) Create(ctx context.Context, meta WriteMeta, suppli
 	}
 	var result *FormalConfigView
 	err := s.work.Within(ctx, func(tx FormalConfigTransaction) error {
-		supplier, err := lockFormalSupplier(ctx, tx, supplierID, meta.ActorID)
+		supplier, err := lockFormalSupplier(ctx, tx, supplierID, meta)
 		if err != nil {
 			return err
 		}
@@ -155,7 +163,7 @@ func (s *FormalConfigService) Update(ctx context.Context, meta WriteMeta, suppli
 	}
 	var result *FormalConfigView
 	err := s.work.Within(ctx, func(tx FormalConfigTransaction) error {
-		supplier, err := lockFormalSupplier(ctx, tx, supplierID, meta.ActorID)
+		supplier, err := lockFormalSupplier(ctx, tx, supplierID, meta)
 		if err != nil {
 			return err
 		}
@@ -214,7 +222,7 @@ func (s *FormalConfigService) Disable(ctx context.Context, meta WriteMeta, suppl
 	}
 	var result *FormalConfigView
 	err := s.work.Within(ctx, func(tx FormalConfigTransaction) error {
-		supplier, err := lockFormalSupplier(ctx, tx, supplierID, meta.ActorID)
+		supplier, err := lockFormalSupplier(ctx, tx, supplierID, meta)
 		if err != nil {
 			return err
 		}

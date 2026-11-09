@@ -68,7 +68,7 @@ func baseExportQuote() *QuoteRow {
 	v := time.Now().Add(24 * time.Hour)
 	return &QuoteRow{
 		ID: 1, CustomerID: 1, VersionNo: 1, Status: QuoteStatusDraft,
-		QuoteType: QuoteTypeTemp, ValidUntil: &v,
+		QuoteType: QuoteTypeTemp, ValidUntil: &v, OurCompany: "根公司",
 	}
 }
 
@@ -122,10 +122,15 @@ func TestExport_Success(t *testing.T) {
 	if name != "东信公司" {
 		t.Fatalf("B2=%q", name)
 	}
-	// quote_type B3
-	qt, _ := xls.GetCellValue(sheet, "B3")
+	// 我方公司 B3（2026-11-07 起表头加了这一行，quote_type 顺延到 B4）
+	our, _ := xls.GetCellValue(sheet, "B3")
+	if our != "根公司" {
+		t.Fatalf("B3=%q", our)
+	}
+	// quote_type B4
+	qt, _ := xls.GetCellValue(sheet, "B4")
 	if qt != "TEMP" {
-		t.Fatalf("B3=%q", qt)
+		t.Fatalf("B4=%q", qt)
 	}
 	// 表头 A8
 	hdr, _ := xls.GetCellValue(sheet, "A8")

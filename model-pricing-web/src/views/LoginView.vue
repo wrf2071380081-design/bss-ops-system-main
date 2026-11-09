@@ -5,6 +5,7 @@ import { ElMessage } from "element-plus";
 import { login, loginSupplierMobile, registerSupplier } from "../api/auth";
 import { ApiError } from "../domain/common";
 import { useSessionStore, type PortalType } from "../stores/session";
+import { usePermissionStore } from "../stores/permission";
 
 const route = useRoute();
 const router = useRouter();
@@ -45,6 +46,17 @@ const demoSuppliers = [
   { name: "星河算力", phone: "13800000004", region: "海外" },
 ];
 
+// 演示人员（迁移 000053 种下）：只有「领导 / 员工」两级。
+// 领导 = LEADER 角色 + can_approve_supplier=true；员工 = STAFF 角色（无审批权）。
+const demoStaff = [
+  { name: "林舟", role: "领导", login: "linzhou" },
+  { name: "许澄", role: "领导", login: "xucheng" },
+  { name: "陈乐", role: "员工", login: "chenle" },
+  { name: "周宁", role: "员工", login: "zhouning" },
+  { name: "沈安", role: "员工", login: "shenan" },
+];
+const DEMO_STAFF_PASSWORD = "Test@1234";
+
 watch(portal, () => {
   password.value = "";
   error.value = "";
@@ -78,11 +90,21 @@ function errorText(cause: unknown) {
 async function finish(result: Parameters<typeof session.startSession>[0], displayName: string) {
   const target = portal.value;
   session.startSession(result, target, displayName);
+  // startSession 内部已用服务端返回的 perms / roles 重建权限集，这里可以直接判定。
+  const permissions = usePermissionStore();
   const redirect = route.query.redirect;
   const destination = typeof redirect === "string" && redirect.startsWith(`/${target}/`)
     ? router.resolve(redirect) : null;
-  await router.replace(destination?.meta.requiresAuth && destination.meta.portal === target
-    ? destination.fullPath : homes[target]);
+  // 只校验「路由存在 + 需要登录 + portal 匹配」是不够的：登录前所在的页面未必是
+  // 当前账号有权访问的页面。典型场景——平台管理员在「账号管理」页退出登录，
+  // redirect 仍是 /internal/accounts，换成新员工账号登录后会被送回该页，
+  // 路由守卫判定无权 → 落地即 /403（用户看到「无权访问」，点返回才恢复）。
+  // 所以落地前必须再校验一次目标 routeKey，无权就回该门户首页。
+  const routeKey = destination?.meta.routeKey as string | undefined;
+  const landingAllowed = Boolean(destination?.meta.requiresAuth)
+    && destination?.meta.portal === target
+    && (!routeKey || permissions.canRoute(routeKey));
+  await router.replace(landingAllowed && destination ? destination.fullPath : homes[target]);
 }
 
 async function submitInternal() {
@@ -100,6 +122,14 @@ async function submitInternal() {
     password.value = "";
     busy.value = false;
   }
+}
+
+/** 演示人员一键登录：填入账号与统一口令后直接提交，等同原型顶栏「切换成员」。 */
+async function loginAsStaff(item: { name: string; role: string; login: string }) {
+  if (busy.value) return;
+  account.value = item.login;
+  password.value = DEMO_STAFF_PASSWORD;
+  await submitInternal();
 }
 
 async function submitSupplierLogin() {
@@ -180,6 +210,13 @@ async function submitSupplierRegister() {
         <p v-if="error" role="alert" class="login-error">{{ error }}</p>
         <el-button type="primary" native-type="submit" :loading="busy">登录</el-button>
       </form>
+
+      <div v-if="isInternal" class="demo-accounts">
+        <span>演示人员（点击直接登录）：</span>
+        <button v-for="item in demoStaff" :key="item.login" type="button" :disabled="busy" @click="loginAsStaff(item)">
+          {{ item.name }} · {{ item.role }}
+        </button>
+      </div>
 
       <div v-else class="supplier-panel">
         <el-tabs v-model="supplierTab">

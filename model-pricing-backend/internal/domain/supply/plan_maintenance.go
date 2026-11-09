@@ -89,7 +89,7 @@ func (s *PlanMaintenanceService) Create(ctx context.Context, meta WriteMeta, res
 		if resource.ID != resourceID {
 			return ErrReadContract
 		}
-		if resource.BuyerID != meta.ActorID {
+		if resource.BuyerID != meta.ActorID && !meta.CanMaintain {
 			return ErrForbidden
 		}
 		if resource.Revision != expected {
@@ -117,7 +117,7 @@ func (s *PlanMaintenanceService) Create(ctx context.Context, meta WriteMeta, res
 			return ErrReadContract
 		}
 		now := s.now().UTC().Truncate(time.Microsecond)
-		plan, err := NewStatePlan(id, meta.ActorID, resource, kind, due.UTC().Truncate(time.Microsecond), meta.Reason, now)
+		plan, err := NewStatePlan(id, meta.ActorID, resource, kind, due.UTC().Truncate(time.Microsecond), meta.Reason, now, meta.CanMaintain)
 		if err != nil {
 			return err
 		}
@@ -159,7 +159,7 @@ func (s *PlanMaintenanceService) CreatePriceChange(ctx context.Context, meta Wri
 		if resource == nil || resource.ID != resourceID {
 			return ErrReadContract
 		}
-		if resource.BuyerID != meta.ActorID {
+		if resource.BuyerID != meta.ActorID && !meta.CanMaintain {
 			return ErrForbidden
 		}
 		if resource.Revision != expected {

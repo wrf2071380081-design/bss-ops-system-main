@@ -41,7 +41,7 @@ func buildImportFile(t *testing.T, rows [][]any) []byte {
 }
 
 func TestBuildSubmissionTemplateHasThreeSheets(t *testing.T) {
-	data, err := BuildSubmissionTemplate(testCatalog())
+	data, err := BuildSubmissionTemplate(testCatalog(), []string{"原单组配置"})
 	if err != nil {
 		t.Fatalf("build template: %v", err)
 	}
@@ -74,10 +74,10 @@ func TestBuildSubmissionTemplateHasThreeSheets(t *testing.T) {
 
 func TestParseSubmissionSheetValidRows(t *testing.T) {
 	data := buildImportFile(t, [][]any{
-		{"claude-sonnet-4", "my-claude", "0.68", "是"},
-		{"Qwen3 Max", "my-qwen", "0.5", "否"},
+		{"claude-sonnet-4", "my-claude", "0.68", "是", "原单组配置"},
+		{"Qwen3 Max", "my-qwen", "0.5", "否", "原单组配置"},
 	})
-	rows, err := ParseSubmissionSheet(data, testCatalog())
+	rows, err := ParseSubmissionSheet(data, testCatalog(), []string{"原单组配置"})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -91,6 +91,9 @@ func TestParseSubmissionSheetValidRows(t *testing.T) {
 	if !rows[1].OK || rows[1].StandardModelID != 14 || rows[1].ParticipateTest {
 		t.Fatalf("第 2 行解析错误：%+v", rows[1])
 	}
+	if rows[0].ConfigGroupName != "原单组配置" || rows[1].ConfigGroupName != "原单组配置" {
+		t.Fatalf("准入配置组应按组名解析，实际 %q / %q", rows[0].ConfigGroupName, rows[1].ConfigGroupName)
+	}
 	if rows[0].Line != 2 || rows[1].Line != 3 {
 		t.Fatalf("行号应为 2/3，实际 %d/%d", rows[0].Line, rows[1].Line)
 	}
@@ -98,20 +101,23 @@ func TestParseSubmissionSheetValidRows(t *testing.T) {
 
 func TestParseSubmissionSheetRejectsBadRows(t *testing.T) {
 	data := buildImportFile(t, [][]any{
-		{"不存在的模型", "x", "0.6", "否"},
-		{"claude-sonnet-4", "", "0.6", "否"},
-		{"Qwen3 Max", "q", "0", "否"},
-		{"Qwen3 Max", "q2", "1.2", "否"},
-		{"claude-sonnet-4", "c2", "0.12345", "否"},
-		{"claude-sonnet-4", "c3", "0.6", "大概吧"},
-		{"claude-sonnet-4", "c4", "0.7", "否"}, // 与第 2 行同模型 → 重复
+		{"不存在的模型", "x", "0.6", "否", "原单组配置"},
+		{"claude-sonnet-4", "", "0.6", "否", "原单组配置"},
+		{"Qwen3 Max", "q", "0", "否", "原单组配置"},
+		{"Qwen3 Max", "q2", "1.2", "否", "原单组配置"},
+		{"claude-sonnet-4", "c2", "0.12345", "否", "原单组配置"},
+		{"claude-sonnet-4", "c3", "0.6", "大概吧", "原单组配置"},
+		{"claude-sonnet-4", "c4", "0.7", "否", "原单组配置"}, // 与第 2 行同模型 → 重复
+		{"claude-sonnet-4", "c5", "0.7", "否", ""},                 // 没填准入配置组（000052 必填）
+		{"claude-sonnet-4", "c6", "0.8", "否", "不存在的组"},          // 组名匹不上 → 报错不静默丢弃
 	})
-	rows, err := ParseSubmissionSheet(data, testCatalog())
+	rows, err := ParseSubmissionSheet(data, testCatalog(), []string{"原单组配置"})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(rows) != 7 {
-		t.Fatalf("应返回 7 行（含错误行），实际 %d", len(rows))
+	// 7 条原有错误 + 2 条 000052 新增（没填组 / 组名不存在），共 9 行全部判错。
+	if len(rows) != 9 {
+		t.Fatalf("应返回 9 行（含错误行），实际 %d", len(rows))
 	}
 	for index, row := range rows {
 		if row.OK {
@@ -129,10 +135,10 @@ func TestParseSubmissionSheetRejectsBadRows(t *testing.T) {
 
 func TestParseSubmissionSheetRejectsEmpty(t *testing.T) {
 	data := buildImportFile(t, nil)
-	if _, err := ParseSubmissionSheet(data, testCatalog()); err == nil {
+	if _, err := ParseSubmissionSheet(data, testCatalog(), []string{"原单组配置"}); err == nil {
 		t.Fatal("空文件应报错")
 	}
-	if _, err := ParseSubmissionSheet([]byte("not a xlsx"), testCatalog()); err == nil {
+	if _, err := ParseSubmissionSheet([]byte("not a xlsx"), testCatalog(), []string{"原单组配置"}); err == nil {
 		t.Fatal("非 xlsx 应报错")
 	}
 }

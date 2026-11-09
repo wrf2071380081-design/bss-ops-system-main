@@ -18,7 +18,7 @@ func (r *SupplyChainRuntime) completeNativeContract(ctx context.Context, meta su
 	if err != nil {
 		return err
 	}
-	var supplier, submission, flow, actor, status, flowStatus, current string
+	var supplier, submission, flow, actor, status, flowStatus string
 	var decision uint64
 	err = tx.QueryRowContext(ctx, `SELECT s.supplier_id::text,s.id::text,n.flow_id::text,l.id FROM public.onboarding_node n JOIN public.operation_log l ON l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'flow_id'=n.flow_id::text JOIN public.submission s ON s.id=l.entity_id WHERE n.id=$1 AND n.node_key='CONTRACT' ORDER BY l.id DESC LIMIT 1`, nodeID).Scan(&supplier, &submission, &flow, &decision)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -34,7 +34,7 @@ func (r *SupplyChainRuntime) completeNativeContract(ctx context.Context, meta su
 	if err := tx.QueryRowContext(ctx, `SELECT status FROM public.submission WHERE id=$1 FOR UPDATE`, submission).Scan(&subStatus); err != nil {
 		return err
 	}
-	err = tx.QueryRowContext(ctx, `SELECT coalesce(n.assignee_id::text,''),n.status,f.status,f.current_node FROM public.onboarding_node n JOIN public.onboarding_flow f ON f.id=n.flow_id WHERE n.id=$1 AND n.enabled FOR UPDATE OF n,f`, nodeID).Scan(&actor, &status, &flowStatus, &current)
+	err = tx.QueryRowContext(ctx, `SELECT coalesce(n.assignee_id::text,''),n.status,f.status FROM public.onboarding_node n JOIN public.onboarding_flow f ON f.id=n.flow_id WHERE n.id=$1 AND n.enabled FOR UPDATE OF n,f`, nodeID).Scan(&actor, &status, &flowStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		return supply.ErrForbidden
 	}
@@ -44,14 +44,9 @@ func (r *SupplyChainRuntime) completeNativeContract(ctx context.Context, meta su
 	if actor != meta.ActorID {
 		return supply.ErrForbidden
 	}
-	if decision != expected || status != "IN_PROGRESS" || flowStatus != "PROCESSING" || current != "CONTRACT" || subStatus != "PROCESSING" {
-		return supply.ErrRevisionConflict
-	}
-	var predecessorReady bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.onboarding_node WHERE flow_id=$1 AND node_key='CONFIG' AND enabled AND status='COMPLETED') AND NOT EXISTS(SELECT 1 FROM public.onboarding_node WHERE flow_id=$1 AND node_key='CONFIG' AND enabled AND status<>'COMPLETED')`, flow).Scan(&predecessorReady); err != nil {
-		return err
-	}
-	if !predecessorReady {
+	// 商务与技术是并行的两条腿：合同办理不再要求技术条线先完成，
+	// 也不再把 "current_node 必须等于 CONTRACT" 当成前置（那时另一条腿可能还在办）。
+	if decision != expected || status != "IN_PROGRESS" || flowStatus != "PROCESSING" || subStatus != "PROCESSING" {
 		return supply.ErrRevisionConflict
 	}
 	if r.f12Readiness == nil {
@@ -71,11 +66,18 @@ func (r *SupplyChainRuntime) completeNativeContract(ctx context.Context, meta su
 	if _, err := tx.ExecContext(ctx, `UPDATE public.onboarding_node SET status='COMPLETED',completed_at=$2,note=$3 WHERE id=$1`, nodeID, now, meta.Reason); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE public.onboarding_flow SET status='COMPLETED',updated_at=$2 WHERE id=$1`, flow, now); err != nil {
+	// 两条腿都完成了才收口：技术还没完就先停在 PROCESSING，等另一条腿。
+	var pending int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM public.onboarding_node WHERE flow_id=$1 AND enabled AND status<>'COMPLETED'`, flow).Scan(&pending); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE public.submission SET status='COMPLETED',revision=revision+1,completed_at=$2,updated_at=$2 WHERE id=$1`, submission, now); err != nil {
-		return err
+	if pending == 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE public.onboarding_flow SET status='COMPLETED',current_node=NULL,updated_at=$2 WHERE id=$1`, flow, now); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE public.submission SET status='COMPLETED',revision=revision+1,completed_at=$2,updated_at=$2 WHERE id=$1`, submission, now); err != nil {
+			return err
+		}
 	}
 	raw, err := json.Marshal(snapshot)
 	if err != nil {

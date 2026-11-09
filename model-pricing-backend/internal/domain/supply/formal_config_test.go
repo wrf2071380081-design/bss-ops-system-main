@@ -18,6 +18,8 @@ type formalConfigMemory struct {
 	referenced bool
 	failLog    bool
 	next       int
+	// handling 模拟"此人是本供应商办理中节点的办理人"。
+	handling bool
 }
 
 func newFormalMemory() *formalConfigMemory {
@@ -38,6 +40,9 @@ func (db *formalConfigMemory) Within(ctx context.Context, run func(FormalConfigT
 	}
 	*db = work
 	return nil
+}
+func (db *formalConfigMemory) HandlingAssigneeForSupplier(_ context.Context, _, _ string) (bool, error) {
+	return db.handling, nil
 }
 func (db *formalConfigMemory) SupplierForUpdate(_ context.Context, id string) (FormalConfigSupplier, error) {
 	s, ok := db.suppliers[id]
