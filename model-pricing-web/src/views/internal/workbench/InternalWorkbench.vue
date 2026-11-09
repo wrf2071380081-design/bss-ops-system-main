@@ -259,8 +259,14 @@ async function openItem(item: InboxItemDTO) {
     await jumpToHandling(item);
     return;
   }
-  if (["SUBMISSION_APPROVAL", "SUBMISSION_CONTRACT"].includes(item.biz_type)) {
-    selectedFlow.value = { id: String(item.biz_id), node: item.biz_type !== "SUBMISSION_APPROVAL" };
+  // 申报审批按原型走独立页（可筛选模型、逐模型摆开看、审批完回供应商记录）。
+  if (item.biz_type === "SUBMISSION_APPROVAL") {
+    await router.push({ path: `/internal/submissions/${item.biz_id}` });
+    return;
+  }
+  // 合同与授信按原型走「供应商档案页」：详情 → 档案与办理 → 页面底部「当前办理范围」→ 办理。
+  if (item.biz_type === "SUBMISSION_CONTRACT") {
+    await jumpToContract(item);
     return;
   }
   if (item.biz_type === "NOTICE") {
@@ -276,13 +282,39 @@ async function openItem(item: InboxItemDTO) {
   ElMessage.info("该事项暂无关联页面");
 }
 
-// 测试与资源配置办理：只有一条可办理资源时直接进资源详情页；多条时先列出来让人挑。
+// 合同与授信：先解析出这条节点待办属于哪个供应商，再把用户送到该供应商的「档案与办理」页。
+// 原型 20261104 的路径是 工作台详情 → 供应商档案页 → 底部「当前办理范围」→ 办理原商务事项，
+// 落地页能同时看到基础资料、合同与授信档案和本批进度，比弹窗更有上下文。
+// 解析失败（流程已撤、接口异常）时退回原办理弹窗，由弹窗展示错误，避免点了没反应。
+// 注意：`?node_id=` 深链仍走弹窗——办理弹窗里「查看事项」切换节点要靠它，
+// 换成整页跳转会让弹窗内的节点切换把自己顶掉。
+async function jumpToContract(item: InboxItemDTO) {
+  try {
+    const view = await submissionFlowsApi.get(String(item.biz_id), true);
+    if (view.supplier_id) {
+      await router.push({
+        path: `/internal/suppliers/${view.supplier_id}/models`,
+        query: { tab: "profile", section: "contract", contract_flow: String(item.biz_id) },
+      });
+      return;
+    }
+  } catch {
+    // 取不到节点视图时退回办理弹窗，由弹窗展示错误。
+  }
+  selectedFlow.value = { id: String(item.biz_id), node: true };
+}
+
+// 供应资源接入：原型是从供应商详情的「接入模型」进入（能看到同批所有模型与进度），
+// 不是单条资源的详情抽屉——抽屉里看不到其他模型，也没法对照办理进度。
 async function jumpToHandling(item: InboxItemDTO) {
   try {
     const view = await submissionFlowsApi.get(String(item.biz_id), true);
     const targets = (view.rows || []).filter(row => row.resource_id && row.status !== "CANCELED");
-    if (targets.length === 1) {
-      await router.push({ path: `/internal/model-plaza/${targets[0].resource_id}`, query: { region: view.region, tab: "operations" } });
+    if (view.supplier_id) {
+      await router.push({
+        path: `/internal/suppliers/${view.supplier_id}/models`,
+        query: { tab: "models", ...(targets.length === 1 ? { highlight: targets[0].resource_id } : {}) },
+      });
       return;
     }
   } catch {
@@ -356,7 +388,7 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
             </template>
           </el-table-column>
           <el-table-column label="操作" width="80">
-            <template #default="{ row }"><el-button link type="primary" @click="openItem(row)">查看</el-button></template>
+            <template #default="{ row }"><el-button link type="primary" @click="openItem(row)">详情</el-button></template>
           </el-table-column>
           <template #empty>
             <el-empty description="当前没有事项" :image-size="64" />

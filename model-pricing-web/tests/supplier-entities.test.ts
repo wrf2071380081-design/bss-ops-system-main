@@ -5,7 +5,7 @@ import { buildSupplierEntitySave, normalizeSupplierEntity, normalizeSupplierEnti
 test("supplier entity save converts percent to ratio and omits buyer assignment", () => {
   const body = buildSupplierEntitySave({
     name: "示例供应商", region: "CN", registration_no: "", contact: "联系人", phone: "",
-    tax_rate_percent: "6.25", settlement_currency: "CNY",
+    tax_rate_percent: "6.25", settlement_currency: "CNY", remark: "",
   }, "供应商建档");
   assert.equal(body.tax_rate, "0.06250000");
   assert.equal("buyer_id" in body, false);
@@ -27,14 +27,14 @@ test("supplier entity response preserves canonical bigint strings and edit autho
 test("supplier tax percent refuses precision lost by the v36 native column", () => {
   assert.throws(() => buildSupplierEntitySave({
     name: "示例供应商", region: "CN", registration_no: "", contact: "", phone: "",
-    tax_rate_percent: "6.251", settlement_currency: "CNY",
+    tax_rate_percent: "6.251", settlement_currency: "CNY", remark: "",
   }, "建档"), /0.01/);
 });
 
 test("supplier tax rate may be left blank without becoming zero", () => {
   const body = buildSupplierEntitySave({
     name: "税率待补供应商", region: "CN", registration_no: "", contact: "", phone: "",
-    tax_rate_percent: "", settlement_currency: "CNY",
+    tax_rate_percent: "", settlement_currency: "CNY", remark: "",
   }, "资料待补");
   assert.equal(body.tax_rate, null);
 });
@@ -42,7 +42,7 @@ test("supplier tax rate may be left blank without becoming zero", () => {
 test("supplier zero tax rate remains distinct from a missing rate", () => {
   const body = buildSupplierEntitySave({
     name: "零税率供应商", region: "CN", registration_no: "", contact: "", phone: "",
-    tax_rate_percent: "0", settlement_currency: "CNY",
+    tax_rate_percent: "0", settlement_currency: "CNY", remark: "",
   }, "确认零税率");
   assert.equal(body.tax_rate, "0.00000000");
   assert.equal(normalizeSupplierEntity({

@@ -37,6 +37,18 @@ type InboxItem struct {
 	AssigneeRole string `json:"assignee_role"`
 	Deeplink     string `json:"deeplink,omitempty"`
 	Readable     bool   `json:"readable"` // 只有本人、且是待阅，才可标记已读
+	// FlowKind / FlowOwnerID 只在 ONBOARDING_NODE 行上填充，**仅用于拼 deeplink**：
+	// v_work_item 只给 biz_id（= onboarding_flow.id），没有 kind/owner_id，
+	// 而客户节点的跳转目标需要 owner_id（customer_profile.id）。
+	// 标 json:"-" 刻意不外泄：它是内部路由解析用的，不属于前端契约。
+	FlowKind    string `json:"-"`
+	FlowOwnerID int64  `json:"-"`
+}
+
+// FlowOwner 是「流程 → 主体」的最小投影，用于拼收件箱 deeplink。
+type FlowOwner struct {
+	Kind    string // SUPPLIER / CUSTOMER
+	OwnerID int64  // SUPPLIER→supplier.id；CUSTOMER→customer_profile.id
 }
 
 // InboxResult 收件箱分页结果。
@@ -89,6 +101,9 @@ type OperationResult struct {
 // InboxStore 收件箱仓储。
 type InboxStore interface {
 	ListInbox(ctx context.Context, q InboxQuery) ([]InboxItem, int64, error)
+	// FlowOwners 按 flow id 批量取「主体类型 + 主体 id」，供 ONBOARDING_NODE 拼 deeplink。
+	// 必须是**批量**接口：收件箱一页可能有多条节点待办，逐行查会成为 N+1。
+	FlowOwners(ctx context.Context, flowIDs []int64) (map[int64]FlowOwner, error)
 	ListPeople(ctx context.Context) ([]Person, error)
 	ListOperations(ctx context.Context, q OperationQuery) ([]OperationItem, int64, error)
 	// MarkNoticeRead 标记公告已读；返回 false 表示公告不存在。
@@ -131,12 +146,78 @@ func (s *InboxService) Inbox(ctx context.Context, q InboxQuery, viewerID int64) 
 	if err != nil {
 		return nil, fmt.Errorf("list inbox: %w", err)
 	}
+	// 先补 ONBOARDING_NODE 的 kind/owner（每页最多 1 次批量查询），再逐行拼 deeplink。
+	if err := s.attachFlowOwners(ctx, list); err != nil {
+		return nil, fmt.Errorf("attach flow owners: %w", err)
+	}
 	for i := range list {
 		list[i].AssigneeRole = inboxAssigneeRole(list[i])
+		list[i].Title = inboxTitle(list[i])
 		list[i].Deeplink = inboxItemDeeplink(list[i])
 		list[i].Readable = list[i].BizType == "NOTICE" && list[i].State == "READ" && q.AssigneeID == viewerID
 	}
 	return &InboxResult{List: list, Total: total, Page: q.Page, Size: q.Size}, nil
+}
+
+// inboxTitle 把办理节点的原始 node_key 翻成待办标题。
+//
+// 视图 `v_work_item` 里 title 直接取 onboarding_node.node_key（CONFIG / CONTRACT），
+// 待办列表上就显示成「CONFIG」。原型 3.9c 的写法是「客户模型开通 / 客户名」。
+// 改视图会牵动 `workbench_inbox.go` 里按 `title IN ('CONFIG','CONTRACT')` 写的排除
+// SQL，所以只在**显示值**上翻译，不动视图与那条件。
+//
+// 客户流程节点不再有任何显示名映射：这类节点已在 `workbench_inbox.go` 的来源 SQL 里
+// 整体排除出收件箱（客户侧要办的两件事由报价审批派发的 todo_task 承载，
+// 即「客户模型开通」「合同与授信」）。此前给客户 CONTRACT 节点起的「客户商务办理」
+// 是代码自造词，原型与前端都叫「合同与授信」，已随这次排除一并删除。
+func inboxTitle(item InboxItem) string {
+	if item.BizType != "ONBOARDING_NODE" {
+		return item.Title
+	}
+	// 能走到这里的只有供应商节点：CONFIG / CONTRACT 两个主要节点另有专门分支
+	// （SUBMISSION_HANDLING / SUBMISSION_CONTRACT）负责拼标题，这里是兜底。
+	switch item.Title {
+	case "CONFIG":
+		return "供应资源接入"
+	case "CONTRACT":
+		return "合同与授信办理"
+	}
+	return item.Title
+}
+
+// attachFlowOwners 给 ONBOARDING_NODE 行补上流程主体类型与主体 id。
+//
+// 为什么不在 SQL 里 join：`workbenchInboxSource` 由 6 条分支（5 个 UNION ALL）组成，
+// 每条都显式列同一套列；往里加列要同时改 6 条分支的列数与类型，一不小心就是运行期
+// UNION 类型不匹配，而且会无谓牵动供应商那 5 条分支。这里改成"取到当页再批量补一次"：
+// 查询次数固定为 1（页内无节点待办时为 0），与行数无关。
+func (s *InboxService) attachFlowOwners(ctx context.Context, list []InboxItem) error {
+	ids := make([]int64, 0, len(list))
+	seen := make(map[int64]bool, len(list))
+	for i := range list {
+		if list[i].BizType != "ONBOARDING_NODE" || list[i].BizID <= 0 || seen[list[i].BizID] {
+			continue
+		}
+		seen[list[i].BizID] = true
+		ids = append(ids, list[i].BizID)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	owners, err := s.store.FlowOwners(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range list {
+		if list[i].BizType != "ONBOARDING_NODE" {
+			continue
+		}
+		if owner, ok := owners[list[i].BizID]; ok {
+			list[i].FlowKind = owner.Kind
+			list[i].FlowOwnerID = owner.OwnerID
+		}
+	}
+	return nil
 }
 
 // inboxAssigneeRole 原型「责任人」列的副标题：这个人在这一行里是什么身份。
@@ -144,7 +225,7 @@ func inboxAssigneeRole(item InboxItem) string {
 	switch item.BizType {
 	case "NOTICE":
 		return "阅读接收人"
-	case "SUBMISSION_APPROVAL", "QUOTE_APPROVAL":
+	case "SUBMISSION_APPROVAL", "QUOTE_APPROVAL", "CUSTOMER_QUOTE_APPROVAL":
 		return "审批人"
 	case "SUBMISSION_HANDLING", "SUBMISSION_CONTRACT", "ONBOARDING_NODE":
 		return "办理人"
@@ -217,10 +298,35 @@ func inboxDeeplink(item InboxItem) string {
 	case "PLAN":
 		return fmt.Sprintf("/internal/model-plaza/%d", item.BizID)
 	case "ONBOARDING_NODE":
-		// 旧版通用办理节点没有独立页面，落到供应商列表并按供应商名过滤。
+		// 客户开通待办：按走查手册 3.9c 落到客户详情「接入模型」Tab。
+		// 原型把"技术批次 / 已接入 / 必要商务"这组办理摘要放在接入模型页顶部，
+		// 从待办点进来的人要看的是"这个客户还差哪些模型没接上"，不是档案表单。
+		// owner_id 是 customer_profile.id（迁移 000050 已把注释纠偏为这个语义）。
+		if item.FlowKind == "CUSTOMER" && item.FlowOwnerID > 0 {
+			return fmt.Sprintf("/internal/customers/%d?tab=models", item.FlowOwnerID)
+		}
+		// 供应商节点：落到该供应商的「接入模型」页。
+		// 供应商现在有独立的接入页（接入 / 上架 / 下架 + 本批办理进度），
+		// 从「供应资源接入」待办点进来就是要看"这批还差哪些模型没接上"，
+		// 再回供应商列表按名字搜一次纯属多绕一步。
+		if item.FlowKind == "SUPPLIER" && item.FlowOwnerID > 0 {
+			return fmt.Sprintf("/internal/suppliers/%d/models", item.FlowOwnerID)
+		}
+		// 取不到 kind 的防御分支保持原有行为：落到供应商列表并按供应商名过滤。
 		return "/internal/suppliers?keyword=" + url.QueryEscape(item.BizObject)
 	case "QUOTE_APPROVAL":
 		return fmt.Sprintf("/internal/supplier-quotes?quote_id=%d", item.BizID)
+	case "CUSTOMER_QUOTE_APPROVAL":
+		// 客户报价审批：直接落到「客户报价单 → 报价审批」里这张单的详情页，
+		// 和列表里点「查看」是同一个落点（biz_id 是审批单 id，不是报价单 id）。
+		return fmt.Sprintf("/internal/customers?tab=quote&approval=%d", item.BizID)
+	case "CUSTOMER_MODELS":
+		// 客户报价审批通过后派的技术待办（000063）：落到客户详情「接入模型」，
+		// 和「客户模型开通」在建流程后的落点保持一致。
+		return fmt.Sprintf("/internal/customers/%d?tab=models", item.BizID)
+	case "CUSTOMER_CONTRACT":
+		// 商务待办：合同与授信在「档案与办理」页签。
+		return fmt.Sprintf("/internal/customers/%d?tab=onboarding", item.BizID)
 	default:
 		return ""
 	}

@@ -283,6 +283,25 @@ func (t *f12RecordTransaction) authorizeSubjectOwner(ctx context.Context, actorI
 		if err != nil {
 			return mapF12StorageError(err)
 		}
+		// 审批时派给「商务办理人」的合同与授信待办，就是让这个人来传资料。
+		// 而 customer_profile.owner_sales_operator_id 记的是销售，不可能是他——
+		// 只认 owner 会让商务点开办理弹窗后每次上传都 403。
+		// 所以：销售本人，或该客户进行中流程里 CONTRACT 节点的办理人，都算合法写入者。
+		if !ownerID.Valid || ownerID.String != actorID {
+			var handler bool
+			if err := t.tx.QueryRowContext(ctx, `SELECT EXISTS(
+				SELECT 1 FROM `+t.store.table("onboarding_flow")+` f
+				  JOIN `+t.store.table("onboarding_node")+` nd ON nd.flow_id = f.id
+				 WHERE f.kind = 'CUSTOMER' AND f.owner_id = $1 AND f.status = 'PROCESSING'
+				   AND nd.enabled AND nd.node_key = 'CONTRACT' AND nd.assignee_id = $2)`,
+				subjectID, actorID).Scan(&handler); err != nil {
+				return mapF12StorageError(err)
+			}
+			if !handler {
+				return supply.ErrForbidden
+			}
+		}
+		return nil
 	default:
 		return supply.ErrReadContract
 	}

@@ -14,3 +14,9 @@ config.yaml
 
 # Local TDD terminal output and screenshots
 docs/Work_A/TDD/evidence/
+
+# 本地资料：只放文档/参考资料，不参与代码提交
+文档资料/
+
+# 工作区临时产物与工作日志
+.workbuddy/

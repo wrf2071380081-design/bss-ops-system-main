@@ -276,6 +276,13 @@ func (t *planExecutionTransaction) AppendPlanExecutionEffect(ctx context.Context
 			}
 		}
 		notice := &supply.Notice{ResourceID: t.resource.ID, ResourceName: t.resource.SupplierModelID, Region: t.resource.Region, Kind: kind, Title: title, Content: content, Reason: e.Reason, SourceEventID: sourceEventID, AffectedStatus: "PENDING"}
+		// 原型「原通知」第二行要显示执行人（「操作人：周宁」）。执行人就是本次登记人。
+		// 取不到名字不算失败：公告本身已经成立，只是少一行元信息。
+		var actorName sql.NullString
+		if err := t.tx.QueryRowContext(ctx, `SELECT name FROM `+t.work.plans.table("internal_staff")+` WHERE id=$1`, e.ActorID).Scan(&actorName); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		notice.ExecutorName = actorName.String
 		payload, err := EncodeNoticePayload(notice)
 		if err != nil {
 			return err

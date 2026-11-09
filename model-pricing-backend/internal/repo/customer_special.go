@@ -120,6 +120,7 @@ type quoteRowFull struct {
 	PriceBookVersion   int        `gorm:"column:price_book_version"`
 	OwnerSalesID       int64      `gorm:"column:owner_sales_operator_id"`
 	OriginOwnerID      *int64     `gorm:"column:origin_owner_id"`
+	OurCompany         string     `gorm:"column:our_company"`
 }
 
 func (quoteRowFull) TableName() string { return "customer_quote" }
@@ -130,7 +131,7 @@ func (r *CustomerSpecialRepo) LoadQuote(ctx context.Context, quoteID int64) (*cu
 	if err := r.txOf(ctx).Table("customer_quote").
 		Select("id", "customer_id", "version_no", "status", "quote_type",
 			"special_price_status", "valid_until", "price_book_version",
-			"owner_sales_operator_id", "origin_owner_id").
+			"owner_sales_operator_id", "origin_owner_id", "our_company").
 		Where("id = ?", quoteID).
 		Take(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -148,6 +149,7 @@ func (r *CustomerSpecialRepo) LoadQuote(ctx context.Context, quoteID int64) (*cu
 		ValidUntil:         row.ValidUntil,
 		PriceBookVersion:   row.PriceBookVersion,
 		OwnerSalesID:       row.OwnerSalesID,
+		OurCompany:         row.OurCompany,
 	}, nil
 }
 

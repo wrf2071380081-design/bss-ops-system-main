@@ -153,6 +153,12 @@ func resourceQuoteCandidate(snapshot *supply.ResourceSnapshot) (customer.Resourc
 		Region: snapshot.Region, SupplierModel: snapshot.SupplierModelID,
 		Coefficient: snapshot.Coefficient, PriceItems: []customer.ResourcePriceItem{},
 	}
+	// 最近一次测试结果随候选一起下发：报价行要展示，不能等选完再去逐个查资源。
+	candidate.TestConnectionMS = derefOrEmpty(snapshot.Test.Metrics.ConnectionMS)
+	candidate.TestRPS = derefOrEmpty(snapshot.Test.Metrics.RPS)
+	candidate.TestTPS = derefOrEmpty(snapshot.Test.Metrics.TPS)
+	candidate.TestCacheHitRate = snapshot.Test.CacheStats.HitPercent
+	candidate.TestCacheStatus = snapshot.Test.CacheStats.Status
 	for _, item := range snapshot.OfficialPriceItems {
 		cost, cerr := customer.ResourceUnitCost(item.Amount, snapshot.Coefficient)
 		if cerr != nil {
@@ -165,4 +171,12 @@ func resourceQuoteCandidate(snapshot *supply.ResourceSnapshot) (customer.Resourc
 		})
 	}
 	return candidate, nil
+}
+
+// derefOrEmpty 把可空指标转成空串（JSON 里用 omitempty 表示「未记录」）。
+func derefOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

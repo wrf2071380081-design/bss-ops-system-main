@@ -98,6 +98,9 @@ func (f *fakeStore) LoadPriceBookItemsForSKUs(_ context.Context, _ int64, _ []in
 func (f *fakeStore) LoadQuoteItems(_ context.Context, _ int64) ([]QuoteItemRow, error) {
 	return f.quoteItems, f.quoteItemsErr
 }
+func (f *fakeStore) LoadQuoteForEdit(_ context.Context, _ int64) (*QuoteForEdit, error) {
+	return nil, nil
+}
 func (f *fakeStore) LoadQuoteOwner(_ context.Context, _ int64) (int64, int64, bool, error) {
 	return f.quoteOwnerCustID, f.quoteOwnerSalesID, f.quoteOwnerFound, f.quoteOwnerErr
 }

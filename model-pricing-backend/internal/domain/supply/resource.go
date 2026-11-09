@@ -71,6 +71,12 @@ type ResourceRecord struct {
 	Config     *FormalConfigView
 	Report     *ResourceReportSummary
 	AdmittedAt *time.Time
+	// DisplayReport 是「最近一次实际测试」的展示用快照。
+	//
+	// Report 是**生效证据**（决定能不能准入/报价），会被审批与重开清空；
+	// DisplayReport 只在 Report 为空时补位，让「测过但还没正式化」的资源
+	// 也能在列表里显示指标。它**绝不参与** QuoteReadiness 判定。
+	DisplayReport *ResourceReportSummary
 }
 type ResourceTestView struct {
 	ReportID           string                `json:"report_id,omitempty"`
@@ -190,6 +196,23 @@ func BuildResourceSnapshot(record *ResourceRecord) (*ResourceSnapshot, error) {
 			return nil, ErrReadContract
 		}
 		block("TESTS_REQUIRED")
+		// 没有生效证据（审批未正式化 / 办理重开）时，用最近一次实际测试的数据填充展示位。
+		// 只填 view.Test 供页面显示指标；ready 仍保留 TESTS_REQUIRED，绝不因此放行准入。
+		if display := record.DisplayReport; display != nil {
+			metrics, err := copyResourceMetrics(display.Metrics)
+			if err != nil {
+				return nil, err
+			}
+			cacheDisplay, err := resourceCacheStats(display.ID, display.Cache)
+			if err != nil {
+				return nil, err
+			}
+			view.Test = ResourceTestView{ReportID: display.ID, Status: "COMPLETED", ConnectivityPassed: display.ConnectivityPassed, PressurePassed: display.PressurePassed, Valid: display.Valid, CacheStats: cacheDisplay, Metrics: metrics}
+			// 前端契约要求 test.report_id / cache_stats.report_id / quote_readiness.test_evidence_ref
+			// 三者指向同一份报告（resources.contract.ts 的 validateResourceRow），
+			// 少填一个就会整行判成「供应资源响应不符合约定」。这里补上第三个。
+			ready.TestEvidenceRef = display.ID
+		}
 	} else {
 		if report.ID != r.LatestReportID || !validID(report.ID) || (report.ResourceID != "" && report.ResourceID != r.ID) || report.SupplierID != r.SupplierID || report.StandardModelID != m.ID || report.Region != r.Region || report.OriginRowID != r.OriginRowID {
 			return nil, ErrReadContract
@@ -213,7 +236,10 @@ func BuildResourceSnapshot(record *ResourceRecord) (*ResourceSnapshot, error) {
 			if !report.Valid {
 				block("TEST_EVIDENCE_INVALID")
 			}
-			if !report.ConnectivityPassed || !report.PressurePassed {
+			// 压力测试只留指标、不参与"能不能报价/能不能接入"的判定：
+			// 压测平台对 stress 不返回 verdict，pressure_passed 恒为 false，
+			// 拿它当门槛等于把所有资源都判成不合格。
+			if !report.ConnectivityPassed {
 				block("TESTS_NOT_PASSED")
 			}
 		}

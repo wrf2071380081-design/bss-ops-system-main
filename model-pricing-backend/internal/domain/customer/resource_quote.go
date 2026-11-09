@@ -52,6 +52,13 @@ type ResourceQuoteCandidate struct {
 	BlockedReasons []string `json:"blocked_reasons,omitempty"`
 	// PriceItems 是该资源的官方价项（键 + 金额 + 单位量），供前端按分项报价。
 	PriceItems []ResourcePriceItem `json:"price_items"`
+	// 来源最近一次测试结果：原型报价行里直接摆出 连通/RPS/TPS/缓存命中率，
+	// 销售当场就能判断这个来源稳不稳。没有报告的来源为空串（前端显示「未记录」）。
+	TestConnectionMS string `json:"test_connection_ms,omitempty"`
+	TestRPS          string `json:"test_rps,omitempty"`
+	TestTPS          string `json:"test_tps,omitempty"`
+	TestCacheHitRate string `json:"test_cache_hit_rate,omitempty"`
+	TestCacheStatus  string `json:"test_cache_status,omitempty"`
 }
 
 // ResourcePriceItem 是候选资源上的一个官方价项。
@@ -260,6 +267,7 @@ func (s *Service) GenerateResourceQuote(ctx context.Context, in GenerateResource
 		QuoteType:    QuoteTypeResource,
 		ValidUntil:   in.ValidTo,
 		OwnerSalesID: ownerSalesID,
+		OurCompany:   strings.TrimSpace(in.OurCompany),
 		Items:        rows,
 	}, operatorID, requestID)
 	if err != nil {
@@ -270,8 +278,10 @@ func (s *Service) GenerateResourceQuote(ctx context.Context, in GenerateResource
 
 // GenerateResourceQuoteInput 是资源口径报价的输入。
 type GenerateResourceQuoteInput struct {
-	CustomerID int64                    `json:"customer_id"`
-	ValidTo    *time.Time               `json:"valid_to,omitempty"`
+	CustomerID int64      `json:"customer_id"`
+	ValidTo    *time.Time `json:"valid_to,omitempty"`
+	// OurCompany 我方签约主体：报价信息里手填，随单落库。
+	OurCompany string                   `json:"our_company,omitempty"`
 	Items      []ResourceQuoteItemInput `json:"items"`
 }
 
@@ -287,4 +297,26 @@ func (s *Service) ListResourceQuoteCandidates(ctx context.Context, keyword strin
 		size = 20
 	}
 	return s.resources.ListResourceQuoteCandidates(ctx, keyword, page, size)
+}
+
+// QuoteCoefficient 纯函数：客户报价系数 = 客户单价 ÷ 官方价。
+//
+// 为什么单独成一个函数：审批详情要把「这次报价打了几折」摆在模型行上，
+// 而单价（2.266668 / 11.33334）本身看不出贵贱——得对上官方价（3 / 15）才知道是 0.7556。
+//
+// 口径：
+//   - 保留 4 位小数（原型展示 0.650 这种 3 位，4 位够区分又不丢精度）。
+//   - 官方价缺失或 <= 0（老价目没快照、SKU 口径）时返回空串，不编造系数。
+//   - 不校验「是否高于采购系数」：那是毛利红线，由 floor_price 在报价环节把关，
+//     审批环节只负责把事实摆出来。
+func QuoteCoefficient(price, amount string) string {
+	p, err := decimal.NewFromString(strings.TrimSpace(price))
+	if err != nil || p.IsNegative() {
+		return ""
+	}
+	a, err := decimal.NewFromString(strings.TrimSpace(amount))
+	if err != nil || !a.IsPositive() {
+		return ""
+	}
+	return p.Div(a).Round(4).String()
 }

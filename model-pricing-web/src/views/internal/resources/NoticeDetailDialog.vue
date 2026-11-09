@@ -33,6 +33,11 @@ const scheduleLine = computed(() => {
   return parts.join("；") + (parts.length ? "。" : "");
 });
 const canMarkRead = computed(() => Boolean(data.value?.permissions.can_mark_read) && !props.readOnly && data.value?.read_status === "UNREAD");
+/**
+ * 「下架不追溯已有客户」这句是产品承诺，原型专门写在弹窗里（走查手册 3.11）。
+ * 只在退役类公告上显示：换货/上架类公告套这句话会读成"新资源不生效"。
+ */
+const isRetireNotice = computed(() => /下架|停服|退役/.test(data.value?.notice.title || ""));
 
 async function load() {
   const generation = ++epoch;
@@ -80,13 +85,14 @@ onBeforeUnmount(() => { ++epoch; controller?.abort(); writeController?.abort(); 
           <h2>{{ data.notice.title }}</h2>
           <el-tag size="small" :type="data.read_status === 'READ' ? 'info' : 'warning'">{{ data.read_status === "READ" ? "已读" : "未读" }}</el-tag>
         </header>
-        <p class="meta">{{ data.notice.supplier_name || data.notice.resource_name }}<template v-if="regionLabel"> · {{ regionLabel }}</template> · {{ formatDateTime(data.notice.published_at, "—", true) }}</p>
+        <p class="meta">{{ data.notice.supplier_name || data.notice.resource_name }}<template v-if="regionLabel"> · {{ regionLabel }}</template> · {{ formatDateTime(data.notice.published_at, "—", true) }}<template v-if="data.notice.executor_name"> · 操作人：{{ data.notice.executor_name }}</template></p>
         <dl>
           <dt>说明</dt>
           <dd>{{ data.notice.reason || "未提供" }}</dd>
           <dt>受影响客户</dt>
           <dd>{{ noticeImpactText(data.notice) }}</dd>
         </dl>
+        <p v-if="isRetireNotice" class="promise">原客户来源、服务状态和已接受报价保持原事实，后续处理须另行登记。</p>
         <p v-if="scheduleLine" class="schedule">{{ scheduleLine }}</p>
         <el-alert v-if="readOnly" title="当前为只读查看，不能代他人标记已读。" type="info" :closable="false" />
         <div class="notice-actions">
@@ -111,6 +117,8 @@ dl{display:grid;grid-template-columns:96px minmax(0,1fr);gap:12px;margin:20px 0 
 dt{color:#8a9099}
 dd{margin:0;overflow-wrap:anywhere}
 .schedule{color:#5b6472;font-size:13px;line-height:1.9;margin:14px 0 0;white-space:pre-wrap}
+/* 下架不追溯：这条是产品对客户的承诺，视觉上要和"说明"区分开。 */
+.promise{margin:16px 0 0;padding:10px 12px;border-radius:6px;background:#fdf6e9;color:#8a6a2f;font-size:13px;line-height:1.8}
 .notice-actions{display:flex;gap:10px;margin-top:18px}
 .write-error{margin-top:16px}
 @media(max-width:500px){.notice-card{padding:16px}dl{grid-template-columns:1fr;gap:8px}}

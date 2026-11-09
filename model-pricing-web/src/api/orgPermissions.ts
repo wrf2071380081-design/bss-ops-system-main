@@ -43,8 +43,125 @@ export interface RoleSummaryDTO {
 }
 
 const basePath = "/internal/org-permissions";
+const staffPath = `${basePath}/staff`;
+
+/** 员工持有的角色（后端 StaffRoleRef）。
+ * portal 由后端按 role.code 推导：SUPPLIER→supplier、CUSTOMER→customer、其余→internal。
+ * 账号管理只允许授予 internal 角色，SUPPLIER/CUSTOMER 必须走各自入驻流程（后端会 400）。 */
+export interface StaffRoleRefDTO {
+  id: string;
+  code: string;
+  name: string;
+  dataScope: string;
+  portal: "internal" | "supplier" | "customer";
+}
+
+/** 员工账号（后端 StaffAccountRef）。**绝不包含 password_hash / token**。 */
+export interface StaffAccountRefDTO {
+  loginId: string;
+  status: string;
+}
+
+/** 员工列表行 / 详情（后端 StaffSummary；详情 StaffDetail 结构与列表行一致）。 */
+export interface StaffSummaryDTO {
+  id: string;
+  name: string;
+  mobile: string;
+  orgUnitId: string;
+  orgName: string;
+  /** ACTIVE / DISABLED。注意：本期 UI 不提供停用入口，但编辑资料时必须原样回传。 */
+  status: string;
+  /** 无账号时为 null（理论不出现）。 */
+  account: StaffAccountRefDTO | null;
+  /** 恒为非 null 数组。 */
+  roles: StaffRoleRefDTO[];
+}
+
+export type StaffDetailDTO = StaffSummaryDTO;
+
+export interface StaffPageDTO {
+  list: StaffSummaryDTO[];
+  total: number;
+  page: number;
+  size: number;
+}
+
+export interface StaffQuery {
+  /** 命中 name / mobile / login_id（模糊）。 */
+  keyword?: string;
+  /** ACTIVE / DISABLED，空 = 全部。 */
+  status?: string;
+  page?: number;
+  size?: number;
+}
+
+/** ⚠️ 请求体是 snake_case，响应体是 camelCase——后端 DTO 现状，不要「顺手统一」。 */
+export interface CreateStaffPayload {
+  name: string;
+  mobile: string;
+  org_unit_id: number;
+  login_id: string;
+  password: string;
+  role_ids: number[];
+}
+
+export interface UpdateStaffPayload {
+  name: string;
+  mobile: string;
+  org_unit_id: number;
+  /** 必须原样回传当前值，否则有被清空的风险。 */
+  status: string;
+}
 
 export const orgPermissionsApi = {
   getOrganizations: () => apiRequest<OrganizationNodeDTO[]>({ url: `${basePath}/organizations`, method: "GET" }),
   getRoles: () => apiRequest<RoleSummaryDTO[]>({ url: `${basePath}/roles`, method: "GET" }),
+
+  // ---- 账号管理（M11:E + PLATFORM_ADMIN 双层鉴权）。
+
+  listStaff: (query: StaffQuery = {}) =>
+    apiRequest<StaffPageDTO>({ url: staffPath, method: "GET", params: query }),
+
+  getStaff: (id: string) =>
+    apiRequest<StaffDetailDTO>({ url: `${staffPath}/${id}`, method: "GET" }),
+
+  createStaff: (payload: CreateStaffPayload) =>
+    apiRequest<StaffDetailDTO>({
+      url: staffPath,
+      method: "POST",
+      data: payload,
+      idempotency: { scope: "staff.create", payload },
+    }),
+
+  updateStaff: (id: string, payload: UpdateStaffPayload) =>
+    apiRequest<StaffDetailDTO>({
+      url: `${staffPath}/${id}`,
+      method: "PUT",
+      data: payload,
+      idempotency: { scope: `staff.update:${id}`, payload },
+    }),
+
+  resetStaffPassword: (id: string, password: string) =>
+    apiRequest<{ reset: boolean }>({
+      url: `${staffPath}/${id}/password`,
+      method: "POST",
+      data: { password },
+      // 口令参与指纹：连续两次同值重置若指纹相同会被幂等重放，第二次实际不生效。
+      idempotency: { scope: `staff.password:${id}`, payload: { password } },
+    }),
+
+  grantStaffRoles: (id: string, roleIds: number[]) =>
+    apiRequest<StaffDetailDTO>({
+      url: `${staffPath}/${id}/roles`,
+      method: "POST",
+      data: { role_ids: roleIds },
+      idempotency: { scope: `staff.roles.grant:${id}`, payload: { role_ids: roleIds } },
+    }),
+
+  revokeStaffRole: (id: string, roleId: string) =>
+    apiRequest<StaffDetailDTO>({
+      url: `${staffPath}/${id}/roles/${roleId}`,
+      method: "DELETE",
+      idempotency: { scope: `staff.roles.revoke:${id}:${roleId}` },
+    }),
 };

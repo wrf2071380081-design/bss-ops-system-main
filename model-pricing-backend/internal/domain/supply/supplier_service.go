@@ -110,7 +110,8 @@ func (s *SupplierService) Update(ctx context.Context, meta WriteMeta, id string,
 		if current.ID != id || !validID(current.BuyerID) || current.Revision == 0 || current.Revision > math.MaxInt64 || (current.Status != "ACTIVE" && current.Status != "FROZEN") {
 			return ErrReadContract
 		}
-		if current.BuyerID != meta.ActorID {
+		// 归属采购人本人，或上层已判定其具备 M3:E 维护授权（WriteMeta.CanMaintain）。
+		if current.BuyerID != meta.ActorID && !meta.CanMaintain {
 			return ErrForbidden
 		}
 		if expected == 0 || expected != current.Revision {

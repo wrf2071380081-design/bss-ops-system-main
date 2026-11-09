@@ -12,6 +12,16 @@ export interface SourceOperation {
   region: "CN" | "OVERSEAS"; action: string; operator_name: string; reason: string; created_at: string;
 }
 export interface SourceOperationPage { list: SourceOperation[]; total: number; page: number; size: number }
+export interface SourceOperationOptions { operators: string[]; actions: string[] }
+export function validateSourceOperationOptions(value: unknown): SourceOperationOptions {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("操作记录筛选项响应不符合约定，请重新加载。");
+  const data = value as SourceOperationOptions;
+  if (!Array.isArray(data.operators) || !Array.isArray(data.actions) ||
+    data.operators.some(item => typeof item !== "string") || data.actions.some(item => typeof item !== "string")) {
+    throw new Error("操作记录筛选项响应不符合约定，请重新加载。");
+  }
+  return { operators: data.operators.slice(0, 200), actions: data.actions.slice(0, 200) };
+}
 function invalid(): never { throw new Error("供应来源操作记录响应不符合约定，请重新加载。"); }
 export function validateSourceOperations(value: unknown, page: number, size: number, expectedSupplierID?: string): SourceOperationPage {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();

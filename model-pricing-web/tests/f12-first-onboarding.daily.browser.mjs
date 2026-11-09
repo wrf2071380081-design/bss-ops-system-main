@@ -36,22 +36,25 @@ async function open(s,node){
 async function saveContract(s,revise=false){
  const panel=s.page.locator('.f12-subject-panel');
  if(revise)await panel.getByRole('button',{name:'修订',exact:true}).click();
- else await panel.getByRole('button',{name:'新增合同',exact:true}).click();
- const dialog=s.page.getByRole('dialog',{name:revise?'修订合同资料':'新增合同资料',exact:true});
- await dialog.getByRole('textbox',{name:'合同名称',exact:true}).fill(`${f.Run} contract${revise?' v2':''}`);
- await dialog.getByRole('textbox',{name:'合同编号',exact:true}).fill(`${f.Run}-C`);
- await dialog.getByRole('textbox',{name:'变更原因',exact:true}).fill(`${f.Run} ${revise?'revise':'create'} contract`);
+ else await panel.getByRole('button',{name:'上传合同资料',exact:true}).click();
+ const dialog=s.page.getByRole('dialog',{name:revise?'修订合同资料':'上传合同资料',exact:true});
+ await dialog.getByRole('textbox',{name:'资料名称',exact:true}).fill(`${f.Run} contract${revise?' v2':''}`);
+ await dialog.getByRole('textbox',{name:'资料编号',exact:true}).fill(`${f.Run}-C`);
+ await dialog.getByRole('textbox',{name:'备注',exact:true}).fill(`${f.Run} ${revise?'revise':'create'} contract`);
  if(!revise)await dialog.locator('input[type=file]').setInputFiles({name:'contract.png',mimeType:'image/png',buffer:png});
- const [r]=await Promise.all([s.page.waitForResponse(r=>new URL(r.url()).pathname.startsWith('/api/internal/contracts')&&r.request().method()==='POST'),dialog.getByRole('button',{name:'保存为版本',exact:true}).click()]);
+ const [r]=await Promise.all([s.page.waitForResponse(r=>new URL(r.url()).pathname.startsWith('/api/internal/contracts')&&r.request().method()==='POST'),dialog.getByRole('button',{name:'保存资料',exact:true}).click()]);
  assert.equal(r.status(),200,await r.text());await dialog.waitFor({state:'hidden'});
  return(await r.json()).data;
 }
 async function saveCredit(s,amount){
- await s.page.locator('.f12-subject-panel').getByRole('button',{name:'新增 / 调整授信',exact:true}).click();
- const dialog=s.page.getByRole('dialog',{name:'新增 / 调整授信',exact:true});
- for(const [name,value] of [['额度',amount],['币种','CNY'],['依据名称',`${f.Run} credit ${amount}`],['依据编号',`${f.Run}-L`],['变更原因',`${f.Run} credit ${amount}`]])await dialog.getByRole('textbox',{name,exact:true}).fill(value);
+ await s.page.locator('.f12-subject-panel').getByRole('button',{name:'上传授信资料',exact:true}).click();
+ const dialog=s.page.getByRole('dialog',{name:'上传授信资料',exact:true});
+ await dialog.getByRole('textbox',{name:'资料名称',exact:true}).fill(`${f.Run} credit ${amount}`);
+ await dialog.getByRole('textbox',{name:'资料编号',exact:true}).fill(`${f.Run}-L`);
+ await dialog.getByRole('textbox',{name:/^授信额度/}).fill(amount);
+ await dialog.getByRole('textbox',{name:'备注',exact:true}).fill(`${f.Run} credit ${amount}`);
  await dialog.locator('input[type=file]').setInputFiles({name:`credit-${amount}.png`,mimeType:'image/png',buffer:png});
- const[r]=await Promise.all([s.page.waitForResponse(r=>new URL(r.url()).pathname==='/api/internal/credits'&&r.request().method()==='POST'),dialog.getByRole('button',{name:'保存为新版本',exact:true}).click()]);
+ const[r]=await Promise.all([s.page.waitForResponse(r=>new URL(r.url()).pathname==='/api/internal/credits'&&r.request().method()==='POST'),dialog.getByRole('button',{name:'保存资料',exact:true}).click()]);
  assert.equal(r.status(),200,await r.text());await dialog.waitFor({state:'hidden'});return(await r.json()).data;
 }
 async function records(s){return {contracts:await get(s,`/contracts?subject_type=SUPPLIER&subject_id=${f.Supplier}&size=20&page=1`),credits:await get(s,`/credits?subject_type=SUPPLIER&subject_id=${f.Supplier}&size=20&page=1`)};}

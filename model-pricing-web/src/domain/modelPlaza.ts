@@ -9,7 +9,7 @@ export interface SourceFilters {
 }
 export const emptySourceFilters = (): SourceFilters => ({ keyword: "", companies: [], model_types: [], supplier_ids: [], regions: [], states: [], coefficient_min: "", coefficient_max: "", connection_min: "", connection_max: "", rps_min: "", rps_max: "", tps_min: "", tps_max: "" });
 export const rangeFields = ["coefficient", "connection", "rps", "tps"] as const;
-export const rangeLabels = { coefficient: "采购系数", connection: "连通耗时 · ms", rps: "压力 RPS", tps: "压力 TPS" };
+export const rangeLabels = { coefficient: "采购系数", connection: "连通耗时（ms）", rps: "RPS", tps: "TPS" };
 function rangeFilters(filters: SourceFilters): RangeFilters {
   return { supplierIDs: filters.supplier_ids, states: filters.states, ranges: {
     coefficient: { min: filters.coefficient_min, max: filters.coefficient_max },
@@ -35,7 +35,7 @@ export interface PlazaGroup extends ResourceGroup { state_label: string }
 export function aggregateSources(rows: ResourceRow[]): PlazaGroup[] {
   const groups = new Map<string, { group: PlazaGroup; suppliers: Set<string> }>();
   for (const row of rows) {
-    if (!groups.has(row.standard_model_id)) groups.set(row.standard_model_id, { group: { id: row.standard_model_id, name: row.model_name, official_id: row.official_id, company: row.company, model_type: row.model_type, supplier_count: 0, resource_count: 0, available_count: 0, coefficient_min: row.coefficient, coefficient_max: row.coefficient, regions: [], state_counts: {}, state_label: "" }, suppliers: new Set() });
+    if (!groups.has(row.standard_model_id)) groups.set(row.standard_model_id, { group: { id: row.standard_model_id, name: row.model_name, official_id: row.official_id, company: row.company, model_type: row.model_type, supplier_count: 0, resource_count: 0, available_count: 0, coefficient_min: row.coefficient, coefficient_max: row.coefficient, regions: [], region_coefficients: [], state_counts: {}, state_label: "" }, suppliers: new Set() });
     const { group, suppliers } = groups.get(row.standard_model_id)!;
     suppliers.add(row.supplier_id); group.supplier_count = suppliers.size; group.resource_count++;
     if (row.quote_readiness.eligible) group.available_count++;
@@ -43,8 +43,14 @@ export function aggregateSources(rows: ResourceRow[]): PlazaGroup[] {
     if (!group.regions.includes(row.region)) group.regions.push(row.region);
     if (new Decimal(row.coefficient).lt(group.coefficient_min)) group.coefficient_min = row.coefficient;
     if (new Decimal(row.coefficient).gt(group.coefficient_max)) group.coefficient_max = row.coefficient;
+    const regional = group.region_coefficients.find(item => item.region === row.region);
+    if (!regional) group.region_coefficients.push({ region: row.region, min: row.coefficient, max: row.coefficient });
+    else {
+      if (new Decimal(row.coefficient).lt(regional.min)) regional.min = row.coefficient;
+      if (new Decimal(row.coefficient).gt(regional.max)) regional.max = row.coefficient;
+    }
   }
-  return [...groups.values()].map(({ group }) => ({ ...group, regions: group.regions.sort(), state_label: group.state_counts.ADMITTED ? "有可用资源" : group.state_counts.PENDING_TEST || group.state_counts.PENDING_ACCESS ? "资源待接入" : "无可用资源" }));
+  return [...groups.values()].map(({ group }) => ({ ...group, regions: group.regions.sort(), region_coefficients: group.region_coefficients.sort((a, b) => a.region === b.region ? 0 : a.region === "CN" ? -1 : 1), state_label: group.state_counts.ADMITTED ? "有可用资源" : group.state_counts.PENDING_TEST || group.state_counts.PENDING_ACCESS ? "资源待接入" : "无可用资源" }));
 }
 
 // Serialize compound filters through model and supplier return links.

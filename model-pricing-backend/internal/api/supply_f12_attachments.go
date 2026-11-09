@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"model_bss/internal/api/middleware"
 	"model_bss/internal/domain/supply"
+	"model_bss/pkg/apperr"
 	"model_bss/pkg/response"
 )
 
@@ -33,7 +34,11 @@ type f12AttachmentUploadRequest struct {
 
 func (h *supplyF12AttachmentHandler) upload(c *gin.Context) {
 	if h == nil || h.service == nil {
-		supplyHTTPError(c, supply.ErrDependencyUnavailable)
+		// 附件服务只有配置了存储目录才会装配（MODEL_BSS_F12_ATTACHMENT_STORE_DIR）。
+		// 之前这里统一回 503「服务暂时不可用」，排查时看不出是配置缺了还是代码坏了，
+		// 所以这里直接说清楚缺什么。
+		response.Error(c, apperr.New(apperr.ErrSystem.Code,
+			"附件存储未配置（MODEL_BSS_F12_ATTACHMENT_STORE_DIR），暂时无法上传附件", 503))
 		return
 	}
 	if _, err := supplyQuery(c); err != nil {

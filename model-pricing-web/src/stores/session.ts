@@ -26,6 +26,8 @@ export interface CurrentUser {
   roleCodes?: string[];
   identityKey?: DevIdentityKey;
   canApproveSupplier?: boolean;
+  /** 客户报价审批权：只有超管/领导为 true（销售虽持 M9:A 也不能审）。 */
+  canApproveCustomerQuote?: boolean;
   supplierName?: string;
   supplierRegion?: string;
   staffId?: number;
@@ -125,8 +127,13 @@ export const DEV_IDENTITIES: Record<DevIdentityKey, DevIdentity> = {
       id: "dev-admin-ops",
       name: "顾言",
       roleLabel: "系统管理员",
+      // 账号管理（/internal/accounts）按 ROLE_REQUIREMENTS 只认 PLATFORM_ADMIN 角色 code，
+      // 本身份既然是「本地开发等价超管」，就必须带上这个 code，否则本地也进不去。
+      roleCodes: ["PLATFORM_ADMIN"],
       identityKey: "ADMIN_OP",
       canApproveSupplier: true,
+      // 本地开发身份等价于超管：客户报价审批页签要能进（真实后端靠 000066 标记位）。
+      canApproveCustomerQuote: true,
     },
     permissionCodes: [
       PERMISSIONS.CUSTOMER_VIEW,
@@ -298,12 +305,15 @@ export const useSessionStore = defineStore("session", () => {
     token.value = result.token;
     portal.value = targetPortal;
     const roleCodes = snapshot.roles?.map(r => r.code) || [];
-    user.value = { id: String(snapshot.account_id), name: loginID, roleCodes,
+    // 角色显示名优先取服务端 role.name（领导 / 员工 / 模型运营…），旧服务端没有该字段时退回角色码。
+    const roleNames = (snapshot.roles || []).map(r => r.name || r.code).filter(Boolean);
+    user.value = { id: String(snapshot.account_id), name: snapshot.staff_name || loginID, roleCodes,
       canApproveSupplier: Boolean(snapshot.can_approve_supplier),
+      canApproveCustomerQuote: Boolean(snapshot.can_approve_customer_quote),
       supplierName: snapshot.supplier_name,
       supplierRegion: snapshot.supplier_region,
       staffId: snapshot.staff_id ? Number(snapshot.staff_id) : undefined,
-      roleLabel: roleCodes.join(" / ") || (targetPortal === "internal" ? "内部用户" : targetPortal === "supplier" ? "供应商" : "客户") };
+      roleLabel: roleNames.join(" / ") || (targetPortal === "internal" ? "内部用户" : targetPortal === "supplier" ? "供应商" : "客户") };
     permissionCodes.value = [...(snapshot.perms || [])];
     legacyRole.value = "VIEWER";
     usePermissionStore().rebuild(permissionCodes.value, roleCodes);

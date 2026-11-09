@@ -31,12 +31,15 @@ type testPlatformRuntime struct {
 	// Store 供内部复测读取资源测试目标（T-10）。
 	Store                           *supplypg.TestPlatformStore
 	InternalBaseURL, InternalAPIKey string
+	// InternalModel 覆盖内部补测传给平台的模型名（平台要求 vendor/model）；空则用 official_id。
+	InternalModel string
 }
 
 // resourceTestTargets 把存储层的资源测试目标适配成 api 侧端口。
 type resourceTestTargets struct {
 	store           *supplypg.TestPlatformStore
 	baseURL, apiKey string
+	model           string
 }
 
 func (r resourceTestTargets) TestTarget(ctx context.Context, actorID, resourceID string) (*api.ResourceTestTarget, error) {
@@ -45,8 +48,12 @@ func (r resourceTestTargets) TestTarget(ctx context.Context, actorID, resourceID
 		return nil, err
 	}
 	modelID, _ := strconv.ParseInt(target.StandardModelID, 10, 64)
+	modelName := target.Model
+	if strings.TrimSpace(r.model) != "" {
+		modelName = strings.TrimSpace(r.model)
+	}
 	return &api.ResourceTestTarget{
-		Model: target.Model, BaseURL: r.baseURL, SealedAPIKey: r.apiKey,
+		Model: modelName, BaseURL: r.baseURL, SealedAPIKey: r.apiKey,
 		TargetFingerprint: testplatform.TargetFingerprint(modelID, target.Model, r.baseURL, r.apiKey),
 		SupplierID:        target.SupplierID, SupplierName: target.SupplierName,
 	}, nil
@@ -57,7 +64,7 @@ func (r *testPlatformRuntime) Targets() api.ResourceTestTargetLoader {
 	if r == nil || r.Store == nil {
 		return nil
 	}
-	return resourceTestTargets{store: r.Store, baseURL: r.InternalBaseURL, apiKey: r.InternalAPIKey}
+	return resourceTestTargets{store: r.Store, baseURL: r.InternalBaseURL, apiKey: r.InternalAPIKey, model: r.InternalModel}
 }
 
 // testCallbackReceiver 把可能为空的接收器转成接口值（避免"非空接口、空实现"）。
@@ -97,7 +104,7 @@ func newTestPlatformRuntime(cfg *config.Config, db *gorm.DB, log *zap.Logger) (*
 	if err != nil {
 		return nil, err
 	}
-	runtime := &testPlatformRuntime{Reader: reader, Store: store, InternalBaseURL: strings.TrimSpace(cfg.TestPlatform.InternalBaseURL), InternalAPIKey: cfg.TestPlatform.InternalAPIKey}
+	runtime := &testPlatformRuntime{Reader: reader, Store: store, InternalBaseURL: strings.TrimSpace(cfg.TestPlatform.InternalBaseURL), InternalAPIKey: cfg.TestPlatform.InternalAPIKey, InternalModel: strings.TrimSpace(cfg.TestPlatform.InternalModel)}
 	if !cfg.TestPlatform.Enable {
 		log.Info("test platform disabled by config, report reader only")
 		return runtime, nil

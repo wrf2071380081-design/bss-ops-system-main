@@ -49,7 +49,9 @@ func RecordNativeApproval(ctx context.Context, tx *sql.Tx, state *ResourceStateS
 	if err := tx.QueryRowContext(ctx, `SELECT id::text,assignee_id::text FROM `+state.table("onboarding_node")+` WHERE flow_id=$1 AND node_key='CONFIG' AND status='IN_PROGRESS' AND enabled FOR UPDATE`, flowID).Scan(&a.NodeID, &a.AssigneeID); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id::text,standard_model_id::text,supplier_model_name,coefficient::text,coalesce(test_fingerprint,''),coalesce(resource_id::text,'') FROM `+state.table("submission_row")+` WHERE submission_id=$1 ORDER BY id FOR UPDATE`, submissionID)
+	// 只处理审批通过的行：原型里没勾「决定」的行不进入技术接入，也就不建资源。
+	// 用 <> 'REJECTED' 而不是 = 'APPROVED'，兼容 000054 之前的历史行（默认 PENDING）。
+	rows, err := tx.QueryContext(ctx, `SELECT id::text,standard_model_id::text,supplier_model_name,coefficient::text,coalesce(test_fingerprint,''),coalesce(resource_id::text,'') FROM `+state.table("submission_row")+` WHERE submission_id=$1 AND decision <> 'REJECTED' ORDER BY id FOR UPDATE`, submissionID)
 	if err != nil {
 		return err
 	}
@@ -130,6 +132,12 @@ func RecordNativeApproval(ctx context.Context, tx *sql.Tx, state *ResourceStateS
 				if err != nil {
 					return err
 				}
+				// 这里**必须**写 NULL，不能改成「保留已有报告」：
+				// resource.latest_test_report_id 与 operation_log 里的控制快照由 reading 侧做
+				// 逐字段一致性校验（resource_read.go 的 resourceProjectionEqual / f.Report 比对），
+				// 只改列而不写快照会让整个资源列表返回 500（2026-11-08 踩过）。
+				// 供应商申报阶段的测试报告改由 resource_read 的 DisplayReport 兜底展示，
+				// 该路径只读 test_report、不参与快照校验，也不会放行准入。
 				if _, err := tx.ExecContext(ctx, `UPDATE `+state.table("resource")+` SET supplier_model_name=$2,coefficient=$3,buyer_id=$4,state='PENDING_TEST',latest_test_report_id=NULL,updated_at=$5,updated_by=$6,request_id=$7 WHERE id=$1 AND NOT ever_admitted`, r.ResourceID, r.Model, r.Coefficient, buyer, target.UpdatedAt, actor, requestID); err != nil {
 					return err
 				}
@@ -266,28 +274,25 @@ func (n *NativeHandling) complete(ctx context.Context, tx *sql.Tx, rowID, actor,
 		return err
 	}
 	if admitted == 0 {
-		if _, err := tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_node")+` SET enabled=false,status='CANCELED',note=$2 WHERE flow_id=$1 AND node_key='CONTRACT' AND status='WAITING_PREDECESSOR'`, a.FlowID, note); err != nil {
+		// 一条都没接入成功：商务那条腿没有可签的内容，一并取消（并行的腿此时可能已经在办理中）。
+		if _, err := tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_node")+` SET enabled=false,status='CANCELED',note=$2 WHERE flow_id=$1 AND node_key='CONTRACT' AND status IN ('WAITING_PREDECESSOR','IN_PROGRESS')`, a.FlowID, note); err != nil {
 			return err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_node")+` SET status='COMPLETED',completed_at=now(),note=$2 WHERE id=$1`, a.NodeID, note); err != nil {
 		return err
 	}
-	var contract string
-	err = tx.QueryRowContext(ctx, `UPDATE `+n.State.table("onboarding_node")+` SET status='IN_PROGRESS' WHERE flow_id=$1 AND enabled AND node_key='CONTRACT' AND status='WAITING_PREDECESSOR' RETURNING id::text`, a.FlowID).Scan(&contract)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	// 技术条线完成。商务条线是并行推进的（原型「技术完成 x/y · 商务待完成 · 办理人」），
+	// 所以这里不再把合同节点从前序等待里推起来，只判断两条腿是否都完成。
+	var pending int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM `+n.State.table("onboarding_node")+` WHERE flow_id=$1 AND enabled AND status<>'COMPLETED'`, a.FlowID).Scan(&pending); err != nil {
 		return err
 	}
-	if contract != "" {
-		_, err = tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_flow")+` SET current_node='CONTRACT',updated_at=now() WHERE id=$1`, a.FlowID)
-	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_flow")+` SET status='COMPLETED',updated_at=now() WHERE id=$1`, a.FlowID)
-	}
-	if err != nil {
-		return err
-	}
-	if contract != "" {
+	if pending > 0 {
 		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE `+n.State.table("onboarding_flow")+` SET status='COMPLETED',current_node=NULL,updated_at=now() WHERE id=$1`, a.FlowID); err != nil {
+		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE `+n.State.table("submission")+` SET status='COMPLETED',completed_at=now(),revision=revision+1,updated_at=now() WHERE id=$1`, a.SubmissionID)
 	return err

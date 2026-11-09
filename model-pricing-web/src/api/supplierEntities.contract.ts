@@ -9,6 +9,8 @@ export interface SupplierEntityForm {
   phone: string;
   tax_rate_percent: string;
   settlement_currency: "CNY" | "USD";
+  /** 主体档案备注（原型「基础资料」最后一行）。 */
+  remark: string;
 }
 
 export interface SupplierEntitySaveBody {
@@ -19,6 +21,7 @@ export interface SupplierEntitySaveBody {
   phone: string;
   tax_rate: string | null;
   settlement_currency: "CNY" | "USD";
+  remark: string;
   reason: string;
   expected_revision?: string;
 }
@@ -35,6 +38,7 @@ export interface SupplierEntityDTO {
   phone: string;
   tax_rate: string | null;
   settlement_currency: "CNY" | "USD";
+  remark: string;
   established: boolean;
   status: "ACTIVE" | "FROZEN";
   revision: string;
@@ -128,7 +132,7 @@ export function buildSupplierEntitySave(form: SupplierEntityForm, reason: string
   }
   const body: SupplierEntitySaveBody = {
     name, region: form.region, registration_no: form.registration_no.trim(), contact: form.contact.trim(), phone: form.phone.trim(),
-    tax_rate: taxRate, settlement_currency: form.settlement_currency, reason: reason.trim(),
+    tax_rate: taxRate, settlement_currency: form.settlement_currency, remark: form.remark.trim(), reason: reason.trim(),
   };
   if (revision !== undefined) body.expected_revision = positiveBigint(revision);
   return body;
@@ -144,7 +148,7 @@ export function normalizeSupplierEntity(value: unknown): SupplierEntityDTO {
   if (typeof row.name !== "string" || !row.name.trim() || (row.region !== "CN" && row.region !== "OVERSEAS") ||
       typeof row.aliases_supported !== "boolean" ||
       (row.settlement_currency !== "CNY" && row.settlement_currency !== "USD") ||
-      typeof row.registration_no !== "string" || typeof row.contact !== "string" || typeof row.phone !== "string" ||
+      typeof row.registration_no !== "string" || typeof row.contact !== "string" || typeof row.phone !== "string" || typeof row.remark !== "string" ||
       !(row.tax_rate === null || (typeof row.tax_rate === "string" && /^(0|1)(\.\d{1,8})?$/.test(row.tax_rate) && !new Decimal(row.tax_rate).greaterThan(1))) ||
       !Array.isArray(aliases) || aliases.some(alias => typeof alias !== "string" || !alias.trim()) ||
       typeof row.established !== "boolean" || (row.status !== "ACTIVE" && row.status !== "FROZEN") ||
@@ -154,7 +158,7 @@ export function normalizeSupplierEntity(value: unknown): SupplierEntityDTO {
   }
   return { id, buyer_id: buyerID, name: row.name, aliases: [...aliases], aliases_supported: row.aliases_supported, region: row.region, registration_no: row.registration_no,
     contact: row.contact, phone: row.phone, tax_rate: row.tax_rate === null ? null : new Decimal(row.tax_rate).toFixed(8),
-    settlement_currency: row.settlement_currency, established: row.established, status: row.status,
+    settlement_currency: row.settlement_currency, remark: row.remark, established: row.established, status: row.status,
     revision, created_at: row.created_at, updated_at: row.updated_at, can_edit: row.can_edit };
 }
 

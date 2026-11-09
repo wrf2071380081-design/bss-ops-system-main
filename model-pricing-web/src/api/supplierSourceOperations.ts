@@ -3,9 +3,18 @@ import { standardModelVersion } from "./standardModels.contract";
 import { validateSourceOperations, type SourceOperationType } from "./sourceOperations.contract";
 
 export const supplierSourceOperationsApi = {
-  async list(supplierID: string, page: number, size = 20, signal?: AbortSignal, entityType?: SourceOperationType) {
+  /** filters.operator / from / to 与模型广场操作记录同口径：操作人、时间区间（左闭右开）。 */
+  async list(supplierID: string, page: number, size = 20, signal?: AbortSignal, entityType?: SourceOperationType,
+    filters?: { operator?: string; from?: string; to?: string }) {
     const id = standardModelVersion(supplierID);
-    const result = await apiRequest<unknown>({ url: `/internal/suppliers/${id}/operations`, params: { page, size, ...(entityType ? { entity_type: entityType } : {}) }, signal });
+    const params = {
+      page, size,
+      ...(entityType ? { entity_type: entityType } : {}),
+      ...(filters?.operator ? { operator: filters.operator } : {}),
+      ...(filters?.from ? { from: filters.from } : {}),
+      ...(filters?.to ? { to: filters.to } : {}),
+    };
+    const result = await apiRequest<unknown>({ url: `/internal/suppliers/${id}/operations`, params, signal });
     const projected = validateSourceOperations(result, page, size, id);
     if (entityType && projected.list.some(row => row.entity_type !== entityType)) throw new Error("操作记录分类与当前筛选不匹配。");
     return projected;

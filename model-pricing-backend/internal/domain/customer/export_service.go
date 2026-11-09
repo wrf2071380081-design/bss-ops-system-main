@@ -102,16 +102,19 @@ func (s *ExportService) renderXLSX(quote *QuoteRow, items []QuoteItemDetail, cus
 	_ = f.MergeCell(sheet, "A1", "F1")
 	_ = f.SetCellValue(sheet, "A2", "客户")
 	_ = f.SetCellValue(sheet, "B2", custName)
-	_ = f.SetCellValue(sheet, "A3", "quote_type")
-	_ = f.SetCellValue(sheet, "B3", quote.QuoteType)
-	_ = f.SetCellValue(sheet, "A4", "status")
-	_ = f.SetCellValue(sheet, "B4", quote.Status)
-	_ = f.SetCellValue(sheet, "A5", "exported_at")
-	_ = f.SetCellValue(sheet, "B5", s.now().In(s.loc).Format("2006-01-02 15:04:05"))
+	// 我方签约主体：报价单上填的那个，导出的文件要能一眼看出是哪个主体签的。
+	_ = f.SetCellValue(sheet, "A3", "我方公司")
+	_ = f.SetCellValue(sheet, "B3", quote.OurCompany)
+	_ = f.SetCellValue(sheet, "A4", "quote_type")
+	_ = f.SetCellValue(sheet, "B4", quote.QuoteType)
+	_ = f.SetCellValue(sheet, "A5", "status")
+	_ = f.SetCellValue(sheet, "B5", quote.Status)
+	_ = f.SetCellValue(sheet, "A6", "exported_at")
+	_ = f.SetCellValue(sheet, "B6", s.now().In(s.loc).Format("2006-01-02 15:04:05"))
 	if quote.ValidUntil != nil {
 		expiry := quote.ValidUntil.In(s.loc).Format("2006-01-02")
-		_ = f.SetCellValue(sheet, "A6", "valid_until")
-		_ = f.SetCellValue(sheet, "B6", expiry)
+		_ = f.SetCellValue(sheet, "A7", "valid_until")
+		_ = f.SetCellValue(sheet, "B7", expiry)
 	}
 
 	// 明细表头

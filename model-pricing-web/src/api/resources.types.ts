@@ -5,10 +5,11 @@ export interface ResourceQuery {
   view: string; page: number; size: number; sort_by: string; order: string;
   keyword?: string; company?: string; model_type?: string; supplier_id?: string; standard_model_id?: string; region?: string; state?: string;
 }
+export interface RegionCoefficient { region: string; min: string; max: string }
 export interface ResourceGroup {
   id: string; name: string; official_id: string; company: string; model_type: string;
   supplier_count: number; resource_count: number; available_count: number;
-  coefficient_min: string; coefficient_max: string; regions: string[]; state_counts: Record<string, number>;
+  coefficient_min: string; coefficient_max: string; regions: string[]; region_coefficients: RegionCoefficient[]; state_counts: Record<string, number>;
 }
 export interface ResourceCache {
   status: string; report_id?: string; hit_tokens?: string; input_tokens?: string; hit_rate?: string; hit_percent?: string; scene?: string;

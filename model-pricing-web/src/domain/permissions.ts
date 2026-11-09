@@ -57,6 +57,7 @@ export const ROUTE_REQUIREMENTS: Record<string, PermissionCode | null> = {
   "internal.alerts": PERMISSIONS.ALERT_VIEW,
   "internal.audit": PERMISSIONS.AUDIT_VIEW,
   "internal.orgPermissions": PERMISSIONS.ORG_PERMISSION_VIEW,
+  "internal.accounts": PERMISSIONS.ORG_PERMISSION_VIEW,
   "internal.integration": PERMISSIONS.AUDIT_VIEW,
   "internal.approvals": null,
   "supplier.home": null,
@@ -76,4 +77,21 @@ export const ROUTE_REQUIREMENTS: Record<string, PermissionCode | null> = {
   "customer.contracts": null,
   "customer.billing": null,
   "customer.notifications": null,
+};
+
+/**
+ * 角色门槛：对 ROUTE_REQUIREMENTS 的**追加 AND 条件**，value 是必须持有的角色 code。
+ *
+ * 为什么需要它：权限点无法表达「只有某个角色能进」。
+ * 账号管理（/internal/accounts）后端两层鉴权是
+ * `RequirePerm(M11:E)` + `perm.CanManageStaff`（后者只认 PLATFORM_ADMIN 角色 code），
+ * 而 LEADER（领导）持有全部 60 个权限点、**包含 M11:E**——只按权限点放行，
+ * 许澄 / 林舟会看到菜单、点进去却整页 403。
+ *
+ * 判定为 AND 语义：routeKey 出现在本表时，除满足 ROUTE_REQUIREMENTS 外，
+ * 还必须在登录快照的角色 code 里命中对应角色，否则 canRoute 返回 false
+ * ⇒ 左菜单不渲染，直接敲 URL 也被守卫打到 /403。
+ */
+export const ROLE_REQUIREMENTS: Record<string, string> = {
+  "internal.accounts": "PLATFORM_ADMIN",
 };

@@ -67,10 +67,10 @@ func TestModelReaderRejectsInvalidQueriesBeforeStore(t *testing.T) {
 
 func TestModelReaderHistoricalSnapshotPreservesPriceAndBlocksNewQuotes(t *testing.T) {
 	old, _ := NewStandardModel("1", "7", completeModelData(), modelNow)
-	old, _, _ = old.verified("7", 1, "2026-10-20", modelNow)
+	old, _, _ = old.verified(WriteMeta{ActorID: "7"}, 1, "2026-10-20", modelNow)
 	changed := cloneData(old.Data)
 	changed.PriceItems[0].Amount = "3.00000000"
-	current, _, _ := old.Updated("7", 2, changed, modelNow)
+	current, _, _ := old.Updated(WriteMeta{ActorID: "7"}, 2, changed, modelNow)
 	reader := NewModelReader(&modelReadFixture{current: current, old: old})
 	history, err := reader.Snapshot(context.Background(), "1", 2)
 	if err != nil {

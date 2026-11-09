@@ -37,6 +37,13 @@ export interface SupplierSubmissionRowDTO {
   coefficient: string;
   test_base_url: string;
   test_api_key_configured?: boolean;
+  /**
+   * 该行挂的准入配置组（000052）。未挂组时为空串（历史数据可能出现）。
+   * name/enabled 是服务端带出的快照，用于「准入配置组」列与「该组已停用」标注。
+   */
+  test_config_group_id?: string;
+  test_config_group_name?: string;
+  test_config_group_enabled?: boolean;
   row_status: string;
   /** 压力测试勾选（原型「压力测试」列） */
   participate_test?: boolean;
@@ -84,12 +91,14 @@ export interface SupplierSubmissionWriteRow {
   interface_model_id: string;
   standard_model_id: string;
   coefficient: string;
+  /** 必填：该行使用的准入配置组（000052）。 */
+  test_config_group_id: string;
   /**
-   * @deprecated 000046 起测试凭据上移主体（`/supplier/test-credential`），
+   * @deprecated 000052 起 URL/Key 由「准入配置组」带出（`/supplier/test-config-groups`），
    * 行级 URL/Key 已废弃；服务端收到也会忽略，仅旧客户端兼容保留字段。
    */
   test_base_url?: string;
-  /** @deprecated 同上：改走主体凭据接口，Key 不再随申报提交。 */
+  /** @deprecated 同上：Key 由配置组维护，不再随申报提交。 */
   test_api_key?: string;
 }
 
@@ -151,6 +160,8 @@ export interface SupplierImportRowDTO {
   interface_model_id: string;
   coefficient: string;
   participate_test: boolean;
+  /** 「准入配置组」列解析出的组名（000052）；后端已按主体组名校验，匹不上该行 ok=false。 */
+  test_config_group_name?: string;
   standard_model_id?: number;
   standard_model_name?: string;
   official_id?: string;

@@ -163,8 +163,21 @@ func (m *StandardModel) unverifiedStatus() string {
 	}
 	return "UNVERIFIED"
 }
-func (m *StandardModel) authorize(actorID string, revision uint64) error {
-	if actorID != m.MaintainerID {
+// authorize 校验编辑权：维护人本人，或上层已判定其具备维护授权（WriteMeta.CanMaintain）。
+func (m *StandardModel) authorize(meta WriteMeta, revision uint64) error {
+	if meta.ActorID != m.MaintainerID && !meta.CanMaintain {
+		return ErrForbidden
+	}
+	if revision != m.Revision {
+		return ErrRevisionConflict
+	}
+	return nil
+}
+
+// authorizeMaintainer 校验核验权：只认绑定维护人本人。
+// 核验（生成可信资料）刻意不随编辑权放开，否则「谁改谁核验」，双人复核名存实亡。
+func (m *StandardModel) authorizeMaintainer(meta WriteMeta, revision uint64) error {
+	if meta.ActorID != m.MaintainerID {
 		return ErrForbidden
 	}
 	if revision != m.Revision {
@@ -174,8 +187,8 @@ func (m *StandardModel) authorize(actorID string, revision uint64) error {
 }
 
 // Updated returns a new snapshot. Caller data, original state and the result never share mutable slices/maps.
-func (m *StandardModel) Updated(actorID string, expectedRevision uint64, data ModelData, now time.Time) (*StandardModel, bool, error) {
-	if err := m.authorize(actorID, expectedRevision); err != nil {
+func (m *StandardModel) Updated(meta WriteMeta, expectedRevision uint64, data ModelData, now time.Time) (*StandardModel, bool, error) {
+	if err := m.authorize(meta, expectedRevision); err != nil {
 		return nil, false, err
 	}
 	if err := validateModelData(data, now); err != nil {
@@ -196,8 +209,11 @@ func (m *StandardModel) Updated(actorID string, expectedRevision uint64, data Mo
 
 // ManuallySaved records one maintainer action. Complete official data becomes the
 // attested version in this same transition; incomplete data is saved unverified.
-func (m *StandardModel) ManuallySaved(actorID string, expectedRevision uint64, data ModelData, now time.Time) (*StandardModel, bool, bool, error) {
-	if err := m.authorize(actorID, expectedRevision); err != nil {
+//
+// 只有维护人本人的「齐备保存」才会直接变成 VERIFIED。持有维护授权的其他人可以保存，
+// 但结果停在 UNVERIFIED，等维护人核验——保证「改」与「核验」不是同一个人。
+func (m *StandardModel) ManuallySaved(meta WriteMeta, expectedRevision uint64, data ModelData, now time.Time) (*StandardModel, bool, bool, error) {
+	if err := m.authorize(meta, expectedRevision); err != nil {
 		return nil, false, false, err
 	}
 	if err := validateModelData(data, now); err != nil {
@@ -209,9 +225,9 @@ func (m *StandardModel) ManuallySaved(actorID string, expectedRevision uint64, d
 	if complete && m.Status != "ACTIVE" {
 		return nil, false, false, ErrInactive
 	}
-	if complete {
+	if complete && meta.ActorID == m.MaintainerID {
 		next.VerifyStatus = "VERIFIED"
-		next.CheckedBy = actorID
+		next.CheckedBy = meta.ActorID
 	} else {
 		next.VerifyStatus = next.unverifiedStatus()
 		next.CheckedBy = ""
@@ -243,8 +259,8 @@ func (m *StandardModel) attestInitialVersion(actorID string) error {
 }
 
 // verified is used only after ModelService has checked the injected official-source policy.
-func (m *StandardModel) verified(actorID string, expectedRevision uint64, date string, now time.Time) (*StandardModel, bool, error) {
-	if err := m.authorize(actorID, expectedRevision); err != nil {
+func (m *StandardModel) verified(meta WriteMeta, expectedRevision uint64, date string, now time.Time) (*StandardModel, bool, error) {
+	if err := m.authorizeMaintainer(meta, expectedRevision); err != nil {
 		return nil, false, err
 	}
 	if m.Status != "ACTIVE" {
@@ -265,7 +281,7 @@ func (m *StandardModel) verified(actorID string, expectedRevision uint64, date s
 		return next, false, nil
 	}
 	next.VerifyStatus = "VERIFIED"
-	next.CheckedBy = actorID
+	next.CheckedBy = meta.ActorID
 	next.Revision++
 	next.VersionNo++
 	next.UpdatedAt = now.UTC()

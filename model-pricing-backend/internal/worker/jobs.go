@@ -19,7 +19,7 @@ import (
 // RegisterJobs 按配置注册任务。返回注册的任务数（供启动日志）。
 // costSvc / costJobs 为 6b-3 新增：COST_RECALC 消费者；传 nil 时跳过注册（老调用点兼容）。
 // eventJobs 为 11b 新增：event_outbox 推送消费者；传 nil 时跳过注册。
-func RegisterJobs(s *Scheduler, cfg config.Worker, approveSvc *supplier.ApproveService, lifecycleSvc *supplier.LifecycleService, costSvc *cost.Service, costJobs *CostJobRepo, eventJobs *repo.EventJobRepo) int {
+func RegisterJobs(s *Scheduler, cfg config.Worker, approveSvc *supplier.ApproveService, lifecycleSvc *supplier.LifecycleService, costSvc *cost.Service, costJobs *CostJobRepo, eventJobs *repo.EventJobRepo, links LinkStateTransitioner) int {
 	if !cfg.Enable {
 		return 0
 	}
@@ -53,7 +53,7 @@ func RegisterJobs(s *Scheduler, cfg config.Worker, approveSvc *supplier.ApproveS
 		if interval <= 0 {
 			interval = time.Minute // 默认 1 分钟
 		}
-		s.Register("event-deliver", EventDeliverJob(eventJobs, s.log), interval, "")
+		s.Register("event-deliver", EventDeliverJob(eventJobs, links, s.log), interval, "")
 		n++
 	}
 	if cfg.Jobs.QuoteExpireScan.Enable {

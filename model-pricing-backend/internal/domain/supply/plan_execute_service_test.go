@@ -68,7 +68,7 @@ func (f *planExecuteFixture) AppendPlanExecutionEffect(_ context.Context, e Plan
 }
 func planExecutionStore(t *testing.T) *planExecuteFixture {
 	record := resourceRecord(t, "11", "21", "31", "CN", "0.68")
-	p, err := NewStatePlan("81", "7", record.Resource, "OFFLINE", modelNow, "维护", modelNow)
+	p, err := NewStatePlan("81", "7", record.Resource, "OFFLINE", modelNow, "维护", modelNow, false)
 	if err != nil {
 		t.Fatal(err)
 	}

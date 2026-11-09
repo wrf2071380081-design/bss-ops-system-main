@@ -26,8 +26,11 @@ const rangeText = (key: typeof rangeFields[number]) => filters.value[`${key}_min
       </el-popover>
     </template>
     <label v-if="metrics || filters.states.length">状态<el-select v-model="filters.states" multiple clearable collapse-tags aria-label="资源状态" placeholder="全部" @change="emit('apply')"><el-option v-for="(name, key) in resourceStateLabels" :key="key" :label="name" :value="key" /></el-select></label>
+    <!-- 详情页与列表页都保留部署节点筛选；详情页按原型放在状态之后。 -->
+    <label v-if="metrics">部署节点<el-select v-model="filters.regions" multiple clearable collapse-tags aria-label="部署节点" placeholder="全部" @change="emit('apply')"><el-option v-for="(name, key) in resourceRegionLabels" :key="key" :value="key" :label="name" /></el-select></label>
     <el-input v-model="filters.keyword" class="filter-search" :aria-label="metrics ? '搜索供应来源' : '搜索模型'" :placeholder="metrics ? '供应商名称 / 接口模型 ID' : '搜索模型名称 / 官方 ID / 供应商'" clearable @input="emit('apply')" />
-    <el-button native-type="submit" :loading="loading">查询</el-button><el-button @click="emit('reset')">重置</el-button>
+    <!-- 原型筛选即改即生效，不设「查询」按钮；表单仍可回车提交。 -->
+    <el-button @click="emit('reset')">重置</el-button>
   </form>
 </template>
 <style scoped>

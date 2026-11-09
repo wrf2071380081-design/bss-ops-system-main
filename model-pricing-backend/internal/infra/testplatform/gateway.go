@@ -21,10 +21,25 @@ func NewGateway(cfg Config) (*Gateway, error) {
 	return &Gateway{client: client}, nil
 }
 
+// platformCategory 把 BSS 内部门类翻译成平台门类。
+//
+// 2026-11-06 实测：平台已把 baseline 门类下线，建任务直接 400
+// 「category: 门类已下线，请改用综合测试（comprehensive）」。
+// comprehensive 的 report/summary 结构与 baseline 完全一致
+// （summary.checks 里仍有 layer=L1、name=minimal_chat、duration_ms），
+// 所以 BSS 侧语义与解读保持不变，只在出站这一层换名字。
+// 平台若恢复 baseline，删掉这层映射即可。
+func platformCategory(category tpdomain.Category) string {
+	if category == tpdomain.CategoryBaseline {
+		return "comprehensive"
+	}
+	return string(category)
+}
+
 // CreateJob 发起任务。
 func (g *Gateway) CreateJob(ctx context.Context, cmd tpdomain.CreateCommand) (tpdomain.Accepted, error) {
 	request := CreateJobRequest{
-		Category: string(cmd.Category),
+		Category: platformCategory(cmd.Category),
 		Target: Target{
 			Model:    cmd.Target.Model,
 			BaseURL:  cmd.Target.BaseURL,
@@ -75,9 +90,15 @@ func paramsOrDefault(category tpdomain.Category, params map[string]any) map[stri
 	}
 	switch category {
 	case tpdomain.CategoryBaseline:
-		return map[string]any{"min_layer_score": 0.8, "mode": "gate"}
+		// 平台侧已由 baseline 切到 comprehensive（见 platformCategory）。
+		// comprehensive 拒绝 mode=gate（只有 baseline 认），2026-11-06 实测：
+		//   params.mode: "gate 仅支持 baseline"
+		// 只传 min_layer_score 即可，平台按 reference-evaluation-v1 跑 L1→L6。
+		return map[string]any{"min_layer_score": 0.8}
 	case tpdomain.CategoryStress:
-		return map[string]any{"concurrency": []int{1}, "duration": "30s"}
+		// engine 是平台 stress 门类的必填参数，且当前只有这一个合法值；
+		// 不传会被平台判 400「参数校验失败」，表现为「测试平台调用失败，请稍后重试」。
+		return map[string]any{"engine": "reference-performance-v1", "concurrency": []int{1}, "duration": "30s"}
 	}
 	return nil
 }

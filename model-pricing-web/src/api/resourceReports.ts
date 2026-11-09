@@ -8,7 +8,7 @@ export interface ResourceReport {
   id: string; resource_id: string; status: "RUNNING" | "COMPLETED" | "FAILED";
   test_job_id?: string; test_report_id?: string;
   created_at: string; tested_at: string | null; test_item: string; operator_name: string;
-  source: "" | "SUPPLIER" | "INTERNAL"; scene: string;
+  source: "" | "SUPPLIER" | "INTERNAL" | "UPLOADED"; scene: string;
   finished_at: string | null; target_matches: boolean;
   connectivity_passed: boolean | null; pressure_passed: boolean | null;
   metrics: { connection_ms: string | null; rps: string | null; tps: string | null };
@@ -27,7 +27,7 @@ export function validateResourceReport(value: unknown, resourceID: string): Reso
   if (row.resource_id !== resourceID || !["RUNNING", "COMPLETED", "FAILED"].includes(row.status) || typeof row.target_matches !== "boolean") invalid();
   const time = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value) && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
   if (!time(row.created_at) || (row.tested_at !== null && !time(row.tested_at)) || (row.finished_at !== null && !time(row.finished_at)) || (row.status === "COMPLETED" && (row.finished_at === null || row.tested_at === null))) invalid();
-  if (typeof row.test_item !== "string" || !row.test_item.trim() || typeof row.operator_name !== "string" || typeof row.scene !== "string" || !["", "SUPPLIER", "INTERNAL"].includes(row.source)) invalid();
+  if (typeof row.test_item !== "string" || !row.test_item.trim() || typeof row.operator_name !== "string" || typeof row.scene !== "string" || !["", "SUPPLIER", "INTERNAL", "UPLOADED"].includes(row.source)) invalid();
   if (![row.connectivity_passed, row.pressure_passed].every(value => value === null || typeof value === "boolean")) invalid();
   if (!row.metrics || !row.cache_stats || row.cache_stats.report_id !== row.id) invalid();
   for (const key of ["connection_ms", "rps", "tps"] as const) {
@@ -69,5 +69,14 @@ export const resourceReportsApi = {
   },
   async file(resourceID: string, reportID: string, fileID: string) {
     return apiFileRequest({ url: `${base(resourceID)}/${standardModelVersion(reportID)}/files/${standardModelVersion(fileID)}` });
+  },
+  // 原型「上传专项报告」：外部报告只留档，不参与准入判定。
+  async upload(resourceID: string, body: { file_name: string; content_base64: string; scene?: string }, lifecycle: string) {
+    const payload = { ...body };
+    const result = await apiRequest<{ report_id: string; source: string }>({ method: "POST", url: base(resourceID), data: payload,
+      idempotency: { scope: `report-upload:${resourceID}`, payload, lifecycle } });
+    if (!result || typeof result.report_id !== "string" || (result.source !== undefined && result.source !== "UPLOADED")) invalid();
+    standardModelVersion(result.report_id);
+    return { report_id: result.report_id };
   },
 };

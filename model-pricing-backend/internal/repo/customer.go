@@ -59,6 +59,8 @@ type customerQuoteRow struct {
 	OwnerSalesOperatorID int64      `gorm:"column:owner_sales_operator_id"`
 	OriginOwnerID        *int64     `gorm:"column:origin_owner_id"`
 	QuoteType            string     `gorm:"column:quote_type"`
+	// OurCompany 是我方签约主体（销售在「报价信息」里手填），老单为空串。
+	OurCompany           string     `gorm:"column:our_company"`
 	CreatedBy            int64      `gorm:"column:created_by"`
 	CreatedAt            time.Time  `gorm:"column:created_at"`
 	UpdatedAt            time.Time  `gorm:"column:updated_at"`
@@ -855,6 +857,7 @@ func (r *CustomerRepo) GenerateQuoteTx(ctx context.Context, in customer.Generate
 			PriceBookVersion:     in.PriceBookVersion,
 			OwnerSalesOperatorID: in.OwnerSalesID,
 			QuoteType:            in.QuoteType,
+			OurCompany:           in.OurCompany,
 			CreatedBy:            operatorID,
 			CreatedAt:            now,
 			UpdatedAt:            now,
@@ -931,6 +934,7 @@ func (r *CustomerRepo) GenerateQuoteTx(ctx context.Context, in customer.Generate
 		PriceBookVersion: in.PriceBookVersion,
 		ValidUntil:       in.ValidUntil,
 		OwnerSalesID:     in.OwnerSalesID,
+		OurCompany:       in.OurCompany,
 		CreatedAt:        now,
 	}, nil
 }

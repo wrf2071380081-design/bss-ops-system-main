@@ -37,12 +37,24 @@ func TestAdmissionRejectsWrongFlowRowVersionAndUnreadyPrerequisites(t *testing.T
 		}
 	}
 }
-func TestAdmissionUsesOwnCurrentTestAndConfirmedFormalConfig(t *testing.T) {
-	for _, change := range []func(*ResourceRecord){func(r *ResourceRecord) { r.Report.ConnectivityPassed = false }, func(r *ResourceRecord) { r.Report.PressurePassed = false }, func(r *ResourceRecord) { r.Report.Valid = false }, func(r *ResourceRecord) { r.Report.TargetVersion = 2 }, func(r *ResourceRecord) { r.Report.OriginRowVersion = 2 }, func(r *ResourceRecord) { r.Report.ResourceID = "12" }, func(r *ResourceRecord) { r.Report = nil }, func(r *ResourceRecord) { r.Config = nil }, func(r *ResourceRecord) { r.Config.ConfirmedRevision = 0 }, func(r *ResourceRecord) { r.Config.HasAPIKey = false }, func(r *ResourceRecord) { r.Config.Region = "OVERSEAS" }, func(r *ResourceRecord) { r.Supplier.Status = "FROZEN" }} {
+// 测试证据不再是接入前置（原型：填完 URL/Key 即可接入），但正式配置与主体状态仍然拦。
+func TestAdmissionIgnoresTestEvidenceButRequiresConfirmedFormalConfig(t *testing.T) {
+	for _, change := range []func(*ResourceRecord){func(r *ResourceRecord) { r.Report.ConnectivityPassed = false }, func(r *ResourceRecord) { r.Report.Valid = false }, func(r *ResourceRecord) { r.Report.TargetVersion = 2 }, func(r *ResourceRecord) { r.Report.OriginRowVersion = 2 }, func(r *ResourceRecord) {
+		// 完全没有测试证据：报告为空且没有生效指针
+		r.Report = nil
+		r.Resource.LatestReportID = ""
+	}} {
+		r, p, cmd := admissionFixture(t)
+		change(r)
+		if _, err := ProposeResourceAdmission(r, p, "8", cmd, modelNow); err != nil {
+			t.Fatalf("test evidence blocked admission: %v", err)
+		}
+	}
+	for _, change := range []func(*ResourceRecord){func(r *ResourceRecord) { r.Report.ResourceID = "12" }, func(r *ResourceRecord) { r.Config = nil }, func(r *ResourceRecord) { r.Config.ConfirmedRevision = 0 }, func(r *ResourceRecord) { r.Config.HasAPIKey = false }, func(r *ResourceRecord) { r.Config.Region = "OVERSEAS" }, func(r *ResourceRecord) { r.Supplier.Status = "FROZEN" }} {
 		r, p, cmd := admissionFixture(t)
 		change(r)
 		if _, err := ProposeResourceAdmission(r, p, "8", cmd, modelNow); err == nil {
-			t.Fatal("unready resource admitted")
+			t.Fatal("resource without usable formal config admitted")
 		}
 		if r.Resource.State != "PENDING_ACCESS" {
 			t.Fatal("failed admission mutated state")
@@ -70,8 +82,9 @@ func TestAdmissionKeepsModelVerificationAsSeparateQuoteGate(t *testing.T) {
 		t.Fatalf("unverified model became quotable %+v %v", snapshot, err)
 	}
 }
-func TestAdmissionRequiresPendingFirstAdmissionRevisionAndActualEvidence(t *testing.T) {
-	for _, change := range []func(*ResourceRecord, *ResourceAdmissionCommand){func(r *ResourceRecord, c *ResourceAdmissionCommand) { r.Resource.State = "PENDING_TEST" }, func(r *ResourceRecord, c *ResourceAdmissionCommand) { r.Resource.State = "ADMITTED" }, func(r *ResourceRecord, c *ResourceAdmissionCommand) { r.Resource.EverAdmitted = true }, func(r *ResourceRecord, c *ResourceAdmissionCommand) { c.ExpectedRevision = 2 }, func(r *ResourceRecord, c *ResourceAdmissionCommand) { c.ExternalConfirmed = false }, func(r *ResourceRecord, c *ResourceAdmissionCommand) { c.CompletionNote = " " }, func(r *ResourceRecord, c *ResourceAdmissionCommand) { c.ResourceID = "12" }, func(r *ResourceRecord, c *ResourceAdmissionCommand) {
+func TestAdmissionRequiresFirstAdmissionRevisionAndActualEvidence(t *testing.T) {
+	// PENDING_TEST 也允许接入（测试不是前置），所以只保留真正非法的状态与入参。
+	for _, change := range []func(*ResourceRecord, *ResourceAdmissionCommand){func(r *ResourceRecord, c *ResourceAdmissionCommand) { r.Resource.State = "ADMITTED" }, func(r *ResourceRecord, c *ResourceAdmissionCommand) { r.Resource.EverAdmitted = true }, func(r *ResourceRecord, c *ResourceAdmissionCommand) { c.ExpectedRevision = 2 }, func(r *ResourceRecord, c *ResourceAdmissionCommand) { c.ExternalConfirmed = false }, func(r *ResourceRecord, c *ResourceAdmissionCommand) { c.CompletionNote = " " }, func(r *ResourceRecord, c *ResourceAdmissionCommand) { c.ResourceID = "12" }, func(r *ResourceRecord, c *ResourceAdmissionCommand) {
 		r.Resource.Revision = math.MaxInt64
 		c.ExpectedRevision = math.MaxInt64
 	}} {
