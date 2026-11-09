@@ -28,12 +28,50 @@ type fakeOnboardingStore struct {
 	contractCalls []CompleteContractRecord
 	completeErr   error
 
+	// 默认「资料已齐」，否则既有 CONTRACT 完成用例都会被新前置校验挡住；
+	// 要测「资料未齐」的用例显式置 docsMissing=true。
+	docsMissing bool
+	docsErr     error
+
+	addedModels []OnboardingModelInput
+	addedOp     *OperationRecord
+	addErr      error
+	// autoReady 模拟「本次申请的批准模型已全部配上来源」。
+	autoReady bool
+
+	modelsAssignee       int64
+	contractTaskAssignee int64
+
 	flow    *OnboardingFlow
 	flowErr error
 }
 
 func (f *fakeOnboardingStore) CustomerRegion(_ context.Context, _ int64) (string, error) {
 	return f.region, f.regionErr
+}
+
+func (f *fakeOnboardingStore) AddFlowModels(_ context.Context, flowID int64, models []OnboardingModelInput, op *OperationRecord, _ int64, _ string) error {
+	f.addedModels = append(f.addedModels, models...)
+	f.addedOp = op
+	if f.addErr != nil {
+		return f.addErr
+	}
+	return nil
+}
+
+func (f *fakeOnboardingStore) OpenCustomerTaskAssignees(context.Context, int64) (int64, int64, error) {
+	return f.modelsAssignee, f.contractTaskAssignee, nil
+}
+
+func (f *fakeOnboardingStore) AutoConfigReady(context.Context, int64, int64) (bool, error) {
+	return f.autoReady, nil
+}
+
+func (f *fakeOnboardingStore) CustomerBusinessDocsReady(_ context.Context, _ int64) (bool, error) {
+	if f.docsErr != nil {
+		return false, f.docsErr
+	}
+	return !f.docsMissing, nil
 }
 
 func (f *fakeOnboardingStore) StartFlow(_ context.Context, in StartFlowRecord) (*OnboardingFlow, error) {
@@ -355,4 +393,218 @@ func TestOnboardingWithoutStoreFailsLoudly(t *testing.T) {
 	if _, err := NewOnboardingService(nil, nil).CompleteNode(context.Background(), CompleteNodeInput{NodeID: 1, Reason: "x"}); !errors.Is(err, ErrOnboardingUnavailable) {
 		t.Fatalf("got %v", err)
 	}
+}
+
+// TestOnboardingCompleteContractRequiresDocs 商务完成必须先有合同与授信资料（对齐原型）。
+//
+// 原型里商务模块的完成不是"点一下确认"，而是合同与授信两份资料真的在档。
+// 只填一句说明就能把 CONTRACT 标完成，会让客户在没有合同依据的情况下被配资源开通。
+func TestOnboardingCompleteContractRequiresDocs(t *testing.T) {
+	node := &OnboardingNodeContext{
+		NodeID: 31, NodeKey: OnboardingNodeContract, NodeStatus: OnboardingNodeInProgress,
+		FlowID: 7, FlowStatus: OnboardingFlowProcessing, CustomerProfileID: 5,
+	}
+	in := CompleteNodeInput{NodeID: 31, Reason: "合同与授信已归档", Operator: 42, Request: "req"}
+
+	t.Run("资料未齐时拦下", func(t *testing.T) {
+		store := &fakeOnboardingStore{nodeCtx: node, docsMissing: true}
+		svc := newOnboardingServiceWith(store, nil)
+		if _, err := svc.CompleteNode(context.Background(), in); !errors.Is(err, ErrOnboardingContractDocs) {
+			t.Fatalf("want ErrOnboardingContractDocs, got %v", err)
+		}
+		if len(store.contractCalls) != 0 {
+			t.Fatal("资料未齐时不得写库")
+		}
+	})
+
+	t.Run("资料齐了才放行", func(t *testing.T) {
+		store := &fakeOnboardingStore{nodeCtx: node}
+		svc := newOnboardingServiceWith(store, nil)
+		if _, err := svc.CompleteNode(context.Background(), in); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if len(store.contractCalls) != 1 {
+			t.Fatalf("应调用一次 CompleteContract，got %d", len(store.contractCalls))
+		}
+	})
+}
+
+// 追加待配置模型：CONFIG 完成后不能加；来源必须已准入且同节点。
+func TestOnboardingAddModels(t *testing.T) {
+	baseFlow := func() *OnboardingFlow {
+		return &OnboardingFlow{
+			ID: 7, CustomerProfileID: 5, Status: OnboardingFlowProcessing,
+			Nodes: []OnboardingNode{{Key: OnboardingNodeConfig, Status: OnboardingNodeInProgress}},
+		}
+	}
+	facts := map[int64]*ResourceFacts{
+		100: {ID: 100, StandardModelID: 13, Region: "CN", State: resourceStateAdmitted},
+		101: {ID: 101, StandardModelID: 14, Region: "OVERSEAS", State: resourceStateAdmitted},
+	}
+
+	t.Run("正常追加", func(t *testing.T) {
+		store := &fakeOnboardingStore{flow: baseFlow(), region: "CN"}
+		svc := newOnboardingServiceWith(store, facts)
+		if _, err := svc.AddModels(context.Background(), 5, []OnboardingModelInput{{StandardModelID: 13, ResourceID: 100}}, nil, 42, "req"); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if len(store.addedModels) != 1 {
+			t.Fatalf("应追加 1 条，got %+v", store.addedModels)
+		}
+	})
+
+	t.Run("资源配置已完成不能再加", func(t *testing.T) {
+		flow := baseFlow()
+		flow.Nodes[0].Status = OnboardingNodeCompleted
+		store := &fakeOnboardingStore{flow: flow, region: "CN"}
+		svc := newOnboardingServiceWith(store, facts)
+		_, err := svc.AddModels(context.Background(), 5, []OnboardingModelInput{{StandardModelID: 13, ResourceID: 100}}, nil, 42, "req")
+		if !errors.Is(err, ErrOnboardingConfigDone) {
+			t.Fatalf("want ErrOnboardingConfigDone, got %v", err)
+		}
+	})
+
+	t.Run("跨部署节点的来源要拒绝", func(t *testing.T) {
+		store := &fakeOnboardingStore{flow: baseFlow(), region: "CN"}
+		svc := newOnboardingServiceWith(store, facts)
+		_, err := svc.AddModels(context.Background(), 5, []OnboardingModelInput{{StandardModelID: 14, ResourceID: 101}}, nil, 42, "req")
+		if !errors.Is(err, ErrOnboardingRegionMismatch) {
+			t.Fatalf("want ErrOnboardingRegionMismatch, got %v", err)
+		}
+	})
+}
+
+// 配齐即自动完成 CONFIG：对齐原型「绑完即生效」，技术不用再跑去另一个页签点完成节点。
+func TestOnboardingAddModelsAutoCompletesConfig(t *testing.T) {
+	baseFlow := func(status string) *OnboardingFlow {
+		return &OnboardingFlow{
+			ID: 7, CustomerProfileID: 5, Status: OnboardingFlowProcessing,
+			Nodes: []OnboardingNode{{Key: OnboardingNodeConfig, Status: status}},
+		}
+	}
+	facts := map[int64]*ResourceFacts{
+		100: {ID: 100, StandardModelID: 13, Region: "CN", State: resourceStateAdmitted},
+	}
+	models := []OnboardingModelInput{{StandardModelID: 13, ResourceID: 100}}
+
+	t.Run("配齐即自动完成", func(t *testing.T) {
+		store := &fakeOnboardingStore{flow: baseFlow(OnboardingNodeInProgress), region: "CN", autoReady: true}
+		svc := newOnboardingServiceWith(store, facts)
+		out, err := svc.AddModels(context.Background(), 5, models, nil, 42, "req")
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if len(store.configCalls) != 1 {
+			t.Fatalf("配齐后应自动完成 CONFIG，got %d 次", len(store.configCalls))
+		}
+		if store.configCalls[0].Reason != autoConfigReason {
+			t.Fatalf("自动完成的说明应为系统口径，got %q", store.configCalls[0].Reason)
+		}
+		if out == nil || out.Status != OnboardingFlowCompleted {
+			t.Fatalf("应返回完成态流程，got %+v", out)
+		}
+	})
+
+	t.Run("没配齐不动节点", func(t *testing.T) {
+		store := &fakeOnboardingStore{flow: baseFlow(OnboardingNodeInProgress), region: "CN"}
+		svc := newOnboardingServiceWith(store, facts)
+		if _, err := svc.AddModels(context.Background(), 5, models, nil, 42, "req"); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if len(store.configCalls) != 0 {
+			t.Fatal("没配齐就不该自动完成")
+		}
+	})
+
+	t.Run("CONFIG 还在等待前序时不自动完成", func(t *testing.T) {
+		store := &fakeOnboardingStore{flow: baseFlow(OnboardingNodeWaiting), region: "CN", autoReady: true}
+		svc := newOnboardingServiceWith(store, facts)
+		if _, err := svc.AddModels(context.Background(), 5, models, nil, 42, "req"); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if len(store.configCalls) != 0 {
+			t.Fatal("前序节点没完成时不该收尾流程")
+		}
+	})
+
+	t.Run("自动完成失败不挡用户", func(t *testing.T) {
+		store := &fakeOnboardingStore{
+			flow: baseFlow(OnboardingNodeInProgress), region: "CN",
+			autoReady: true, completeErr: ErrLinkModelAlreadyActive,
+		}
+		svc := newOnboardingServiceWith(store, facts)
+		out, err := svc.AddModels(context.Background(), 5, models, nil, 42, "req")
+		if err != nil {
+			t.Fatalf("自动完成失败应降级为手动，不能回传错误: %v", err)
+		}
+		if len(store.configCalls) != 1 {
+			t.Fatalf("应尝试过一次自动完成，got %d", len(store.configCalls))
+		}
+		if out == nil || out.Status != OnboardingFlowProcessing {
+			t.Fatalf("失败时应返回未完成的流程，got %+v", out)
+		}
+	})
+}
+
+// 操作登记（对齐原型「先去生产平台操作、再回来登记」）：
+// 填了就进节点说明与审计，三项全空视为没登记，不挡流程。
+func TestOnboardingAddModelsOperationRecord(t *testing.T) {
+	baseFlow := func() *OnboardingFlow {
+		return &OnboardingFlow{
+			ID: 7, CustomerProfileID: 5, Status: OnboardingFlowProcessing,
+			Nodes: []OnboardingNode{{Key: OnboardingNodeConfig, Status: OnboardingNodeInProgress}},
+		}
+	}
+	facts := map[int64]*ResourceFacts{
+		100: {ID: 100, StandardModelID: 13, Region: "CN", State: resourceStateAdmitted},
+	}
+	models := []OnboardingModelInput{{StandardModelID: 13, ResourceID: 100}}
+
+	t.Run("登记信息进节点说明", func(t *testing.T) {
+		store := &fakeOnboardingStore{flow: baseFlow(), region: "CN", autoReady: true}
+		svc := newOnboardingServiceWith(store, facts)
+		op := &OperationRecord{ExecutedAt: "2026-11-08 11:30", ExecutedBy: "张三", Evidence: "WO-0912"}
+		if _, err := svc.AddModels(context.Background(), 5, models, op, 42, "req"); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if store.addedOp == nil || store.addedOp.ExecutedBy != "张三" {
+			t.Fatalf("登记应原样传给仓储，got %+v", store.addedOp)
+		}
+		if len(store.configCalls) != 1 {
+			t.Fatalf("应自动完成一次，got %d", len(store.configCalls))
+		}
+		reason := store.configCalls[0].Reason
+		for _, want := range []string{autoConfigReason, "2026-11-08 11:30", "张三", "WO-0912"} {
+			if !strings.Contains(reason, want) {
+				t.Fatalf("节点说明应含 %q，got %q", want, reason)
+			}
+		}
+	})
+
+	t.Run("三项全空等于没登记", func(t *testing.T) {
+		store := &fakeOnboardingStore{flow: baseFlow(), region: "CN", autoReady: true}
+		svc := newOnboardingServiceWith(store, facts)
+		if _, err := svc.AddModels(context.Background(), 5, models, &OperationRecord{ExecutedAt: "   "}, 42, "req"); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if store.addedOp != nil {
+			t.Fatalf("空白登记应归一为 nil，got %+v", store.addedOp)
+		}
+		if len(store.configCalls) != 1 || store.configCalls[0].Reason != autoConfigReason {
+			t.Fatalf("没有登记时节点说明应只有系统口径，got %+v", store.configCalls)
+		}
+	})
+
+	t.Run("超长登记要拒绝", func(t *testing.T) {
+		store := &fakeOnboardingStore{flow: baseFlow(), region: "CN"}
+		svc := newOnboardingServiceWith(store, facts)
+		_, err := svc.AddModels(context.Background(), 5, models,
+			&OperationRecord{Evidence: strings.Repeat("证", 501)}, 42, "req")
+		if !errors.Is(err, ErrOnboardingOperationInvalid) {
+			t.Fatalf("want ErrOnboardingOperationInvalid, got %v", err)
+		}
+		if len(store.addedModels) != 0 {
+			t.Fatal("校验失败不得写库")
+		}
+	})
 }

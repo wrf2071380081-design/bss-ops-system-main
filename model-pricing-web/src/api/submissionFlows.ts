@@ -2,7 +2,7 @@ import {apiRequest} from './http';
 import {standardModelVersion} from './standardModels.contract';
 export interface SubmissionFlowView {
  id:string;supplier_id:string;supplier_name:string;revision:string;status:string;kind:string;region:string;first_model:boolean;can_approve:boolean;can_handle:boolean;
- rows:Array<{id:string;model_id:string;model_name:string;interface_model_id:string;coefficient:string;status:string;resource_id:string;decision?:'PENDING'|'APPROVED'|'REJECTED';company?:string;model_type?:string;
+ rows:Array<{id:string;model_id:string;model_name:string;interface_model_id:string;coefficient:string;/** 价格变更：该模型现有资源当前生效的系数（新增单为空串）。 */current_coefficient?:string;status:string;resource_id:string;decision?:'PENDING'|'APPROVED'|'REJECTED';company?:string;model_type?:string;
   /** 该行供应资源最近一次测试（原型审批页四列指标）；无报告时 test_status=NOT_TESTED。 */
   test_status?:'NOT_TESTED'|'PASSED'|'FAILED'|'INCOMPLETE';connection_ms?:string;rps?:string;tps?:string;cache_hit_rate?:string;cache_available?:boolean;
   /** 最近一次测试的两项结论：四列有数值但结论未通过时，审批人要能看出来。 */

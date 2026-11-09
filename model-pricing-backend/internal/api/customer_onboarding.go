@@ -43,7 +43,10 @@ func customerOnboardingErrToAppErr(err error) apperr.Error {
 	switch {
 	case errors.Is(err, customer.ErrOnboardingInProgress),
 		errors.Is(err, customer.ErrOnboardingNodeCompleted),
-		errors.Is(err, customer.ErrOnboardingNodeNotReady):
+		errors.Is(err, customer.ErrOnboardingNodeNotReady),
+		// 资料未齐属于「换个状态就能过」的业务冲突：先去档案与办理补齐资料。
+		errors.Is(err, customer.ErrOnboardingContractDocs),
+		errors.Is(err, customer.ErrOnboardingConfigDone):
 		return apperr.New(apperr.ErrConflict.Code, err.Error(), apperr.ErrConflict.Status) // 409
 	case errors.Is(err, customer.ErrOnboardingFlowNotFound),
 		errors.Is(err, customer.ErrOnboardingNodeNotFound),
@@ -58,6 +61,7 @@ func customerOnboardingErrToAppErr(err error) apperr.Error {
 		errors.Is(err, customer.ErrOnboardingAssigneeRequired),
 		errors.Is(err, customer.ErrOnboardingContractAssignee),
 		errors.Is(err, customer.ErrOnboardingReasonRequired),
+		errors.Is(err, customer.ErrOnboardingOperationInvalid),
 		errors.Is(err, customer.ErrLinkModelMismatch),
 		errors.Is(err, customer.ErrLinkResourceNotAdmitted):
 		return apperr.New(apperr.ErrInvalidParams.Code, err.Error(), apperr.ErrInvalidParams.Status) // 400
@@ -77,6 +81,57 @@ type startOnboardingBody struct {
 	ConfigAssigneeID   int64                           `json:"config_assignee_id"`
 	Models             []customer.OnboardingModelInput `json:"models"`
 	Reason             string                          `json:"reason"`
+}
+
+// addOnboardingModelsBody 追加待配置模型请求体。
+//
+// Operation 是可选的生产侧操作登记（实际操作时间/人员/完成依据），
+// 对齐原型「先去生产平台配好、再回来登记」：填了就以它为审计依据，不填用系统口径。
+type addOnboardingModelsBody struct {
+	Models    []customer.OnboardingModelInput `json:"models"`
+	Operation *customer.OperationRecord       `json:"operation"`
+}
+
+// AddOnboardingModels 给进行中的开通流程追加「模型 × 资源」（M8:E + 幂等）。
+//
+// @Summary 追加待配置模型（M8:E）
+// @Description 原型里「配置资源」是逐模型的：审批通过后可以一个个模型挑来源。这里是增量入口——只要本次开通的 CONFIG 还没完成，就能继续往里加（重复加同一资源是幂等的）。
+// @Tags 客户报价
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path int64 true "customer_profile.id"
+// @Param Idempotency-Key header string true "幂等键"
+// @Param body body addOnboardingModelsBody true "models[{standard_model_id,resource_id}]"
+// @Success 200 {object} api.APIResponse "code=0；data=OnboardingFlow"
+// @Failure 400 {object} api.APIResponse "code=10001 模型或资源参数非法"
+// @Failure 403 {object} api.APIResponse "code=10003 无 M8:E"
+// @Failure 404 {object} api.APIResponse "code=10004 客户/资源/流程不存在"
+// @Failure 409 {object} api.APIResponse "code=10008 资源配置已完成，不能再追加"
+// @Router /api/internal/customers/{id}/onboarding/models [post]
+func (h *CustomerOnboardingHandler) AddOnboardingModels(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "customer id 非法", apperr.ErrInvalidParams.Status))
+		return
+	}
+	var body addOnboardingModelsBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "JSON 解析失败：请提供 models[{standard_model_id,resource_id}]", apperr.ErrInvalidParams.Status))
+		return
+	}
+	flow, err := h.svc.AddModels(c.Request.Context(), id, body.Models, body.Operation, op.OperatorID, requestIDOf(c))
+	if err != nil {
+		response.Error(c, customerOnboardingErrToAppErr(err))
+		return
+	}
+	middleware.SetIdempotencyResult(c, flow)
+	response.Success(c, flow)
 }
 
 // StartOnboarding 发起客户开通（M8:E + 幂等）。
@@ -217,6 +272,38 @@ func (h *CustomerOnboardingHandler) CompleteCustomerNode(c *gin.Context) {
 		Operator:     op.StaffID,
 		Request:      requestIDOf(c),
 	})
+	if err != nil {
+		response.Error(c, customerOnboardingErrToAppErr(err))
+		return
+	}
+	middleware.SetIdempotencyResult(c, flow)
+	response.Success(c, flow)
+}
+
+// EnsureOnboardingFlow 兜底补建客户开通流程（M8:E + 幂等）。
+//
+// @Summary 按审批派发的待办补建开通流程
+// @Description 审批通过已经派了「客户模型开通 / 合同与授信」待办、但客户名下还没有进行中的流程时，按待办责任人把流程补出来（不写模型明细，来源由技术后续配置）。已有流程时幂等返回。
+// @Tags 客户报价
+// @Produce json
+// @Security BearerAuth
+// @Param id path int64 true "customer_profile.id"
+// @Param Idempotency-Key header string true "幂等键"
+// @Success 200 {object} api.APIResponse "code=0；data=OnboardingFlow"
+// @Failure 400,401,403,404 {object} api.APIResponse
+// @Router /api/internal/customers/{id}/onboarding/ensure [post]
+func (h *CustomerOnboardingHandler) EnsureOnboardingFlow(c *gin.Context) {
+	op := middleware.OperatorFrom(c)
+	if op == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "customer id 非法", apperr.ErrInvalidParams.Status))
+		return
+	}
+	flow, err := h.svc.EnsureFlowFromTasks(c.Request.Context(), id, op.OperatorID, requestIDOf(c))
 	if err != nil {
 		response.Error(c, customerOnboardingErrToAppErr(err))
 		return

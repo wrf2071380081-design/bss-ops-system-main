@@ -398,13 +398,17 @@ func (s *CustomerResourceLinkStore) LoadResourceFacts(ctx context.Context, resou
 func (s *CustomerResourceLinkStore) ListCustomerModelServices(ctx context.Context, customerProfileID int64) ([]customer.CustomerModelServiceRow, error) {
 	// 投影由两部分合成：
 	//   1. bound —— 已经落库的未归档绑定（现状，服务中/已禁用/来源待处理都从这里来）；
-	//   2. pending —— **进行中的开通申请**里还没绑来源的模型。
+	//   2. pending —— **还没配来源**的模型，两个来源取并集：
+	//      a) 进行中的开通申请里已纳入、但还没绑定的模型；
+	//      b) **报价审批已批准、但还没有任何未归档绑定的模型**。
 	//
-	// 为什么要带 pending：原型「接入模型」把「已申请但还没配来源」的模型也列出来（资源数 0/0），
-	// 运营才能看出「还差哪个模型没配置」。只按绑定投影时，这些模型在界面上根本不存在，
-	// 批量「配置资源」也就没有可勾选的对象。
-	// pending 的口径刻意收得很紧：同客户、未归档绑定不存在的模型才补一行，
-	// 不碰历史归档（那会把客户所有用过的模型翻出来）。
+	// 为什么 b 必须有：审批通过只是「这批模型可以对外卖」，配源是后面技术的事。
+	// 只按开通申请投影时，审批完到发起开通之间这段时间，接入模型是空表——
+	// 工作台派出去的「客户模型开通」待办点进来没东西可配，等于死链。
+	// 补上 b 之后，批准即出现在待配置列表（与原型一致：有效可用资源 0 / 已绑定 0）。
+	//
+	// 口径仍然收得很紧：同客户、未归档绑定不存在的模型才补一行，不碰历史归档
+	// （那会把客户所有用过的模型翻出来）；被驳回的模型不会出现（只取 result='APPROVED'）。
 	query := fmt.Sprintf(`
 WITH bound AS (
     SELECT l.standard_model_id,
@@ -420,10 +424,13 @@ WITH bound AS (
      WHERE l.customer_profile_id = $1 AND l.archived = FALSE
      GROUP BY l.standard_model_id
 ),
-pending AS (
+pending_raw AS (
+    -- a) 进行中的开通申请：已选模型、资源还没落绑定
     SELECT m.standard_model_id,
-           max(COALESCE(r2.region, ''))              AS region,
-           max(COALESCE(r2.coefficient::text, ''))   AS coefficient
+           COALESCE(r2.region, '')            AS region,
+           COALESCE(r2.coefficient::text, '') AS coefficient,
+           NULL::text                         AS quote_price_min,
+           NULL::text                         AS quote_price_max
       FROM %s m
       JOIN %s f ON f.id = m.flow_id
       LEFT JOIN %s r2 ON r2.id = m.resource_id
@@ -432,15 +439,47 @@ pending AS (
                         WHERE l2.customer_profile_id = $1
                           AND l2.standard_model_id = m.standard_model_id
                           AND l2.archived = FALSE)
-     GROUP BY m.standard_model_id
+    UNION ALL
+    -- b) 报价审批已批准、但还没配来源的模型（取每张报价单最新那次审批的批准行）
+    SELECT r.standard_model_id,
+           COALESCE(cp.region, '') AS region,
+           ''::text                AS coefficient,
+           min(r.price_min)::text  AS quote_price_min,
+           max(r.price_max)::text  AS quote_price_max
+      FROM %s r
+      JOIN %s a ON a.id = r.approval_id
+      JOIN %s q ON q.id = a.customer_quote_id
+      JOIN %s cp ON cp.id = q.customer_id
+     WHERE q.customer_id = $1
+       AND r.standard_model_id > 0
+       AND r.result = 'APPROVED'
+       AND a.status IN ('APPROVED', 'PARTIAL')
+       AND a.id = (SELECT max(a2.id) FROM %s a2
+                    WHERE a2.customer_quote_id = q.id AND a2.status IN ('APPROVED', 'PARTIAL'))
+       AND NOT EXISTS (SELECT 1 FROM %s l3
+                        WHERE l3.customer_profile_id = $1
+                          AND l3.standard_model_id = r.standard_model_id
+                          AND l3.archived = FALSE)
+     GROUP BY r.standard_model_id, cp.region
+),
+pending AS (
+    SELECT standard_model_id,
+           max(region)              AS region,
+           max(coefficient)         AS coefficient,
+           min(quote_price_min)     AS quote_price_min,
+           max(quote_price_max)     AS quote_price_max
+      FROM pending_raw
+     GROUP BY standard_model_id
 ),
 merged AS (
     SELECT standard_model_id, region, coefficient, primary_state,
-           bound_count, active_count, disabled_count, offline_pending_count, FALSE AS pending_config
+           bound_count, active_count, disabled_count, offline_pending_count, FALSE AS pending_config,
+           NULL::text AS quote_price_min, NULL::text AS quote_price_max
       FROM bound
     UNION ALL
     SELECT standard_model_id, region, coefficient, NULL::text,
-           0, 0, 0, 0, TRUE
+           0, 0, 0, 0, TRUE,
+           quote_price_min, quote_price_max
       FROM pending
 )
 SELECT b.standard_model_id,
@@ -457,12 +496,16 @@ SELECT b.standard_model_id,
           FROM %s r3
          WHERE r3.standard_model_id = b.standard_model_id
            AND r3.region = b.region
-           AND r3.state = 'ADMITTED') AS available_count
+           AND r3.state = 'ADMITTED') AS available_count,
+       COALESCE(b.quote_price_min, '') AS quote_price_min,
+       COALESCE(b.quote_price_max, '') AS quote_price_max
   FROM merged b
   LEFT JOIN %s sm ON sm.id = b.standard_model_id
  ORDER BY COALESCE(sm.name, '') ASC, b.standard_model_id ASC`,
 		s.table("customer_resource_link"), s.table("resource"),
 		s.table("customer_onboarding_model"), s.table("onboarding_flow"), s.table("resource"), s.table("customer_resource_link"),
+		s.table("customer_quote_approval_row"), s.table("customer_quote_approval"), s.table("customer_quote"), s.table("customer_profile"),
+		s.table("customer_quote_approval"), s.table("customer_resource_link"),
 		s.table("resource"), s.table("standard_model"))
 
 	rows, err := s.db.QueryContext(ctx, query, customerProfileID)
@@ -482,6 +525,7 @@ SELECT b.standard_model_id,
 			&row.BoundCount, &row.ActiveCount, &row.DisabledCount, &row.OfflinePendingCount,
 			&row.PendingConfig,
 			&row.AvailableCount,
+			&row.QuotePriceMin, &row.QuotePriceMax,
 		); err != nil {
 			return nil, mapLinkStorageError(err)
 		}
@@ -519,25 +563,40 @@ SELECT l.id,
        l.activated_at,
        l.created_at,
        l.updated_at,
-       COALESCE(tr.connection_ms, ''), COALESCE(tr.rps, ''), COALESCE(tr.tps, ''),
-       COALESCE(tr.hit_tokens, ''), COALESCE(tr.input_tokens, '')
+       COALESCE(tr_conn.connection_ms, ''), COALESCE(tr_perf.rps, ''), COALESCE(tr_perf.tps, ''),
+       COALESCE(tr_cache.hit_tokens, ''), COALESCE(tr_cache.input_tokens, '')
   FROM %s l
   LEFT JOIN %s r  ON r.id  = l.resource_id
   LEFT JOIN %s sp ON sp.id = r.supplier_id
-  -- 最近一次测试结果：展开区要直接看指标，避免每次都跳资源页。
-  -- 按 tested_at 取最新一条；没有报告的来源这五列为空，前端显示「未记录」。
+  -- 实测指标分属不同报告：连通性测验只写 connection_ms，压测只写 rps/tps，
+  -- 缓存命中又只在部分报告里。取「最新一条」会被后一次测验冲成空，
+  -- 展开区就成了「未记录」——所以按指标各取最近非空值。
   LEFT JOIN LATERAL (
-        SELECT p.connection_ms::text AS connection_ms, p.rps::text AS rps, p.tps::text AS tps,
-               p.cache_hit_tokens::text AS hit_tokens, p.cache_input_tokens::text AS input_tokens
+        SELECT p.connection_ms::text AS connection_ms
           FROM %s p
-         WHERE p.resource_id = l.resource_id
+         WHERE p.resource_id = l.resource_id AND p.connection_ms IS NOT NULL
          ORDER BY p.tested_at DESC NULLS LAST, p.id DESC
          LIMIT 1
-       ) tr ON TRUE
+       ) tr_conn ON TRUE
+  LEFT JOIN LATERAL (
+        SELECT p.rps::text AS rps, p.tps::text AS tps
+          FROM %s p
+         WHERE p.resource_id = l.resource_id AND (p.rps IS NOT NULL OR p.tps IS NOT NULL)
+         ORDER BY p.tested_at DESC NULLS LAST, p.id DESC
+         LIMIT 1
+       ) tr_perf ON TRUE
+  LEFT JOIN LATERAL (
+        SELECT p.cache_hit_tokens::text AS hit_tokens, p.cache_input_tokens::text AS input_tokens
+          FROM %s p
+         WHERE p.resource_id = l.resource_id AND p.cache_input_tokens IS NOT NULL
+         ORDER BY p.tested_at DESC NULLS LAST, p.id DESC
+         LIMIT 1
+       ) tr_cache ON TRUE
  WHERE l.customer_profile_id = $1
    AND l.archived = FALSE
  ORDER BY l.standard_model_id ASC, l.id ASC`,
-		s.table("customer_resource_link"), s.table("resource"), s.table("supplier"), s.table("test_report"))
+		s.table("customer_resource_link"), s.table("resource"), s.table("supplier"),
+		s.table("test_report"), s.table("test_report"), s.table("test_report"))
 
 	rows, err := s.db.QueryContext(ctx, query, customerProfileID)
 	if err != nil {

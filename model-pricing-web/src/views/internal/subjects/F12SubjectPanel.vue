@@ -10,7 +10,7 @@ import { ApiError } from "../../../domain/common";
 import { f12ErrorMessage } from "../../../domain/f12Errors";
 import { canManageF12Subject } from "../../../domain/f12Permissions";
 
-const props = defineProps<{ subjectType: F12SubjectType; subjectId: string; canManage: boolean; flowContext?: F12FlowWriteContext; flowCanManage?: boolean; layout?: "full" | "merged"; addBlockedReason?: string }>();
+const props = defineProps<{ subjectType: F12SubjectType; subjectId: string; canManage: boolean; flowContext?: F12FlowWriteContext; flowCanManage?: boolean; layout?: "full" | "merged"; addBlockedReason?: string; currency?: string }>();
 const emit = defineEmits<{ (event: "refresh-flow-context"): void; (event: "changed"): void; (event: "readiness-change", ready: boolean): void }>();
 // These flags only control the UI. Every write and attachment read is authorized again by the server.
 const canManage = computed(() => canManageF12Subject(props.canManage, Boolean(props.flowContext), props.flowCanManage));
@@ -32,8 +32,14 @@ const refreshedContract = ref<F12ContractRecord | null>(null);
 const contractFile = ref<File | null>(null), creditFile = ref<File | null>(null);
 const uploadedContractFile = ref<{ id: string; name: string } | null>(null), uploadedCreditFile = ref<{ id: string; name: string } | null>(null);
 const contractUploadLifecycle = ref(""), contractWriteLifecycle = ref(""), creditUploadLifecycle = ref(""), creditWriteLifecycle = ref(""), archiveWriteLifecycle = ref("");
-const contractForm = reactive({ documentName: "", documentNo: "", reason: "" });
+const contractForm = reactive({ amount: "", documentName: "", documentNo: "", reason: "" });
 const creditForm = reactive({ amount: "", currency: "CNY", documentName: "", documentNo: "", reason: "" });
+// 原型：币种不在表单里选，跟着主体走（国内人民币、海外美元），只在标签上体现。
+const currency = computed(() => (props.currency || "CNY").toUpperCase());
+const currencyText = computed(() => (currency.value === "USD" ? "美元 USD" : "人民币 CNY"));
+// 原型里「备注」是可选的；留空时用默认说明，保证审计里不会出现空原因。
+const contractReason = () => contractForm.reason.trim() || (editingContract.value ? "修订合同资料" : "上传合同资料");
+const creditReason = () => creditForm.reason.trim() || "上传授信资料";
 const archiveReason = ref("");
 let request: AbortController | undefined;
 let sequence = 0;
@@ -157,7 +163,7 @@ function openCreateContract() {
   if (!canManage.value || saving.value || loading.value || error.value) return;
   contractError.value = ""; clearContractConflict();
   editingContract.value = null;
-  contractForm.documentName = ""; contractForm.documentNo = ""; contractForm.reason = "";
+  contractForm.amount = ""; contractForm.documentName = ""; contractForm.documentNo = ""; contractForm.reason = "";
   contractFile.value = null; uploadedContractFile.value = null;
   contractUploadLifecycle.value = newLifecycle("contract-attachment"); contractWriteLifecycle.value = newLifecycle("contract-create"); contractDialog.value = true;
 }
@@ -165,7 +171,7 @@ function openReviseContract(row: F12ContractRecord) {
   if (!canManage.value || saving.value || loading.value || error.value || !row.contract_key || row.is_latest !== true || row.status === "ARCHIVED") return;
   contractError.value = ""; clearContractConflict();
   editingContract.value = row;
-  contractForm.documentName = row.document_name || ""; contractForm.documentNo = row.document_no || ""; contractForm.reason = "";
+  contractForm.amount = ""; contractForm.documentName = row.document_name || ""; contractForm.documentNo = row.document_no || ""; contractForm.reason = "";
   contractFile.value = null; uploadedContractFile.value = null;
   contractUploadLifecycle.value = newLifecycle("contract-attachment"); contractWriteLifecycle.value = newLifecycle("contract-revision"); contractDialog.value = true;
 }
@@ -205,7 +211,7 @@ function onCreditFileChange(event: Event) {
 function openCreditDialog() {
   if (!canManage.value || saving.value || loading.value || error.value) return;
   creditError.value = ""; clearCreditConflict();
-  creditForm.amount = ""; creditForm.currency = "CNY"; creditForm.documentName = ""; creditForm.documentNo = ""; creditForm.reason = "";
+  creditForm.amount = ""; creditForm.currency = currency.value; creditForm.documentName = ""; creditForm.documentNo = ""; creditForm.reason = "";
   creditFile.value = null; uploadedCreditFile.value = null;
   creditUploadLifecycle.value = newLifecycle("credit-attachment"); creditWriteLifecycle.value = newLifecycle("credit-version"); creditDialog.value = true;
 }
@@ -214,7 +220,7 @@ async function getContractFileID(snapshot: SubjectSnapshot): Promise<string | nu
   if (!isCurrentSubject(snapshot)) return null;
   if (uploadedContractFile.value) return uploadedContractFile.value.id;
   if (contractFile.value) {
-    const uploaded = await f12SubjectRecordsApi.uploadAttachment(snapshot.subjectType, snapshot.subjectID, "CONTRACT", contractFile.value, contractForm.reason, contractUploadLifecycle.value, snapshot.flowContext);
+    const uploaded = await f12SubjectRecordsApi.uploadAttachment(snapshot.subjectType, snapshot.subjectID, "CONTRACT", contractFile.value, contractReason(), contractUploadLifecycle.value, snapshot.flowContext);
     if (!isCurrentSubject(snapshot)) return null;
     uploadedContractFile.value = uploaded;
     return uploaded.id;
@@ -226,8 +232,8 @@ async function getContractFileID(snapshot: SubjectSnapshot): Promise<string | nu
 async function saveContract() {
   if (!canManage.value || saving.value || loading.value || error.value) return;
   if (contractConflict.value && !contractConflictReady.value) return;
-  if (!contractForm.documentName.trim() || !contractForm.documentNo.trim() || !contractForm.reason.trim()) {
-    contractError.value = "请填写合同名称、编号和变更原因。"; return;
+  if (!contractForm.documentName.trim() || !contractForm.documentNo.trim()) {
+    contractError.value = "请填写资料名称和资料编号。"; return;
   }
   const snapshot = captureSubject();
   const lifecycle = contractWriteLifecycle.value;
@@ -235,7 +241,7 @@ async function saveContract() {
   try {
     const fileID = await getContractFileID(snapshot);
     if (!fileID || !isCurrentSubject(snapshot)) return;
-    const input = { subjectType: snapshot.subjectType, subjectID: snapshot.subjectID, documentName: contractForm.documentName, documentNo: contractForm.documentNo, fileID, reason: contractForm.reason };
+    const input = { subjectType: snapshot.subjectType, subjectID: snapshot.subjectID, documentName: contractForm.documentName, documentNo: contractForm.documentNo, fileID, reason: contractReason() };
     if (editingContract.value) {
       await f12SubjectRecordsApi.reviseContract(editingContract.value.contract_key!, editingContract.value.version, input, lifecycle, snapshot.flowContext);
     } else {
@@ -438,8 +444,8 @@ function downloadFilename(contentDisposition: string | undefined, fallback: stri
 async function saveCreditVersion() {
   if (!canManage.value || saving.value || loading.value || error.value) return;
   if (creditConflict.value && !creditConflictReady.value) return;
-  if (!creditForm.documentName.trim() || !creditForm.documentNo.trim() || !creditForm.reason.trim() || !creditForm.amount.trim() || !creditForm.currency.trim()) {
-    creditError.value = "请填写额度、币种、依据名称/编号和变更原因。"; return;
+  if (!creditForm.documentName.trim() || !creditForm.documentNo.trim() || !creditForm.amount.trim()) {
+    creditError.value = "请填写资料名称、资料编号和授信额度。"; return;
   }
   let credit: ReturnType<typeof normalizeF12CreditInput>;
   try { credit = normalizeF12CreditInput(creditForm.amount, creditForm.currency); }
@@ -453,14 +459,14 @@ async function saveCreditVersion() {
   try {
     if (!creditFile.value && !uploadedCreditFile.value) throw new Error("每条授信版本都必须上传对应依据附件。");
     if (!uploadedCreditFile.value) {
-      const uploaded = await f12SubjectRecordsApi.uploadAttachment(snapshot.subjectType, snapshot.subjectID, "CREDIT", creditFile.value!, creditForm.reason, uploadLifecycle, snapshot.flowContext);
+      const uploaded = await f12SubjectRecordsApi.uploadAttachment(snapshot.subjectType, snapshot.subjectID, "CREDIT", creditFile.value!, creditReason(), uploadLifecycle, snapshot.flowContext);
       if (!isCurrentSubject(snapshot)) return;
       uploadedCreditFile.value = uploaded;
     }
     if (!isCurrentSubject(snapshot)) return;
     const direction = snapshot.subjectType === "CUSTOMER" ? "US_TO_CUSTOMER" : "SUPPLIER_TO_US";
     await f12SubjectRecordsApi.addCreditVersion({ subjectType: snapshot.subjectType, subjectID: snapshot.subjectID, direction, ...credit,
-      documentName: creditForm.documentName, documentNo: creditForm.documentNo, fileID: uploadedCreditFile.value.id, expectedVersion: existing?.latest_version ?? existing?.record?.version ?? 0, reason: creditForm.reason }, writeLifecycle, snapshot.flowContext);
+      documentName: creditForm.documentName, documentNo: creditForm.documentNo, fileID: uploadedCreditFile.value.id, expectedVersion: existing?.latest_version ?? existing?.record?.version ?? 0, reason: creditReason() }, writeLifecycle, snapshot.flowContext);
     if (!isCurrentSubject(snapshot)) return;
     creditDialog.value = false; creditPage.value = 1; emit("changed"); await load();
     if (!isCurrentSubject(snapshot)) return;
@@ -531,7 +537,12 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
     <div class="panel-heading">
       <div><h3>合同与授信</h3><p v-if="!isMerged">主体 {{ subjectId }} · {{ subjectType === "SUPPLIER" ? "供应商" : "客户" }}</p></div>
       <div class="heading-actions">
-      <template v-if="isMerged">
+      <!-- 办理上下文（工作台合同授信待办进来）按原型只给两个上传动作：先把合同、授信两份资料传齐。 -->
+      <template v-if="flowContext">
+        <el-button v-if="canManage" size="small" :disabled="loading || saving || !!error" @click="openCreateContract">上传合同资料</el-button>
+        <el-button v-if="canManage" size="small" type="primary" :disabled="loading || saving || !!error" @click="openCreditDialog">上传授信资料</el-button>
+      </template>
+      <template v-else-if="isMerged">
         <!-- 首次接入没办完时「新增」只提示（原型同样只弹提示，不给开单），所以不展开菜单。 -->
         <el-button v-if="canManage && addBlockedReason" size="small" @click="createFromMenu('contract')">新增</el-button>
         <el-dropdown v-else-if="canManage" trigger="click" :disabled="loading || saving || !!error" @command="createFromMenu">
@@ -540,9 +551,9 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
         </el-dropdown>
       </template>
       <template v-else>
-        <el-button v-if="canManage" size="small" :disabled="loading || saving || !!error" @click="openCreateContract">新增合同</el-button><el-button v-if="canManage" size="small" type="primary" :disabled="loading || saving || !!error" @click="openCreditDialog">新增 / 调整授信</el-button>
+        <el-button v-if="canManage" size="small" :disabled="loading || saving || !!error" @click="openCreateContract">上传合同资料</el-button><el-button v-if="canManage" size="small" type="primary" :disabled="loading || saving || !!error" @click="openCreditDialog">上传授信资料</el-button>
       </template>
-      <el-button v-if="!isMerged" size="small" :loading="loading" :disabled="saving" @click="load">刷新</el-button>
+      <el-button v-if="!isMerged && !flowContext" size="small" :loading="loading" :disabled="saving" @click="load">刷新</el-button>
     </div>
     </div>
     <el-alert v-if="error" type="error" :title="error" :closable="false" show-icon />
@@ -637,7 +648,7 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
       <template #footer><el-button @click="historyTarget = null">关闭</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="contractDialog" append-to-body :title="editingContract ? '修订合同资料' : '新增合同资料'" width="min(560px, 94vw)" destroy-on-close :close-on-click-modal="false" :close-on-press-escape="!saving && !loading" :show-close="!saving && !loading">
+    <el-dialog v-model="contractDialog" append-to-body :title="editingContract ? '修订合同资料' : '上传合同资料'" width="min(860px, 94vw)" destroy-on-close :close-on-click-modal="false" :close-on-press-escape="!saving && !loading" :show-close="!saving && !loading">
       <el-alert v-if="contractError" :type="contractConflict ? 'warning' : 'error'" :title="contractError" :closable="false">
         <template v-if="contractConflict"><el-button text :disabled="loading || saving" @click="refreshContractConflict">刷新合同版本{{ flowContext ? '并请求刷新办理上下文' : '' }}</el-button></template>
       </el-alert>
@@ -648,28 +659,38 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
           <el-descriptions-item label="合同编号">{{ refreshedContract.document_no || '未记录' }}</el-descriptions-item>
           <el-descriptions-item label="附件">{{ refreshedContract.has_attachment ? '已关联；未选新文件时沿用最新版本附件' : '未关联' }}</el-descriptions-item>
         </el-descriptions>
-        <el-form-item label="合同名称"><el-input v-model="contractForm.documentName" maxlength="128" :disabled="saving" /></el-form-item>
-        <el-form-item label="合同编号"><el-input v-model="contractForm.documentNo" maxlength="128" :disabled="saving" /></el-form-item>
-        <el-form-item label="合同附件"><input type="file" accept=".pdf,.png,.jpg,.jpeg" :disabled="saving || loading" @change="onContractFileChange"><small>{{ uploadedContractFile?.name || contractFile?.name || (editingContract?.file_id ? '不选新文件则沿用本版本附件' : '首次登记必须上传附件') }}</small></el-form-item>
-        <el-form-item label="变更原因"><el-input v-model="contractForm.reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="saving" /></el-form-item>
+        <!-- 原型「上传合同资料」：两列四格 + 备注占整行。 -->
+        <div class="f12-form-grid">
+          <el-form-item label="资料名称"><el-input v-model="contractForm.documentName" maxlength="128" :disabled="saving" aria-label="资料名称" /></el-form-item>
+          <el-form-item label="资料编号"><el-input v-model="contractForm.documentNo" maxlength="128" :disabled="saving" aria-label="资料编号" /></el-form-item>
+          <el-form-item :label="`授信额度（${currencyText}），合同可留空`"><el-input v-model="contractForm.amount" inputmode="decimal" :disabled="saving" aria-label="授信额度" /></el-form-item>
+          <el-form-item label="附件上传">
+            <input class="f12-file" type="file" accept=".pdf,.png,.jpg,.jpeg" :disabled="saving || loading" @change="onContractFileChange">
+            <small>2 MB 以内；{{ uploadedContractFile?.name || contractFile?.name || (editingContract?.file_id ? '不选新文件则沿用本版本附件' : '首次登记必须上传附件') }}</small>
+          </el-form-item>
+          <el-form-item label="备注" class="full"><el-input v-model="contractForm.reason" type="textarea" :rows="2" maxlength="500" :disabled="saving" aria-label="备注" /></el-form-item>
+        </div>
       </el-form>
-      <template #footer><el-button :disabled="saving || loading" @click="contractDialog = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="saving || loading || !!error || contractConflict && !contractConflictReady" @click="saveContract">{{ contractConflictReady ? '按最新版本重试' : '保存为版本' }}</el-button></template>
+      <template #footer><el-button :disabled="saving || loading" @click="contractDialog = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="saving || loading || !!error || contractConflict && !contractConflictReady" @click="saveContract">{{ contractConflictReady ? '按最新版本重试' : '保存资料' }}</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="creditDialog" append-to-body title="新增 / 调整授信" width="min(560px, 94vw)" destroy-on-close :close-on-click-modal="false" :close-on-press-escape="!saving && !loading" :show-close="!saving && !loading">
+    <el-dialog v-model="creditDialog" append-to-body title="上传授信资料" width="min(860px, 94vw)" destroy-on-close :close-on-click-modal="false" :close-on-press-escape="!saving && !loading" :show-close="!saving && !loading">
       <el-alert v-if="creditError" :type="creditConflict ? 'warning' : 'error'" :title="creditError" :closable="false">
         <template v-if="creditConflict"><el-button text :disabled="loading || saving" @click="refreshCreditConflict">刷新当前额度{{ flowContext ? '并请求刷新办理上下文' : '' }}</el-button></template>
       </el-alert>
       <el-form label-position="top" :disabled="saving || loading" @submit.prevent="saveCreditVersion">
-        <el-form-item label="授信方向"><span>{{ subjectType === "SUPPLIER" ? "供应商 → 我方" : "我方 → 客户" }}</span></el-form-item>
-        <el-form-item label="额度"><el-input v-model="creditForm.amount" placeholder="正数，最多两位小数" :disabled="saving" /></el-form-item>
-        <el-form-item label="币种"><el-input v-model="creditForm.currency" maxlength="3" :disabled="saving" /></el-form-item>
-        <el-form-item label="依据名称"><el-input v-model="creditForm.documentName" maxlength="128" :disabled="saving" /></el-form-item>
-        <el-form-item label="依据编号"><el-input v-model="creditForm.documentNo" maxlength="128" :disabled="saving" /></el-form-item>
-        <el-form-item label="依据附件"><input type="file" accept=".pdf,.png,.jpg,.jpeg" :disabled="saving || loading" @change="onCreditFileChange"><small>{{ uploadedCreditFile?.name || creditFile?.name || '每个授信版本都需提供对应依据附件' }}</small></el-form-item>
-        <el-form-item label="变更原因"><el-input v-model="creditForm.reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="saving" /></el-form-item>
+        <div class="f12-form-grid">
+          <el-form-item label="资料名称"><el-input v-model="creditForm.documentName" maxlength="128" :disabled="saving" aria-label="资料名称" /></el-form-item>
+          <el-form-item label="资料编号"><el-input v-model="creditForm.documentNo" maxlength="128" :disabled="saving" aria-label="资料编号" /></el-form-item>
+          <el-form-item :label="`授信额度（${currencyText}）`"><el-input v-model="creditForm.amount" inputmode="decimal" placeholder="正数，最多两位小数" :disabled="saving" aria-label="授信额度" /></el-form-item>
+          <el-form-item label="附件上传">
+            <input class="f12-file" type="file" accept=".pdf,.png,.jpg,.jpeg" :disabled="saving || loading" @change="onCreditFileChange">
+            <small>2 MB 以内；{{ uploadedCreditFile?.name || creditFile?.name || '每个授信版本都需提供对应依据附件' }}</small>
+          </el-form-item>
+          <el-form-item label="备注" class="full"><el-input v-model="creditForm.reason" type="textarea" :rows="2" maxlength="500" :disabled="saving" aria-label="备注" /></el-form-item>
+        </div>
       </el-form>
-      <template #footer><el-button :disabled="saving || loading" @click="creditDialog = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="saving || loading || !!error || creditConflict && !creditConflictReady" @click="saveCreditVersion">{{ creditConflictReady ? '按最新版本重试' : '保存为新版本' }}</el-button></template>
+      <template #footer><el-button :disabled="saving || loading" @click="creditDialog = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="saving || loading || !!error || creditConflict && !creditConflictReady" @click="saveCreditVersion">{{ creditConflictReady ? '按最新版本重试' : '保存资料' }}</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="archiveDialog" append-to-body title="归档合同" width="min(440px, 94vw)" :close-on-click-modal="false" :close-on-press-escape="!saving && !loading" :show-close="!saving && !loading">
@@ -685,6 +706,12 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
 
 <style scoped>
 .f12-subject-panel{padding:4px 0}.panel-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}.panel-heading h3{margin:0 0 4px}.panel-heading p,.read-only-note{font-size:12px;color:var(--app-text-muted);margin:4px 0 12px}.heading-actions{display:flex;gap:8px}.panel-body h4{margin:18px 0 8px;font-size:14px}.panel-body h4:first-child{margin-top:0}.history-pagination{justify-content:flex-end;margin-top:10px}small{display:block;color:var(--app-text-muted);margin-top:4px}
+/* 原型「上传合同/授信资料」：两列网格，备注占整行，页脚只有取消与保存。 */
+.f12-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 16px}
+.f12-form-grid .full{grid-column:1/-1}
+.f12-form-grid :deep(.el-form-item){margin-bottom:14px}
+.f12-file{width:100%;padding:5px 0}
+@media(max-width:640px){.f12-form-grid{grid-template-columns:1fr}}
 .latest-version,.historical-version{display:block;font-size:12px;color:var(--app-text-muted)}.latest-version{color:var(--el-color-primary)}
 @media(max-width:640px){.panel-heading{align-items:flex-start;flex-direction:column}.heading-actions{flex-wrap:wrap}}
 </style>

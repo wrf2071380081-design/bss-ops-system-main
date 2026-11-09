@@ -88,6 +88,17 @@ func registerTradeRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, portal 
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			coh.StartOnboarding,
 		)
+		protected.POST("/customers/:id/onboarding/models",
+			middleware.RequirePerm(perm.M8Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			coh.AddOnboardingModels,
+		)
+		// 兜底：审批已派活但历史客户没有流程时，按待办责任人补建（000063 之前的单）。
+		protected.POST("/customers/:id/onboarding/ensure",
+			middleware.RequirePerm(perm.M8Edit),
+			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+			coh.EnsureOnboardingFlow,
+		)
 		protected.GET("/customers/:id/onboarding",
 			middleware.RequirePerm(perm.M8View),
 			coh.GetOnboarding,

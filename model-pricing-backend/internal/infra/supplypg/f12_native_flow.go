@@ -45,8 +45,9 @@ func F12ReadTransactions(db *sql.DB) ModelReadRunner {
 }
 
 type nativeF12Flow struct {
-	decision                                                                  uint64
-	assignee, nodeStatus, flowStatus, currentNode, submissionStatus, currency string
+	decision                                                           uint64
+	assignee, nodeStatus, flowStatus, currentNode, submissionStatus    string
+	currency, region                                                   string
 }
 
 func (n *NativeSupplierF12) flow(ctx context.Context, tx *sql.Tx, subjectType, subjectID, flowID, module string, lock bool) (nativeF12Flow, error) {
@@ -61,12 +62,12 @@ func (n *NativeSupplierF12) flow(ctx context.Context, tx *sql.Tx, subjectType, s
 	if lock {
 		suffix = " FOR SHARE OF f,nd,s"
 	}
-	err := tx.QueryRowContext(ctx, `SELECT l.id,coalesce(nd.assignee_id::text,''),nd.status,f.status,f.current_node,s.status,coalesce(sp.settlement_currency,'')
+	err := tx.QueryRowContext(ctx, `SELECT l.id,coalesce(nd.assignee_id::text,''),nd.status,f.status,f.current_node,s.status,coalesce(sp.settlement_currency,''),coalesce(sp.region,'')
  FROM `+n.table("supplier")+` sp JOIN `+n.table("onboarding_flow")+` f ON f.owner_id=sp.id AND f.kind='SUPPLIER'
  JOIN `+n.table("onboarding_node")+` nd ON nd.flow_id=f.id AND nd.node_key='CONTRACT' AND (NOT $3::boolean OR nd.enabled)
  JOIN `+n.table("operation_log")+` l ON l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'flow_id'=f.id::text AND l."after"->>'supplier_id'=sp.id::text
  JOIN `+n.table("submission")+` s ON s.id=l.entity_id AND s.supplier_id=sp.id
- WHERE sp.id=$1 AND f.id=$2 ORDER BY l.id DESC LIMIT 1`+suffix, subjectID, flowID, lock).Scan(&facts.decision, &facts.assignee, &facts.nodeStatus, &facts.flowStatus, &facts.currentNode, &facts.submissionStatus, &facts.currency)
+ WHERE sp.id=$1 AND f.id=$2 ORDER BY l.id DESC LIMIT 1`+suffix, subjectID, flowID, lock).Scan(&facts.decision, &facts.assignee, &facts.nodeStatus, &facts.flowStatus, &facts.currentNode, &facts.submissionStatus, &facts.currency, &facts.region)
 	if errors.Is(err, sql.ErrNoRows) {
 		return facts, supply.ErrForbidden
 	}
@@ -116,11 +117,20 @@ func (n *NativeSupplierF12) AuthorizeF12FlowRead(ctx context.Context, tx *sql.Tx
 	return nil
 }
 func (n *NativeSupplierF12) AuthorizeF12OrdinaryWrite(ctx context.Context, tx *sql.Tx, actor, typ, id string) error {
-	if typ != "SUPPLIER" {
+	// 客户侧没有「流程上下文」写入通道（onboarding_flow 没有 revision 列，见
+	// customer_onboarding.go 的说明），合同与授信只能在普通写入里办。
+	// 早先这里只放行 SUPPLIER，客户侧的每一次上传都返回 ErrDependencyUnavailable（503），
+	// 前端显示「服务暂时不可用」——商务的合同与授信待办因此永远办不完。
+	// CUSTOMER 放行后，主体归属仍由 store 的 authorizeSubjectOwner 判定
+	// （销售本人或该客户 CONTRACT 节点的办理人）。
+	if typ != "SUPPLIER" && typ != "CUSTOMER" {
 		return supply.ErrDependencyUnavailable
 	}
 	if !modelIdentity(actor) || !modelIdentity(id) {
 		return supply.ErrReadContract
+	}
+	if typ == "CUSTOMER" {
+		return nil // 主体归属与节点办理人校验在 store 里做。
 	}
 	var pending bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+n.table("onboarding_flow")+` f JOIN `+n.table("onboarding_node")+` nd ON nd.flow_id=f.id WHERE f.kind='SUPPLIER' AND f.owner_id=$1 AND f.status='PROCESSING' AND nd.enabled AND nd.node_key='CONTRACT' AND nd.status<>'COMPLETED')`, id).Scan(&pending); err != nil {
@@ -141,10 +151,21 @@ func (n *NativeSupplierF12) ResolveF12BusinessContext(ctx context.Context, q sup
 		if (f.flowStatus != "PROCESSING" && f.flowStatus != "COMPLETED") || (f.submissionStatus != "PROCESSING" && f.submissionStatus != "COMPLETED") {
 			return supply.ErrRevisionConflict
 		}
-		if !f12AttachmentCurrency.MatchString(f.currency) {
+		// supplier.settlement_currency 允许为空（000067 之前无默认值，历史新建路径漏写），
+		// 空值直接报错会让整条合同授信办理链断掉且用户无从修复。按主体区域兜底推断，
+		// 与申报页同一口径：国内结算 CNY、海外结算 USD。
+		currency := f.currency
+		if currency == "" {
+			if f.region == "OVERSEAS" {
+				currency = "USD"
+			} else {
+				currency = "CNY"
+			}
+		}
+		if !f12AttachmentCurrency.MatchString(currency) {
 			return &supply.FieldError{Path: "settlement_currency", Reason: "supplier settlement currency is required for first contract and credit handling"}
 		}
-		result = &supply.F12BusinessContext{SubjectType: q.SubjectType, SubjectID: q.SubjectID, FlowID: q.FlowID, ModuleKey: q.ModuleKey, FlowRevision: f.decision, RequiredItems: []supply.F12ReadinessRequirement{{Item: supply.F12RequiredContract}, {Item: supply.F12RequiredCredit, Currency: f.currency}}}
+		result = &supply.F12BusinessContext{SubjectType: q.SubjectType, SubjectID: q.SubjectID, FlowID: q.FlowID, ModuleKey: q.ModuleKey, FlowRevision: f.decision, RequiredItems: []supply.F12ReadinessRequirement{{Item: supply.F12RequiredContract}, {Item: supply.F12RequiredCredit, Currency: currency}}}
 		return nil
 	})
 	return result, err

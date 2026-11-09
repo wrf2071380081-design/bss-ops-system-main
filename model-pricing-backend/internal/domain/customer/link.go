@@ -312,8 +312,14 @@ type CustomerModelServiceRow struct {
 	DisabledCount       int64
 	OfflinePendingCount int64
 	AvailableCount      int64
-	// PendingConfig 为真表示该行来自「进行中的开通申请」而非已落库的绑定。
+	// PendingConfig 为真表示该行来自「进行中的开通申请」或「已批准但还没配来源的报价」，
+	// 而不是已落库的绑定。
 	PendingConfig bool
+	// QuotePriceMin/Max 是审批通过时那个模型的客户报价区间（审批行的价目快照）。
+	// 只有「已批准、待配置」这种行才有值；已绑定行留空（价格以绑定时的报价为准，
+	// 这里不拿旧快照冒充现价）。
+	QuotePriceMin string
+	QuotePriceMax string
 }
 
 // CustomerModelService 是客户详情「接入模型」Tab 的投影行。
@@ -342,6 +348,10 @@ type CustomerModelService struct {
 	// PendingConfig 为真表示这行来自「进行中的开通申请」：已申请、还没有绑定来源。
 	// 前端用它把「配置资源」批量入口指向该申请，而不是当成已有来源去禁用/启用。
 	PendingConfig bool `json:"pending_config"`
+	// 客户报价区间（原型「客户报价系数」列）：只有待配置行有值，
+	// 来源是审批通过时的价目快照，用于配源时判断"这个模型卖多少钱"。
+	QuotePriceMin string `json:"quote_price_min,omitempty"`
+	QuotePriceMax string `json:"quote_price_max,omitempty"`
 	// Links 是该模型下的**未归档绑定明细**（A2，2026-11-03）。
 	//
 	// 为什么放在这个接口里而不是让前端去读开通流程：库里的绑定不一定由开通流程
@@ -416,6 +426,8 @@ func (r CustomerModelServiceRow) Project() CustomerModelService {
 		AvailableCount:  r.AvailableCount,
 		RiskFlags:       make([]string, 0, 3),
 		PendingConfig:   r.PendingConfig,
+		QuotePriceMin:   r.QuotePriceMin,
+		QuotePriceMax:   r.QuotePriceMax,
 	}
 	switch {
 	case r.PendingConfig:

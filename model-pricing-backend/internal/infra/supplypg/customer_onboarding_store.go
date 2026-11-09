@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -97,6 +98,23 @@ VALUES ('onboarding_flow', $1, $2, $3, (SELECT name FROM %s WHERE id = $3), $4::
 	return err
 }
 
+// OpenCustomerTaskAssignees 读审批派发的两类待办责任人（未关闭的）。
+//
+// 用途：审批已经派活但历史上没建流程（000063 之前审批不建流程），靠这两个人把流程补出来。
+func (s *CustomerOnboardingStore) OpenCustomerTaskAssignees(ctx context.Context, customerProfileID int64) (int64, int64, error) {
+	query := fmt.Sprintf(`
+SELECT COALESCE(MAX(assignee_id) FILTER (WHERE biz_type = 'CUSTOMER_MODELS'), 0)   AS models_assignee,
+       COALESCE(MAX(assignee_id) FILTER (WHERE biz_type = 'CUSTOMER_CONTRACT'), 0) AS contract_assignee
+  FROM %s
+ WHERE biz_id = $1 AND status = 'OPEN'
+   AND biz_type IN ('CUSTOMER_MODELS', 'CUSTOMER_CONTRACT')`, s.table("todo_task"))
+	var modelsAssignee, contractAssignee int64
+	if err := s.db.QueryRowContext(ctx, query, customerProfileID).Scan(&modelsAssignee, &contractAssignee); err != nil {
+		return 0, 0, mapOnboardingError(err)
+	}
+	return modelsAssignee, contractAssignee, nil
+}
+
 // CustomerRegion 读客户主体区域。
 func (s *CustomerOnboardingStore) CustomerRegion(ctx context.Context, customerProfileID int64) (string, error) {
 	var region string
@@ -107,6 +125,31 @@ func (s *CustomerOnboardingStore) CustomerRegion(ctx context.Context, customerPr
 		return "", mapOnboardingError(err)
 	}
 	return region, nil
+}
+
+// CustomerBusinessDocsReady 判断客户合同与授信资料是否已齐（完成 CONTRACT 节点的前置条件）。
+//
+// 口径与 F12 档案页一致，不另立一套：
+//   - 合同：存在 subject_type='CUSTOMER' 且状态已归档（ARCHIVED）的记录；
+//   - 授信：存在我方给客户的授信（direction='US_TO_CUSTOMER'）且额度 > 0。
+//
+// 只认这两条事实，不看 customer_profile.contract_status（那个字段没有写入路径）。
+func (s *CustomerOnboardingStore) CustomerBusinessDocsReady(ctx context.Context, customerProfileID int64) (bool, error) {
+	query := fmt.Sprintf(`
+SELECT EXISTS (
+         SELECT 1 FROM %s c
+          WHERE c.subject_type = 'CUSTOMER' AND c.subject_id = $1 AND c.status = 'ARCHIVED'
+       )
+   AND EXISTS (
+         SELECT 1 FROM %s cl
+          WHERE cl.subject_type = 'CUSTOMER' AND cl.subject_id = $1
+            AND cl.direction = 'US_TO_CUSTOMER' AND cl.amount > 0
+       )`, s.table("contract"), s.table("credit_line"))
+	var ready bool
+	if err := s.db.QueryRowContext(ctx, query, customerProfileID).Scan(&ready); err != nil {
+		return false, mapOnboardingError(err)
+	}
+	return ready, nil
 }
 
 // StartFlow 建流程 + 节点 + 模型明细 + 审计（单事务）。
@@ -190,6 +233,115 @@ INSERT INTO %s (flow_id, standard_model_id, resource_id) VALUES ($1, $2, $3)`,
 		return nil, mapOnboardingError(err)
 	}
 	return s.GetFlow(ctx, in.CustomerProfileID)
+}
+
+// AddFlowModels 给进行中的流程追加「模型 × 资源」（单事务 + 审计）。
+//
+// 同一资源重复加会撞 uk_com_flow_resource：翻成业务错误，而不是 500。
+func (s *CustomerOnboardingStore) AddFlowModels(ctx context.Context, flowID int64, models []customer.OnboardingModelInput, op *customer.OperationRecord, operatorID int64, requestID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapOnboardingError(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var status string
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT status FROM %s WHERE id = $1 AND kind = 'CUSTOMER' FOR UPDATE`, s.table("onboarding_flow")), flowID).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return customer.ErrOnboardingFlowNotFound
+		}
+		return mapOnboardingError(err)
+	}
+	if status != customer.OnboardingFlowProcessing {
+		return customer.ErrOnboardingConfigDone
+	}
+
+	added := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		res, err := tx.ExecContext(ctx, fmt.Sprintf(`
+INSERT INTO %s (flow_id, standard_model_id, resource_id) VALUES ($1, $2, $3)
+ON CONFLICT (flow_id, resource_id) DO NOTHING`, s.table("customer_onboarding_model")),
+			flowID, model.StandardModelID, model.ResourceID)
+		if err != nil {
+			return mapOnboardingError(err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			// 已经在这批里了：幂等语义，不报错也不算新增。
+			continue
+		}
+		added = append(added, map[string]any{"standard_model_id": model.StandardModelID, "resource_id": model.ResourceID})
+	}
+	if len(added) > 0 {
+		after := map[string]any{"models": added}
+		// 生产侧登记原样留着（谁在什么时候、凭什么配的），和 BSS 里的操作人分开记：
+		// 这一步可能是别人在生产平台做完、技术回来代填的。
+		if op != nil {
+			after["operation"] = map[string]any{
+				"executed_at": op.ExecutedAt,
+				"executed_by": op.ExecutedBy,
+				"evidence":    op.Evidence,
+			}
+		}
+		if err := s.auditFlow(ctx, tx, flowID, operatorID, "ADD_MODELS", nil,
+			after, "追加待配置模型", requestID); err != nil {
+			return mapOnboardingError(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return mapOnboardingError(err)
+	}
+	return nil
+}
+
+// AutoConfigReady 判断「本次申请是否已经配齐」，供 AddFlowModels 之后自动完成 CONFIG。
+//
+// 口径刻意与「接入模型」页的待配置行（customer_resource_link_store.go 的 pending 分支）一致：
+// 取每张报价单**最新一次**已批准（APPROVED / PARTIAL）审批的批准行，只要还有一条既不在
+// 本次流程明细里、也没有未归档绑定，就不算配齐。两边口径不一致会变成「界面已经没有
+// 待配置行了，节点却还挂着不让完成」。
+//
+// 为什么要区分「根本没有审批」：手工发起开通（StartFlow）不走审批，这次要配哪些模型
+// 只存在于用户提交时的表单里，没有可对照的批准集，判不出"配齐"，返回 false 让它继续
+// 走手动「完成节点」，不要把没配完的流程误收尾。
+func (s *CustomerOnboardingStore) AutoConfigReady(ctx context.Context, customerProfileID, flowID int64) (bool, error) {
+	if customerProfileID <= 0 || flowID <= 0 {
+		return false, nil
+	}
+	approvalScope := fmt.Sprintf(`
+      FROM %s r
+      JOIN %s a ON a.id = r.approval_id
+      JOIN %s q ON q.id = a.customer_quote_id
+     WHERE q.customer_id = $1
+       AND r.standard_model_id > 0
+       AND r.result = 'APPROVED'
+       AND a.status IN ('APPROVED','PARTIAL')
+       AND a.id = (SELECT max(a2.id) FROM %s a2
+                    WHERE a2.customer_quote_id = q.id AND a2.status IN ('APPROVED','PARTIAL'))`,
+		s.table("customer_quote_approval_row"), s.table("customer_quote_approval"), s.table("customer_quote"),
+		s.table("customer_quote_approval"))
+
+	query := fmt.Sprintf(`
+SELECT
+  EXISTS (SELECT 1 %s)
+  AND NOT EXISTS (
+      SELECT 1 %s
+         AND NOT EXISTS (SELECT 1 FROM %s m
+                          WHERE m.flow_id = $2 AND m.standard_model_id = r.standard_model_id)
+         AND NOT EXISTS (SELECT 1 FROM %s l
+                          WHERE l.customer_profile_id = $1
+                            AND l.standard_model_id = r.standard_model_id
+                            AND l.archived = FALSE)
+  )`, approvalScope, approvalScope,
+		s.table("customer_onboarding_model"), s.table("customer_resource_link"))
+
+	var ready bool
+	if err := s.db.QueryRowContext(ctx, query, customerProfileID, flowID).Scan(&ready); err != nil {
+		// 判据查不出来时按"没配齐"处理（调用方会继续走手动完成节点），
+		// 但不能静默：否则排查"为什么没自动完成"时完全看不到线索。
+		log.Printf("[auto-config] readiness sql failed: customer=%d flow=%d err=%v", customerProfileID, flowID, err)
+		return false, mapOnboardingError(err)
+	}
+	return ready, nil
 }
 
 // LoadNodeContext 读完成节点前的上下文。

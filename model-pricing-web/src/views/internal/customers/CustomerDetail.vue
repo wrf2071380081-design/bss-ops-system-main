@@ -27,6 +27,8 @@ import { customerWorkspaceApi, type CustomerApprovalRow, type CustomerQuoteRow }
 import { changeRequestsApi } from "../../../api/changeRequests";
 import type { ChangeRequestDetailDTO } from "../../../api/changeRequests.types";
 import {
+  APPROVAL_STATUS_LABELS,
+  APPROVAL_STATUS_TYPES,
   quoteApprovalApi,
   type ApprovalDecisionInput,
   type QuoteApprovalDTO,
@@ -42,8 +44,8 @@ import { useSessionStore } from "../../../stores/session";
 import F12SubjectPanel from "../subjects/F12SubjectPanel.vue";
 import ResourceReportsPanel from "../resources/ResourceReportsPanel.vue";
 import CustomerOnboardingStartForm from "./CustomerOnboardingStartForm.vue";
+import CustomerContractDialog from "./CustomerContractDialog.vue";
 import CustomerTransferDialog from "./CustomerTransferDialog.vue";
-import QuoteApprovalDialog from "./QuoteApprovalDialog.vue";
 
 const TABS = ["models", "onboarding", "quotes", "records"] as const;
 type TabKey = (typeof TABS)[number];
@@ -67,7 +69,9 @@ const customerId = computed(() => String(route.params.id ?? ""));
 const canEdit = computed(() => permissions.canAction(PERMISSIONS.CUSTOMER_EDIT));
 const canQuoteView = computed(() => permissions.canAction(PERMISSIONS.CUSTOMER_QUOTE_VIEW));
 const canQuoteEdit = computed(() => permissions.canAction(PERMISSIONS.CUSTOMER_QUOTE_EDIT));
-const canQuoteApprove = computed(() => permissions.canAction(PERMISSIONS.CUSTOMER_QUOTE_APPROVE));
+/** 与客户报价单页签同口径：M9:A 权限点 + 超管标记位，两者都满足才算能审。 */
+const canQuoteApprove = computed(() =>
+  permissions.canAction(PERMISSIONS.CUSTOMER_QUOTE_APPROVE) && session.user?.canApproveCustomerQuote === true);
 
 function resolveTab(value: unknown): TabKey {
   const text = typeof value === "string" ? value : "";
@@ -210,6 +214,15 @@ const sortByBound = (row: CustomerModelServiceRow) => row.bound_count ?? 0;
 const sortByRisk = (row: CustomerModelServiceRow) => (row.risk_flags?.length ? 1 : 0);
 // 系数按有效位展示（0.7200 → 0.72），与模型广场一致。
 const coefficientText = (raw: string) => raw && raw.includes(".") ? raw.replace(/0+$/, "").replace(/\.$/, "") : raw;
+
+/** 客户报价：审批快照里的价目区间，币种随客户结算币种（我们按单价报价，不是系数）。 */
+const quotePriceText = (row: CustomerModelServiceRow) => {
+  const symbol = profile.value?.settlement_currency === "USD" ? "$" : "¥";
+  const min = coefficientText(row.quote_price_min || "");
+  const max = coefficientText(row.quote_price_max || "");
+  if (!min) return "—";
+  return min === max ? `${symbol}${min}` : `${symbol}${min} ~ ${max}`;
+};
 const modelEmptyText = computed(() => {
   // 有数据但被筛没了 ≠ 客户没有模型：两种空态分开说，否则用户以为接入记录丢了。
   if (modelRows.value.length && !filteredModelRows.value.length) return "没有匹配的模型：可调整模型公司 / 类型筛选，或清空搜索关键字";
@@ -453,8 +466,15 @@ async function prepareConfigAccess() {
   }
   await loadFlow();
   const current = flow.value;
+  const selectedModels = batchSelected.value.map(row => ({
+    standard_model_id: row.standard_model_id,
+    model_name: row.model_name,
+  }));
   if (!current) {
-    ElMessage.warning("该客户还没有开通申请，请先在「开通流程」发起开通");
+    // 审批通过但还没发起开通：直接带着模型去发起开通（来源只能在发起时选），
+    // 否则「客户模型开通」待办点进来是个死链。
+    openStart(selectedModels);
+    ElMessage.info("该客户还没有开通流程，已带出本次勾选的模型，请选择供应来源后发起开通。");
     return;
   }
   const config = current.nodes.find(node => node.key === "CONFIG");
@@ -463,20 +483,12 @@ async function prepareConfigAccess() {
     return;
   }
   if (config.status !== "IN_PROGRESS") {
-    ElMessage.warning(`「资源配置」节点当前为${nodeStatusText(config.status)}，不能重复登记`);
+    ElMessage.warning(`「资源配置」节点当前为${nodeStatusText(config.status)}，不能再往本次开通里加模型`);
     return;
   }
-  const covered = new Set(current.models.map(item => item.standard_model_id));
-  const outside = batchSelected.value.filter(row => !covered.has(row.standard_model_id));
-  if (outside.length) {
-    ElMessage.warning(`以下模型不在本次申请内：${outside.map(row => row.model_name).join("、")}`);
-    return;
-  }
-  const names = batchSelected.value.map(row => row.model_name || `标准模型 #${row.standard_model_id}`);
-  selectTab("onboarding");
-  openComplete(config);
-  completeReason.value = `配置资源：${names.join("、")}`;
-  ElMessage.info("「资源配置」是整单节点：本次确认会一并登记本申请内的全部模型。");
+  // 原型里「配置资源」是逐模型的：这里同样开逐模型选来源，走「追加到进行中的开通」。
+  openStart(selectedModels, current.id);
+  ElMessage.info("已带出本次勾选的模型：给每个模型选一条来源后「加入本次开通」，本次申请的模型配齐后会自动开通。");
 }
 
 /** 某行是否有可执行的服务动作（禁用/启用），判据与批量完全一致。 */
@@ -529,13 +541,33 @@ async function loadFlow() {
 }
 
 const startVisible = ref(false);
-function openStart() { startVisible.value = true; }
+/**
+ * 从「接入模型」的待配置行进入发起开通时，把模型范围带进来。
+ *
+ * 为什么需要：审批通过后模型已经出现在接入模型里，但还没有开通流程。
+ * 这时候点「配置资源」，原型是直接给这个模型挑来源；我们没有独立的配源弹窗，
+ * 只能复用「发起开通」，所以要把模型范围传下去，让候选来源按模型收窄，
+ * 避免顺手给一个没报过价的模型开客户。
+ */
+const pendingPresetModels = ref<Array<{ standard_model_id: number; model_name: string }>>([]);
+/** 已有进行中流程时为流程 id：表单走「追加模型」，不再新建流程。 */
+const pendingFlowId = ref<number | null>(null);
+function openStart(preset: Array<{ standard_model_id: number; model_name: string }> = [], flowId: number | null = null) {
+  pendingPresetModels.value = preset;
+  pendingFlowId.value = flowId;
+  startVisible.value = true;
+}
 function onStarted(next: OnboardingFlowDTO) {
   flow.value = next;
   flowMissing.value = false;
   flowLoaded.value = true;
   startVisible.value = false;
-  // 开通发起后「接入模型」可能还没变化，但流程节点变了；这里只刷新流程与页头。
+  pendingPresetModels.value = [];
+  pendingFlowId.value = null;
+  // 开通发起后「接入模型」的行会从「已批准待配源」变成「进行中申请待配源」，
+  // 两边的 region/coefficient 来源不同，必须重拉一次，不能只看流程节点变了。
+  modelLoaded.value = false;
+  void loadModels();
   void loadProfile();
 }
 
@@ -546,6 +578,43 @@ const completeReason = ref("");
 const completeReference = ref("");
 const completeSubmitting = ref(false);
 const completeError = ref("");
+
+/** 合同与授信办理（对齐原型弹窗）：不走"完成节点"那句说明，而是登记合同/授信后一并完成。 */
+const contractVisible = ref(false);
+const contractNodeId = ref<number | null>(null);
+/** 兜底补建流程：审批已派活但没流程（000063 之前的单），按待办责任人建出来。 */
+const ensuringFlow = ref(false);
+async function ensureFlow() {
+  if (ensuringFlow.value) return;
+  ensuringFlow.value = true;
+  try {
+    const next = await customerDetailApi.ensureOnboardingFlow(customerId.value);
+    flow.value = next;
+    flowMissing.value = false;
+    ElMessage.success("开通流程已按审批派发的办理人补建。");
+  } catch (value) {
+    ElMessage.error(message(value));
+  } finally {
+    ensuringFlow.value = false;
+  }
+}
+
+function openContract(node: OnboardingNodeDTO) {
+  contractNodeId.value = node.id;
+  contractVisible.value = true;
+  // 弹窗要摆「本次开通的模型」（报价批准即出现的那批）。直接从 `?tab=onboarding` 进来时
+  // 模型投影还没加载过，这里补一次，否则商务看到的是空表。
+  void loadModels();
+}
+
+function onContractCompleted(next: OnboardingFlowDTO) {
+  flow.value = next;
+  contractVisible.value = false;
+  // 合同完成后 CONFIG 会从"等待前序"变"办理中"，模型与绑定状态也可能变。
+  modelLoaded.value = false;
+  void loadModels();
+  void loadProfile();
+}
 
 function openComplete(node: OnboardingNodeDTO) {
   completeNode.value = node;
@@ -670,26 +739,19 @@ function newQuote() {
 const quoteApprovalRows = ref<QuoteApprovalSummaryDTO[]>([]);
 const quoteApprovalError = ref("");
 const quoteApprovalLoading = ref(false);
-const quoteApprovalVisible = ref(false);
 /** 当前打开的审批单；弹窗自身负责取详情与决策（与客户报价单页签共用同一组件）。 */
-const quoteApprovalTargetId = ref<number | null>(null);
 /** 提交中/撤回中的报价单 ID，避免连点。 */
 const quoteApprovalActing = ref<number>(0);
 
-const QUOTE_APPROVAL_STATUS: Record<string, { label: string; type: "success" | "danger" | "info" | "warning" }> = {
-  PENDING: { label: "待审批", type: "warning" },
-  APPROVED: { label: "已批准", type: "success" },
-  REJECTED: { label: "已驳回", type: "danger" },
-  WITHDRAWN: { label: "已撤回", type: "info" },
-};
-const approvalStatusLabel = (status: string) => QUOTE_APPROVAL_STATUS[status]?.label ?? status;
-const approvalStatusType = (status: string) => QUOTE_APPROVAL_STATUS[status]?.type ?? "info";
+// 审批状态词与弹窗共用一份字典：000063 之后多了「部分批准」，不能再各写各的。
+const approvalStatusLabel = (status: string) => APPROVAL_STATUS_LABELS[status] ?? status;
+const approvalStatusType = (status: string) => APPROVAL_STATUS_TYPES[status] ?? "info";
 
 async function loadQuoteApprovals(signal?: AbortSignal) {
   quoteApprovalLoading.value = true;
   quoteApprovalError.value = "";
   try {
-    quoteApprovalRows.value = await quoteApprovalApi.list(customerId.value, "", signal);
+    quoteApprovalRows.value = await quoteApprovalApi.list({ customerID: customerId.value }, signal);
   } catch (value) {
     quoteApprovalError.value = message(value);
   } finally {
@@ -706,17 +768,17 @@ function staffId(): number {
   return session.user?.staffId ? Number(session.user.staffId) : 0;
 }
 
-/** 打开审批弹窗；取详情与决策都在弹窗组件里，这里只传审批单 id。 */
+/**
+ * 看审批详情：跳到「客户报价单 → 报价审批」的详情页。
+ *
+ * 原型的详情是一个页面（带「返回报价审批」），不是弹窗；而且详情页里还要能开
+ * 「逐模型审批」表单。这两个层次只在客户报价单页签里实现一份，详情页不再复制。
+ */
 function openQuoteApproval(row: QuoteApprovalSummaryDTO) {
-  quoteApprovalTargetId.value = row.id;
-  quoteApprovalVisible.value = true;
-}
-
-/** 弹窗处理完（批准 / 驳回 / 撤回）后刷新报价单与审批列表。 */
-async function onQuoteApprovalDecided() {
-  await loadQuoteApprovals();
-  await loadQuotes(true);
-  if (logLoaded.value) { logLoaded.value = false; void loadLogs(true); }
+  void router.push({
+    path: "/internal/customers",
+    query: { tab: "quote", approval: String(row.id), customer_id: String(customerId.value) },
+  });
 }
 
 async function submitQuoteForApproval(row: CustomerQuoteRow) {
@@ -742,17 +804,27 @@ async function submitQuoteForApproval(row: CustomerQuoteRow) {
 async function withdrawQuoteApproval(target: { id: number; quote_id: number }) {
   if (quoteApprovalActing.value) return;
   const approvalID = target.id;
+  let reason = "";
+  try {
+    const result = await ElMessageBox.prompt("撤回后报价单回到草稿，审批单作废。请说明撤回原因。", "撤回客户报价审批", {
+      confirmButtonText: "提交撤回",
+      cancelButtonText: "取消",
+      inputPlaceholder: "撤回原因（必填）",
+      inputValidator: (value: string) => (value && value.trim() ? true : "请填写撤回原因"),
+      inputType: "textarea",
+    });
+    reason = String(result.value || "").trim();
+  } catch {
+    return;
+  }
   quoteApprovalActing.value = approvalID;
   try {
-    await ElMessageBox.confirm(`撤回报价单 #${target.quote_id} 的审批？撤回后报价单回到草稿。`, "撤回审批", {
-      confirmButtonText: "撤回", cancelButtonText: "取消", type: "warning",
-    });
-    await quoteApprovalApi.withdraw(approvalID, crypto.randomUUID());
+    await quoteApprovalApi.withdraw(approvalID, reason, crypto.randomUUID());
     ElMessage.success("已撤回");
     await loadQuoteApprovals();
     await loadQuotes(true);
   } catch (value) {
-    if (value !== "cancel" && value !== "close") ElMessage.error(message(value));
+    ElMessage.error(message(value));
   } finally {
     quoteApprovalActing.value = 0;
   }
@@ -1139,8 +1211,13 @@ function backToList() {
         <el-table-column label="部署区域" width="100" sortable :sort-by="sortByRegion">
           <template #default="{ row }">{{ row.region === "OVERSEAS" ? "海外" : row.region === "CN" ? "国内" : "—" }}</template>
         </el-table-column>
-        <el-table-column label="客户报价系数" width="130">
-          <template #default><span class="hint">待核对</span></template>
+        <!-- 原型这里是「客户报价系数」；我们按单价报价（没有系数口径），
+             所以给的是审批通过时的客户报价区间，不用编一个系数糊上去。 -->
+        <el-table-column label="客户报价" width="130">
+          <template #default="{ row }">
+            <span v-if="row.quote_price_min" class="mono">{{ quotePriceText(row) }}</span>
+            <span v-else class="hint">—</span>
+          </template>
         </el-table-column>
         <el-table-column label="采购系数" width="110" sortable :sort-by="sortByCoefficient">
           <template #default="{ row }">{{ row.coefficient ? coefficientText(row.coefficient) : "—" }}</template>
@@ -1208,6 +1285,7 @@ function backToList() {
           subject-type="CUSTOMER"
           :subject-id="customerId"
           :can-manage="canManageF12"
+          :currency="profile.settlement_currency"
           @changed="loadProfile"
         />
         <div v-else class="hint">加载客户档案后显示合同与授信记录。</div>
@@ -1222,7 +1300,10 @@ function backToList() {
             </el-tag>
           </div>
           <div class="card-head-right">
-            <el-button v-if="canEdit && flowMissing" type="primary" @click="openStart">发起开通</el-button>
+            <!-- 审批通过已经派了办理待办（合同与授信 / 客户模型开通）时，流程应该由系统补出来；
+                 让商务自己去「发起开通」还得先选供应来源，那不是他的活。 -->
+            <el-button v-if="canEdit && flowMissing" type="primary" :loading="ensuringFlow" @click="ensureFlow">按审批补建流程</el-button>
+            <el-button v-if="canEdit && flowMissing" link type="primary" @click="openStart">手工发起开通</el-button>
           </div>
         </div>
 
@@ -1249,8 +1330,15 @@ function backToList() {
               </el-table-column>
               <el-table-column label="操作" width="100" fixed="right">
                 <template #default="{ row }">
+                  <!-- 合同与授信走专门弹窗（上传合同/授信资料 + 确认），其余节点仍是"完成节点" -->
                   <el-button
-                    v-if="canEdit && row.status === 'IN_PROGRESS'"
+                    v-if="canEdit && row.key === 'CONTRACT' && row.status === 'IN_PROGRESS'"
+                    link
+                    type="primary"
+                    @click="openContract(row)"
+                  >办理</el-button>
+                  <el-button
+                    v-else-if="canEdit && row.status === 'IN_PROGRESS'"
                     link
                     type="primary"
                     @click="openComplete(row)"
@@ -1363,7 +1451,7 @@ function backToList() {
             <template #default="{ row }"><span class="mono">{{ row.model_count }}</span></template>
           </el-table-column>
           <el-table-column label="提交人" width="120">
-            <template #default="{ row }">{{ staffText(`staff:${row.submitted_by}`) }}</template>
+            <template #default="{ row }">{{ row.submitted_name || staffText(`staff:${row.submitted_by}`) }}</template>
           </el-table-column>
           <el-table-column label="提交时间" width="180">
             <template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template>
@@ -1373,8 +1461,11 @@ function backToList() {
               <el-tag size="small" :type="approvalStatusType(row.status)">{{ approvalStatusLabel(row.status) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="处理时间" min-width="180">
-            <template #default="{ row }">{{ row.decided_at ? formatDateTime(row.decided_at) : "—" }}</template>
+          <el-table-column label="处理人 / 处理时间" min-width="200">
+            <template #default="{ row }">
+              {{ row.decided_name || (row.decided_by ? staffText(`staff:${row.decided_by}`) : "—") }}
+              · {{ row.decided_at ? formatDateTime(row.decided_at) : "—" }}
+            </template>
           </el-table-column>
           <el-table-column label="操作" width="100" fixed="right">
             <template #default="{ row }">
@@ -1506,16 +1597,46 @@ function backToList() {
     </el-dialog>
 
     <!-- 发起开通弹窗（表单与向导 Step2 共用） -->
-    <el-dialog v-model="startVisible" title="发起客户开通" width="min(980px, 96vw)" :close-on-click-modal="false">
+    <el-dialog
+      v-model="startVisible"
+      :title="pendingFlowId ? '配置资源（逐模型选来源）' : '发起客户开通'"
+      width="min(980px, 96vw)"
+      :close-on-click-modal="false"
+    >
       <CustomerOnboardingStartForm
         :customer-id="customerId"
         :region="profile?.region || 'CN'"
+        :preset-models="pendingPresetModels"
+        :flow-id="pendingFlowId ?? undefined"
         @started="onStarted"
       />
     </el-dialog>
 
+    <!-- 合同与授信办理弹窗（原型：上传合同/授信资料 + 说明 + 确认商务完成） -->
+    <CustomerContractDialog
+      v-model:visible="contractVisible"
+      :customer-id="customerId"
+      :customer-name="profile?.legal_name || ''"
+      :flow-id="flow?.id"
+      :node-id="contractNodeId"
+      :nodes="flow?.nodes ?? []"
+      :models="modelRows"
+      :currency="profile?.settlement_currency || 'CNY'"
+      :can-manage="canEdit"
+      @completed="onContractCompleted"
+    />
+
     <!-- 完成节点弹窗 -->
     <el-dialog v-model="completeVisible" :title="`完成节点 · ${completeNode ? nodeKeyText(completeNode.key) : ''}`" width="min(620px, 96vw)">
+      <el-alert
+        v-if="completeNode?.key === 'CONTRACT'"
+        type="info"
+        show-icon
+        :closable="false"
+        class="block-gap"
+        title="完成前请先在上方「合同与授信」归档合同、登记授信额度"
+        description="对齐原型：商务完成 = 合同与授信两份资料在档。资料未齐时后端会拒绝完成。"
+      />
       <el-form label-position="top" :disabled="completeSubmitting">
         <el-form-item label="操作说明 *">
           <el-input
@@ -1559,15 +1680,6 @@ function backToList() {
         </div>
       </template>
     </el-dialog>
-
-    <!-- 报价审批（原型）：逐模型批准 / 驳回，驳回必填原因。与客户报价单页签共用同一组件。 -->
-    <QuoteApprovalDialog
-      v-model:visible="quoteApprovalVisible"
-      :approval-id="quoteApprovalTargetId"
-      :can-approve="canQuoteApprove"
-      :staff-id="staffId()"
-      @decided="onQuoteApprovalDecided"
-    />
 
     <!-- 特价审批：两步角色链（PRICING_OP → FINANCE），与上面的报价审批无关 -->
     <el-dialog v-model="approvalVisible" title="特价审批（破线）" width="min(780px, 96vw)" :close-on-click-modal="false">
