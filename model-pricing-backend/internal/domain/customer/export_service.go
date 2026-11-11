@@ -1,9 +1,15 @@
-// Package customer 的 export_service.go：9b §5 导出卖货报价单。
+// Package customer 的 export_service.go：报价单导出。
 //
-// 范围（裁决 4）：
-//   - **只做 XLSX**（excelize）；PDF 本批不支持，登记为 9b-② 遗留。
-//   - TEMP 必须带水印；valid_until 过期 → 409。
-//   - 其余类型（APPLY/CLONE/SPECIAL/CONTRACT）不带水印。
+// 模板口径（2026-11-10 PM 确认，对齐 TokenOps 报价单模板）：
+//   - 一个文件两个 sheet：海外（在前）/ 国内（在后）
+//   - 每个 sheet 只有两列：模型名 / 对外报价（系数）
+//   - 不加抬头：客户名、我方公司、报价单号、状态、导出时间、有效期一律不出现
+//   - TEMP 的红字水印已按 PM 要求取消
+//
+// 安全约束：底价（floor_price）与破线标记（below_floor）属于内部风控数据，
+// 任何情况下都不得出现在导出文件里。改动本文件时请先读这条。
+//
+// 范围（裁决 4）：只做 XLSX；PDF 仍是 9b-② 遗留。
 package customer
 
 import (
@@ -11,6 +17,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/xuri/excelize/v2"
@@ -21,6 +29,20 @@ var (
 	ErrExportFormatUnsupported = errors.New("导出格式暂不支持（本批仅支持 xlsx；pdf 登记为 9b-② 遗留）")
 	ErrQuoteExpired            = errors.New("临时报价已过期（valid_until < now），不能导出")
 	ErrQuoteForExportNotFound  = errors.New("客户报价不存在")
+)
+
+// 导出模板常量：两张表，顺序与 PM 模板一致（海外在前）。
+const (
+	// SheetOverseas / SheetDomestic 是导出文件里两张表的名字，也是分组键。
+	SheetOverseas = "海外"
+	SheetDomestic = "国内"
+
+	colModelName = "模型名"
+	colQuotation = "对外报价"
+
+	// 列宽照 PM 模板设置，只影响可读性，不影响内容。
+	widthModelName = 34.83
+	widthQuotation = 14.83
 )
 
 // ExportService 客户报价导出。
@@ -48,16 +70,17 @@ type ExportStore interface {
 	CheckQuoteOwnerScope(ctx context.Context, quoteID int64, scope OwnerScope) (found, inScope bool, err error)
 	// LoadQuote 同 SpecialPriceStore 的读取口径。
 	LoadQuote(ctx context.Context, quoteID int64) (*QuoteRow, error)
-	// LoadQuoteItemsDetail 读明细。
+	// LoadQuoteItemsDetail 读明细（含模型名、区域、官方价，导出算系数要用）。
 	LoadQuoteItemsDetail(ctx context.Context, quoteID int64) ([]QuoteItemDetail, error)
-	// LoadCustomerLegalName 读 legal_subject.legal_name（水印用）。
+	// LoadCustomerLegalName 读 legal_subject.legal_name。
+	// 模板取消抬头与水印后导出已不再调用，保留给后续 PDF 版（需要抬头）使用。
 	LoadCustomerLegalName(ctx context.Context, customerID int64) (string, error)
 }
 
-// GenerateXLSX 生成 XLSX 文件流（直返 []byte）；TEMP 带水印。
+// GenerateXLSX 生成 XLSX 文件流（直返 []byte）。
 //
 // scope 是当前操作员的数据域（红线 7）。越域一律 ErrCustomerOutOfScope（→403），
-// 不得因"只是读"而放行——导出文件含 unit_price 与客户名，属越权读。
+// 不得因"只是读"而放行——导出文件含对外报价，属越权读。
 func (s *ExportService) GenerateXLSX(ctx context.Context, scope OwnerScope, quoteID int64, format string) ([]byte, error) {
 	if format != "xlsx" {
 		return nil, ErrExportFormatUnsupported
@@ -69,12 +92,11 @@ func (s *ExportService) GenerateXLSX(ctx context.Context, scope OwnerScope, quot
 	if quote == nil {
 		return nil, ErrQuoteForExportNotFound
 	}
-	// 数据域校验：紧跟 LoadQuote，早于任何后续取数（含 items / 客户名）。
+	// 数据域校验：紧跟 LoadQuote，早于任何后续取数（含 items）。
 	if err := checkQuoteOwnerScope(ctx, s.store, scope, quoteID, ErrQuoteForExportNotFound); err != nil {
 		return nil, err
 	}
-	// TEMP 才校验 valid_until（其余类型可以不带；但本规则只限 TEMP，
-	// 因为 APPLY/CLONE 是长期价格条目，不该因临时校验被拒——裁决 5/EXPIRED 联动本批不做）。
+	// TEMP 才校验 valid_until（其余类型是长期价格条目，不该因临时校验被拒）。
 	if quote.QuoteType == QuoteTypeTemp {
 		if quote.ValidUntil != nil && s.now().After(*quote.ValidUntil) {
 			return nil, ErrQuoteExpired
@@ -84,72 +106,41 @@ func (s *ExportService) GenerateXLSX(ctx context.Context, scope OwnerScope, quot
 	if err != nil {
 		return nil, fmt.Errorf("load items: %w", err)
 	}
-	custName, err := s.store.LoadCustomerLegalName(ctx, quote.CustomerID)
-	if err != nil {
-		return nil, fmt.Errorf("load customer name: %w", err)
-	}
-	return s.renderXLSX(quote, items, custName)
+	return s.renderXLSX(items)
 }
 
-// renderXLSX 真正渲染（可独立测）。
-func (s *ExportService) renderXLSX(quote *QuoteRow, items []QuoteItemDetail, custName string) ([]byte, error) {
+// quotationLine 是导出一行：一个模型 + 一个对外报价系数。
+type quotationLine struct {
+	ModelName   string
+	Coefficient string
+}
+
+// renderXLSX 按模板渲染：固定两张表，只写「模型名 / 对外报价」。
+func (s *ExportService) renderXLSX(items []QuoteItemDetail) ([]byte, error) {
 	f := excelize.NewFile()
 	defer func() { _ = f.Close() }()
 
-	const sheet = "Sheet1"
-	// 标题行
-	_ = f.SetCellValue(sheet, "A1", fmt.Sprintf("客户报价 #%d（v%d）", quote.ID, quote.VersionNo))
-	_ = f.MergeCell(sheet, "A1", "F1")
-	_ = f.SetCellValue(sheet, "A2", "客户")
-	_ = f.SetCellValue(sheet, "B2", custName)
-	// 我方签约主体：报价单上填的那个，导出的文件要能一眼看出是哪个主体签的。
-	_ = f.SetCellValue(sheet, "A3", "我方公司")
-	_ = f.SetCellValue(sheet, "B3", quote.OurCompany)
-	_ = f.SetCellValue(sheet, "A4", "quote_type")
-	_ = f.SetCellValue(sheet, "B4", quote.QuoteType)
-	_ = f.SetCellValue(sheet, "A5", "status")
-	_ = f.SetCellValue(sheet, "B5", quote.Status)
-	_ = f.SetCellValue(sheet, "A6", "exported_at")
-	_ = f.SetCellValue(sheet, "B6", s.now().In(s.loc).Format("2006-01-02 15:04:05"))
-	if quote.ValidUntil != nil {
-		expiry := quote.ValidUntil.In(s.loc).Format("2006-01-02")
-		_ = f.SetCellValue(sheet, "A7", "valid_until")
-		_ = f.SetCellValue(sheet, "B7", expiry)
-	}
+	lines := groupQuotationLines(items)
 
-	// 明细表头
-	_ = f.SetCellValue(sheet, "A8", "sku_id")
-	_ = f.SetCellValue(sheet, "B8", "currency")
-	_ = f.SetCellValue(sheet, "C8", "unit_price")
-	_ = f.SetCellValue(sheet, "D8", "floor_price")
-	_ = f.SetCellValue(sheet, "E8", "below_floor")
-	row := 9
-	for _, it := range items {
-		_ = f.SetCellValue(sheet, fmt.Sprintf("A%d", row), it.SKUID)
-		_ = f.SetCellValue(sheet, fmt.Sprintf("B%d", row), it.Currency)
-		_ = f.SetCellValue(sheet, fmt.Sprintf("C%d", row), it.UnitPrice.StringFixed(8))
-		_ = f.SetCellValue(sheet, fmt.Sprintf("D%d", row), it.FloorPrice.StringFixed(8))
-		_ = f.SetCellBool(sheet, fmt.Sprintf("E%d", row), it.UnitPrice.LessThan(it.FloorPrice))
-		row++
-	}
-
-	// 水印：仅 TEMP。
-	if quote.QuoteType == QuoteTypeTemp {
-		validStr := "未知"
-		if quote.ValidUntil != nil {
-			validStr = quote.ValidUntil.In(s.loc).Format("2006-01-02")
+	first := true
+	for _, sheet := range []string{SheetOverseas, SheetDomestic} {
+		if first {
+			// excelize 新建文件自带 "Sheet1"，改名为第一张表，避免残留空表。
+			if err := f.SetSheetName(f.GetSheetName(0), sheet); err != nil {
+				return nil, fmt.Errorf("rename sheet: %w", err)
+			}
+			first = false
+		} else if _, err := f.NewSheet(sheet); err != nil {
+			return nil, fmt.Errorf("create sheet %s: %w", sheet, err)
 		}
-		mark := fmt.Sprintf("临时报价，有效期至 %s，仅限 %s 使用", validStr, custName)
-		markRow := row + 2
-		_ = f.SetCellValue(sheet, fmt.Sprintf("A%d", markRow), mark)
-		_ = f.MergeCell(sheet, fmt.Sprintf("A%d", markRow), fmt.Sprintf("F%d", markRow))
-		style, err := f.NewStyle(&excelize.Style{
-			Font:      &excelize.Font{Bold: true, Color: "FF0000", Size: 12},
-			Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
-			Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"FFFFF2CC"}},
-		})
-		if err == nil {
-			_ = f.SetCellStyle(sheet, fmt.Sprintf("A%d", markRow), fmt.Sprintf("F%d", markRow), style)
+		_ = f.SetColWidth(sheet, "A", "A", widthModelName)
+		_ = f.SetColWidth(sheet, "B", "B", widthQuotation)
+		_ = f.SetCellValue(sheet, "A1", colModelName)
+		_ = f.SetCellValue(sheet, "B1", colQuotation)
+		for i, line := range lines[sheet] {
+			row := i + 2
+			_ = f.SetCellValue(sheet, fmt.Sprintf("A%d", row), line.ModelName)
+			_ = f.SetCellValue(sheet, fmt.Sprintf("B%d", row), line.Coefficient)
 		}
 	}
 
@@ -158,4 +149,54 @@ func (s *ExportService) renderXLSX(quote *QuoteRow, items []QuoteItemDetail, cus
 		return nil, fmt.Errorf("write xlsx: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// groupQuotationLines 把明细折成两张表的行：一个模型一行、只留对外报价系数。
+//
+// 折叠规则（每一条都是为了不给客户错数）：
+//   - 一个模型有多个价项（input/output）时只出一行：业务上一模型一个系数，
+//     两个价项算出的系数本应相同，取排序后的第一行以保证输出确定性；
+//   - 算不出系数的行跳过（官方价缺失、非正数、币种不一致），不猜一个数；
+//   - region 为空或未知（SKU 口径老数据）跳过：宁可少一行，也不能把模型
+//     塞进错误的区域报出去。
+func groupQuotationLines(items []QuoteItemDetail) map[string][]quotationLine {
+	out := map[string][]quotationLine{SheetOverseas: {}, SheetDomestic: {}}
+	seen := map[string]map[string]bool{SheetOverseas: {}, SheetDomestic: {}}
+
+	for _, it := range items {
+		sheet := sheetOfRegion(it.Region)
+		if sheet == "" {
+			continue
+		}
+		name := strings.TrimSpace(it.ModelName)
+		if name == "" || seen[sheet][name] {
+			continue
+		}
+		coef := strings.TrimSpace(it.QuotationCoefficient)
+		if coef == "" {
+			// 历史单据（000068 之前）没有记录系数。不猜、不从单价倒推——官方价一变
+			// 倒推值就失真。这类行直接跳过，重新保存一次报价单即可补上。
+			continue
+		}
+		seen[sheet][name] = true
+		out[sheet] = append(out[sheet], quotationLine{ModelName: name, Coefficient: coef})
+	}
+
+	for _, sheet := range []string{SheetOverseas, SheetDomestic} {
+		rows := out[sheet]
+		sort.Slice(rows, func(i, j int) bool { return rows[i].ModelName < rows[j].ModelName })
+	}
+	return out
+}
+
+// sheetOfRegion 区域 → 目标表；未知区域返回空串（不导出）。
+func sheetOfRegion(region string) string {
+	switch strings.ToUpper(strings.TrimSpace(region)) {
+	case "OVERSEAS":
+		return SheetOverseas
+	case "CN":
+		return SheetDomestic
+	default:
+		return ""
+	}
 }

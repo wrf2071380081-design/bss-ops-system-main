@@ -221,7 +221,20 @@ const filteredCustomers = computed(() => [{ id: NEW_CUSTOMER_ID, name: "+ 新建
 
 /** 结算币种跟业务区域走：国内=人民币、海外=美元（客户档案的 settlement_currency 优先）。 */
 const currencyOfRegion = (region: string) => region === "OVERSEAS" ? "USD" : "CNY";
+// 业务区域一变，之前选的模型可能来自另一个区域（海外客户买国内节点这种组合不成立），
+// 统一清空并明确告知，避免带着混区明细继续提交。
+function clearLinesOnRegionChange(next: string) {
+  const prev = form.region;
+  form.region = next;
+  if (prev && next && prev !== next && lines.value.length) {
+    const count = lines.value.length;
+    lines.value = [];
+    ElMessage.warning(`业务区域已切换为${regionText(next)}，已清空 ${count} 个${regionText(prev)}模型，请重新选择对应区域的资源。`);
+  }
+}
+
 function onRegionChange(region: string) {
+  clearLinesOnRegionChange(region);
   form.currency = currencyOfRegion(region);
 }
 
@@ -235,7 +248,7 @@ function onCustomerChange(customerId: string) {
   const option = customerOptions.value.find(item => item.id === customerId);
   if (!option) { form.customerName = ""; return; }
   form.customerName = option.name;
-  form.region = option.region;
+  clearLinesOnRegionChange(option.region);
   form.currency = option.currency || currencyOfRegion(option.region);
 }
 
@@ -437,7 +450,8 @@ async function searchCandidates(append: boolean) {
   pickerError.value = "";
   const page = append ? pickerPage.value + 1 : 1;
   try {
-    const result = await quoteCandidatesApi.list(pickerKeyword.value.trim(), page, 20);
+    // 只取客户所在区域的资源：海外客户看不到国内资源，反之亦然。
+    const result = await quoteCandidatesApi.list(pickerKeyword.value.trim(), page, 20, form.region);
     if (sequence !== pickerSequence) return;
     pickerRows.value = append ? [...pickerRows.value, ...result.list] : result.list;
     pickerPage.value = page;
@@ -466,9 +480,9 @@ function unitCostOf(amount: string, coefficient: string) {
 /**
  * 「继续编辑」回填的一行 → 编辑器行。
  *
- * 关键是把「已存单价」还原成报价系数：编辑器只认系数（单价 = 官方价 × 系数），
- * 所以用 unit_price ÷ amount 反算，再反推毛利率。多个价项算出同一个系数才取该值，
- * 不一致时取最低的那个（保守），避免把某一条价项的价格悄悄抬高。
+ * 报价系数优先取**落库的原值**（000068 起每张单都存）。历史单据没有这个值，
+ * 才用「已存单价 ÷ 官方价」兜一个编辑初值——那只是让编辑器能打开，
+ * 用户保存后就会把系数正式写入，导出永远走落库值、不做反算。
  */
 function lineFromEdit(dto: QuoteForEditLineDTO): QuoteLine {
   const coefficient = dto.coefficient || "";
@@ -479,14 +493,18 @@ function lineFromEdit(dto: QuoteForEditLineDTO): QuoteLine {
     unitCost: unitCostOf(item.amount, coefficient),
     currency: item.currency || form.currency,
   }));
-  const ratios = dto.price_items
-    .map(item => {
-      const amount = Number(item.amount), unitPrice = Number(item.unit_price);
-      return amount > 0 && unitPrice > 0 ? unitPrice / amount : NaN;
-    })
-    .filter(value => Number.isFinite(value) && value > 0);
-  const quoted = ratios.length ? Math.min(...ratios) : NaN;
-  const quoteCoefficient = Number.isFinite(quoted) ? trimNumber(quoted) : "";
+  const stored = Number(dto.quotation_coefficient);
+  let quoteCoefficient = Number.isFinite(stored) && stored > 0 ? trimNumber(stored) : "";
+  if (!quoteCoefficient) {
+    const ratios = dto.price_items
+      .map(item => {
+        const amount = Number(item.amount), unitPrice = Number(item.unit_price);
+        return amount > 0 && unitPrice > 0 ? unitPrice / amount : NaN;
+      })
+      .filter(value => Number.isFinite(value) && value > 0);
+    const quoted = ratios.length ? Math.min(...ratios) : NaN;
+    quoteCoefficient = Number.isFinite(quoted) ? trimNumber(quoted) : "";
+  }
   const supplierCoefficient = Number(coefficient);
   const margin = quoteCoefficient && Number.isFinite(supplierCoefficient) && supplierCoefficient > 0
     ? String(Number((100 * (1 - supplierCoefficient / Number(quoteCoefficient))).toFixed(1)))
@@ -630,10 +648,12 @@ async function saveDraft(exportAfter: boolean, submitAfter = false) {
     const customerId = await ensureCustomer();
     const validTo = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
     // 一条报价行（模型 + 来源）展开成该来源的全部价项：单价 = 官方价 × 报价系数。
+    // 系数一并提交——它是主数据，导出按系数出，不能事后从单价倒推。
     const items = lines.value.flatMap(line => line.items.map(item => ({
       resourceId: line.resourceId,
       priceItemKey: item.key,
       unitPrice: priceFor(item, line),
+      coefficient: line.quoteCoefficient,
     })));
     const result = await customerQuotesApi.generateResource({ customerId, validTo, ourCompany: form.ourCompany.trim(), items });
     if (submitAfter) {
@@ -842,7 +862,8 @@ async function hydrateSourcePool(rows: QuoteLine[]) {
   await Promise.all(rows.map(async line => {
     if (pool.has(line.modelKey)) return;
     try {
-      const result = await quoteCandidatesApi.list(line.modelName, 1, 50);
+      // 按该行自己的区域拉来源（回填的历史单可能跨区域），缺失时回落到表单区域。
+      const result = await quoteCandidatesApi.list(line.modelName, 1, 50, line.region || form.region);
       const grouped = new Map<string, ResourceQuoteCandidate[]>();
       for (const row of result.list) {
         const key = modelKeyOf(row);
@@ -1333,8 +1354,9 @@ onMounted(async () => {
       </template>
     </template>
 
-    <!-- 选择报价模型（对齐原型：按模型勾选，供应商在报价行里选） -->
-    <el-dialog v-model="pickerVisible" title="选择报价模型" width="min(880px, 96vw)">
+    <!-- 选择报价模型（对齐原型：按模型勾选，供应商在报价行里选）。
+         标题写明区域，让销售一眼知道「这里只可能出现该区域的货源」。 -->
+    <el-dialog v-model="pickerVisible" :title="`选择报价模型 · 仅显示${regionText(form.region)}资源`" width="min(880px, 96vw)">
       <div class="picker-bar">
         <el-input v-model="pickerKeyword" placeholder="搜索模型 / 供应商 / 官方 ID" clearable @keyup.enter="searchCandidates(false)" />
         <el-button type="primary" @click="searchCandidates(false)">搜索</el-button>

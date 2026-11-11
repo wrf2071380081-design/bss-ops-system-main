@@ -3,6 +3,7 @@ package customer
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -15,7 +16,7 @@ type fakeResourceStore struct {
 	items map[string]ResourceQuoteItem
 }
 
-func (f *fakeResourceStore) ListResourceQuoteCandidates(_ context.Context, _ string, page, size int) (*ResourceQuoteCandidatePage, error) {
+func (f *fakeResourceStore) ListResourceQuoteCandidates(_ context.Context, _, _ string, page, size int) (*ResourceQuoteCandidatePage, error) {
 	return &ResourceQuoteCandidatePage{List: []ResourceQuoteCandidate{}, Total: 0, Page: page, Size: size}, nil
 }
 func (f *fakeResourceStore) LoadResourceQuoteItems(_ context.Context, refs []ResourceQuoteItemInput) (map[string]ResourceQuoteItem, error) {
@@ -44,6 +45,7 @@ func resourceStoreFixture() *fakeResourceStore {
 				ResourceID: 16, PriceItemKey: "image_generation",
 				Amount: "0.04000000", Coefficient: "0.6800", UnitCost: "0.02720000",
 				Currency: "USD", ModelName: "GPT Image 1", SupplierName: "青禾云",
+				Region: "CN",
 			},
 		},
 	}
@@ -56,7 +58,7 @@ func TestGenerateResourceQuoteWritesResourceItems(t *testing.T) {
 	svc := NewService(store, nil).WithResourceQuoteStore(store)
 	res, err := svc.GenerateResourceQuote(context.Background(), GenerateResourceQuoteInput{
 		CustomerID: 3,
-		Items:      []ResourceQuoteItemInput{{ResourceID: 16, PriceItemKey: "image_generation", UnitPrice: "0.04000000"}},
+		Items:      []ResourceQuoteItemInput{{ResourceID: 16, PriceItemKey: "image_generation", UnitPrice: "0.04000000", Coefficient: "1"}},
 	}, OwnerScope{DataScope: "ALL", StaffID: 51}, 51, "req-1")
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +92,7 @@ func TestGenerateResourceQuoteRejectsBelowFloor(t *testing.T) {
 	svc := NewService(store, nil).WithResourceQuoteStore(store)
 	_, err := svc.GenerateResourceQuote(context.Background(), GenerateResourceQuoteInput{
 		CustomerID: 3,
-		Items:      []ResourceQuoteItemInput{{ResourceID: 16, PriceItemKey: "image_generation", UnitPrice: "0.03000000"}},
+		Items:      []ResourceQuoteItemInput{{ResourceID: 16, PriceItemKey: "image_generation", UnitPrice: "0.03000000", Coefficient: "0.75"}},
 	}, OwnerScope{DataScope: "ALL", StaffID: 51}, 51, "req-2")
 	if err == nil {
 		t.Fatal("低于 floor 的报价应当被拒")
@@ -129,5 +131,89 @@ func TestGenerateResourceQuoteRejectsDuplicateAndUnknown(t *testing.T) {
 	}, OwnerScope{DataScope: "ALL", StaffID: 51}, 51, "req-4")
 	if !errors.Is(err, ErrResourceNotQuotable) {
 		t.Fatalf("未知资源的错误 = %v, want ErrResourceNotQuotable", err)
+	}
+}
+
+// TestGenerateResourceQuoteRequiresCoefficient 系数是报价单主数据，缺失即拒。
+// 没有系数，导出时只能从单价倒推——官方价一变就还原不出客户承诺的报价。
+func TestGenerateResourceQuoteRequiresCoefficient(t *testing.T) {
+	store := resourceStoreFixture()
+	svc := NewService(store, nil).WithResourceQuoteStore(store)
+	_, err := svc.GenerateResourceQuote(context.Background(), GenerateResourceQuoteInput{
+		CustomerID: 3,
+		Items:      []ResourceQuoteItemInput{{ResourceID: 16, PriceItemKey: "image_generation", UnitPrice: "0.04000000"}},
+	}, OwnerScope{DataScope: "ALL", StaffID: 51}, 51, "req-coef-1")
+	if err == nil || !strings.Contains(err.Error(), "报价系数必填") {
+		t.Fatalf("缺系数应被拒，err=%v", err)
+	}
+}
+
+// TestGenerateResourceQuoteRejectsCoefficientMismatch 系数与单价严重不一致时拒绝，
+// 避免「导出按系数、收钱按单价」两边对不上。官方价 0.04 × 0.5 = 0.02，
+// 单价却给 0.04（差 100%）。
+func TestGenerateResourceQuoteRejectsCoefficientMismatch(t *testing.T) {
+	store := resourceStoreFixture()
+	svc := NewService(store, nil).WithResourceQuoteStore(store)
+	_, err := svc.GenerateResourceQuote(context.Background(), GenerateResourceQuoteInput{
+		CustomerID: 3,
+		Items: []ResourceQuoteItemInput{{
+			ResourceID: 16, PriceItemKey: "image_generation",
+			UnitPrice: "0.04000000", Coefficient: "0.5",
+		}},
+	}, OwnerScope{DataScope: "ALL", StaffID: 51}, 51, "req-coef-2")
+	if err == nil || !strings.Contains(err.Error(), "不一致") {
+		t.Fatalf("系数与单价不一致应被拒，err=%v", err)
+	}
+}
+
+// TestGenerateResourceQuoteStoresCoefficient 落库明细必须带上级数原值。
+func TestGenerateResourceQuoteStoresCoefficient(t *testing.T) {
+	store := resourceStoreFixture()
+	svc := NewService(store, nil).WithResourceQuoteStore(store)
+	if _, err := svc.GenerateResourceQuote(context.Background(), GenerateResourceQuoteInput{
+		CustomerID: 3,
+		Items: []ResourceQuoteItemInput{{
+			ResourceID: 16, PriceItemKey: "image_generation",
+			UnitPrice: "0.04000000", Coefficient: "1",
+		}},
+	}, OwnerScope{DataScope: "ALL", StaffID: 51}, 51, "req-coef-3"); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got := store.lastGenInput.Items[0].QuotationCoefficient; got != "1" {
+		t.Fatalf("落库系数 = %q, want 1", got)
+	}
+}
+
+// TestGenerateResourceQuoteRejectsRegionMismatch 海外客户不能报国内资源（反之亦然）。
+// 前端候选已按区域过滤，这道校验防的是绕过界面直接调接口。
+func TestGenerateResourceQuoteRejectsRegionMismatch(t *testing.T) {
+	store := resourceStoreFixture()
+	store.customerRegion = "OVERSEAS" // 资源 fixture 在 CN
+	svc := NewService(store, nil).WithResourceQuoteStore(store)
+	_, err := svc.GenerateResourceQuote(context.Background(), GenerateResourceQuoteInput{
+		CustomerID: 3,
+		Items: []ResourceQuoteItemInput{{
+			ResourceID: 16, PriceItemKey: "image_generation",
+			UnitPrice: "0.04000000", Coefficient: "1",
+		}},
+	}, OwnerScope{DataScope: "ALL", StaffID: 51}, 51, "req-region-1")
+	if !errors.Is(err, ErrResourceRegionMismatch) {
+		t.Fatalf("跨区域报价应被拒，err=%v", err)
+	}
+}
+
+// TestGenerateResourceQuoteSameRegionPasses 同区域正常放行。
+func TestGenerateResourceQuoteSameRegionPasses(t *testing.T) {
+	store := resourceStoreFixture()
+	store.customerRegion = "CN"
+	svc := NewService(store, nil).WithResourceQuoteStore(store)
+	if _, err := svc.GenerateResourceQuote(context.Background(), GenerateResourceQuoteInput{
+		CustomerID: 3,
+		Items: []ResourceQuoteItemInput{{
+			ResourceID: 16, PriceItemKey: "image_generation",
+			UnitPrice: "0.04000000", Coefficient: "1",
+		}},
+	}, OwnerScope{DataScope: "ALL", StaffID: 51}, 51, "req-region-2"); err != nil {
+		t.Fatalf("同区域应放行，err=%v", err)
 	}
 }

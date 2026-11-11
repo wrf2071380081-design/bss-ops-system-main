@@ -130,6 +130,17 @@ type QuoteItemDetail struct {
 	PriceItemKey string
 	ModelName    string
 	SupplierName string
+	// Region 部署区域：CN / OVERSEAS。SKU 口径（老明细）为空。
+	Region string
+	// OfficialAmount 标准模型官方价（standard_model.price_items 中与 price_item_key
+	// 对应的 amount）。只作参照——导出不再用它算系数，见 QuotationCoefficient。
+	OfficialAmount string
+	// QuotationCoefficient 对外报价系数：销售在报价编辑器里填的原值（迁移 000068）。
+	//
+	// 系数是主数据、单价是派生值（单价 = 官方价 × 系数），所以导出直接用它，
+	// **不再从单价倒推**：官方价会变，倒推出来的系数会与客户当初谈的对不上
+	// （库里就出现过倒推成 3.33 的荒谬值）。空串表示历史单据未记录，导出时跳过该行。
+	QuotationCoefficient string
 }
 
 // ComputeMarginImpact 纯函数：由 items 计算 margin_impact。

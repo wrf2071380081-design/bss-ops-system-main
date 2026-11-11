@@ -58,7 +58,9 @@ func customerErrToAppErr(err error) apperr.Error {
 	case errors.Is(err, customer.ErrInvalidQuoteType),
 		errors.Is(err, customer.ErrTempValidToRequired),
 		errors.Is(err, customer.ErrInvalidTransferTarget),
-		errors.Is(err, customer.ErrConfirmRequired):
+		errors.Is(err, customer.ErrConfirmRequired),
+		// 跨区域报价是参数问题（客户与资源区域不一致），给 400 而不是 500。
+		errors.Is(err, customer.ErrResourceRegionMismatch):
 		return apperr.New(apperr.ErrInvalidParams.Code, err.Error(), apperr.ErrInvalidParams.Status) // 400
 	default:
 		return apperr.ErrSystem

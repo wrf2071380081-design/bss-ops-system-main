@@ -41,6 +41,9 @@ type QuoteForEditLine struct {
 	Region          string `json:"region"`
 	// Coefficient 是采购系数（资源的成本折扣），不是客户报价系数。
 	Coefficient string `json:"coefficient"`
+	// QuotationCoefficient 是对外报价系数（000068 起落库，编辑器填的原值）。
+	// 为空表示历史单据没记录——前端只能用「单价 ÷ 官方价」兜一个初值，仅用于编辑。
+	QuotationCoefficient string `json:"quotation_coefficient"`
 	// 来源最近一次测试结果：报价行里直接摆连通/RPS/TPS/缓存命中率。
 	// 回填老单也要看得到「这个来源当初跑得怎么样」，不能因为是从库里读的就空着。
 	TestConnectionMS string                  `json:"test_connection_ms"`

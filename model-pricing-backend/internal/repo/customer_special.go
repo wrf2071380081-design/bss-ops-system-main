@@ -156,24 +156,57 @@ func (r *CustomerSpecialRepo) LoadQuote(ctx context.Context, quoteID int64) (*cu
 // quoteItemDetailRow 是 customer_quote_item 的读侧。
 // sku_id 自迁移 000048 起可空（资源口径明细 sku_id 为 NULL），故用 *int64。
 type quoteItemDetailRow struct {
-	SKUID        *int64  `gorm:"column:sku_id"`
-	ResourceID   *int64  `gorm:"column:resource_id"`
-	PriceItemKey *string `gorm:"column:price_item_key"`
-	Currency     string  `gorm:"column:currency"`
-	UnitPrice    string  `gorm:"column:unit_price"`
-	FloorPrice   string  `gorm:"column:floor_price"`
+	SKUID          *int64  `gorm:"column:sku_id"`
+	ResourceID     *int64  `gorm:"column:resource_id"`
+	PriceItemKey   *string `gorm:"column:price_item_key"`
+	Currency       string  `gorm:"column:currency"`
+	UnitPrice      string  `gorm:"column:unit_price"`
+	FloorPrice     string  `gorm:"column:floor_price"`
+	Region         string  `gorm:"column:region"`
+	ModelName      string  `gorm:"column:model_name"`
+	SupplierName   string  `gorm:"column:supplier_name"`
+	OfficialAmount string  `gorm:"column:official_amount"`
+	// QuotationCoefficient 对外报价系数（000068 起落库）；历史单据为空串。
+	QuotationCoefficient string `gorm:"column:quotation_coefficient"`
 }
 
-func (quoteItemDetailRow) TableName() string { return "customer_quote_item" }
-
 // LoadQuoteItemsDetail 读明细（decimal 解析失败即报错，不静默吞——8a §8a-8 教训）。
+//
+// 除明细本身外，这里一并取出导出需要的三样东西（导出模板只要「模型名 + 对外报价」）：
+//   - region：来自 resource.region，用于把模型分到「海外 / 国内」两张表；
+//   - model_name：standard_model.name 优先，退回资源的模型名快照，SKU 口径退回 sku_code；
+//   - official_amount：standard_model.price_items 中与 price_item_key 对应的官方价，
+//     是算对外报价系数（unit_price ÷ 官方价）的分母。
+//
+// SKU 口径（sku_id 非空）没有 region 概念，region 留空由导出层跳过。
 func (r *CustomerSpecialRepo) LoadQuoteItemsDetail(ctx context.Context, quoteID int64) ([]customer.QuoteItemDetail, error) {
+	const query = `
+SELECT cqi.sku_id,
+       cqi.resource_id,
+       cqi.price_item_key,
+       cqi.currency,
+       cqi.unit_price::text  AS unit_price,
+       cqi.floor_price::text AS floor_price,
+       COALESCE(r.region, '')                                              AS region,
+       COALESCE(sm.name, r.standard_model_name_snapshot, ms.sku_code, '')  AS model_name,
+       COALESCE(sp.name, '')                                               AS supplier_name,
+       COALESCE(pi.amount, '')                                             AS official_amount,
+       COALESCE(cqi.quotation_coefficient::text, '')                       AS quotation_coefficient
+FROM customer_quote_item cqi
+LEFT JOIN resource r        ON r.id  = cqi.resource_id
+LEFT JOIN supplier sp       ON sp.id = r.supplier_id
+LEFT JOIN standard_model sm ON sm.id = r.standard_model_id
+LEFT JOIN model_sku ms      ON ms.id = cqi.sku_id
+LEFT JOIN LATERAL (
+    SELECT x ->> 'amount' AS amount
+    FROM jsonb_array_elements(COALESCE(sm.price_items, '[]'::jsonb)) AS x
+    WHERE x ->> 'item_key' = cqi.price_item_key
+    LIMIT 1
+) pi ON TRUE
+WHERE cqi.customer_quote_id = ?
+ORDER BY COALESCE(r.region, ''), model_name, COALESCE(cqi.price_item_key, '')`
 	var rows []quoteItemDetailRow
-	if err := r.txOf(ctx).Table("customer_quote_item").
-		Select("sku_id", "resource_id", "price_item_key", "currency", "unit_price", "floor_price").
-		Where("customer_quote_id = ?", quoteID).
-		Order("sku_id ASC").
-		Find(&rows).Error; err != nil {
+	if err := r.txOf(ctx).Raw(query, quoteID).Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load customer_quote_item: %w", err)
 	}
 	out := make([]customer.QuoteItemDetail, 0, len(rows))
@@ -186,7 +219,21 @@ func (r *CustomerSpecialRepo) LoadQuoteItemsDetail(ctx context.Context, quoteID 
 		if err != nil {
 			return nil, fmt.Errorf("parse floor_price %q quote=%d: %w", row.FloorPrice, quoteID, err)
 		}
-		item := customer.QuoteItemDetail{Currency: row.Currency, UnitPrice: up, FloorPrice: fp}
+		item := customer.QuoteItemDetail{
+			Currency:       row.Currency,
+			UnitPrice:      up,
+			FloorPrice:     fp,
+			Region:         row.Region,
+			ModelName:      row.ModelName,
+			SupplierName:   row.SupplierName,
+			OfficialAmount: row.OfficialAmount,
+		}
+		// numeric(10,6) 直接 cast 成 text 会带尾零（0.700000），统一走 decimal 去尾零。
+		if row.QuotationCoefficient != "" {
+			if d, derr := decimal.NewFromString(row.QuotationCoefficient); derr == nil {
+				item.QuotationCoefficient = d.String()
+			}
+		}
 		if row.SKUID != nil {
 			item.SKUID = *row.SKUID
 		}

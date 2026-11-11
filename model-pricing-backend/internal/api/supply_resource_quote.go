@@ -31,7 +31,8 @@ func NewSupplyResourceQuoteAdapter(reader *supply.ResourceReader) *supplyResourc
 var _ customer.ResourceQuoteStore = (*supplyResourceQuoteAdapter)(nil)
 
 // ListResourceQuoteCandidates 列出可报价的资源候选（供应域判定可报价的那些）。
-func (a *supplyResourceQuoteAdapter) ListResourceQuoteCandidates(ctx context.Context, keyword string, page, size int) (*customer.ResourceQuoteCandidatePage, error) {
+// region 非空时只取该部署区域的资源（海外客户只报海外资源、国内客户只报国内资源）。
+func (a *supplyResourceQuoteAdapter) ListResourceQuoteCandidates(ctx context.Context, keyword, region string, page, size int) (*customer.ResourceQuoteCandidatePage, error) {
 	if a == nil || a.reader == nil {
 		return nil, customer.ErrResourceStoreUnavailable
 	}
@@ -44,7 +45,8 @@ func (a *supplyResourceQuoteAdapter) ListResourceQuoteCandidates(ctx context.Con
 	// 供应域按 flat 视图取资源；只保留 quote_readiness.eligible 的（可报价）。
 	// 分页在过滤之后做，保证 total 与 list 一致。
 	result, err := a.reader.List(ctx, supply.ResourceListQuery{
-		View: "flat", Keyword: strings.TrimSpace(keyword), Page: 1, Size: 100,
+		View: "flat", Keyword: strings.TrimSpace(keyword), Region: strings.TrimSpace(region),
+		Page: 1, Size: 100,
 		SortBy: "id", Order: "asc", NullsLast: true, TieBreakBy: "id",
 	})
 	if err != nil {
@@ -130,6 +132,7 @@ func (a *supplyResourceQuoteAdapter) LoadResourceQuoteItems(ctx context.Context,
 				Amount: item.Amount, Coefficient: snapshot.Coefficient,
 				UnitCost: cost.StringFixed(8), Currency: item.Currency,
 				ModelName: snapshot.ModelName, SupplierName: snapshot.SupplierName,
+				Region: snapshot.Region,
 			}
 		}
 	}

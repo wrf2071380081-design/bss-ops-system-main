@@ -124,9 +124,10 @@ function optionalText(value: unknown): string | undefined {
 
 export const quoteCandidatesApi = {
   // 候选资源（可报价）：供应域已判定 ADMITTED + 正式配置已确认 + 测试证据有效 + 模型就绪。
-  list: (keyword = "", page = 1, size = 20) => apiRequest<ResourceQuoteCandidatePage>({
+  // region 按客户所在区域传入（CN / OVERSEAS）：海外客户只应看到海外资源，反之亦然。
+  list: (keyword = "", page = 1, size = 20, region = "") => apiRequest<ResourceQuoteCandidatePage>({
     url: "/internal/quote-candidates", method: "GET",
-    params: { keyword: keyword || undefined, page, size },
+    params: { keyword: keyword || undefined, region: region || undefined, page, size },
   }).then(data => ({
     list: (data?.list ?? []).map(validateCandidate),
     total: Number(data?.total ?? 0),

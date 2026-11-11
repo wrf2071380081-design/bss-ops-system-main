@@ -79,7 +79,9 @@ type customerQuoteItemRow struct {
 	Currency        string    `gorm:"column:currency"`
 	UnitPrice       string    `gorm:"column:unit_price"`
 	FloorPrice      string    `gorm:"column:floor_price"`
-	CreatedAt       time.Time `gorm:"column:created_at"`
+	// QuotationCoefficient 对外报价系数（迁移 000068）。历史单据为 NULL。
+	QuotationCoefficient *string   `gorm:"column:quotation_coefficient"`
+	CreatedAt            time.Time `gorm:"column:created_at"`
 	UpdatedAt       time.Time `gorm:"column:updated_at"`
 	RequestID       *string   `gorm:"column:request_id"`
 	CreatedBy       *int64    `gorm:"column:created_by"`
@@ -387,6 +389,22 @@ func (r *CustomerRepo) LoadCustomerLevel(ctx context.Context, customerID int64) 
 		return "", 0, fmt.Errorf("load customer level %d: %w", customerID, err)
 	}
 	return row.LevelCode, row.OwnerSales, nil
+}
+
+// LoadCustomerRegion 实现 customer.Store.LoadCustomerRegion。
+func (r *CustomerRepo) LoadCustomerRegion(ctx context.Context, customerID int64) (string, error) {
+	var region string
+	err := r.txOf(ctx).Table("customer_profile").
+		Where("id = ?", customerID).
+		Select("region").
+		Take(&region).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", customer.ErrCustomerNotFound
+		}
+		return "", fmt.Errorf("load customer region %d: %w", customerID, err)
+	}
+	return strings.TrimSpace(region), nil
 }
 
 // TransferCustomerTx 实现 customer.Store.TransferCustomerTx。
@@ -886,6 +904,10 @@ func (r *CustomerRepo) GenerateQuoteTx(ctx context.Context, in customer.Generate
 				resourceID, priceItemKey := it.ResourceID, it.PriceItemKey
 				item.ResourceID = &resourceID
 				item.PriceItemKey = &priceItemKey
+				// 对外报价系数只对资源口径有意义（SKU 口径无官方价可比）。
+				if coef := strings.TrimSpace(it.QuotationCoefficient); coef != "" {
+					item.QuotationCoefficient = &coef
+				}
 			} else {
 				skuID := it.SKUID
 				item.SkuID = &skuID

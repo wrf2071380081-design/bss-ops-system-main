@@ -73,6 +73,11 @@ export interface QuoteForEditLineDTO {
   region: string;
   /** 采购系数（成本折扣），不是客户报价系数。 */
   coefficient: string;
+  /**
+   * 对外报价系数（销售当初填的原值）。历史单据没有记录，为空串——
+   * 那种情况下前端只能用「单价 ÷ 官方价」兜一个编辑初值，但绝不用于导出。
+   */
+  quotation_coefficient: string;
   /** 来源最近一次实测：连通(ms) / RPS / TPS / 缓存命中率(%)；没有报告的来源为空串。 */
   test_connection_ms: string;
   test_rps: string;
@@ -137,13 +142,15 @@ export const customerQuotesApi = {
   getForEdit: (quoteID: string | number) =>
     apiRequest<QuoteForEditDTO>({ url: `${basePath}/${requestId(String(quoteID))}`, method: "GET" }),
 
-  generateResource: (draft: { customerId: string; validTo?: string; ourCompany?: string; items: Array<{ resourceId: string; priceItemKey: string; unitPrice: string }> }) => {
+  generateResource: (draft: { customerId: string; validTo?: string; ourCompany?: string; items: Array<{ resourceId: string; priceItemKey: string; unitPrice: string; coefficient: string }> }) => {
     const payload = {
       customer_id: requestId(draft.customerId),
       ...(draft.validTo ? { valid_to: draft.validTo } : {}),
       ...(draft.ourCompany ? { our_company: draft.ourCompany } : {}),
       items: draft.items.map(item => ({
-        resource_id: requestId(item.resourceId), price_item_key: item.priceItemKey, unit_price: item.unitPrice,
+        resource_id: requestId(item.resourceId), price_item_key: item.priceItemKey,
+        // 系数是报价单主数据，单价只是它乘官方价的结果；两者都要传，后端落库并校验自洽。
+        unit_price: item.unitPrice, coefficient: item.coefficient,
       })),
     };
     return apiRequest<GeneratedQuoteWireDTO>({ url: `${basePath}/resource`, method: "POST", data: payload,

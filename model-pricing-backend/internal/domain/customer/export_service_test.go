@@ -72,36 +72,36 @@ func baseExportQuote() *QuoteRow {
 	}
 }
 
+// baseExportItems 资源口径明细：一个海外模型 + 一个国内模型。
+// 系数取落库值（与单价 ÷ 官方价恰好一致，便于早期数据核对）。
 func baseExportItems() []QuoteItemDetail {
 	return []QuoteItemDetail{
-		{SKUID: 40, Currency: "CNY", UnitPrice: dec("5.00000000"), FloorPrice: dec("3.52941176")},
-		{SKUID: 41, Currency: "CNY", UnitPrice: dec("12.00000000"), FloorPrice: dec("10.58823529")},
+		{ResourceID: 40, PriceItemKey: "input", Currency: "USD", ModelName: "gpt-4o",
+			Region: "OVERSEAS", QuotationCoefficient: "0.65",
+			UnitPrice: dec("1.30000000"), OfficialAmount: "2.00000000",
+			FloorPrice: dec("1.00000000")},
+		{ResourceID: 41, PriceItemKey: "input", Currency: "CNY", ModelName: "混元 全系（含混元3）",
+			Region: "CN", QuotationCoefficient: "0.61",
+			UnitPrice: dec("1.22000000"), OfficialAmount: "2.00000000",
+			FloorPrice: dec("0.90000000")},
 	}
 }
 
-// ============================================================
-// 测试
-// ============================================================
-
-func readXLSX(t *testing.T, buf []byte) (*excelize.File, string) {
+func openXLSX(t *testing.T, buf []byte) *excelize.File {
 	t.Helper()
 	xls, err := excelize.OpenReader(io.NopCloser(bytes.NewReader(buf)))
 	if err != nil {
 		t.Fatalf("重开 XLSX 失败：%v", err)
 	}
-	sheet := xls.GetSheetName(0)
-	if sheet == "" {
-		t.Fatalf("no sheet")
-	}
-	return xls, sheet
+	return xls
 }
 
-func TestExport_Success(t *testing.T) {
-	f := &fakeExportStore{
-		quote:     baseExportQuote(),
-		items:     baseExportItems(),
-		legalName: "东信公司",
-	}
+// ============================================================
+// 模板结构
+// ============================================================
+
+func TestExport_TwoSheetsModelAndCoefficient(t *testing.T) {
+	f := &fakeExportStore{quote: baseExportQuote(), items: baseExportItems()}
 	svc := NewExportService(f, fixedNow, nil)
 	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
 	if err != nil {
@@ -110,43 +110,194 @@ func TestExport_Success(t *testing.T) {
 	if len(buf) == 0 {
 		t.Fatalf("buffer empty")
 	}
-	xls, sheet := readXLSX(t, buf)
+	xls := openXLSX(t, buf)
 	defer func() { _ = xls.Close() }()
-	// 标题 A1 含 quote id 与版本号
-	title, _ := xls.GetCellValue(sheet, "A1")
-	if !strings.Contains(title, "1") {
-		t.Fatalf("A1=%q", title)
+
+	sheets := xls.GetSheetList()
+	if len(sheets) != 2 || sheets[0] != SheetOverseas || sheets[1] != SheetDomestic {
+		t.Fatalf("sheet 列表=%v，应为 [海外 国内]", sheets)
 	}
-	// 客户名 B2
-	name, _ := xls.GetCellValue(sheet, "B2")
-	if name != "东信公司" {
-		t.Fatalf("B2=%q", name)
+
+	// 两张表都是两列表头。
+	for _, sheet := range []string{SheetOverseas, SheetDomestic} {
+		if v, _ := xls.GetCellValue(sheet, "A1"); v != "模型名" {
+			t.Fatalf("%s!A1=%q", sheet, v)
+		}
+		if v, _ := xls.GetCellValue(sheet, "B1"); v != "对外报价" {
+			t.Fatalf("%s!B1=%q", sheet, v)
+		}
+		// 只有两列：C 列必须为空。
+		if v, _ := xls.GetCellValue(sheet, "C1"); v != "" {
+			t.Fatalf("%s!C1=%q，模板只有两列", sheet, v)
+		}
 	}
-	// 我方公司 B3（2026-11-07 起表头加了这一行，quote_type 顺延到 B4）
-	our, _ := xls.GetCellValue(sheet, "B3")
-	if our != "根公司" {
-		t.Fatalf("B3=%q", our)
+
+	// 海外：gpt-4o / 0.65
+	if v, _ := xls.GetCellValue(SheetOverseas, "A2"); v != "gpt-4o" {
+		t.Fatalf("海外!A2=%q", v)
 	}
-	// quote_type B4
-	qt, _ := xls.GetCellValue(sheet, "B4")
-	if qt != "TEMP" {
-		t.Fatalf("B4=%q", qt)
+	if v, _ := xls.GetCellValue(SheetOverseas, "B2"); v != "0.65" {
+		t.Fatalf("海外!B2=%q，应为 0.65", v)
 	}
-	// 表头 A8
-	hdr, _ := xls.GetCellValue(sheet, "A8")
-	if hdr != "sku_id" {
-		t.Fatalf("A8=%q", hdr)
+	// 国内：混元 / 0.61
+	if v, _ := xls.GetCellValue(SheetDomestic, "A2"); v != "混元 全系（含混元3）" {
+		t.Fatalf("国内!A2=%q", v)
 	}
-	// 行 9 sku 40；行 10 sku 41
-	sku40, _ := xls.GetCellValue(sheet, "A9")
-	if sku40 != "40" {
-		t.Fatalf("A9=%q", sku40)
-	}
-	sku41, _ := xls.GetCellValue(sheet, "A10")
-	if sku41 != "41" {
-		t.Fatalf("A10=%q", sku41)
+	if v, _ := xls.GetCellValue(SheetDomestic, "B2"); v != "0.61" {
+		t.Fatalf("国内!B2=%q，应为 0.61", v)
 	}
 }
+
+// TestExport_NoInternalFields 守住"内部数据不外泄"：底价、破线、SKU、币种、
+// 单价、报价类型、水印文案都不得出现在文件里。任何人把这些加回模板都会红。
+func TestExport_NoInternalFields(t *testing.T) {
+	f := &fakeExportStore{quote: baseExportQuote(), items: baseExportItems()}
+	svc := NewExportService(f, fixedNow, nil)
+	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	xls := openXLSX(t, buf)
+	defer func() { _ = xls.Close() }()
+
+	forbidden := []string{
+		"floor_price", "below_floor", "unit_price", "sku_id", "quote_type",
+		"status", "exported_at", "valid_until", "临时报价",
+		"1.00000000", "0.90000000", // fixture 里的底价，不能出现在导出中
+		"USD", "CNY",
+	}
+	for _, sheet := range xls.GetSheetList() {
+		rows, err := xls.GetRows(sheet)
+		if err != nil {
+			t.Fatalf("%s GetRows: %v", sheet, err)
+		}
+		for _, row := range rows {
+			for _, cell := range row {
+				low := strings.ToLower(cell)
+				for _, bad := range forbidden {
+					if strings.Contains(low, strings.ToLower(bad)) {
+						t.Fatalf("%s 出现内部字段 %q（单元格=%q）", sheet, bad, cell)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestExport_CoefficientIsStoredValueNotDerived 守核心口径：导出的系数必须是
+// 报价时存下来的值，**不能**用 单价 ÷ 官方价 反推。
+//
+// 构造一条"反推会算错"的数据：单价 1.50 / 官方价 2.00 反推得 0.75，
+// 但当初存的是 0.60（例如官方价后来涨过）。导出必须显示 0.60。
+func TestExport_CoefficientIsStoredValueNotDerived(t *testing.T) {
+	items := []QuoteItemDetail{
+		{ResourceID: 40, PriceItemKey: "input", Currency: "USD", ModelName: "gpt-4o",
+			Region: "OVERSEAS", QuotationCoefficient: "0.60",
+			UnitPrice: dec("1.50000000"), OfficialAmount: "2.00000000"},
+	}
+	f := &fakeExportStore{quote: baseExportQuote(), items: items}
+	svc := NewExportService(f, fixedNow, nil)
+	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	xls := openXLSX(t, buf)
+	defer func() { _ = xls.Close() }()
+	if v, _ := xls.GetCellValue(SheetOverseas, "B2"); v != "0.60" {
+		t.Fatalf("B2=%q，应为落库的 0.60（反推会得到 0.75）", v)
+	}
+}
+
+// TestExport_SameModelMultipleItemsCollapsed 一个模型 input/output 两行价项，
+// 导出只出一行（一模型一系数）。
+func TestExport_SameModelMultipleItemsCollapsed(t *testing.T) {
+	items := []QuoteItemDetail{
+		{ResourceID: 40, PriceItemKey: "input", Currency: "USD", ModelName: "gpt-4o",
+			Region: "OVERSEAS", QuotationCoefficient: "0.65",
+			UnitPrice: dec("1.30000000"), OfficialAmount: "2.00000000"},
+		{ResourceID: 40, PriceItemKey: "output", Currency: "USD", ModelName: "gpt-4o",
+			Region: "OVERSEAS", QuotationCoefficient: "0.65",
+			UnitPrice: dec("1.95000000"), OfficialAmount: "3.00000000"},
+	}
+	f := &fakeExportStore{quote: baseExportQuote(), items: items}
+	svc := NewExportService(f, fixedNow, nil)
+	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	xls := openXLSX(t, buf)
+	defer func() { _ = xls.Close() }()
+
+	if v, _ := xls.GetCellValue(SheetOverseas, "A3"); v != "" {
+		t.Fatalf("A3=%q，同一模型应折叠成一行", v)
+	}
+}
+
+// TestExport_SkipRowWhenCoefficientMissing 历史单据没有系数（000068 之前）时跳过，
+// 绝不从单价倒推一个数出来。
+func TestExport_SkipRowWhenCoefficientMissing(t *testing.T) {
+	items := []QuoteItemDetail{
+		{ResourceID: 40, PriceItemKey: "input", Currency: "USD", ModelName: "历史单里的模型",
+			Region: "OVERSEAS", QuotationCoefficient: "",
+			UnitPrice: dec("1.30000000"), OfficialAmount: "2.00000000"},
+	}
+	f := &fakeExportStore{quote: baseExportQuote(), items: items}
+	svc := NewExportService(f, fixedNow, nil)
+	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	xls := openXLSX(t, buf)
+	defer func() { _ = xls.Close() }()
+	if v, _ := xls.GetCellValue(SheetOverseas, "A2"); v != "" {
+		t.Fatalf("没有系数的行不应输出，A2=%q", v)
+	}
+}
+
+// TestExport_SkipUnknownRegion 区域未知（SKU 口径老数据）不塞进任何一张表。
+func TestExport_SkipUnknownRegion(t *testing.T) {
+	items := []QuoteItemDetail{
+		{SKUID: 9, Currency: "CNY", ModelName: "老口径模型", QuotationCoefficient: "0.8",
+			UnitPrice: dec("1.00000000"), OfficialAmount: "1.00000000"},
+	}
+	f := &fakeExportStore{quote: baseExportQuote(), items: items}
+	svc := NewExportService(f, fixedNow, nil)
+	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	xls := openXLSX(t, buf)
+	defer func() { _ = xls.Close() }()
+	for _, sheet := range []string{SheetOverseas, SheetDomestic} {
+		if v, _ := xls.GetCellValue(sheet, "A2"); v != "" {
+			t.Fatalf("%s!A2=%q，region 未知时不应输出", sheet, v)
+		}
+	}
+}
+
+// TestExport_EmptyItemsStillHasTwoSheets 没有明细时仍保留两张空表，
+// 客户看到的是"这份报价没有模型"，而不是缺表。
+func TestExport_EmptyItemsStillHasTwoSheets(t *testing.T) {
+	f := &fakeExportStore{quote: baseExportQuote(), items: nil}
+	svc := NewExportService(f, fixedNow, nil)
+	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	xls := openXLSX(t, buf)
+	defer func() { _ = xls.Close() }()
+	sheets := xls.GetSheetList()
+	if len(sheets) != 2 {
+		t.Fatalf("sheet=%v，应为两张", sheets)
+	}
+	if v, _ := xls.GetCellValue(SheetOverseas, "A1"); v != "模型名" {
+		t.Fatalf("空表也要有表头，A1=%q", v)
+	}
+}
+
+// ============================================================
+// 校验与错误路径
+// ============================================================
 
 func TestExport_QuoteNotFound(t *testing.T) {
 	f := &fakeExportStore{quote: nil}
@@ -168,15 +319,10 @@ func TestExport_FormatUnsupported(t *testing.T) {
 
 func TestExport_Expired(t *testing.T) {
 	q := baseExportQuote()
-	// valid_until 必须相对 fixedNow 派生，不能用 time.Now()：
-	// service 的过期判断是 svc.now()（= fixedNow，恒定 2026-09-16 12:00 UTC）与 valid_until 比较，
-	// 一旦真实时间走到 fixedNow 之后，"now()-24h" 就晚于 fixedNow，判断不再成立，测试必然失败。
+	// valid_until 必须相对 fixedNow 派生：service 用 svc.now()（= fixedNow）比较。
 	past := fixedNow().Add(-24 * time.Hour)
 	q.ValidUntil = &past
-	f := &fakeExportStore{
-		quote: q,
-		items: baseExportItems(),
-	}
+	f := &fakeExportStore{quote: q, items: baseExportItems()}
 	svc := NewExportService(f, fixedNow, nil)
 	_, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
 	if !errors.Is(err, ErrQuoteExpired) {
@@ -190,88 +336,10 @@ func TestExport_ApplyNotExpiredEvenIfPastValidUntil(t *testing.T) {
 	q.QuoteType = QuoteTypeApply
 	past := time.Now().Add(-24 * time.Hour)
 	q.ValidUntil = &past
-	f := &fakeExportStore{
-		quote:     q,
-		items:     baseExportItems(),
-		legalName: "东信公司",
-	}
+	f := &fakeExportStore{quote: q, items: baseExportItems()}
 	svc := NewExportService(f, fixedNow, nil)
-	_, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
-	if err != nil {
+	if _, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx"); err != nil {
 		t.Fatalf("APPLY 即使有过期 valid_until 也不应 409：%v", err)
-	}
-}
-
-func TestExport_TempWatermarkPresent(t *testing.T) {
-	f := &fakeExportStore{
-		quote:     baseExportQuote(), // TEMP
-		items:     baseExportItems(),
-		legalName: "东信公司",
-	}
-	svc := NewExportService(f, fixedNow, nil)
-	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
-	if err != nil {
-		t.Fatalf("err=%v", err)
-	}
-	xls, sheet := readXLSX(t, buf)
-	defer func() { _ = xls.Close() }()
-	// 水印在 items 之后 +2 行：表头 row 8，items row 9,10 → markRow = 13
-	watermark, _ := xls.GetCellValue(sheet, "A13")
-	if !strings.Contains(watermark, "临时报价") {
-		t.Fatalf("watermark=%q（应含『临时报价』）", watermark)
-	}
-	if !strings.Contains(watermark, "东信公司") {
-		t.Fatalf("watermark 未含客户名：%q", watermark)
-	}
-}
-
-func TestExport_ApplyNoWatermark(t *testing.T) {
-	q := baseExportQuote()
-	q.QuoteType = QuoteTypeApply
-	f := &fakeExportStore{
-		quote:     q,
-		items:     baseExportItems(),
-		legalName: "东信公司",
-	}
-	svc := NewExportService(f, fixedNow, nil)
-	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
-	if err != nil {
-		t.Fatalf("err=%v", err)
-	}
-	xls, sheet := readXLSX(t, buf)
-	defer func() { _ = xls.Close() }()
-	// APPLY 不应有水印（markRow=13 应为空）
-	wm, _ := xls.GetCellValue(sheet, "A13")
-	if wm != "" {
-		t.Fatalf("APPLY 不应有水印，A13=%q", wm)
-	}
-}
-
-func TestExport_BelowFloorComputedOnFly(t *testing.T) {
-	// customer_quote_item 无 below_floor 列，导出时应按 UnitPrice < FloorPrice 实时算
-	items := []QuoteItemDetail{
-		{SKUID: 40, Currency: "CNY", UnitPrice: dec("3.00000000"), FloorPrice: dec("3.52941176")},   // 破线
-		{SKUID: 41, Currency: "CNY", UnitPrice: dec("12.00000000"), FloorPrice: dec("10.58823529")}, // 不破
-	}
-	f := &fakeExportStore{
-		quote:     baseExportQuote(),
-		items:     items,
-		legalName: "东信",
-	}
-	svc := NewExportService(f, fixedNow, nil)
-	buf, err := svc.GenerateXLSX(context.Background(), selfScope(7), 1, "xlsx")
-	if err != nil {
-		t.Fatalf("err=%v", err)
-	}
-	xls, sheet := readXLSX(t, buf)
-	defer func() { _ = xls.Close() }()
-	e9, _ := xls.GetCellValue(sheet, "E9") // below_floor of sku40
-	if !strings.EqualFold(e9, "TRUE") {
-		t.Fatalf("E9=%q（应 true，破线）", e9)
-	}
-	e10, _ := xls.GetCellValue(sheet, "E10")
-	if !strings.EqualFold(e10, "FALSE") {
-		t.Fatalf("E10=%q（应 false）", e10)
 	}
 }
 
@@ -280,8 +348,7 @@ func TestExport_BelowFloorComputedOnFly(t *testing.T) {
 // ============================================================
 
 func TestExport_OutOfScope(t *testing.T) {
-	// 越域导出必须 ErrCustomerOutOfScope（→403），且不得继续取明细/客户名。
-	// 修前：直接 200 返回含 unit_price 与客户名的 xlsx（稽核报告 §3.1 V1）。
+	// 越域导出必须 ErrCustomerOutOfScope（→403），且不得继续取明细。
 	f := &fakeExportStore{
 		quote:           baseExportQuote(),
 		items:           baseExportItems(),
@@ -306,11 +373,7 @@ func TestExport_OutOfScope(t *testing.T) {
 
 func TestExport_InScopeStillChecksScope(t *testing.T) {
 	// 在域内也必须真的走过校验——防有人整段删掉校验后测试仍绿。
-	f := &fakeExportStore{
-		quote:     baseExportQuote(),
-		items:     baseExportItems(),
-		legalName: "东信公司",
-	}
+	f := &fakeExportStore{quote: baseExportQuote(), items: baseExportItems()}
 	svc := NewExportService(f, fixedNow, nil)
 	if _, err := svc.GenerateXLSX(context.Background(), selfScope(7), 2, "xlsx"); err != nil {
 		t.Fatalf("err=%v", err)
