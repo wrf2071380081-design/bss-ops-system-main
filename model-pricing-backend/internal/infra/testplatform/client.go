@@ -91,7 +91,17 @@ func New(cfg Config) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	return &Client{base: base, token: cfg.Token, http: &http.Client{Timeout: timeout}}, nil
+	// 测试平台是内网地址（10.x），绝不能跟着环境变量走 HTTP_PROXY。
+	// 后端如果从带代理变量的 shell 里启动（IDE 终端、CI、本地代理工具都会设），
+	// Go 默认的 ProxyFromEnvironment 会把这单出站请求交给代理：表现是「页面一直
+	// 没有返回」，而平台侧一条任务都查不到，排查时极易误判成平台故障。
+	// 2026-11-11 供应商 6 的申报测试就是被这一层拖住的。
+	transport := &http.Transport{
+		Proxy:               nil,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	return &Client{base: base, token: cfg.Token, http: &http.Client{Timeout: timeout, Transport: transport}}, nil
 }
 
 // endpoint 把 /api/v1 前缀补到 base 上，已带则原样拼接。
@@ -109,6 +119,15 @@ type envelope struct {
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data"`
 	Errors  []FieldError    `json:"errors"`
+}
+
+// Ping 用一次最小代价的列表请求确认平台可达（含鉴权与网关拦截）。
+//
+// 只关心「能不能拿到符合契约的信封」，不解析业务字段：没连内网时这里会快速
+// 失败，调用方据此决定「不建单」，而不是先建一条本地任务再等超时。
+func (c *Client) Ping(ctx context.Context) error {
+	var out json.RawMessage
+	return c.do(ctx, http.MethodGet, "/test-jobs?page=1", nil, "", &out)
 }
 
 // do 发送请求并解开信封，成功时把 data 反序列化到 out。

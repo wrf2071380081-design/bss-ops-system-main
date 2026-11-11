@@ -23,6 +23,13 @@ export interface ApiRequestConfig extends AxiosRequestConfig {
   anonymous?: boolean;
   noContent?: boolean;
   idempotency?: IdempotencyOptions;
+  /**
+   * 5xx 时也优先展示后端返回的 message。
+   *
+   * 默认 5xx 一律折叠成通用文案（避免把内部细节抛给用户），但像「发起测试」
+   * 这种失败原因本身就属于操作指引的接口，需要原样告诉用户「先去连内网」。
+   */
+  keepServerMessage?: boolean;
 }
 
 const http = axios.create({
@@ -64,9 +71,17 @@ function normalizeError(error: unknown) {
   }
   const status = error.response?.status || 0;
   const body = error.response?.data as ApiErrorResponse | undefined;
+  const keepServerMessage = (error.config as ApiRequestConfig | undefined)?.keepServerMessage === true;
+  const fallback = status ? friendlyMessage(status) : "网络连接失败，请稍后重试。";
   return new ApiError(
     status,
-    redactText(status >= 500 ? friendlyMessage(status) : body?.message || (status ? friendlyMessage(status) : "网络连接失败，请稍后重试。")),
+    redactText(
+      keepServerMessage && body?.message
+        ? body.message
+        : status >= 500
+          ? friendlyMessage(status)
+          : body?.message || fallback,
+    ),
     body?.code || error.code,
     body?.requestId,
     body?.fieldErrors ? redactSensitive(body.fieldErrors) : undefined,

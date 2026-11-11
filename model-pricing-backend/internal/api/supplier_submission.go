@@ -633,6 +633,10 @@ func writeRowTestError(c *gin.Context, err error) {
 	case errors.Is(err, errCredentialMissing):
 		// 000046：凭据是主体级，缺了就是「还没登记」，不是「这一行没填」。
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "请先在申报页登记本主体的测试接口 URL 与 API Key", 400))
+	case errors.Is(err, tpdomain.ErrUnreachable):
+		// 没连内网 / 网关拦了：把原因直接告诉供应商，别让他们反复点。
+		// 这种情况一个本地任务都不该建（探测在建单之前），所以重试不会被去重挡。
+		response.Error(c, apperr.New(apperr.ErrSystem.Code, "连不上测试平台，请确认已连接公司内网后重试", 503))
 	case errors.Is(err, tpdomain.ErrNotConfigured):
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未接入", 503))
 	case errors.Is(err, tpdomain.ErrInvalidCommand):
@@ -905,6 +909,8 @@ func testFailureReason(err error) string {
 	switch {
 	case errors.Is(err, errCredentialMissing):
 		return "未填写测试 Key"
+	case errors.Is(err, tpdomain.ErrUnreachable):
+		return "连不上测试平台，请确认已连接公司内网"
 	case errors.Is(err, tpdomain.ErrNotConfigured):
 		return "测试平台未接入"
 	default:

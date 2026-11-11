@@ -2,15 +2,23 @@ package testplatform
 
 import (
 	"context"
+	"time"
 
 	tpdomain "model_bss/internal/domain/testplatform"
 )
+
+// probeTimeout 是发起前可达性探测的时间上限。
+//
+// 故意比出站请求超时（默认 30s）短得多：探测的意义是「快速告诉用户连不上内网」，
+// 没必要让页面陪着干等半分钟。
+const probeTimeout = 5 * time.Second
 
 // Gateway 把领域层的端口适配到 open-api 客户端。
 // 放在 infra 侧（而不是 domain），保证 domain 不依赖 HTTP 细节。
 type Gateway struct{ client *Client }
 
 var _ tpdomain.Gateway = (*Gateway)(nil)
+var _ tpdomain.Prober = (*Gateway)(nil)
 
 // NewGateway 构造适配器；未配置时返回 tpdomain.ErrNotConfigured。
 func NewGateway(cfg Config) (*Gateway, error) {
@@ -34,6 +42,14 @@ func platformCategory(category tpdomain.Category) string {
 		return "comprehensive"
 	}
 	return string(category)
+}
+
+// Healthy 用一次最小代价的列表请求确认平台可达（含鉴权与网关）。
+// 只判断「能不能拿到正常信封」，不解析业务字段。
+func (g *Gateway) Healthy(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return g.client.Ping(ctx)
 }
 
 // CreateJob 发起任务。

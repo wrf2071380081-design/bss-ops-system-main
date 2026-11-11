@@ -8,6 +8,10 @@ import type {
 } from "./supplierSubmissions.types";
 
 const base = "/supplier/submissions";
+// 发起测试要真的去调外部测试平台（探测 + 建任务 + 回填任务号），耗时远高于普通查询。
+// 沿用全局 15s 会让浏览器先放弃：请求被中断后后端那条任务可能停在「排队中」，
+// 用户再点又会被去重挡掉（2026-11-11 供应商 6 就是这么卡住的）。这里单独放宽。
+const TEST_START_TIMEOUT_MS = 60_000;
 function submissionID(value: string) { standardModelVersion(value); return encodeURIComponent(value); }
 function validatePage(value: SupplierSubmissionPageDTO, params: SupplierSubmissionListParams): SupplierSubmissionPageDTO {
   if (!value || !Array.isArray(value.list) || !Number.isSafeInteger(value.total) || value.total < 0 || value.page !== params.page || value.size !== params.size || value.list.length > value.size) throw new Error("申报列表响应不符合约定，请重新加载。");
@@ -55,7 +59,7 @@ export const supplierSubmissionsApi = {
   async startTest(id: string, rowID: string, category: SupplierTestCategory, lifecycle: string) {
     const url = `${base}/${submissionID(id)}/rows/${submissionID(rowID)}/test`;
     const data = { category };
-    const result = await apiRequest<SupplierTestJobDTO>({ method: "POST", url, data, idempotency: { scope: `${url}:${category}`, payload: data, lifecycle } });
+    const result = await apiRequest<SupplierTestJobDTO>({ method: "POST", url, data, timeout: TEST_START_TIMEOUT_MS, keepServerMessage: true, idempotency: { scope: `${url}:${category}`, payload: data, lifecycle } });
     standardModelVersion(result.job_id);
     validateTest(result, category);
     return result;
@@ -64,7 +68,7 @@ export const supplierSubmissionsApi = {
     const url = `${base}/${submissionID(id)}/tests`;
     const data = { categories };
     const result = await apiRequest<SupplierBatchTestResultDTO>({
-      method: "POST", url, data, idempotency: { scope: `${url}:${categories.join("+")}`, payload: data, lifecycle },
+      method: "POST", url, data, timeout: TEST_START_TIMEOUT_MS, keepServerMessage: true, idempotency: { scope: `${url}:${categories.join("+")}`, payload: data, lifecycle },
     });
     if (!result || !Array.isArray(result.items) || typeof result.started !== "number") {
       throw new Error("批量测试响应不符合约定，请重新查询进度。");
