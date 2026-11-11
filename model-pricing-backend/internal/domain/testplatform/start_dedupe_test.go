@@ -17,6 +17,9 @@ type fakeStartStore struct {
 	created bool
 	failed  []string
 	calls   int
+	// failCtxErr 记录收口时收到的上下文状态：必须是 nil（活的），
+	// 不能是 context.Canceled/DeadlineExceeded，否则 UPDATE 根本落不了库。
+	failCtxErr error
 }
 
 func (f *fakeStartStore) CreateJob(context.Context, NewJobRecord) (string, bool, error) {
@@ -24,8 +27,9 @@ func (f *fakeStartStore) CreateJob(context.Context, NewJobRecord) (string, bool,
 	f.nextID++
 	return fmt.Sprintf("job-%d", f.nextID), f.created, nil
 }
-func (f *fakeStartStore) FailJob(_ context.Context, localID, _ string) error {
+func (f *fakeStartStore) FailJob(ctx context.Context, localID, _ string) error {
 	f.failed = append(f.failed, localID)
+	f.failCtxErr = ctx.Err()
 	return nil
 }
 func (f *fakeStartStore) AttachExternalJob(context.Context, string, string, string) error { return nil }
@@ -111,5 +115,73 @@ func TestStartFailsJobWhenPlatformRejects(t *testing.T) {
 	}
 	if len(store.failed) != 1 {
 		t.Fatalf("应把本地任务收成 FAILED，实际 %v", store.failed)
+	}
+}
+
+// probeGateway 在普通假网关之外额外实现 Prober（发起前探测）。
+// 现有用例使用的 fakeStartGateway 不实现它，因此走「不探测」的老路径。
+type probeGateway struct {
+	fakeStartGateway
+	probeErr error
+	probes   int
+}
+
+func (p *probeGateway) Healthy(context.Context) error {
+	p.probes++
+	return p.probeErr
+}
+
+// 连不上平台（没连内网）时，必须在建单之前就失败：一条本地任务都不留。
+// 留了就会占住唯一索引槽位，让用户连上内网后的重试全被去重挡掉。
+func TestStartProbesPlatformBeforeCreatingJob(t *testing.T) {
+	store := &fakeStartStore{created: true}
+	gateway := &probeGateway{probeErr: errors.New("dial tcp 10.19.218.33:18080: i/o timeout")}
+	svc, _ := NewService(gateway, store, nil)
+
+	_, err := svc.Start(context.Background(), startCmd())
+	if !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("连不上平台应返回 ErrUnreachable，实际 %v", err)
+	}
+	if store.calls != 0 {
+		t.Fatalf("探测失败时不该建本地任务，实际建了 %d 条", store.calls)
+	}
+	if gateway.calls != 0 {
+		t.Fatalf("探测失败时不该向平台建单，实际调用 %d 次", gateway.calls)
+	}
+}
+
+// 探测通过后行为不变：建单、调平台照旧。
+func TestStartCreatesAfterSuccessfulProbe(t *testing.T) {
+	store := &fakeStartStore{created: true}
+	gateway := &probeGateway{}
+	svc, _ := NewService(gateway, store, nil)
+
+	if _, err := svc.Start(context.Background(), startCmd()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if gateway.probes != 1 || gateway.calls != 1 {
+		t.Fatalf("应探测一次、建单一次，实际 probe=%d create=%d", gateway.probes, gateway.calls)
+	}
+}
+
+// 请求上下文已被取消（浏览器 15s 超时后断连）时，收口仍必须落库。
+// 2026-11-11 供应商 6 的 test_job 122/123 就是在这里丢的：
+// FailJob 复用了已经取消的请求 ctx，UPDATE 直接失败，任务永远停在 QUEUED。
+func TestStartMarksFailedWithLiveContextWhenRequestCanceled(t *testing.T) {
+	store := &fakeStartStore{created: true}
+	gateway := &fakeStartGateway{err: context.Canceled}
+	svc, _ := NewService(gateway, store, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := svc.Start(ctx, startCmd()); err == nil {
+		t.Fatal("平台失败时应返回错误")
+	}
+	if len(store.failed) != 1 {
+		t.Fatalf("请求已取消也必须把任务收成 FAILED，实际 %v", store.failed)
+	}
+	if store.failCtxErr != nil {
+		t.Fatalf("收口不能复用已取消的上下文，实际 %v", store.failCtxErr)
 	}
 }

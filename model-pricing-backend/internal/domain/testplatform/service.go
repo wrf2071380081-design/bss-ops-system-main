@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,6 +21,11 @@ import (
 
 // ErrNotConfigured 表示测试平台未配置，调用方应跳过而不是报错。
 var ErrNotConfigured = errors.New("test platform is not configured")
+
+// ErrUnreachable 表示发起前探测到平台不可达（没连内网、网关拦截、地址写错等）。
+// 与 ErrNotConfigured 的区别：配置是好的，重试之前要先把网络修好。
+// 单独成一个错误，是为了让调用方能告诉用户「去连内网」，而不是笼统的「系统错误」。
+var ErrUnreachable = errors.New("test platform: unreachable")
 
 // ErrInvalidCommand 表示发起参数不合法（缺凭据、模型为空等）。
 var ErrInvalidCommand = errors.New("test platform: invalid command")
@@ -115,6 +121,16 @@ type Gateway interface {
 	DownloadReport(context.Context, string, string) ([]byte, error)
 }
 
+// Prober 是可选能力：发起前先确认平台可达。
+//
+// 之所以做成可选接口而不是塞进 Gateway：探测属于「体验优化 + 防脏数据」，
+// 不给所有现有实现和测试替身增加负担。实现方为空实现时退化为「不探测」，
+// 行为与改动前一致。
+type Prober interface {
+	// Healthy 返回 nil 表示平台此刻可以接受任务。
+	Healthy(context.Context) error
+}
+
 // NewJobRecord 是新建任务时要落库的字段。
 type NewJobRecord struct {
 	ResourceID        string
@@ -202,6 +218,22 @@ type StartResult struct {
 // orphanGrace 是「本地任务已建、平台任务号一直没回填」的容忍时长。
 const orphanGrace = 10 * time.Minute
 
+// startTimeout 是「探测 → 建本地任务 → 调平台 → 回填任务号」整段的时间上限。
+//
+// 这段时间必须与 HTTP 请求解耦。前端 axios 15 秒就超时，用户关页面 / 刷新也会
+// 取消请求；如果整段都挂在请求 ctx 上，会有三处连锁失效：平台调用被中途打断、
+// 平台任务号回填失败、失败收口（FailJob）也写不进去。结果是任务永远停在 QUEUED，
+// 一边占着「同资源+同门类+同指纹只能有一个活跃任务」的唯一索引槽位，让后续重试
+// 全被去重挡掉，一边又因为 external_job_id 为空被轮询永远跳过。
+// 2026-11-11 供应商 6 的申报测试就是这么卡住的（test_job 122/123）。
+const startTimeout = 60 * time.Second
+
+// failGrace 是失败收口用的独立时间窗。
+//
+// 收口要从 startTimeout 之外重新计时：走到这里往往已经超时了，
+// 继续用外层 ctx 只会再失败一次，僵尸照样留下。
+const failGrace = 5 * time.Second
+
 // orphanCleaner 是可选能力：收掉发起时中途失败的僵尸任务。
 // 单独成一个可选接口，避免为了清理去改 Store 的所有实现与测试替身。
 type orphanCleaner interface {
@@ -223,6 +255,20 @@ func (s *Service) Start(ctx context.Context, cmd CreateCommand) (*StartResult, e
 	if strings.TrimSpace(cmd.Target.Model) == "" || strings.TrimSpace(cmd.Target.BaseURL) == "" {
 		return nil, ErrInvalidCommand
 	}
+	// 从这一行往后都脱离请求生命周期（理由见 startTimeout 常量注释）。
+	// context.WithoutCancel 保留 ctx 上的值（追踪 id 之类），只摘掉取消与截止时间。
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), startTimeout)
+	defer cancel()
+
+	// 先探测再建单：连不上平台时一条本地任务都不该留下。
+	// 不探测的话，没连内网会走「建单 → 平台超时 → 收口」的老路，用户白等一轮
+	// 还可能因为收口失败留下僵尸槽位。
+	if prober, ok := s.gateway.(Prober); ok {
+		if err := prober.Healthy(ctx); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
+		}
+	}
+
 	payload, err := json.Marshal(map[string]any{
 		"category": cmd.Category, "resource_id": cmd.ResourceID,
 		"source": cmd.Source,
@@ -249,13 +295,26 @@ func (s *Service) Start(ctx context.Context, cmd CreateCommand) (*StartResult, e
 		// 平台没受理就必须立刻收口：否则这条任务永远 QUEUED，
 		// 一边占着「同一目标只能有一个活跃任务」的槽位（该目标再也发不出去），
 		// 一边又因为 external_job_id 为空被轮询永远跳过。
-		_ = s.store.FailJob(ctx, localID, err.Error())
+		// 收口失败不能再默默吞掉——那等于把僵尸任务变成静默事故。
+		if failErr := s.markFailed(ctx, localID, err.Error()); failErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("test platform: mark local job %s failed: %w", localID, failErr))
+		}
 		return nil, err
 	}
 	if err := s.store.AttachExternalJob(ctx, localID, accepted.JobID, mapStatus(accepted.Status)); err != nil {
 		return &StartResult{LocalJobID: localID, ExternalID: accepted.JobID}, err
 	}
 	return &StartResult{LocalJobID: localID, ExternalID: accepted.JobID, Status: accepted.Status}, nil
+}
+
+// markFailed 把发起失败的任务收成 FAILED。
+//
+// 用「去掉外层取消 + 重新计时」的上下文：走到这里多半已经因为 startTimeout
+// 或者用户关页面而超时，沿用外层 ctx 只会再失败一次，僵尸任务照样留下。
+func (s *Service) markFailed(ctx context.Context, localID, reason string) error {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failGrace)
+	defer cancel()
+	return s.store.FailJob(cctx, localID, reason)
 }
 
 // PollResult 汇总一次轮询。

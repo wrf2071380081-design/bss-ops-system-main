@@ -12,12 +12,24 @@ import (
 	"model_bss/internal/domain/customer"
 )
 
+// trimTrailingZero 把 numeric 直接 cast 成 text 得到的 "0.700000" 去尾零成 "0.7"。
+// 只用于回填/展示，不做数值校验；空串原样返回。
+func trimTrailingZero(s string) string {
+	if !strings.Contains(s, ".") {
+		return s
+	}
+	s = strings.TrimRight(s, "0")
+	return strings.TrimSuffix(s, ".")
+}
+
 // quoteEditItemRow 是「继续编辑」回填的明细读侧：一条价项 + 它的来源与官方价项。
 type quoteEditItemRow struct {
 	ResourceID          *int64  `gorm:"column:resource_id"`
 	PriceItemKey        *string `gorm:"column:price_item_key"`
 	UnitPrice           string  `gorm:"column:unit_price"`
 	FloorPrice          string  `gorm:"column:floor_price"`
+	// QuotationCoefficient 落库的对外报价系数（000068 起）；历史单据为空串。
+	QuotationCoefficient string `gorm:"column:quotation_coefficient"`
 	Currency            string  `gorm:"column:currency"`
 	StandardModelID     int64   `gorm:"column:standard_model_id"`
 	SupplierID          int64   `gorm:"column:supplier_id"`
@@ -91,6 +103,7 @@ func (r *CustomerRepo) LoadQuoteForEdit(ctx context.Context, quoteID int64) (*cu
 		       i.price_item_key,
 		       i.unit_price::text                              AS unit_price,
 		       i.floor_price::text                             AS floor_price,
+		       COALESCE(i.quotation_coefficient::text, '')     AS quotation_coefficient,
 		       i.currency,
 		       COALESCE(r.standard_model_id, 0)                AS standard_model_id,
 		       COALESCE(r.supplier_id, 0)                      AS supplier_id,
@@ -166,6 +179,8 @@ func (r *CustomerRepo) LoadQuoteForEdit(ctx context.Context, quoteID int64) (*cu
 				SupplierModel:    row.SupplierModelName,
 				Region:           row.Region,
 				Coefficient:      row.ResourceCoefficient,
+				// 落库的对外报价系数（000068 起）。为空表示历史单据，编辑器会自行兜底。
+				QuotationCoefficient: trimTrailingZero(row.QuotationCoefficient),
 				TestConnectionMS: row.TestConnectionMS,
 				TestRPS:          row.TestRPS,
 				TestTPS:          row.TestTPS,

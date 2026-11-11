@@ -39,6 +39,9 @@ type fakeStore struct {
 	levelCode         string
 	ownerSalesID      int64
 	levelErr          error
+	// 客户所在区域（CN / OVERSEAS）；空串表示不做区域校验。
+	customerRegion string
+	regionErr      error
 	bookID            int64
 	bookVersion       int
 	bookFound         bool
@@ -85,6 +88,10 @@ func (f *fakeStore) LoadSalesOperator(_ context.Context, _ int64) (int64, string
 }
 func (f *fakeStore) LoadCustomerLevel(_ context.Context, _ int64) (string, int64, error) {
 	return f.levelCode, f.ownerSalesID, f.levelErr
+}
+func (f *fakeStore) LoadCustomerRegion(_ context.Context, _ int64) (string, error) {
+	// 默认空串表示「不校验区域」，既有用例不必逐个改；区域校验用例显式设置。
+	return f.customerRegion, f.regionErr
 }
 func (f *fakeStore) LoadEffectivePriceBook(_ context.Context, _ string) (int64, int, bool, error) {
 	return f.bookID, f.bookVersion, f.bookFound, f.bookErr

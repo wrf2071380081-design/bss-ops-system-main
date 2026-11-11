@@ -30,6 +30,9 @@ type resourceQuoteItemBody struct {
 	ResourceID   int64  `json:"resource_id" binding:"required"`
 	PriceItemKey string `json:"price_item_key" binding:"required"`
 	UnitPrice    string `json:"unit_price"`
+	// Coefficient 对外报价系数（编辑器里销售填的原值）。必填——
+	// 系数是报价单主数据，导出直接用它，事后从单价倒推会因官方价变动而失真。
+	Coefficient string `json:"coefficient" binding:"required"`
 }
 
 // resourceQuoteBody 是资源口径报价请求体。
@@ -59,8 +62,10 @@ func (h *CustomerHandler) ListResourceQuoteCandidates(c *gin.Context) {
 		return
 	}
 	keyword := strings.TrimSpace(c.Query("keyword"))
+	// region 由调用方按客户所在区域传入（CN / OVERSEAS）；不传则不限制。
+	region := strings.TrimSpace(c.Query("region"))
 	page, size := parsePageQuery(c)
-	result, err := h.svc.ListResourceQuoteCandidates(c.Request.Context(), keyword, page, size)
+	result, err := h.svc.ListResourceQuoteCandidates(c.Request.Context(), keyword, region, page, size)
 	if err != nil {
 		response.Error(c, customerErrToAppErr(err))
 		return
@@ -97,7 +102,8 @@ func (h *CustomerHandler) GenerateResourceQuote(c *gin.Context) {
 	items := make([]customer.ResourceQuoteItemInput, 0, len(body.Items))
 	for _, it := range body.Items {
 		items = append(items, customer.ResourceQuoteItemInput{
-			ResourceID: it.ResourceID, PriceItemKey: it.PriceItemKey, UnitPrice: it.UnitPrice,
+			ResourceID: it.ResourceID, PriceItemKey: it.PriceItemKey,
+			UnitPrice: it.UnitPrice, Coefficient: it.Coefficient,
 		})
 	}
 	res, err := h.svc.GenerateResourceQuote(c.Request.Context(), customer.GenerateResourceQuoteInput{

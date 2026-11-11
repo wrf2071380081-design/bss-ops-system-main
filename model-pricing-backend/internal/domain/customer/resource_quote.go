@@ -35,6 +35,9 @@ var (
 	ErrResourceNotQuotable      = errors.New("资源不可报价（未接入、正式配置未确认、测试证据无效或模型未就绪）")
 	ErrResourcePriceItem        = errors.New("资源没有该官方价项")
 	ErrResourceDuplicate        = errors.New("同一资源不能重复出现在一张报价单里")
+	// ErrResourceRegionMismatch 报价资源与客户所在区域不一致：
+	// 海外客户只能报海外资源、国内客户只能报国内资源。
+	ErrResourceRegionMismatch = errors.New("报价资源与客户所在区域不一致")
 )
 
 // ResourceQuoteCandidate 是报价候选资源（一行一条可报价资源）。
@@ -87,6 +90,10 @@ type ResourceQuoteItemInput struct {
 	ResourceID   int64  `json:"resource_id"`
 	PriceItemKey string `json:"price_item_key"`
 	UnitPrice    string `json:"unit_price"` // decimal 字符串
+	// Coefficient 对外报价系数（销售在编辑器里填的原值，decimal 字符串）。
+	// 必填：系数是报价单的主数据，单价只是「官方价 × 系数」的派生结果，
+	// 缺了它导出时无法还原客户当初承诺的报价。
+	Coefficient string `json:"coefficient"`
 }
 
 // ResourceQuoteStore 是资源口径报价需要的只读端口。
@@ -95,7 +102,9 @@ type ResourceQuoteItemInput struct {
 // 由供应域适配器实现（见 internal/api/supply_resource_quote.go）。
 type ResourceQuoteStore interface {
 	// ListResourceQuoteCandidates 列出可报价资源候选（供应域已判可报价的）。
-	ListResourceQuoteCandidates(ctx context.Context, keyword string, page, size int) (*ResourceQuoteCandidatePage, error)
+	// region 非空时只返回该部署区域的资源：海外客户只能报海外资源、国内客户只能报国内资源，
+	// 混选会让报价单出现「海外客户买国内节点」这种不成立的组合。
+	ListResourceQuoteCandidates(ctx context.Context, keyword, region string, page, size int) (*ResourceQuoteCandidatePage, error)
 	// LoadResourceQuoteItems 按 (resource_id, price_item_key) 取采购成本口径。
 	// 找不到 → ErrResourceNotQuotable / ErrResourcePriceItem。
 	LoadResourceQuoteItems(ctx context.Context, refs []ResourceQuoteItemInput) (map[string]ResourceQuoteItem, error)
@@ -111,6 +120,8 @@ type ResourceQuoteItem struct {
 	Currency     string `json:"currency"`
 	ModelName    string `json:"model_name"`
 	SupplierName string `json:"supplier_name"`
+	// Region 资源部署区域（CN / OVERSEAS），用于校验「报价与客户同区域」。
+	Region string `json:"region"`
 }
 
 // resourceQuoteKey 是明细去重与回查的稳定键。
@@ -201,6 +212,12 @@ func (s *Service) GenerateResourceQuote(ctx context.Context, in GenerateResource
 		return nil, fmt.Errorf("load customer level: %w", err)
 	}
 	_ = levelCode
+	// 报价必须与客户同区域：前端已在候选列表里过滤，这里再兜一道，
+	// 防止绕过界面直接调接口把「海外客户 + 国内节点」组合写进库里。
+	customerRegion, err := s.store.LoadCustomerRegion(ctx, in.CustomerID)
+	if err != nil {
+		return nil, fmt.Errorf("load customer region: %w", err)
+	}
 
 	// 去重：同一 (resource_id, price_item_key) 只能出现一次。
 	seen := map[string]bool{}
@@ -234,6 +251,10 @@ func (s *Service) GenerateResourceQuote(ctx context.Context, in GenerateResource
 		if !ok {
 			return nil, ErrResourceNotQuotable
 		}
+		if customerRegion != "" && base.Region != "" && !strings.EqualFold(customerRegion, base.Region) {
+			return nil, fmt.Errorf("%w：资源 %d 在 %s，客户在 %s",
+				ErrResourceRegionMismatch, it.ResourceID, base.Region, customerRegion)
+		}
 		unitPrice, perr := decimal.NewFromString(strings.TrimSpace(it.UnitPrice))
 		if perr != nil {
 			return nil, fmt.Errorf("解析 resource=%d 的 unit_price: %w", it.ResourceID, perr)
@@ -246,6 +267,20 @@ func (s *Service) GenerateResourceQuote(ctx context.Context, in GenerateResource
 		if ferr != nil {
 			return nil, fmt.Errorf("floor resource=%d: %w", it.ResourceID, ferr)
 		}
+		coef, coefErr := decimal.NewFromString(strings.TrimSpace(it.Coefficient))
+		if coefErr != nil || !coef.IsPositive() {
+			return nil, fmt.Errorf("%w：resource=%d 的报价系数必填且须大于 0", ErrInvalidQuoteType, it.ResourceID)
+		}
+		// 系数与单价必须自洽：单价 = 官方价 × 系数。容差 1% 只吸收前端取整误差，
+		// 挡住"系数填 0.7、单价却按 3 倍给"这类错配——否则导出按系数、收钱按单价，两边对不上。
+		if official, aerr := decimal.NewFromString(strings.TrimSpace(base.Amount)); aerr == nil && official.IsPositive() {
+			expected := official.Mul(coef)
+			if unitPrice.Sub(expected).Abs().Div(expected).GreaterThan(decimal.NewFromFloat(0.01)) {
+				return nil, fmt.Errorf("%w：resource=%d 单价与报价系数不一致（单价 %s，官方价 %s × 系数 %s = %s）",
+					ErrInvalidQuoteType, it.ResourceID, unitPrice.String(),
+					base.Amount, coef.String(), expected.StringFixed(8))
+			}
+		}
 		if unitPrice.LessThan(floor) {
 			violations = append(violations, ResourceFloorViolation{
 				ResourceID: it.ResourceID, PriceItemKey: it.PriceItemKey,
@@ -256,6 +291,7 @@ func (s *Service) GenerateResourceQuote(ctx context.Context, in GenerateResource
 		rows = append(rows, GenerateQuoteItemRow{
 			ResourceID: it.ResourceID, PriceItemKey: it.PriceItemKey,
 			Currency: base.Currency, UnitPrice: unitPrice, FloorPrice: floor,
+			QuotationCoefficient: coef.String(),
 		})
 	}
 	if len(violations) > 0 {
@@ -286,7 +322,10 @@ type GenerateResourceQuoteInput struct {
 }
 
 // ListResourceQuoteCandidates 列出报价候选资源（可报价的资源）。
-func (s *Service) ListResourceQuoteCandidates(ctx context.Context, keyword string, page, size int) (*ResourceQuoteCandidatePage, error) {
+//
+// region 为空表示不限制区域（兼容旧调用）；下单方应以客户所在区域传入，
+// 保证「海外客户只能报海外资源、国内客户只能报国内资源」。
+func (s *Service) ListResourceQuoteCandidates(ctx context.Context, keyword, region string, page, size int) (*ResourceQuoteCandidatePage, error) {
 	if s == nil || s.resources == nil {
 		return nil, ErrResourceStoreUnavailable
 	}
@@ -296,7 +335,7 @@ func (s *Service) ListResourceQuoteCandidates(ctx context.Context, keyword strin
 	if size <= 0 || size > 200 {
 		size = 20
 	}
-	return s.resources.ListResourceQuoteCandidates(ctx, keyword, page, size)
+	return s.resources.ListResourceQuoteCandidates(ctx, keyword, strings.TrimSpace(region), page, size)
 }
 
 // QuoteCoefficient 纯函数：客户报价系数 = 客户单价 ÷ 官方价。

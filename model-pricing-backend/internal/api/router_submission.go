@@ -233,6 +233,8 @@ func writeTestStartError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, tpdomain.ErrInvalidCommand):
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "发起测试的参数不完整", 400))
+	case errors.Is(err, tpdomain.ErrUnreachable):
+		response.Error(c, apperr.New(apperr.ErrSystem.Code, "连不上测试平台，请确认已连接公司内网后重试", 503))
 	case errors.Is(err, tpdomain.ErrNotConfigured):
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "测试平台未配置", 503))
 	default:

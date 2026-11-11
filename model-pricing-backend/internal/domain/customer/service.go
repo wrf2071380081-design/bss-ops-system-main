@@ -347,6 +347,10 @@ type Store interface {
 	// ---- 生成报价 ----
 	// LoadCustomerLevel 读 customer_profile.level_code（生成报价时定位价目表）。
 	LoadCustomerLevel(ctx context.Context, customerID int64) (levelCode string, ownerSalesID int64, err error)
+	// LoadCustomerRegion 读 customer_profile.region（CN / OVERSEAS）。
+	// 报价必须与客户同区域：海外客户只能报海外资源、国内客户只能报国内资源，
+	// 混选会产生「海外客户买国内节点」这种不成立的商务组合。
+	LoadCustomerRegion(ctx context.Context, customerID int64) (string, error)
 	// LoadEffectivePriceBook 按 level_code 查当前 EFFECTIVE 价目表。
 	// found=false → 调用方返回 ErrNoEffectivePriceBook。
 	LoadEffectivePriceBook(ctx context.Context, levelCode string) (bookID int64, versionNo int, found bool, err error)
@@ -427,6 +431,10 @@ type GenerateQuoteItemRow struct {
 	// ResourceID/PriceItemKey 是资源口径明细（与 SKUID 二选一）。
 	ResourceID   int64
 	PriceItemKey string
+	// QuotationCoefficient 对外报价系数（销售在编辑器里填的原值，decimal 字符串）。
+	// 系数是主数据、单价是派生值：导出直接用它，不再从单价倒推。
+	// 空串表示历史单据未记录（000068 之前），这类行导出时跳过。
+	QuotationCoefficient string
 }
 
 // ============================================================
