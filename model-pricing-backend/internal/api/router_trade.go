@@ -28,6 +28,7 @@ func registerTradeRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, portal 
 		protected.GET("/workbench/inbox", wh.Inbox)
 		protected.GET("/workbench/people", wh.People)
 		protected.GET("/workbench/operations", wh.Operations)
+		protected.GET("/workbench/operations/options", wh.OperationOptions)
 		protected.POST("/workbench/notices/:id/read",
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			wh.MarkNoticeRead,

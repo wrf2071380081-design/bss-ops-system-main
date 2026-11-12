@@ -121,6 +121,8 @@ export interface OperationItemDTO {
   action: string;
   entity_type: string;
   entity_id: number;
+  /** 业务对象展示名（原型「对象」列）：供应商 / 模型 或 供应商 · 申报单号。 */
+  object_name?: string;
   operator_name: string;
   reason?: string;
   created_at: IsoDateTime;
@@ -135,10 +137,21 @@ export interface OperationPageDTO {
 
 export interface OperationQuery {
   operatorId?: number;
+  action?: string;
   entityType?: string;
   entityId?: number;
+  keyword?: string;
+  /** 左闭右开：dateTo 由后端 +1 天处理，前端只传 YYYY-MM-DD。 */
+  dateFrom?: string;
+  dateTo?: string;
   page?: number;
   size?: number;
+}
+
+export interface OperationOptionsDTO {
+  actions: string[];
+  entity_types: string[];
+  operators: WorkbenchPersonDTO[];
 }
 
 export const workbenchApi = {
@@ -198,12 +211,19 @@ export const workbenchApi = {
       method: "GET",
       params: {
         operator_id: query.operatorId || undefined,
+        action: query.action || undefined,
         entity_type: query.entityType || undefined,
         entity_id: query.entityId || undefined,
+        keyword: query.keyword || undefined,
+        date_from: query.dateFrom || undefined,
+        date_to: query.dateTo || undefined,
         page: query.page || 1,
         size: query.size || 20,
       },
     }),
+
+  operationOptions: async (): Promise<OperationOptionsDTO> =>
+    apiRequest<OperationOptionsDTO>({ url: "/internal/workbench/operations/options", method: "GET" }),
 
   markRead: async (noticeId: number): Promise<void> => {
     await apiRequest<{ notice_id: number }>({

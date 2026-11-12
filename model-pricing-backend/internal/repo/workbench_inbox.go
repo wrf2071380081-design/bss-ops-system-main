@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"gorm.io/gorm"
@@ -329,18 +330,57 @@ type operationRow struct {
 	CreatedAt    time.Time `gorm:"column:created_at"`
 }
 
-// ListOperations 操作记录（可按操作人/实体过滤）。
+// ListOperations 操作记录（可按操作人/操作类型/对象类型/时间区间/关键词过滤）。
 func (r *WorkbenchInboxRepo) ListOperations(ctx context.Context, q workbench.OperationQuery) ([]workbench.OperationItem, int64, error) {
 	apply := func(tx *gorm.DB) *gorm.DB {
 		tx = tx.Table("operation_log")
 		if q.OperatorID > 0 {
 			tx = tx.Where("operator_id = ?", q.OperatorID)
 		}
+		if q.Action != "" {
+			tx = tx.Where("action = ?", q.Action)
+		}
 		if q.EntityType != "" {
 			tx = tx.Where("entity_type = ?", q.EntityType)
 		}
 		if q.EntityID > 0 {
 			tx = tx.Where("entity_id = ?", q.EntityID)
+		}
+		// 右端不含：handler 已把日期选择器的末日 +1 天。
+		if q.DateFrom != nil {
+			tx = tx.Where("created_at >= ?", *q.DateFrom)
+		}
+		if q.DateTo != nil {
+			tx = tx.Where("created_at < ?", *q.DateTo)
+		}
+		if q.Keyword != "" {
+			kw := "%" + q.Keyword + "%"
+			// 原型搜索框是「搜索操作 / 业务对象」：操作码、操作人、说明直接匹配；
+			// 业务对象名是跨表拼出来的（供应商 / 模型、供应商 · 申报单号），
+			// operation_log 里只有 id，所以按类型用 EXISTS 关联真实业务表匹配。
+			// 表很小（演示库几十行），不做额外索引优化。
+			cond := `(action ILIKE ? OR operator_name_snapshot ILIKE ? OR reason ILIKE ?
+				OR (entity_type = 'resource' AND EXISTS (
+					SELECT 1 FROM resource r JOIN supplier s ON s.id = r.supplier_id
+					 WHERE r.id = operation_log.entity_id
+					   AND (s.name ILIKE ? OR r.supplier_model_name ILIKE ?)))
+				OR (entity_type = 'submission' AND EXISTS (
+					SELECT 1 FROM submission sb JOIN supplier s ON s.id = sb.supplier_id
+					 WHERE sb.id = operation_log.entity_id
+					   AND (s.name ILIKE ? OR sb.submission_no ILIKE ?)))
+				OR (entity_type = 'supplier_formal_config' AND EXISTS (
+					SELECT 1 FROM supplier_formal_config fc JOIN supplier s ON s.id = fc.supplier_id
+					 WHERE fc.id = operation_log.entity_id AND s.name ILIKE ?))
+				OR (entity_type = 'customer_profile' AND EXISTS (
+					SELECT 1 FROM customer_profile cpx JOIN legal_subject ls ON ls.id = cpx.subject_id
+					 WHERE cpx.id = operation_log.entity_id AND ls.legal_name ILIKE ?)))`
+			args := []any{kw, kw, kw, kw, kw, kw, kw, kw, kw}
+			if id, err := strconv.ParseInt(q.Keyword, 10, 64); err == nil && id > 0 {
+				// 整个条件必须在一对括号里：否则 OR 会跟外层其它筛选条件平级，把过滤条件废掉。
+				cond = "(" + cond + " OR entity_id = ?)"
+				args = append(args, id)
+			}
+			tx = tx.Where(cond, args...)
 		}
 		return tx
 	}
@@ -379,6 +419,77 @@ func (r *WorkbenchInboxRepo) ListOperations(ctx context.Context, q workbench.Ope
 		list = append(list, item)
 	}
 	return list, total, nil
+}
+
+// ObjectNames 按实体类型批量取展示名（原型「对象」列：供应商 / 模型）。
+// 只覆盖收件箱里真实出现的类型；未识别的类型返回空 map，由前端退回「类型 #id」。
+func (r *WorkbenchInboxRepo) ObjectNames(ctx context.Context, entityType string, ids []int64) (map[int64]string, error) {
+	out := make(map[int64]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var query string
+	switch entityType {
+	case "resource":
+		query = `SELECT r.id AS id, (s.name || ' / ' || COALESCE(r.supplier_model_name, '')) AS name
+		           FROM resource r JOIN supplier s ON s.id = r.supplier_id
+		          WHERE r.id IN ?`
+	case "submission":
+		query = `SELECT sb.id AS id, (s.name || ' · ' || COALESCE(sb.submission_no, '')) AS name
+		           FROM submission sb JOIN supplier s ON s.id = sb.supplier_id
+		          WHERE sb.id IN ?`
+	case "supplier_formal_config":
+		query = `SELECT fc.id AS id, s.name AS name
+		           FROM supplier_formal_config fc JOIN supplier s ON s.id = fc.supplier_id
+		          WHERE fc.id IN ?`
+	case "onboarding_flow":
+		query = `SELECT f.id AS id, COALESCE(s.name, ls.legal_name, '') AS name
+		           FROM onboarding_flow f
+		           LEFT JOIN supplier s ON f.kind = 'SUPPLIER' AND s.id = f.owner_id
+		           LEFT JOIN customer_profile cp ON f.kind = 'CUSTOMER' AND cp.id = f.owner_id
+		           LEFT JOIN legal_subject ls ON ls.id = cp.subject_id
+		          WHERE f.id IN ?`
+	case "onboarding_node":
+		query = `SELECT n.id AS id, COALESCE(s.name, ls.legal_name, '') AS name
+		           FROM onboarding_node n
+		           JOIN onboarding_flow f ON f.id = n.flow_id
+		           LEFT JOIN supplier s ON f.kind = 'SUPPLIER' AND s.id = f.owner_id
+		           LEFT JOIN customer_profile cp ON f.kind = 'CUSTOMER' AND cp.id = f.owner_id
+		           LEFT JOIN legal_subject ls ON ls.id = cp.subject_id
+		          WHERE n.id IN ?`
+	case "customer_profile":
+		query = `SELECT cp.id AS id, ls.legal_name AS name
+		           FROM customer_profile cp JOIN legal_subject ls ON ls.id = cp.subject_id
+		          WHERE cp.id IN ?`
+	default:
+		return out, nil
+	}
+	var rows []struct {
+		ID   int64   `gorm:"column:id"`
+		Name *string `gorm:"column:name"`
+	}
+	if err := r.txOf(ctx).Raw(query, ids).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row.Name != nil && *row.Name != "" {
+			out[row.ID] = *row.Name
+		}
+	}
+	return out, nil
+}
+
+// OperationFacets 筛选条可选项：库里真实出现过的 action 与 entity_type。
+func (r *WorkbenchInboxRepo) OperationFacets(ctx context.Context) ([]string, []string, error) {
+	actions := make([]string, 0, 8)
+	if err := r.txOf(ctx).Table("operation_log").Distinct().Order("action").Pluck("action", &actions).Error; err != nil {
+		return nil, nil, err
+	}
+	types := make([]string, 0, 8)
+	if err := r.txOf(ctx).Table("operation_log").Distinct().Order("entity_type").Pluck("entity_type", &types).Error; err != nil {
+		return nil, nil, err
+	}
+	return actions, types, nil
 }
 
 // MarkNoticeRead 标记公告已读（幂等）；公告不存在返回 false。

@@ -42,6 +42,48 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   STAGING_PRICE_SUBMIT: "提交暂存价",
 };
 
+/** 操作记录（operation_log.action）→ 中文。按后端写日志的调用点逐条核对（2026-11-12）。
+ *  表里没有的新枚举原样返回，避免出现空白格子。 */
+export const OPERATION_ACTION_LABELS: Record<string, string> = {
+  ADMIT: "资源准入通过",
+  APPROVE: "审批通过",
+  ARCHIVE: "归档",
+  COMPLETE_CONTRACT: "完成合同签署",
+  CONFIG_COMPLETE: "完成资源配置",
+  CREATE: "新建",
+  FORMAL_CONFIG_REVISION: "正式配置变更",
+  PRICE_CHANGE: "价格变更",
+  READ: "阅读公告",
+  REJECT: "驳回",
+  RESOURCE_REVISION: "资源变更",
+  SELECT_REPORT_PAIR: "选择测试报告",
+  START: "开始办理",
+  SUBMISSION_HANDLING: "办理模型申报",
+  UPDATE: "修改",
+  UPDATE_LICENSE: "更新企业资质",
+  UPDATE_NOOP: "提交（无变更）",
+  UPDATE_PROFILE: "更新企业信息",
+  UPLOADED: "上传附件",
+  VERIFY: "核验通过",
+};
+
+/** 操作记录（operation_log.entity_type）→ 中文业务对象名。 */
+export const OPERATION_ENTITY_LABELS: Record<string, string> = {
+  contract: "合同",
+  credit_line: "授信额度",
+  customer_profile: "客户档案",
+  onboarding_flow: "入驻流程",
+  onboarding_node: "入驻节点",
+  notice: "公告",
+  price_book: "价目表",
+  quote_sheet: "供应商报价单",
+  resource: "供应资源",
+  standard_model: "标准模型",
+  submission: "模型申报",
+  supplier: "供应商",
+  supplier_formal_config: "正式配置",
+};
+
 /** 审计的业务对象类型（audit_log.target_type）。 */
 export const AUDIT_TARGET_LABELS: Record<string, string> = {
   ALERT: "预警",

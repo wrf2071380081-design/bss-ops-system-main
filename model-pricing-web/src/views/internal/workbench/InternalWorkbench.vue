@@ -10,8 +10,10 @@ import {
   type InboxItemDTO,
   type InboxState,
   type OperationItemDTO,
+  type OperationOptionsDTO,
   type WorkbenchPersonDTO,
 } from "../../../modules/workbench/api/workbench";
+import { OPERATION_ACTION_LABELS, OPERATION_ENTITY_LABELS } from "../../../domain/labels";
 import NoticeDetailDialog from "../resources/NoticeDetailDialog.vue";
 import SubmissionFlowDialog from "./SubmissionFlowDialog.vue";
 import { submissionFlowsApi } from "../../../api/submissionFlows";
@@ -54,6 +56,21 @@ const selectedSupplyNotice = ref<{ id: string; staffID?: string; readOnly: boole
 const selectedOperation = ref<OperationItemDTO>();
 let inboxGeneration = 0, operationsGeneration = 0;
 
+// 待办表排序（原型要求五列都能升降序）。数据是「状态 × 人员」多路合并后在本地排的，
+// 所以排序也在本地做，不回后台翻页。
+type InboxSortKey = "title" | "biz_object" | "assignee_name" | "occurred_at" | "state";
+const sortKey = ref<InboxSortKey>("occurred_at");
+const sortOrder = ref<"asc" | "desc">("desc");
+const mergedRows = ref<InboxItemDTO[]>([]);
+
+// 操作记录筛选条（原型：操作人 / 操作类型 / 对象类型 / 操作时间 / 搜索 / 重置）。
+const opOperatorId = ref<number>();
+const opAction = ref<string>();
+const opEntityType = ref<string>();
+const opDateRange = ref<[string, string] | null>(null);
+const opKeyword = ref("");
+const opOptions = ref<OperationOptionsDTO>({ actions: [], entity_types: [], operators: [] });
+
 // 勾选顺序与原型一致：待办、已办、待阅、已阅。
 const stateTabs: { value: InboxState; label: string }[] = [
   { value: "TODO", label: "待办" },
@@ -83,13 +100,8 @@ const PLAN_LABELS: Record<string, string> = {
   OFFLINE: "下架计划",
   PRICE_CHANGE: "内部改价计划",
 };
-const ENTITY_LABELS: Record<string, string> = {
-  standard_model: "标准模型",
-  resource: "资源",
-  supply_notice: "公告",
-  supply_plan: "资源计划",
-  formal_config: "正式配置",
-};
+const operationLabel = (action: string) => OPERATION_ACTION_LABELS[action] || action;
+const operationEntityLabel = (entityType: string) => OPERATION_ENTITY_LABELS[entityType] || entityType;
 const filteredPeople = computed(() => {
   const text = peopleKeyword.value.trim().toLocaleLowerCase();
   return text ? people.value.filter(person => person.name.toLocaleLowerCase().includes(text)) : people.value;
@@ -105,7 +117,44 @@ const displayTitle = (item: InboxItemDTO) => {
   return item.title;
 };
 const stateLabel = (state: InboxState) => stateTabs.find(item => item.value === state)?.label || state;
-const operationObject = (item: OperationItemDTO) => `${ENTITY_LABELS[item.entity_type] || item.entity_type} #${item.entity_id}`;
+// 对象列：优先用后端补的业务对象名（供应商 / 模型、供应商 · 申报单号），取不到再退回「类型 #id」。
+const operationObject = (item: OperationItemDTO) => {
+  if (item.object_name) return item.object_name;
+  const label = operationEntityLabel(item.entity_type);
+  return label ? `${label} #${item.entity_id}` : "系统记录";
+};
+const sortColumnValue = (row: InboxItemDTO) => {
+  switch (sortKey.value) {
+    case "title": return displayTitle(row);
+    case "biz_object": return row.biz_object || "";
+    case "assignee_name": return row.assignee_name || "";
+    case "state": return stateLabel(row.state);
+    case "occurred_at": default: return row.occurred_at;
+  }
+};
+function compareInboxRows(a: InboxItemDTO, b: InboxItemDTO) {
+  let result = sortKey.value === "occurred_at"
+    ? Date.parse(a.occurred_at) - Date.parse(b.occurred_at)
+    : String(sortColumnValue(a)).localeCompare(String(sortColumnValue(b)), "zh-Hans-CN");
+  // 同值时按业务 id 兜底，保证翻页/重排稳定。
+  if (!result) result = a.biz_id - b.biz_id;
+  return sortOrder.value === "asc" ? result : -result;
+}
+function applyInboxView() {
+  const sorted = [...mergedRows.value].sort(compareInboxRows);
+  list.value = sorted.slice((page.value - 1) * size.value, page.value * size.value);
+}
+function onInboxSortChange({ prop, order }: { prop?: string; order?: string | null }) {
+  if (!order) {
+    sortKey.value = "occurred_at";
+    sortOrder.value = "desc";
+  } else {
+    sortKey.value = (prop as InboxSortKey) || "occurred_at";
+    sortOrder.value = order === "ascending" ? "asc" : "desc";
+  }
+  applyInboxView();
+}
+const defaultInboxSort = computed(() => ({ prop: sortKey.value, order: sortOrder.value === "asc" ? "ascending" : "descending" }));
 const stateTagType = (state: InboxState) => state === "TODO" ? "warning" : state === "DONE" ? "success" : "info";
 const formatTime = (value?: string | null) => formatDateTime(value, "—", true);
 const errorMessage = (value: unknown) => value instanceof ApiError ? value.message : value instanceof Error ? value.message : "工作台加载失败，请稍后重试。";
@@ -164,12 +213,9 @@ async function loadInbox() {
       return { rows, total: combinationTotal };
     }));
     if (generation !== inboxGeneration) return;
-    const combined = results.flatMap(result => result.rows).sort((a, b) => {
-      const byTime = Date.parse(b.occurred_at) - Date.parse(a.occurred_at);
-      return byTime || a.biz_type.localeCompare(b.biz_type) || a.biz_id - b.biz_id;
-    });
-    list.value = combined.slice((page.value - 1) * size.value, page.value * size.value);
+    mergedRows.value = results.flatMap(result => result.rows);
     total.value = results.reduce((sum, result) => sum + result.total, 0);
+    applyInboxView();
   } catch (value) {
     if (generation !== inboxGeneration) return;
     list.value = [];
@@ -185,7 +231,17 @@ async function loadOperations() {
   opLoading.value = true;
   error.value = "";
   try {
-    const res = await workbenchApi.operations({ page: opPage.value, size: opSize.value });
+    const [dateFrom, dateTo] = opDateRange.value ?? [];
+    const res = await workbenchApi.operations({
+      operatorId: opOperatorId.value || undefined,
+      action: opAction.value || undefined,
+      entityType: opEntityType.value || undefined,
+      keyword: opKeyword.value.trim() || undefined,
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
+      page: opPage.value,
+      size: opSize.value,
+    });
     if (generation !== operationsGeneration) return;
     operations.value = res.list;
     opTotal.value = res.total;
@@ -197,6 +253,29 @@ async function loadOperations() {
   } finally {
     if (generation === operationsGeneration) opLoading.value = false;
   }
+}
+
+async function loadOperationOptions() {
+  try {
+    opOptions.value = await workbenchApi.operationOptions();
+  } catch {
+    // 筛选条是辅助能力，取不到就退化成只有搜索框，不影响列表。
+    opOptions.value = { actions: [], entity_types: [], operators: [] };
+  }
+}
+
+function searchOperations() {
+  opPage.value = 1;
+  void loadOperations();
+}
+
+function resetOperationFilters() {
+  opOperatorId.value = undefined;
+  opAction.value = undefined;
+  opEntityType.value = undefined;
+  opDateRange.value = null;
+  opKeyword.value = "";
+  searchOperations();
 }
 
 function resetAndLoad() {
@@ -324,12 +403,15 @@ async function jumpToHandling(item: InboxItemDTO) {
 }
 
 watch(activeTab, (tab) => {
-  if (tab === "operations" && operations.value.length === 0) void loadOperations();
+  if (tab !== "operations") return;
+  void loadOperationOptions();
+  if (operations.value.length === 0) void loadOperations();
 });
 
 onMounted(() => {
   void loadPeople();
   void loadInbox();
+  void loadOperationOptions();
 });
 onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
 </script>
@@ -368,21 +450,27 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
           <el-button @click="resetFilters">重置</el-button>
         </div>
 
-        <el-table v-loading="loading" :data="list" style="width: 100%">
-          <el-table-column label="事项" min-width="180">
+        <el-table
+          v-loading="loading"
+          :data="list"
+          :default-sort="defaultInboxSort"
+          style="width: 100%"
+          @sort-change="onInboxSortChange"
+        >
+          <el-table-column prop="title" label="事项" min-width="180" sortable="custom">
             <template #default="{ row }">{{ displayTitle(row) }}</template>
           </el-table-column>
-          <el-table-column prop="biz_object" label="业务对象" min-width="220" />
-          <el-table-column label="责任人" width="140">
+          <el-table-column prop="biz_object" label="业务对象" min-width="220" sortable="custom" />
+          <el-table-column prop="assignee_name" label="责任人" width="140" sortable="custom">
             <template #default="{ row }">
               <div>{{ row.assignee_name || "—" }}</div>
               <div class="wb-sub">{{ row.assignee_role }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="时间" width="200">
-            <template #default="{ row }">创建 {{ formatTime(row.occurred_at) }}</template>
+          <el-table-column prop="occurred_at" label="时间" width="200" sortable="custom">
+            <template #default="{ row }">{{ formatTime(row.occurred_at) }}</template>
           </el-table-column>
-          <el-table-column label="状态" width="90">
+          <el-table-column prop="state" label="状态" width="110" sortable="custom">
             <template #default="{ row }">
               <el-tag :type="stateTagType(row.state)" size="small">{{ stateLabel(row.state) }}</el-tag>
             </template>
@@ -409,8 +497,42 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
       </el-tab-pane>
 
       <el-tab-pane label="操作记录" name="operations">
+        <div class="wb-toolbar">
+          <el-select v-model="opOperatorId" class="wb-filter" clearable placeholder="操作人" @change="searchOperations">
+            <el-option v-for="person in opOptions.operators" :key="person.id" :label="person.name" :value="person.id" />
+          </el-select>
+          <el-select v-model="opAction" class="wb-filter" clearable placeholder="操作类型" @change="searchOperations">
+            <el-option v-for="action in opOptions.actions" :key="action" :label="operationLabel(action)" :value="action" />
+          </el-select>
+          <el-select v-model="opEntityType" class="wb-filter" clearable placeholder="对象类型" @change="searchOperations">
+            <el-option v-for="type in opOptions.entity_types" :key="type" :label="operationEntityLabel(type)" :value="type" />
+          </el-select>
+          <el-date-picker
+            v-model="opDateRange"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            class="wb-date-range"
+            @change="searchOperations"
+          />
+          <el-input
+            v-model="opKeyword"
+            class="wb-search"
+            placeholder="搜索操作 / 业务对象"
+            clearable
+            @keyup.enter="searchOperations"
+            @clear="searchOperations"
+          />
+          <el-button @click="resetOperationFilters">重置</el-button>
+        </div>
+
         <el-table v-loading="opLoading" :data="operations" style="width: 100%">
-          <el-table-column prop="action" label="操作" width="180" />
+          <el-table-column label="操作" width="200">
+            <template #default="{ row }">
+              <span :title="row.action">{{ operationLabel(row.action) }}</span>
+            </template>
+          </el-table-column>
           <el-table-column label="对象" min-width="240">
             <template #default="{ row }">{{ operationObject(row) }}</template>
           </el-table-column>
@@ -452,7 +574,10 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
   />
   <el-dialog :model-value="Boolean(selectedOperation)" title="操作记录详情" width="min(620px, 94vw)" @close="selectedOperation = undefined">
     <el-descriptions v-if="selectedOperation" :column="1" border>
-      <el-descriptions-item label="操作">{{ selectedOperation.action }}</el-descriptions-item>
+      <el-descriptions-item label="操作">
+        {{ operationLabel(selectedOperation.action) }}
+        <span class="wb-raw">{{ selectedOperation.action }}</span>
+      </el-descriptions-item>
       <el-descriptions-item label="对象">{{ operationObject(selectedOperation) }}</el-descriptions-item>
       <el-descriptions-item label="操作人">{{ selectedOperation.operator_name }}</el-descriptions-item>
       <el-descriptions-item label="时间">{{ formatTime(selectedOperation.created_at) }}</el-descriptions-item>
@@ -467,6 +592,9 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
 .wb-state-options { display: inline-flex; gap: 18px; flex-wrap: wrap; }
 .wb-state-options label { display: inline-flex; align-items: center; gap: 6px; color: var(--app-text-primary); font-size: 13px; cursor: pointer; }
 .wb-search { width: 240px; }
+.wb-filter { width: 150px; }
+.wb-date-range { width: 260px; }
+.wb-raw { margin-left: 8px; color: var(--app-text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .wb-people-filter { position: relative; width: 200px; max-width: 100%; }
 .wb-people-filter summary { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 11px; border: 1px solid var(--app-border); border-radius: 4px; background: var(--app-surface); cursor: pointer; font-size: 13px; list-style: none; }
 .wb-people-filter summary::-webkit-details-marker { display: none; }

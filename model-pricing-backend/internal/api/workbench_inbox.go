@@ -3,6 +3,8 @@ package api
 import (
 	"errors"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -68,7 +70,7 @@ func (h *WorkbenchInboxHandler) People(c *gin.Context) {
 }
 
 // Operations 操作记录。
-// GET /api/internal/workbench/operations?operator_id=&entity_type=&entity_id=&page=&size=
+// GET /api/internal/workbench/operations?operator_id=&action=&entity_type=&entity_id=&keyword=&date_from=&date_to=&page=&size=
 func (h *WorkbenchInboxHandler) Operations(c *gin.Context) {
 	if middleware.OperatorFrom(c) == nil {
 		response.Error(c, apperr.ErrUnauthorized)
@@ -77,10 +79,25 @@ func (h *WorkbenchInboxHandler) Operations(c *gin.Context) {
 	page, size := parsePageQuery(c)
 	operatorID, _ := strconv.ParseInt(c.Query("operator_id"), 10, 64)
 	entityID, _ := strconv.ParseInt(c.Query("entity_id"), 10, 64)
+	from, err := parseOperationDate(c.Query("date_from"), false)
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
+	// 原型的时间区间是左闭右开：选到 11-10 就包含 11-10 全天。
+	to, err := parseOperationDate(c.Query("date_to"), true)
+	if err != nil {
+		response.Error(c, apperr.ErrInvalidParams)
+		return
+	}
 	res, err := h.svc.Operations(c.Request.Context(), workbench.OperationQuery{
 		OperatorID: operatorID,
-		EntityType: c.Query("entity_type"),
+		Action:     strings.TrimSpace(c.Query("action")),
+		EntityType: strings.TrimSpace(c.Query("entity_type")),
 		EntityID:   entityID,
+		Keyword:    strings.TrimSpace(c.Query("keyword")),
+		DateFrom:   from,
+		DateTo:     to,
 		Page:       page,
 		Size:       size,
 	})
@@ -89,6 +106,41 @@ func (h *WorkbenchInboxHandler) Operations(c *gin.Context) {
 		return
 	}
 	response.Success(c, res)
+}
+
+// OperationOptions 操作记录筛选条的可选项（操作类型 / 对象类型 / 操作人）。
+// GET /api/internal/workbench/operations/options
+func (h *WorkbenchInboxHandler) OperationOptions(c *gin.Context) {
+	if middleware.OperatorFrom(c) == nil {
+		response.Error(c, apperr.ErrUnauthorized)
+		return
+	}
+	res, err := h.svc.OperationOptions(c.Request.Context())
+	if err != nil {
+		response.Error(c, apperr.ErrSystem)
+		return
+	}
+	response.Success(c, res)
+}
+
+// parseOperationDate 解析筛选条的日期。接受 YYYY-MM-DD 与 RFC3339；
+// endExclusive=true 时把纯日期右端 +1 天（左闭右开），带时刻的原样返回。
+func parseOperationDate(raw string, endExclusive bool) (*time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	if t, err := time.ParseInLocation("2006-01-02", raw, time.Local); err == nil {
+		if endExclusive {
+			t = t.AddDate(0, 0, 1)
+		}
+		return &t, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // MarkNoticeRead 标记本人公告已读。

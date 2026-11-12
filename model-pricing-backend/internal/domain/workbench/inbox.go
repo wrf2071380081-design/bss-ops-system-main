@@ -71,12 +71,18 @@ type PeopleResult struct {
 }
 
 // OperationQuery 操作记录查询。
+// 对应原型「操作记录」页的筛选条：操作人 / 操作类型 / 对象类型 / 操作时间区间 + 关键词。
 type OperationQuery struct {
 	OperatorID int64
+	Action     string
 	EntityType string
 	EntityID   int64
-	Page       int
-	Size       int
+	Keyword    string
+	// DateFrom 含、DateTo 不含（handler 把日期选择器的右端 +1 天再传进来）。
+	DateFrom *time.Time
+	DateTo   *time.Time
+	Page     int
+	Size     int
 }
 
 // OperationItem 操作记录单行。
@@ -85,6 +91,7 @@ type OperationItem struct {
 	Action       string    `json:"action"`
 	EntityType   string    `json:"entity_type"`
 	EntityID     int64     `json:"entity_id"`
+	ObjectName   string    `json:"object_name,omitempty"`
 	OperatorName string    `json:"operator_name"`
 	Reason       string    `json:"reason,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -98,6 +105,14 @@ type OperationResult struct {
 	Size  int             `json:"size"`
 }
 
+// OperationOptions 操作记录筛选条的可选项（原型页头的四个下拉）。
+// 只返回库里真实出现过的值，避免下拉里出现选了就没数据的项。
+type OperationOptions struct {
+	Actions     []string `json:"actions"`
+	EntityTypes []string `json:"entity_types"`
+	Operators   []Person `json:"operators"`
+}
+
 // InboxStore 收件箱仓储。
 type InboxStore interface {
 	ListInbox(ctx context.Context, q InboxQuery) ([]InboxItem, int64, error)
@@ -106,6 +121,11 @@ type InboxStore interface {
 	FlowOwners(ctx context.Context, flowIDs []int64) (map[int64]FlowOwner, error)
 	ListPeople(ctx context.Context) ([]Person, error)
 	ListOperations(ctx context.Context, q OperationQuery) ([]OperationItem, int64, error)
+	// ObjectNames 批量取「实体 id → 展示名」，按 entity_type 分别解析（resource/submission/…）。
+	// 也是批量接口：一页操作记录里同类型可能有多行，逐行查会 N+1。
+	ObjectNames(ctx context.Context, entityType string, ids []int64) (map[int64]string, error)
+	// OperationFacets 返回操作记录筛选条的可选值（库里真实出现过的 action / entity_type）。
+	OperationFacets(ctx context.Context) (actions []string, entityTypes []string, err error)
 	// MarkNoticeRead 标记公告已读；返回 false 表示公告不存在。
 	MarkNoticeRead(ctx context.Context, noticeID, staffID int64) (bool, error)
 }
@@ -267,7 +287,49 @@ func (s *InboxService) Operations(ctx context.Context, q OperationQuery) (*Opera
 	if err != nil {
 		return nil, fmt.Errorf("list operations: %w", err)
 	}
+	// 业务对象展示名（原型「对象」列：云桥算力 / DeepSeek-V3）。
+	// 按类型分组批量取，取不到就留空——前端会退回「类型 #id」，不能因为补名字失败把整页打空。
+	byType := make(map[string][]int64, 2)
+	for _, item := range list {
+		byType[item.EntityType] = append(byType[item.EntityType], item.EntityID)
+	}
+	for entityType, ids := range byType {
+		names, nameErr := s.store.ObjectNames(ctx, entityType, ids)
+		if nameErr != nil || len(names) == 0 {
+			continue
+		}
+		for i := range list {
+			if list[i].EntityType != entityType {
+				continue
+			}
+			if name, ok := names[list[i].EntityID]; ok {
+				list[i].ObjectName = name
+			}
+		}
+	}
 	return &OperationResult{List: list, Total: total, Page: q.Page, Size: q.Size}, nil
+}
+
+// OperationOptions 操作记录筛选条的可选项。
+func (s *InboxService) OperationOptions(ctx context.Context) (*OperationOptions, error) {
+	actions, entityTypes, err := s.store.OperationFacets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("operation facets: %w", err)
+	}
+	operators, err := s.store.ListPeople(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list people: %w", err)
+	}
+	if actions == nil {
+		actions = []string{}
+	}
+	if entityTypes == nil {
+		entityTypes = []string{}
+	}
+	if operators == nil {
+		operators = []Person{}
+	}
+	return &OperationOptions{Actions: actions, EntityTypes: entityTypes, Operators: operators}, nil
 }
 
 // MarkNoticeRead 标记本人公告已读。

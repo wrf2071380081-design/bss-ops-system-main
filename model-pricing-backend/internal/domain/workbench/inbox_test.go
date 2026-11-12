@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type fakeInboxStore struct {
@@ -17,6 +18,12 @@ type fakeInboxStore struct {
 	owners         map[int64]FlowOwner
 	flowOwnerCalls int
 	flowOwnerIDs   []int64
+	// 操作记录筛选/对象名的测试支撑。
+	lastOperations OperationQuery
+	names          map[int64]string
+	nameCalls      []string
+	actions        []string
+	entityTypes    []string
 }
 
 func TestNativeSubmissionTasksStayInsideWorkbench(t *testing.T) {
@@ -45,8 +52,25 @@ func (f *fakeInboxStore) FlowOwners(_ context.Context, flowIDs []int64) (map[int
 	return f.owners, nil
 }
 func (f *fakeInboxStore) ListPeople(context.Context) ([]Person, error) { return f.people, nil }
-func (f *fakeInboxStore) ListOperations(context.Context, OperationQuery) ([]OperationItem, int64, error) {
+func (f *fakeInboxStore) ListOperations(_ context.Context, q OperationQuery) ([]OperationItem, int64, error) {
+	f.lastOperations = q
 	return f.ops, f.opTotal, nil
+}
+func (f *fakeInboxStore) ObjectNames(_ context.Context, entityType string, ids []int64) (map[int64]string, error) {
+	f.nameCalls = append(f.nameCalls, entityType)
+	if f.names == nil {
+		return map[int64]string{}, nil
+	}
+	out := map[int64]string{}
+	for _, id := range ids {
+		if name, ok := f.names[id]; ok {
+			out[id] = name
+		}
+	}
+	return out, nil
+}
+func (f *fakeInboxStore) OperationFacets(context.Context) ([]string, []string, error) {
+	return f.actions, f.entityTypes, nil
 }
 func (f *fakeInboxStore) MarkNoticeRead(_ context.Context, noticeID, _ int64) (bool, error) {
 	return noticeID == 1, nil
@@ -146,5 +170,66 @@ func TestMarkNoticeReadNotFound(t *testing.T) {
 	svc := NewInboxService(&fakeInboxStore{})
 	if err := svc.MarkNoticeRead(context.Background(), 999, 1); !errors.Is(err, ErrNoticeNotFound) {
 		t.Fatalf("err = %v, want ErrNoticeNotFound", err)
+	}
+}
+
+// TestOperationsResolveObjectNames 操作记录：筛选条件透传 + 对象展示名按类型补齐。
+// 原型「对象」列是「供应商 / 模型」，取不到名字时要留空（前端退回「类型 #id」），不能整页失败。
+func TestOperationsResolveObjectNames(t *testing.T) {
+	store := &fakeInboxStore{
+		ops: []OperationItem{
+			{ID: 1, Action: "RESOURCE_REVISION", EntityType: "resource", EntityID: 16},
+			{ID: 2, Action: "REJECT", EntityType: "submission", EntityID: 18},
+			{ID: 3, Action: "UPDATE", EntityType: "unknown_type", EntityID: 9},
+		},
+		opTotal: 3,
+		names:   map[int64]string{16: "云桥算力 / DeepSeek-V3", 18: "云桥算力 · S00000018"},
+	}
+	svc := NewInboxService(store)
+
+	from := time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local)
+	to := time.Date(2026, 11, 12, 0, 0, 0, 0, time.Local)
+	res, err := svc.Operations(context.Background(), OperationQuery{
+		Action:     "RESOURCE_REVISION",
+		EntityType: "resource",
+		Keyword:    "云桥",
+		DateFrom:   &from,
+		DateTo:     &to,
+		Page:       1,
+		Size:       20,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := store.lastOperations
+	if got.Action != "RESOURCE_REVISION" || got.EntityType != "resource" || got.Keyword != "云桥" {
+		t.Fatalf("filters not forwarded: %+v", got)
+	}
+	if got.DateFrom == nil || got.DateTo == nil || !got.DateFrom.Equal(from) || !got.DateTo.Equal(to) {
+		t.Fatalf("date range not forwarded: %+v", got)
+	}
+	if res.List[0].ObjectName != "云桥算力 / DeepSeek-V3" {
+		t.Fatalf("resource object name = %q", res.List[0].ObjectName)
+	}
+	if res.List[1].ObjectName != "云桥算力 · S00000018" {
+		t.Fatalf("submission object name = %q", res.List[1].ObjectName)
+	}
+	if res.List[2].ObjectName != "" {
+		t.Fatalf("unknown type should keep empty name, got %q", res.List[2].ObjectName)
+	}
+}
+
+// TestOperationOptionsFallback 筛选条没有数据时也要返回空数组，前端下拉才不会渲染成 undefined。
+func TestOperationOptionsFallback(t *testing.T) {
+	svc := NewInboxService(&fakeInboxStore{})
+	res, err := svc.OperationOptions(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Actions == nil || res.EntityTypes == nil || res.Operators == nil {
+		t.Fatalf("options must be non-nil: %+v", res)
+	}
+	if len(res.Actions) != 0 || len(res.EntityTypes) != 0 || len(res.Operators) != 0 {
+		t.Fatalf("options should be empty: %+v", res)
 	}
 }
