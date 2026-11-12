@@ -71,16 +71,19 @@ const opEntityCategories = ref<string[]>([]);
 const opDateRange = ref<[string, string] | null>(null);
 const opKeyword = ref("");
 const opOptions = ref<OperationOptionsDTO>({ actions: [], entity_types: [], operators: [] });
-// 对象类型按原型归并成 8 个类别；一个类别可能对应多个 entity_type（如「供应商」含正式配置）。
+// 对象类型按原型固定成 8 类（标准模型库/供应商/客户/模型/报价/申报/请求/系统记录）。
+// 库里没有数据的类别置灰而不是隐藏——原型列的就是这八项，隐藏会看不出差别。
 const opEntityCategoryOptions = computed(() => {
   const byCategory = new Map<string, string[]>();
   for (const raw of opOptions.value.entity_types) {
     const category = OPERATION_ENTITY_CATEGORY[raw] || "系统记录";
     byCategory.set(category, [...(byCategory.get(category) ?? []), raw]);
   }
-  return OPERATION_ENTITY_CATEGORY_ORDER
-    .filter(category => byCategory.has(category))
-    .map(category => ({ label: category, types: byCategory.get(category) as string[] }));
+  return OPERATION_ENTITY_CATEGORY_ORDER.map(category => ({
+    label: category,
+    types: byCategory.get(category) ?? [],
+    disabled: !byCategory.has(category),
+  }));
 });
 const opEntityTypes = computed(() =>
   opEntityCategories.value.flatMap(category => opEntityCategoryOptions.value.find(option => option.label === category)?.types ?? []),
@@ -282,6 +285,12 @@ async function loadOperationOptions() {
 function searchOperations() {
   opPage.value = 1;
   void loadOperations();
+}
+
+// 原型在日期区间右侧有独立的「清空」，只清时间、不动其它筛选。
+function clearOperationDates() {
+  opDateRange.value = null;
+  searchOperations();
 }
 
 function resetOperationFilters() {
@@ -550,17 +559,25 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
             placeholder="对象类型"
             @change="searchOperations"
           >
-            <el-option v-for="option in opEntityCategoryOptions" :key="option.label" :label="option.label" :value="option.label" />
+            <el-option
+              v-for="option in opEntityCategoryOptions"
+              :key="option.label"
+              :label="option.label"
+              :value="option.label"
+              :disabled="option.disabled"
+            />
           </el-select>
           <el-date-picker
             v-model="opDateRange"
             type="daterange"
             value-format="YYYY-MM-DD"
-            start-placeholder="开始日期"
-            end-placeholder="结束日期"
+            range-separator="—"
+            start-placeholder="yyyy/mm/dd"
+            end-placeholder="yyyy/mm/dd"
             class="wb-date-range"
             @change="searchOperations"
           />
+          <el-button text :disabled="!opDateRange" @click="clearOperationDates">清空</el-button>
           <el-input
             v-model="opKeyword"
             class="wb-search"
