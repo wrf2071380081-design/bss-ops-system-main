@@ -102,11 +102,19 @@ func (r *SupplierReader) Get(ctx context.Context, id string) (*Supplier, error) 
 	if err != nil {
 		return nil, err
 	}
-	if profile == nil || profile.ID != id || !validID(profile.BuyerID) || profile.Revision == 0 || profile.CreatedAt.IsZero() || profile.UpdatedAt.Before(profile.CreatedAt) {
+	if profile == nil || profile.ID != id || profile.CreatedAt.IsZero() || profile.UpdatedAt.Before(profile.CreatedAt) {
 		return nil, ErrReadContract
 	}
-	if _, err := canonicalSupplierData(profile.Data); err != nil {
-		return nil, ErrReadContract
+	// 审计链有缺口的档案仍然可以读，只是跳过依赖流水的那部分校验
+	// （采购人归属、修订号、字段规范化）。展示层用 audit_status 告诉
+	// 调用方「可信依据缺失」，由它决定禁用哪些写操作。
+	if profile.AuditStatus != SupplierAuditIncomplete {
+		if !validID(profile.BuyerID) || profile.Revision == 0 {
+			return nil, ErrReadContract
+		}
+		if _, err := canonicalSupplierData(profile.Data); err != nil {
+			return nil, ErrReadContract
+		}
 	}
 	return profile.Clone(), nil
 }

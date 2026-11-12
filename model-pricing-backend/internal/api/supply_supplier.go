@@ -64,6 +64,10 @@ type supplySupplierDTO struct {
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 	CanEdit            bool      `json:"can_edit"`
+	// AuditStatus 为 INCOMPLETE 时表示档案本身可读，但缺少可信的建档/变更流水
+	// （典型来源：供应商自助注册只建了 supplier 与 account）。前端据此提示
+	// 「审计信息不完整」并禁用编辑。
+	AuditStatus string `json:"audit_status"`
 }
 
 type supplySupplierPageDTO struct {
@@ -100,7 +104,10 @@ func supplyCanEditSupplier(c *gin.Context) bool {
 
 func supplierDTO(profile *supply.Supplier, actor string, canMaintain bool, aliasesSupported bool) supplySupplierDTO {
 	aliases := append([]string{}, profile.Aliases...)
-	return supplySupplierDTO{ID: profile.ID, BuyerID: profile.BuyerID, Name: profile.Data.Name, Aliases: aliases, AliasesSupported: aliasesSupported, Region: profile.Data.Region, RegistrationNo: profile.Data.RegistrationNo, Contact: profile.Data.Contact, Phone: profile.Data.Phone, TaxRate: profile.Data.TaxRate, SettlementCurrency: profile.Data.SettlementCurrency, Remark: profile.Data.Remark, Established: profile.Established, Status: profile.Status, Revision: profile.Revision, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, CanEdit: actor == profile.BuyerID || canMaintain}
+	// 审计不完整时 revision 不可信，乐观锁写入必然失败，因此直接关掉编辑入口，
+	// 而不是让用户点开表单再撞一次 409。
+	canEdit := profile.AuditStatus != supply.SupplierAuditIncomplete && (actor == profile.BuyerID || canMaintain)
+	return supplySupplierDTO{ID: profile.ID, BuyerID: profile.BuyerID, Name: profile.Data.Name, Aliases: aliases, AliasesSupported: aliasesSupported, Region: profile.Data.Region, RegistrationNo: profile.Data.RegistrationNo, Contact: profile.Data.Contact, Phone: profile.Data.Phone, TaxRate: profile.Data.TaxRate, SettlementCurrency: profile.Data.SettlementCurrency, Remark: profile.Data.Remark, Established: profile.Established, Status: profile.Status, Revision: profile.Revision, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, CanEdit: canEdit, AuditStatus: profile.AuditStatus}
 }
 
 func (h *supplySupplierHandler) list(c *gin.Context) {

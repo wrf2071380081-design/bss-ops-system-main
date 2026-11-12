@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"model_bss/internal/domain/auth"
@@ -386,6 +388,15 @@ func (r *AuthRepo) FindAccountByOwner(ctx context.Context, portal, ownerType str
 }
 
 // CreateSupplierWithAccount 单事务创建供应商 + 登录账号（供应商注册）。
+//
+// 除 supplier 与 account 两张表外，这里必须同时落下一条 supplier 的建档流水
+// （operation_log，action=CREATE）。档案读取（supplierpg.loadSupplier）会核对
+// 最新一条流水与当前行是否自洽，缺流水会被标为 audit_status=INCOMPLETE，
+// 档案页因此只能只读展示。历史上正是漏了这一步，自助注册的供应商档案才长期打不开。
+//
+// 自助注册没有内部员工身份，所以 operator_id 留空、只落 operator_name_snapshot
+// （与 supplypg.account_store 处理供应商侧操作的口径一致）；归属采购人留空，
+// 由后续「分配采购人」补上。
 func (r *AuthRepo) CreateSupplierWithAccount(ctx context.Context, in auth.SupplierRegisterInput) (*auth.Account, error) {
 	var acct *auth.Account
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -396,12 +407,16 @@ func (r *AuthRepo) CreateSupplierWithAccount(ctx context.Context, in auth.Suppli
 		if n > 0 {
 			return auth.ErrSupplierExists
 		}
+		// 时间戳在 Go 侧取一次并复用到行与流水：读取侧会逐微秒比对两者，
+		// 各写各的 now() 会立刻被判为不一致。
+		now := time.Now().UTC().Truncate(time.Microsecond)
 		var supplierID int64
+		var settlementCurrency string
 		if err := tx.Raw(
-			`INSERT INTO supplier (name, region, registration_no, contact, phone, status)
-			 VALUES (?, ?, ?, ?, ?, 'ACTIVE') RETURNING id`,
-			in.CompanyName, in.Region, in.CreditCode, in.Contact, in.Phone,
-		).Scan(&supplierID).Error; err != nil {
+			`INSERT INTO supplier (name, region, registration_no, contact, phone, status, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?) RETURNING id, COALESCE(settlement_currency, 'CNY')`,
+			in.CompanyName, in.Region, in.CreditCode, in.Contact, in.Phone, now, now,
+		).Row().Scan(&supplierID, &settlementCurrency); err != nil {
 			if isDuplicateKey(err) {
 				return auth.ErrSupplierExists
 			}
@@ -418,6 +433,9 @@ func (r *AuthRepo) CreateSupplierWithAccount(ctx context.Context, in auth.Suppli
 			}
 			return err
 		}
+		if err := appendSupplierCreateLog(tx, supplierID, in, settlementCurrency, now); err != nil {
+			return err
+		}
 		acct = &auth.Account{ID: accountID, PortalType: "SUPPLIER", OwnerType: "SUPPLIER", OwnerID: supplierID, LoginID: in.Phone, Status: "ACTIVE"}
 		return nil
 	})
@@ -425,6 +443,45 @@ func (r *AuthRepo) CreateSupplierWithAccount(ctx context.Context, in auth.Suppli
 		return nil, err
 	}
 	return acct, nil
+}
+
+// appendSupplierCreateLog 写一条与 supplier 行逐字段对齐的建档快照。
+// 快照形状必须与 supply.Supplier 的 JSON 一致（读取侧用 DisallowUnknownFields
+// 解码），空别名要写成 [] 而不是省略，否则与读出的空切片不等。
+func appendSupplierCreateLog(tx *gorm.DB, supplierID int64, in auth.SupplierRegisterInput, settlementCurrency string, now time.Time) error {
+	operator := strings.TrimSpace(in.Contact)
+	if operator == "" {
+		operator = in.Phone
+	}
+	after := map[string]any{
+		"id": strconv.FormatInt(supplierID, 10),
+		"data": map[string]any{
+			"name":                in.CompanyName,
+			"region":              in.Region,
+			"registration_no":     in.CreditCode,
+			"contact":             in.Contact,
+			"phone":               in.Phone,
+			"tax_rate":            nil,
+			"settlement_currency": settlementCurrency,
+			"remark":              "",
+		},
+		"aliases":     []string{},
+		"status":      "ACTIVE",
+		"buyer_id":    "",
+		"revision":    "1",
+		"created_at":  now,
+		"updated_at":  now,
+		"established": false,
+	}
+	raw, err := json.Marshal(after)
+	if err != nil {
+		return err
+	}
+	return tx.Exec(
+		`INSERT INTO operation_log (entity_type, entity_id, action, operator_name_snapshot, "after", reason, request_id, created_at)
+		 VALUES ('supplier', ?, 'CREATE', ?, ?::jsonb, ?, ?, ?)`,
+		supplierID, operator, string(raw), "供应商自助注册", uuid.NewString(), now,
+	).Error
 }
 
 func isDuplicateKey(err error) bool {

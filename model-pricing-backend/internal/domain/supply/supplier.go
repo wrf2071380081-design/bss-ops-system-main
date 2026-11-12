@@ -11,6 +11,17 @@ import (
 
 var ErrSupplierRegionLocked = errors.New("supplier region is locked by historical business use")
 
+// 审计状态：读取时由存储层计算，不落库、不参与快照比对。
+//
+// 历史原因：供应商自助注册（auth.CreateSupplierWithAccount）只写 supplier 与
+// account 两张表，不写 operation_log / assignment_log，于是「有档案、无流水」。
+// 旧实现让这种缺口直接导致整条档案乃至整个列表返回 500。现在的口径是：
+// 档案照样可读，但标记为 INCOMPLETE，由调用方禁用依赖可信依据的写操作。
+const (
+	SupplierAuditVerified   = ""
+	SupplierAuditIncomplete = "INCOMPLETE"
+)
+
 // SupplierData contains only ordinary profile fields. Assignment, onboarding,
 // website credentials, credit and contract records have separate write paths.
 type SupplierData struct {
@@ -34,6 +45,9 @@ type Supplier struct {
 	Revision    uint64       `json:"revision,string"`
 	CreatedAt   time.Time    `json:"created_at"`
 	UpdatedAt   time.Time    `json:"updated_at"`
+	// AuditStatus 标记这条档案的审计链是否完整；空值表示完整。
+	// 写快照前必须置空，避免把「读取结论」写进历史。
+	AuditStatus string `json:"audit_status,omitempty"`
 }
 
 func (s *Supplier) Clone() *Supplier {
