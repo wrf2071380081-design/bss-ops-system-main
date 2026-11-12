@@ -113,10 +113,11 @@ function supplierSortChanged({ prop, order }: { prop?: string; order?: string | 
   searchSuppliers();
 }
 
-function openSupplier(row: SupplierWorkspaceRow) {
+function openSupplier(row: SupplierWorkspaceRow, tab: "models" | "profile" = "models") {
   const id = String(row.id);
   if (!/^[1-9]\d*$/.test(id)) { ElMessage.error("供应商标识无效，无法打开详情。"); return; }
   void router.push({ path: `/internal/suppliers/${id}/models`, query: {
+    ...(tab === "profile" ? { tab: "profile" } : {}),
     return_to: "suppliers", supplier_name: row.name,
     supplier_keyword: filters.keyword, supplier_region: filters.region,
     supplier_contract: filters.contract, supplier_stage: filters.stage, supplier_handling: filters.handling,
@@ -193,8 +194,10 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
           <el-table-column prop="cooperation_stage" label="合作/潜在" width="110" sortable="custom">
             <template #default="{ row }"><el-tag type="info" :effect="row.cooperation_stage === '已有' ? 'light' : 'plain'" size="small">{{ stageText(row.cooperation_stage) }}</el-tag></template>
           </el-table-column>
-          <el-table-column prop="handling_status" label="办理状态" width="130" sortable="custom">
-            <template #default="{ row }">{{ row.handling_status }}</template>
+          <el-table-column prop="handling_status" label="办理状态" width="150" sortable="custom">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="openSupplier(row, 'profile')">{{ row.handling_status }}</el-button>
+            </template>
           </el-table-column>
           <el-table-column label="详情" width="80"><template #default="{ row }"><el-button size="small" @click="openSupplier(row)">详情</el-button></template></el-table-column>
           <template #empty><el-empty description="暂无供应商" :image-size="64" /></template>
