@@ -13,7 +13,7 @@ const rangeText = (key: typeof rangeFields[number]) => filters.value[`${key}_min
 </script>
 <template>
   <form class="source-filter-bar" @submit.prevent="emit('apply')">
-    <label>供应商名称<el-select v-model="filters.supplier_ids" multiple filterable :remote="!!options" :remote-method="(value: string) => emit('search', value)" @visible-change="(visible: boolean) => visible && emit('search', '')" clearable collapse-tags collapse-tags-tooltip aria-label="供应商名称" placeholder="全部" @change="emit('apply')"><el-option v-for="supplier in suppliers" :key="supplier.id" :value="supplier.id" :label="`${supplier.name} · ${resourceRegionLabels[supplier.region]}`" /></el-select></label>
+    <label>供应商公司名称<el-select v-model="filters.supplier_ids" multiple filterable :remote="!!options" :remote-method="(value: string) => emit('search', value)" @visible-change="(visible: boolean) => visible && emit('search', '')" clearable collapse-tags collapse-tags-tooltip aria-label="供应商公司名称" placeholder="全部" @change="emit('apply')"><el-option v-for="supplier in suppliers" :key="supplier.id" :value="supplier.id" :label="`${supplier.name} · ${resourceRegionLabels[supplier.region]}`" /></el-select></label>
     <template v-if="!metrics">
       <label>模型公司<el-select v-model="filters.companies" multiple filterable :remote="!!options" :remote-method="(value: string) => emit('search', value)" @visible-change="(visible: boolean) => visible && emit('search', '')" clearable collapse-tags collapse-tags-tooltip aria-label="模型公司" placeholder="全部" @change="emit('apply')"><el-option v-for="company in companies" :key="company" :value="company" :label="company" /></el-select></label>
       <label>模型类型<el-select v-model="filters.model_types" multiple filterable :remote="!!options" :remote-method="(value: string) => emit('search', value)" @visible-change="(visible: boolean) => visible && emit('search', '')" clearable collapse-tags collapse-tags-tooltip aria-label="模型类型" placeholder="全部" @change="emit('apply')"><el-option v-for="(name, key) in modelTypeLabels" :key="key" :value="key" :label="name" /></el-select></label>
@@ -28,7 +28,7 @@ const rangeText = (key: typeof rangeFields[number]) => filters.value[`${key}_min
     <label v-if="metrics || filters.states.length">状态<el-select v-model="filters.states" multiple clearable collapse-tags aria-label="资源状态" placeholder="全部" @change="emit('apply')"><el-option v-for="(name, key) in resourceStateLabels" :key="key" :label="name" :value="key" /></el-select></label>
     <!-- 详情页与列表页都保留部署节点筛选；详情页按原型放在状态之后。 -->
     <label v-if="metrics">部署节点<el-select v-model="filters.regions" multiple clearable collapse-tags aria-label="部署节点" placeholder="全部" @change="emit('apply')"><el-option v-for="(name, key) in resourceRegionLabels" :key="key" :value="key" :label="name" /></el-select></label>
-    <el-input v-model="filters.keyword" class="filter-search" :aria-label="metrics ? '搜索供应来源' : '搜索模型'" :placeholder="metrics ? '供应商名称 / 接口模型 ID' : '搜索模型名称 / 官方 ID / 供应商'" clearable @input="emit('apply')" />
+    <el-input v-model="filters.keyword" class="filter-search" :aria-label="metrics ? '搜索供应来源' : '搜索模型'" :placeholder="metrics ? '供应商名称 / 接口模型 ID' : '搜索模型名称 / 官方 ID'" clearable @input="emit('apply')" />
     <!-- 原型筛选即改即生效，不设「查询」按钮；表单仍可回车提交。 -->
     <el-button @click="emit('reset')">重置</el-button>
   </form>
