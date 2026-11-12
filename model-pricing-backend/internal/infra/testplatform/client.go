@@ -121,13 +121,23 @@ type envelope struct {
 	Errors  []FieldError    `json:"errors"`
 }
 
+// pingPath 是可达性探测用的列表请求。
+//
+// **必须带 view=lite**：平台的任务列表默认返回与详情同构的全量投影
+// （summary / params / callback_result 三个大字段都在里面），一页 20 条实测
+// 3.96MB；探测只要一个信封，却按最重形态去拉，纯属自找超时。
+// 2026-11-12 同一接口实测：page=1 → 3.96MB / 1.74s，加 view=lite → 37KB / 0.37s。
+// 当天 09:41 供应商 6 的连通性测试被判「连不上测试平台」，就是因为重投影把
+// 探测拖过了 probeTimeout，而紧接着的压测探测又刚巧擦线通过。
+const pingPath = "/test-jobs?page=1&view=lite"
+
 // Ping 用一次最小代价的列表请求确认平台可达（含鉴权与网关拦截）。
 //
 // 只关心「能不能拿到符合契约的信封」，不解析业务字段：没连内网时这里会快速
 // 失败，调用方据此决定「不建单」，而不是先建一条本地任务再等超时。
 func (c *Client) Ping(ctx context.Context) error {
 	var out json.RawMessage
-	return c.do(ctx, http.MethodGet, "/test-jobs?page=1", nil, "", &out)
+	return c.do(ctx, http.MethodGet, pingPath, nil, "", &out)
 }
 
 // do 发送请求并解开信封，成功时把 data 反序列化到 out。
