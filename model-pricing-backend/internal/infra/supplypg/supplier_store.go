@@ -66,6 +66,22 @@ func supplierTaxRateFromDB(percent string) (*string, error) {
 
 func supplierDataEqual(left, right supply.SupplierData) bool { return reflect.DeepEqual(left, right) }
 
+// supplierAliasesEqual 比较曾用名列表，把 nil 与空切片视为等价。
+// 两侧都可能用不同方式表示「没有曾用名」：快照里是 "aliases": []（解出空切片），
+// 而 supplier_alias 结构检查未通过时读出的是 nil。语义相同就不该因此判为
+// 审计不完整——否则一条空别名会永久卡住档案页。
+func supplierAliasesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func validSupplierAuditTimestamp(action string, createdAt, updatedAt, loggedAt time.Time) bool {
 	createdAt = createdAt.UTC().Truncate(time.Microsecond)
 	updatedAt = updatedAt.UTC().Truncate(time.Microsecond)
@@ -524,15 +540,16 @@ func (s *SupplierStore) loadSupplier(ctx context.Context, tx *sql.Tx, id string,
 	if err != nil {
 		return nil, err
 	}
-	if !currency.Valid {
-		return nil, supply.ErrReadContract
-	}
+	// 以下校验只用来判断「审计链是否完整」，不再中断读取：
+	// 一条历史数据不完美，不该让档案页乃至整个列表直接 500。
+	auditIncomplete := false
 	profile.Data.RegistrationNo, profile.Data.Contact, profile.Data.Phone = registration.String, contact.String, phone.String
 	profile.Data.Remark = remark.String
 	if taxRate.Valid {
-		profile.Data.TaxRate, err = supplierTaxRateFromDB(taxRate.String)
-		if err != nil {
-			return nil, err
+		if parsed, err := supplierTaxRateFromDB(taxRate.String); err != nil {
+			auditIncomplete = true
+		} else {
+			profile.Data.TaxRate = parsed
 		}
 	}
 	profile.Data.SettlementCurrency = currency.String
@@ -542,57 +559,101 @@ func (s *SupplierStore) loadSupplier(ctx context.Context, tx *sql.Tx, id string,
 	}
 	profile.CreatedAt, profile.UpdatedAt = createdAt.UTC().Truncate(time.Microsecond), updatedAt.UTC().Truncate(time.Microsecond)
 	if (profile.Status != "ACTIVE" && profile.Status != "FROZEN") || (profile.Data.Region != "CN" && profile.Data.Region != "OVERSEAS") {
-		return nil, supply.ErrReadContract
+		auditIncomplete = true
 	}
-	canonical, err := supply.NewSupplier(id, "1", profile.Data, profile.CreatedAt)
-	if err != nil || !reflect.DeepEqual(canonical.Data, profile.Data) {
-		return nil, supply.ErrReadContract
+	canonical, cErr := supply.NewSupplier(id, "1", profile.Data, profile.CreatedAt)
+	if cErr != nil || !reflect.DeepEqual(canonical.Data, profile.Data) {
+		auditIncomplete = true
 	}
-	profile.BuyerID, err = s.currentSupplierBuyer(ctx, tx, id)
-	if err != nil {
-		return nil, err
+	if buyer, err := s.currentSupplierBuyer(ctx, tx, id); err != nil {
+		if !errors.Is(err, supply.ErrReadContract) {
+			return nil, err
+		}
+		auditIncomplete = true
+	} else {
+		profile.BuyerID = buyer
+	}
+	if err := s.verifySupplierAuditSnapshot(ctx, tx, id, &profile); err != nil {
+		if !errors.Is(err, supply.ErrReadContract) {
+			return nil, err
+		}
+		auditIncomplete = true
+	}
+	if auditIncomplete {
+		profile.AuditStatus = supply.SupplierAuditIncomplete
+		// 没有可信的流水就没法给出可靠的修订号；置 0 让依赖 revision 的
+		// 乐观锁写入自然失效，由调用方按 audit_status 禁用编辑入口。
+		profile.Revision = 0
+	}
+	return profile.Clone(), nil
+}
+
+// verifySupplierAuditSnapshot 校验「最新一条建档/变更流水」与当前行是否自洽。
+// 失败统一返回 supply.ErrReadContract，由调用方降级为 audit_status=INCOMPLETE，
+// 而不是把整条档案（乃至整个列表）判为不可用。
+func (s *SupplierStore) verifySupplierAuditSnapshot(ctx context.Context, tx *sql.Tx, id string, profile *supply.Supplier) error {
+	if s == nil || tx == nil || profile == nil {
+		return supply.ErrDependencyUnavailable
 	}
 	var raw []byte
-	var action, actor, reason, requestID sql.NullString
+	var action, actor, operator, reason, requestID sql.NullString
 	var loggedAt time.Time
-	err = tx.QueryRowContext(ctx, `SELECT "after",action,operator_id::text,reason,request_id,created_at FROM `+s.table("operation_log")+` WHERE entity_type='supplier' AND entity_id=$1 AND action IN ('CREATE','UPDATE','UPDATE_NOOP') ORDER BY id DESC LIMIT 1`, id).Scan(&raw, &action, &actor, &reason, &requestID, &loggedAt)
+	err := tx.QueryRowContext(ctx, `SELECT "after",action,operator_id::text,operator_name_snapshot,reason,request_id,created_at FROM `+s.table("operation_log")+` WHERE entity_type='supplier' AND entity_id=$1 AND action IN ('CREATE','UPDATE','UPDATE_NOOP') ORDER BY id DESC LIMIT 1`, id).Scan(&raw, &action, &actor, &operator, &reason, &requestID, &loggedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, supply.ErrReadContract
+			return supply.ErrReadContract
 		}
-		return nil, err
+		return err
 	}
 	var snapshot supply.Supplier
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&snapshot); err != nil {
-		return nil, supply.ErrReadContract
+		return supply.ErrReadContract
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return nil, supply.ErrReadContract
+		return supply.ErrReadContract
 	}
-	if snapshot.ID != id || snapshot.Revision == 0 || snapshot.Revision > math.MaxInt64 || snapshot.Established != profile.Established || snapshot.Status != profile.Status || !supplierDataEqual(snapshot.Data, profile.Data) || !reflect.DeepEqual(snapshot.Aliases, profile.Aliases) || !snapshot.CreatedAt.UTC().Truncate(time.Microsecond).Equal(profile.CreatedAt) || !snapshot.UpdatedAt.UTC().Truncate(time.Microsecond).Equal(profile.UpdatedAt) || !actor.Valid || !modelIdentity(actor.String) || !reason.Valid || strings.TrimSpace(reason.String) == "" || !requestID.Valid || !modelIdentity(profile.BuyerID) || !validSupplierAuditTimestamp(action.String, profile.CreatedAt, profile.UpdatedAt, loggedAt) {
-		return nil, supply.ErrReadContract
+	if snapshot.ID != id || snapshot.Revision == 0 || snapshot.Revision > math.MaxInt64 {
+		return supply.ErrReadContract
+	}
+	if snapshot.Established != profile.Established || snapshot.Status != profile.Status || !supplierDataEqual(snapshot.Data, profile.Data) || !supplierAliasesEqual(snapshot.Aliases, profile.Aliases) || !snapshot.CreatedAt.UTC().Truncate(time.Microsecond).Equal(profile.CreatedAt) || !snapshot.UpdatedAt.UTC().Truncate(time.Microsecond).Equal(profile.UpdatedAt) {
+		return supply.ErrReadContract
+	}
+	// 操作人两条来源：内部员工建档记 internal_staff.id；供应商自助注册没有
+	// staff 身份，只能落 operator_name_snapshot（与 account_store 同一口径）。
+	// 有其一即视为可追溯，不再强求必须是内部员工。
+	hasStaffActor := actor.Valid && modelIdentity(actor.String)
+	hasNamedActor := operator.Valid && strings.TrimSpace(operator.String) != ""
+	if !hasStaffActor && !hasNamedActor {
+		return supply.ErrReadContract
+	}
+	if !reason.Valid || strings.TrimSpace(reason.String) == "" || !requestID.Valid || !modelIdentity(profile.BuyerID) || !validSupplierAuditTimestamp(action.String, profile.CreatedAt, profile.UpdatedAt, loggedAt) {
+		return supply.ErrReadContract
 	}
 	switch action.String {
 	case "CREATE":
-		if snapshot.Revision != 1 || actor.String != profile.BuyerID {
-			return nil, supply.ErrReadContract
+		if snapshot.Revision != 1 {
+			return supply.ErrReadContract
+		}
+		// 自助注册本来就不是采购员建档，跳过「建档人必等于归属采购人」的等式。
+		if hasStaffActor && actor.String != profile.BuyerID {
+			return supply.ErrReadContract
 		}
 	case "UPDATE":
 		if snapshot.Revision < 2 {
-			return nil, supply.ErrReadContract
+			return supply.ErrReadContract
 		}
 	case "UPDATE_NOOP":
 		if snapshot.Revision < 1 {
-			return nil, supply.ErrReadContract
+			return supply.ErrReadContract
 		}
 	default:
-		return nil, supply.ErrReadContract
+		return supply.ErrReadContract
 	}
 	profile.Revision = snapshot.Revision
-	return profile.Clone(), nil
+	return nil
 }
 
 func (s *SupplierStore) supplierAliases(ctx context.Context, tx *sql.Tx, supplierID, currentName string) ([]string, error) {

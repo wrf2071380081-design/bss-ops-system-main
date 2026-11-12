@@ -28,6 +28,7 @@ export interface SupplierEntitySaveBody {
 
 export interface SupplierEntityDTO {
   id: string;
+  /** 空串表示尚未分配采购人（自助注册后待分配）。 */
   buyer_id: string;
   name: string;
   aliases: string[];
@@ -41,10 +42,13 @@ export interface SupplierEntityDTO {
   remark: string;
   established: boolean;
   status: "ACTIVE" | "FROZEN";
+  /** "0" 表示审计信息不完整、无可用修订号，此时不可编辑。 */
   revision: string;
   created_at: string;
   updated_at: string;
   can_edit: boolean;
+  /** INCOMPLETE 表示档案可读但缺少可信的建档/变更流水。 */
+  audit_status: "" | "INCOMPLETE";
 }
 
 export interface SupplierQualificationDTO {
@@ -142,8 +146,12 @@ export function normalizeSupplierEntity(value: unknown): SupplierEntityDTO {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("供应商主体响应格式不正确。");
   const row = value as Record<string, unknown>;
   const id = positiveBigint(row.id);
-  const buyerID = positiveBigint(row.buyer_id);
-  const revision = positiveBigint(row.revision);
+  // 自助注册的供应商在「分配采购人」之前没有归属人，后端会返回空串；
+  // 审计不完整时后端也给不出可用修订号（返回 "0"）。两者都是合法状态，
+  // 由 audit_status / can_edit 表达「只读」，不能当解析错误处理。
+  const buyerID = row.buyer_id === "" ? "" : positiveBigint(row.buyer_id);
+  const revision = String(row.revision) === "0" ? "0" : positiveBigint(row.revision);
+  const auditStatus = row.audit_status === undefined ? "" : row.audit_status;
   const aliases = row.aliases === undefined ? [] : row.aliases;
   if (typeof row.name !== "string" || !row.name.trim() || (row.region !== "CN" && row.region !== "OVERSEAS") ||
       typeof row.aliases_supported !== "boolean" ||
@@ -152,14 +160,16 @@ export function normalizeSupplierEntity(value: unknown): SupplierEntityDTO {
       !(row.tax_rate === null || (typeof row.tax_rate === "string" && /^(0|1)(\.\d{1,8})?$/.test(row.tax_rate) && !new Decimal(row.tax_rate).greaterThan(1))) ||
       !Array.isArray(aliases) || aliases.some(alias => typeof alias !== "string" || !alias.trim()) ||
       typeof row.established !== "boolean" || (row.status !== "ACTIVE" && row.status !== "FROZEN") ||
-      typeof row.can_edit !== "boolean" || typeof row.created_at !== "string" || typeof row.updated_at !== "string" ||
+      typeof row.can_edit !== "boolean" || (auditStatus !== "" && auditStatus !== "INCOMPLETE") ||
+      typeof row.created_at !== "string" || typeof row.updated_at !== "string" ||
       Number.isNaN(Date.parse(row.created_at)) || Number.isNaN(Date.parse(row.updated_at)) || Date.parse(row.updated_at) < Date.parse(row.created_at)) {
     throw new Error("供应商主体响应不符合字段契约。");
   }
   return { id, buyer_id: buyerID, name: row.name, aliases: [...aliases], aliases_supported: row.aliases_supported, region: row.region, registration_no: row.registration_no,
     contact: row.contact, phone: row.phone, tax_rate: row.tax_rate === null ? null : new Decimal(row.tax_rate).toFixed(8),
     settlement_currency: row.settlement_currency, remark: row.remark, established: row.established, status: row.status,
-    revision, created_at: row.created_at, updated_at: row.updated_at, can_edit: row.can_edit };
+    revision, created_at: row.created_at, updated_at: row.updated_at, can_edit: row.can_edit,
+    audit_status: auditStatus as "" | "INCOMPLETE" };
 }
 
 export function normalizeSupplierEntityPage(value: unknown, page: number, size: number) {

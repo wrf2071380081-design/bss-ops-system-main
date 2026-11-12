@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,3 +174,47 @@ func TestIsTerminal(t *testing.T) {
 		}
 	}
 }
+
+// TestPingUsesLightweightProjection 守住探测请求的形态。
+//
+// 探测必须带 view=lite：平台任务列表默认是全量投影（与详情同构），
+// 2026-11-12 实测一页 3.96MB / 1.74s，加 view=lite 后 37KB / 0.37s。
+// 探针按最重形态去拉，就会撞上 probeTimeout，把「平台慢」误判成「连不上内网」
+// ——当天供应商 6 的连通性测试就是这么被判失败的。
+func TestPingUsesLightweightProjection(t *testing.T) {
+	var gotPath, gotQuery, gotAuth string
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery, gotAuth = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"ok","data":{"items":[],"total":0}}`))
+	})
+
+	if err := client.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if gotPath != "/open-api/api/v1/test-jobs" {
+		t.Fatalf("unexpected path %q", gotPath)
+	}
+	if !strings.Contains(gotQuery, "view=lite") {
+		t.Fatalf("探测必须用轻量投影，实际 query=%q", gotQuery)
+	}
+	if gotAuth != "Bearer cons-test" {
+		t.Fatalf("unexpected auth %q", gotAuth)
+	}
+}
+
+// TestPingMapsUnauthorized：探测失败要保留平台给的原因。
+// 只报「连不上内网」会把 token 失效说成网络问题，排查方向直接跑偏。
+func TestPingMapsUnauthorized(t *testing.T) {
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":40101,"message":"token 无效","data":null}`))
+	})
+
+	err := client.Ping(context.Background())
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.HTTPStatus != http.StatusUnauthorized {
+		t.Fatalf("want 401 APIError, got %v", err)
+	}
+}
+
