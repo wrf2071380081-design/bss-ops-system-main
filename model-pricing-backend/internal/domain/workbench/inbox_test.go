@@ -190,19 +190,19 @@ func TestOperationsResolveObjectNames(t *testing.T) {
 	from := time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local)
 	to := time.Date(2026, 11, 12, 0, 0, 0, 0, time.Local)
 	res, err := svc.Operations(context.Background(), OperationQuery{
-		Action:     "RESOURCE_REVISION",
-		EntityType: "resource",
-		Keyword:    "云桥",
-		DateFrom:   &from,
-		DateTo:     &to,
-		Page:       1,
-		Size:       20,
+		Actions:     []string{"RESOURCE_REVISION"},
+		EntityTypes: []string{"resource"},
+		Keyword:     "云桥",
+		DateFrom:    &from,
+		DateTo:      &to,
+		Page:        1,
+		Size:        20,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := store.lastOperations
-	if got.Action != "RESOURCE_REVISION" || got.EntityType != "resource" || got.Keyword != "云桥" {
+	if len(got.Actions) != 1 || got.Actions[0] != "RESOURCE_REVISION" || len(got.EntityTypes) != 1 || got.EntityTypes[0] != "resource" || got.Keyword != "云桥" {
 		t.Fatalf("filters not forwarded: %+v", got)
 	}
 	if got.DateFrom == nil || got.DateTo == nil || !got.DateFrom.Equal(from) || !got.DateTo.Equal(to) {

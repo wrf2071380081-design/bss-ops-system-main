@@ -136,9 +136,10 @@ export interface OperationPageDTO {
 }
 
 export interface OperationQuery {
-  operatorId?: number;
-  action?: string;
-  entityType?: string;
+  /** 多选：操作人 / 操作类型 / 对象类型都按数组传，前端拼成逗号分隔给后端。 */
+  operatorIds?: number[];
+  actions?: string[];
+  entityTypes?: string[];
   entityId?: number;
   keyword?: string;
   /** 左闭右开：dateTo 由后端 +1 天处理，前端只传 YYYY-MM-DD。 */
@@ -146,6 +147,11 @@ export interface OperationQuery {
   dateTo?: string;
   page?: number;
   size?: number;
+}
+
+function joinFilter(values?: Array<string | number>): string | undefined {
+  if (!values || !values.length) return undefined;
+  return values.join(",");
 }
 
 export interface OperationOptionsDTO {
@@ -210,9 +216,9 @@ export const workbenchApi = {
       url: "/internal/workbench/operations",
       method: "GET",
       params: {
-        operator_id: query.operatorId || undefined,
-        action: query.action || undefined,
-        entity_type: query.entityType || undefined,
+        operator_id: joinFilter(query.operatorIds),
+        action: joinFilter(query.actions),
+        entity_type: joinFilter(query.entityTypes),
         entity_id: query.entityId || undefined,
         keyword: query.keyword || undefined,
         date_from: query.dateFrom || undefined,

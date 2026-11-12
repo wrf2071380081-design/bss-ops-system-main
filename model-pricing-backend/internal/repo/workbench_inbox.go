@@ -334,14 +334,14 @@ type operationRow struct {
 func (r *WorkbenchInboxRepo) ListOperations(ctx context.Context, q workbench.OperationQuery) ([]workbench.OperationItem, int64, error) {
 	apply := func(tx *gorm.DB) *gorm.DB {
 		tx = tx.Table("operation_log")
-		if q.OperatorID > 0 {
-			tx = tx.Where("operator_id = ?", q.OperatorID)
+		if len(q.OperatorIDs) > 0 {
+			tx = tx.Where("operator_id IN ?", q.OperatorIDs)
 		}
-		if q.Action != "" {
-			tx = tx.Where("action = ?", q.Action)
+		if len(q.Actions) > 0 {
+			tx = tx.Where("action IN ?", q.Actions)
 		}
-		if q.EntityType != "" {
-			tx = tx.Where("entity_type = ?", q.EntityType)
+		if len(q.EntityTypes) > 0 {
+			tx = tx.Where("entity_type IN ?", q.EntityTypes)
 		}
 		if q.EntityID > 0 {
 			tx = tx.Where("entity_id = ?", q.EntityID)

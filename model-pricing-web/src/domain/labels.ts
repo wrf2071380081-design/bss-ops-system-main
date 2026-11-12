@@ -42,27 +42,27 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   STAGING_PRICE_SUBMIT: "提交暂存价",
 };
 
-/** 操作记录（operation_log.action）→ 中文。按后端写日志的调用点逐条核对（2026-11-12）。
+/** 操作记录（operation_log.action）→ 中文。措辞对齐交互原型 Token-Ops 的操作词表；
  *  表里没有的新枚举原样返回，避免出现空白格子。 */
 export const OPERATION_ACTION_LABELS: Record<string, string> = {
-  ADMIT: "资源准入通过",
+  ADMIT: "确认模型已开通",
   APPROVE: "审批通过",
   ARCHIVE: "归档",
-  COMPLETE_CONTRACT: "完成合同签署",
-  CONFIG_COMPLETE: "完成资源配置",
+  COMPLETE_CONTRACT: "合同与授信确认完成",
+  CONFIG_COMPLETE: "登记模型技术配置完成",
   CREATE: "新建",
-  FORMAL_CONFIG_REVISION: "正式配置变更",
-  PRICE_CHANGE: "价格变更",
-  READ: "阅读公告",
-  REJECT: "驳回",
-  RESOURCE_REVISION: "资源变更",
-  SELECT_REPORT_PAIR: "选择测试报告",
+  FORMAL_CONFIG_REVISION: "登记历史资源当前生产配置",
+  PRICE_CHANGE: "采购改价整批",
+  READ: "查看公告",
+  REJECT: "驳回申报",
+  RESOURCE_REVISION: "批量供应资源结果登记",
+  SELECT_REPORT_PAIR: "测试结果已登记",
   START: "开始办理",
-  SUBMISSION_HANDLING: "办理模型申报",
+  SUBMISSION_HANDLING: "供应商申报",
   UPDATE: "修改",
-  UPDATE_LICENSE: "更新企业资质",
+  UPDATE_LICENSE: "维护供应商资质",
   UPDATE_NOOP: "提交（无变更）",
-  UPDATE_PROFILE: "更新企业信息",
+  UPDATE_PROFILE: "维护主体档案",
   UPLOADED: "上传附件",
   VERIFY: "核验通过",
 };
@@ -83,6 +83,36 @@ export const OPERATION_ENTITY_LABELS: Record<string, string> = {
   supplier: "供应商",
   supplier_formal_config: "正式配置",
 };
+
+/** 对象类型（原型筛选项）：把库里的 entity_type 归到原型的 8 个业务对象类别。
+ *  原型一条记录可以同时属于多个类别（供应商+模型），我们按主体归类，保证筛选可解释。 */
+export const OPERATION_ENTITY_CATEGORY: Record<string, string> = {
+  contract: "客户",
+  credit_line: "客户",
+  customer_profile: "客户",
+  notice: "系统记录",
+  onboarding_flow: "系统记录",
+  onboarding_node: "系统记录",
+  price_book: "报价",
+  quote_sheet: "报价",
+  resource: "模型",
+  standard_model: "标准模型库",
+  submission: "申报",
+  supplier: "供应商",
+  supplier_formal_config: "供应商",
+};
+
+/** 对象类型下拉的固定顺序（与原型一致）。 */
+export const OPERATION_ENTITY_CATEGORY_ORDER = [
+  "标准模型库",
+  "供应商",
+  "客户",
+  "模型",
+  "报价",
+  "申报",
+  "请求",
+  "系统记录",
+];
 
 /** 审计的业务对象类型（audit_log.target_type）。 */
 export const AUDIT_TARGET_LABELS: Record<string, string> = {

@@ -72,12 +72,13 @@ type PeopleResult struct {
 
 // OperationQuery 操作记录查询。
 // 对应原型「操作记录」页的筛选条：操作人 / 操作类型 / 对象类型 / 操作时间区间 + 关键词。
+// 操作类型与对象类型都是**多选**（原型是勾选下拉），所以按切片传。
 type OperationQuery struct {
-	OperatorID int64
-	Action     string
-	EntityType string
-	EntityID   int64
-	Keyword    string
+	OperatorIDs []int64
+	Actions     []string
+	EntityTypes []string
+	EntityID    int64
+	Keyword     string
 	// DateFrom 含、DateTo 不含（handler 把日期选择器的右端 +1 天再传进来）。
 	DateFrom *time.Time
 	DateTo   *time.Time

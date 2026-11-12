@@ -13,7 +13,7 @@ import {
   type OperationOptionsDTO,
   type WorkbenchPersonDTO,
 } from "../../../modules/workbench/api/workbench";
-import { OPERATION_ACTION_LABELS, OPERATION_ENTITY_LABELS } from "../../../domain/labels";
+import { OPERATION_ACTION_LABELS, OPERATION_ENTITY_LABELS, OPERATION_ENTITY_CATEGORY, OPERATION_ENTITY_CATEGORY_ORDER } from "../../../domain/labels";
 import NoticeDetailDialog from "../resources/NoticeDetailDialog.vue";
 import SubmissionFlowDialog from "./SubmissionFlowDialog.vue";
 import { submissionFlowsApi } from "../../../api/submissionFlows";
@@ -64,12 +64,27 @@ const sortOrder = ref<"asc" | "desc">("desc");
 const mergedRows = ref<InboxItemDTO[]>([]);
 
 // 操作记录筛选条（原型：操作人 / 操作类型 / 对象类型 / 操作时间 / 搜索 / 重置）。
-const opOperatorId = ref<number>();
-const opAction = ref<string>();
-const opEntityType = ref<string>();
+// 三个下拉都是**多选**（原型的勾选下拉），选项由后端返回库里真实出现过的值。
+const opOperatorIds = ref<number[]>([]);
+const opActions = ref<string[]>([]);
+const opEntityCategories = ref<string[]>([]);
 const opDateRange = ref<[string, string] | null>(null);
 const opKeyword = ref("");
 const opOptions = ref<OperationOptionsDTO>({ actions: [], entity_types: [], operators: [] });
+// 对象类型按原型归并成 8 个类别；一个类别可能对应多个 entity_type（如「供应商」含正式配置）。
+const opEntityCategoryOptions = computed(() => {
+  const byCategory = new Map<string, string[]>();
+  for (const raw of opOptions.value.entity_types) {
+    const category = OPERATION_ENTITY_CATEGORY[raw] || "系统记录";
+    byCategory.set(category, [...(byCategory.get(category) ?? []), raw]);
+  }
+  return OPERATION_ENTITY_CATEGORY_ORDER
+    .filter(category => byCategory.has(category))
+    .map(category => ({ label: category, types: byCategory.get(category) as string[] }));
+});
+const opEntityTypes = computed(() =>
+  opEntityCategories.value.flatMap(category => opEntityCategoryOptions.value.find(option => option.label === category)?.types ?? []),
+);
 
 // 勾选顺序与原型一致：待办、已办、待阅、已阅。
 const stateTabs: { value: InboxState; label: string }[] = [
@@ -233,9 +248,9 @@ async function loadOperations() {
   try {
     const [dateFrom, dateTo] = opDateRange.value ?? [];
     const res = await workbenchApi.operations({
-      operatorId: opOperatorId.value || undefined,
-      action: opAction.value || undefined,
-      entityType: opEntityType.value || undefined,
+      operatorIds: opOperatorIds.value,
+      actions: opActions.value,
+      entityTypes: opEntityTypes.value,
       keyword: opKeyword.value.trim() || undefined,
       dateFrom: dateFrom || undefined,
       dateTo: dateTo || undefined,
@@ -270,9 +285,9 @@ function searchOperations() {
 }
 
 function resetOperationFilters() {
-  opOperatorId.value = undefined;
-  opAction.value = undefined;
-  opEntityType.value = undefined;
+  opOperatorIds.value = [];
+  opActions.value = [];
+  opEntityCategories.value = [];
   opDateRange.value = null;
   opKeyword.value = "";
   searchOperations();
@@ -498,14 +513,44 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
 
       <el-tab-pane label="操作记录" name="operations">
         <div class="wb-toolbar">
-          <el-select v-model="opOperatorId" class="wb-filter" clearable placeholder="操作人" @change="searchOperations">
+          <el-select
+            v-model="opOperatorIds"
+            class="wb-filter"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            clearable
+            placeholder="操作人"
+            @change="searchOperations"
+          >
             <el-option v-for="person in opOptions.operators" :key="person.id" :label="person.name" :value="person.id" />
           </el-select>
-          <el-select v-model="opAction" class="wb-filter" clearable placeholder="操作类型" @change="searchOperations">
+          <el-select
+            v-model="opActions"
+            class="wb-filter"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            clearable
+            placeholder="操作类型"
+            @change="searchOperations"
+          >
             <el-option v-for="action in opOptions.actions" :key="action" :label="operationLabel(action)" :value="action" />
           </el-select>
-          <el-select v-model="opEntityType" class="wb-filter" clearable placeholder="对象类型" @change="searchOperations">
-            <el-option v-for="type in opOptions.entity_types" :key="type" :label="operationEntityLabel(type)" :value="type" />
+          <el-select
+            v-model="opEntityCategories"
+            class="wb-filter"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            clearable
+            placeholder="对象类型"
+            @change="searchOperations"
+          >
+            <el-option v-for="option in opEntityCategoryOptions" :key="option.label" :label="option.label" :value="option.label" />
           </el-select>
           <el-date-picker
             v-model="opDateRange"

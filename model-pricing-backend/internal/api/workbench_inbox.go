@@ -77,7 +77,6 @@ func (h *WorkbenchInboxHandler) Operations(c *gin.Context) {
 		return
 	}
 	page, size := parsePageQuery(c)
-	operatorID, _ := strconv.ParseInt(c.Query("operator_id"), 10, 64)
 	entityID, _ := strconv.ParseInt(c.Query("entity_id"), 10, 64)
 	from, err := parseOperationDate(c.Query("date_from"), false)
 	if err != nil {
@@ -91,15 +90,15 @@ func (h *WorkbenchInboxHandler) Operations(c *gin.Context) {
 		return
 	}
 	res, err := h.svc.Operations(c.Request.Context(), workbench.OperationQuery{
-		OperatorID: operatorID,
-		Action:     strings.TrimSpace(c.Query("action")),
-		EntityType: strings.TrimSpace(c.Query("entity_type")),
-		EntityID:   entityID,
-		Keyword:    strings.TrimSpace(c.Query("keyword")),
-		DateFrom:   from,
-		DateTo:     to,
-		Page:       page,
-		Size:       size,
+		OperatorIDs: parseQueryIDs(c.QueryArray("operator_id")),
+		Actions:     splitQueryValues(c.QueryArray("action")),
+		EntityTypes: splitQueryValues(c.QueryArray("entity_type")),
+		EntityID:    entityID,
+		Keyword:     strings.TrimSpace(c.Query("keyword")),
+		DateFrom:    from,
+		DateTo:      to,
+		Page:        page,
+		Size:        size,
 	})
 	if err != nil {
 		response.Error(c, apperr.ErrSystem)
@@ -121,6 +120,38 @@ func (h *WorkbenchInboxHandler) OperationOptions(c *gin.Context) {
 		return
 	}
 	response.Success(c, res)
+}
+
+// splitQueryValues 解析多选筛选值。兼容两种写法：
+//   - ?action=APPROVE&action=REJECT（QueryArray）
+//   - ?action=APPROVE,REJECT（前端用逗号拼，避免数组序列化成 action[]=）
+func splitQueryValues(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		for _, part := range strings.Split(raw, ",") {
+			if v := strings.TrimSpace(part); v != "" {
+				out = append(out, v)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// parseQueryIDs 解析多选的人员 id（逗号分隔或重复参数）；非法值直接跳过。
+func parseQueryIDs(values []string) []int64 {
+	out := make([]int64, 0, len(values))
+	for _, raw := range splitQueryValues(values) {
+		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
+			out = append(out, id)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // parseOperationDate 解析筛选条的日期。接受 YYYY-MM-DD 与 RFC3339；
