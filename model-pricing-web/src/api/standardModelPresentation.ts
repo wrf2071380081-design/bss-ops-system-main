@@ -32,6 +32,10 @@ export function modelPriceGroups(prices: StandardPrice[]): ModelPriceGroup[] {
 const operationLabels: Record<string, string> = {
   CREATE: "新增标准模型", UPDATE: "修改标准模型", UPDATE_NOOP: "保存标准模型（无变化）", VERIFY: "人工核验标准模型", VERIFY_NOOP: "人工核验标准模型（无变化）",
   MANUAL_SAVE: "手动补全标准模型", MANUAL_SAVE_NOOP: "手动补全标准模型（无变化）",
+  // 抓取类（对齐交互原型「标准模型库 · 操作记录」）：失败记录的对象是「系统记录」，没有模型名。
+  MODEL_CRAWL_MANUAL_FAILED: "手动抓取尝试失败",
+  MODEL_CRAWL_MANUAL_FAILED_SIM: "手动抓取尝试失败（模拟）",
+  MODEL_CRAWL_AUTO_FAILED_SIM: "自动抓取尝试失败（模拟）",
 };
 export const modelOperationLabel = (action: string) => operationLabels[action] || action;
 export interface ModelOperation { id: string; entity_id: string; action: string; operator_name: string; reason: string; created_at: string; model_name: string }
