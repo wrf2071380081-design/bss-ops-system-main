@@ -56,7 +56,10 @@ const regionLabel = (region: string) => region === "OVERSEAS" ? "海外" : "国�
 // 原型文案：合作阶段显示「合作」，合同状态「未登记」显示「暂无」（筛选值仍是后端枚举）。
 const stageText = (stage: string) => stage === "已有" ? "合作" : stage;
 const contractStatusText = (status: string) => status === "未登记" ? "暂无" : status;
-const contractStatusType = (status: SupplierWorkspaceRow["contract_status"]) => status === "已归档" ? "success" : status === "办理中" ? "warning" : "info";
+const contractStatusType = (status: SupplierWorkspaceRow["contract_status"]) => status === "已归档" ? "info" : status === "办理中" ? "primary" : "info";
+// 原型：结算币种显示「人民币 CNY / 美元 USD」。
+const currencyText = (code: string) => code === "USD" ? "美元 USD" : code === "CNY" ? "人民币 CNY" : code || "—";
+const contractStatusPlain = (status: string) => status === "未登记";
 const currencyAmount = (row: SupplierWorkspaceRow) => {
   if (row.credit_status === "AMBIGUOUS_VERSION") return "版本冲突，待核对";
   if (row.credit_status === "INVALID_LEGACY_AMOUNT") return "额度异常，待核对";
@@ -160,7 +163,6 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
       <el-tab-pane label="供应商列表" name="list">
         <el-alert v-if="supplierError" :title="supplierError" type="error" show-icon :closable="false" />
         <div class="filters">
-          <el-input v-model="filters.keyword" placeholder="搜索供应商名称 / 曾用名" clearable style="width: 220px" @change="searchSuppliers" @keyup.enter="searchSuppliers" />
           <el-select v-model="filters.region" placeholder="国内 / 海外主体" clearable style="width: 140px" @change="searchSuppliers">
             <el-option value="CN" label="国内" /><el-option value="OVERSEAS" label="海外" />
           </el-select>
@@ -173,6 +175,7 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
           <el-select v-model="filters.handling" placeholder="办理状态" clearable style="width: 150px" @change="searchSuppliers">
             <el-option value="有未完成事项" label="有未完成事项" /><el-option value="无未完成事项" label="无未完成事项" />
           </el-select>
+          <el-input v-model="filters.keyword" placeholder="搜索供应商名称 / 曾用名" clearable class="filters-keyword" @change="searchSuppliers" @keyup.enter="searchSuppliers" />
           <el-button @click="resetFilters">重置</el-button>
         </div>
         <el-table v-loading="supplierLoading" :data="filteredSuppliers" :default-sort="{ prop: supplierSortBy, order: supplierSortOrder === 'desc' ? 'descending' : 'ascending' }" style="width: 100%" @sort-change="supplierSortChanged">
@@ -180,16 +183,18 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
           <el-table-column prop="resource_count" label="资源数" width="80" sortable="custom" />
           <el-table-column prop="region" label="国内 / 海外" width="100" sortable="custom"><template #default="{ row }">{{ regionLabel(row.region) }}</template></el-table-column>
           <el-table-column label="授信额度" width="130">
-            <template #default="{ row }"><strong>{{ currencyAmount(row) }}</strong><span class="muted">供应商-我方</span></template>
+            <template #default="{ row }"><strong>{{ currencyAmount(row) }}</strong></template>
           </el-table-column>
-          <el-table-column prop="contract_status" label="合同状态" width="100" sortable="custom">
-            <template #default="{ row }"><el-tag :type="contractStatusType(row.contract_status)" size="small">{{ contractStatusText(row.contract_status) }}</el-tag></template>
+          <el-table-column prop="contract_status" label="合同状态" width="110" sortable="custom">
+            <template #default="{ row }"><el-tag :type="contractStatusType(row.contract_status)" :effect="contractStatusPlain(row.contract_status) ? 'plain' : 'light'" size="small">{{ contractStatusText(row.contract_status) }}</el-tag></template>
           </el-table-column>
-          <el-table-column label="结算币种" width="100"><template #default="{ row }">{{ row.settlement_currency || "—" }}</template></el-table-column>
-          <el-table-column label="税率" width="80"><template #default="{ row }">{{ formatSupplierTaxRate(row.tax_rate) }}</template></el-table-column>
-          <el-table-column prop="cooperation_stage" label="合作/潜在" width="110" sortable="custom"><template #default="{ row }">{{ stageText(row.cooperation_stage) }}</template></el-table-column>
+          <el-table-column label="结算币种" width="120"><template #default="{ row }">{{ currencyText(row.settlement_currency) }}</template></el-table-column>
+          <el-table-column label="税率" width="90"><template #default="{ row }">{{ formatSupplierTaxRate(row.tax_rate) }}</template></el-table-column>
+          <el-table-column prop="cooperation_stage" label="合作/潜在" width="110" sortable="custom">
+            <template #default="{ row }"><el-tag type="info" :effect="row.cooperation_stage === '已有' ? 'light' : 'plain'" size="small">{{ stageText(row.cooperation_stage) }}</el-tag></template>
+          </el-table-column>
           <el-table-column prop="handling_status" label="办理状态" width="130" sortable="custom">
-            <template #default="{ row }"><el-tag :type="row.handling_status === '有未完成事项' ? 'warning' : 'info'" size="small">{{ row.handling_status }}</el-tag></template>
+            <template #default="{ row }">{{ row.handling_status }}</template>
           </el-table-column>
           <el-table-column label="详情" width="80"><template #default="{ row }"><el-button size="small" @click="openSupplier(row)">详情</el-button></template></el-table-column>
           <template #empty><el-empty description="暂无供应商" :image-size="64" /></template>
@@ -208,6 +213,7 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
 <style scoped>
 .supplier-workspace { padding: 18px 20px; }
 .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.filters-keyword { flex: 1; min-width: 240px; }
 .supplier-pagination { justify-content: flex-end; margin-top: 16px; }
 .muted { display: block; color: var(--app-text-muted); font-size: 12px; margin-top: 4px; }
 </style>
