@@ -524,7 +524,7 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
         <div class="wb-toolbar">
           <el-select
             v-model="opOperatorIds"
-            class="wb-filter"
+            class="wb-filter wb-filter-person"
             multiple
             filterable
             collapse-tags
@@ -537,7 +537,7 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
           </el-select>
           <el-select
             v-model="opActions"
-            class="wb-filter"
+            class="wb-filter wb-filter-action"
             multiple
             filterable
             collapse-tags
@@ -550,7 +550,7 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
           </el-select>
           <el-select
             v-model="opEntityCategories"
-            class="wb-filter"
+            class="wb-filter wb-filter-entity"
             multiple
             filterable
             collapse-tags
@@ -564,7 +564,6 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
               :key="option.label"
               :label="option.label"
               :value="option.label"
-              :disabled="option.disabled"
             />
           </el-select>
           <el-date-picker
@@ -590,15 +589,15 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
         </div>
 
         <el-table v-loading="opLoading" :data="operations" style="width: 100%">
-          <el-table-column label="操作" width="200">
+          <el-table-column label="操作" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">
               <span :title="row.action">{{ operationLabel(row.action) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="对象" min-width="240">
+          <el-table-column label="对象" min-width="300" show-overflow-tooltip>
             <template #default="{ row }">{{ operationObject(row) }}</template>
           </el-table-column>
-          <el-table-column prop="operator_name" label="操作人" width="140" />
+          <el-table-column prop="operator_name" label="操作人" width="140" show-overflow-tooltip />
           <el-table-column label="时间" width="180">
             <template #default="{ row }">{{ formatDateTime(row.created_at, "—", false) }}</template>
           </el-table-column>
@@ -654,8 +653,9 @@ onBeforeUnmount(() => { ++inboxGeneration; ++operationsGeneration; });
 .wb-state-options { display: inline-flex; gap: 18px; flex-wrap: wrap; }
 .wb-state-options label { display: inline-flex; align-items: center; gap: 6px; color: var(--app-text-primary); font-size: 13px; cursor: pointer; }
 .wb-search { width: 240px; }
-.wb-filter { width: 150px; }
-.wb-date-range { width: 260px; }
+.wb-filter { width: 160px; }
+.wb-filter-action { width: 200px; }
+.wb-date-range { width: 300px; }
 .wb-raw { margin-left: 8px; color: var(--app-text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .wb-people-filter { position: relative; width: 200px; max-width: 100%; }
 .wb-people-filter summary { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 11px; border: 1px solid var(--app-border); border-radius: 4px; background: var(--app-surface); cursor: pointer; font-size: 13px; list-style: none; }
