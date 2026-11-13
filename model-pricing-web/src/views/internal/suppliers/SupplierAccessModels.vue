@@ -42,6 +42,17 @@ const route = useRoute();
 const router = useRouter();
 const supplierID = computed(() => String(route.params.supplierId || ""));
 const rows = ref<ResourceRow[]>([]);
+/**
+ * 资源详情面板开关。
+ *
+ * 本版暂不展示：办理资源接入所需的动作（接入/上架/下架、接口配置、测试与报告）
+ * 都已经在表格按钮和两个弹窗里，面板承载的是阻断原因、正式配置明细、报告历史、
+ * 公告、计划与操作记录，属于「深挖」用途，当前业务不需要。
+ *
+ * 组件引用、URL 上下文参数、selected 状态都保持完整；后续要恢复时把这里改成 true
+ * 即可，不需要改动其它代码。
+ */
+const resourceDetailPanelEnabled = false;
 const selectedID = ref("");
 const loading = ref(false);
 const error = ref("");
@@ -303,6 +314,9 @@ function back() {
 
 function focus(row: ResourceRow) {
   selectedID.value = row.id;
+  // 面板关闭时只保留行高亮，不再把资源上下文写进 URL：
+  // 否则刷新后会走「带资源进入」的校验分支，对操作者是个无意义的副作用。
+  if (!resourceDetailPanelEnabled) return;
   void router.replace({ query: { ...route.query, resource_id: row.id, model_id: row.standard_model_id, region: row.region } });
 }
 
@@ -963,7 +977,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
       <ResourceReportsPanel :resource-i-d="reportsRow.id" :current-report-i-d="reportsRow.test.report_id" />
       <template #footer><el-button @click="reportsVisible = false">关闭测试列表</el-button></template>
     </el-dialog>
-    <ResourceDetailDrawer v-if="selected && activeTab === 'models'" :key="`${selected.id}:${selected.region}`" :id="selected.id" :region="selected.region" presentation="page" :expected-supplier-i-d="selected.supplier_id" :expected-model-i-d="selected.standard_model_id" initial-tab="profile" @close="clearSelected" @changed="load" />
+    <ResourceDetailDrawer v-if="resourceDetailPanelEnabled && selected && activeTab === 'models'" :key="`${selected.id}:${selected.region}`" :id="selected.id" :region="selected.region" presentation="page" :expected-supplier-i-d="selected.supplier_id" :expected-model-i-d="selected.standard_model_id" initial-tab="profile" @close="clearSelected" @changed="load" />
   </section>
 </template>
 

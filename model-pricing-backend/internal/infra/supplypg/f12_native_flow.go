@@ -62,7 +62,7 @@ func (n *NativeSupplierF12) flow(ctx context.Context, tx *sql.Tx, subjectType, s
 	if lock {
 		suffix = " FOR SHARE OF f,nd,s"
 	}
-	err := tx.QueryRowContext(ctx, `SELECT l.id,coalesce(nd.assignee_id::text,''),nd.status,f.status,f.current_node,s.status,coalesce(sp.settlement_currency,''),coalesce(sp.region,'')
+	err := tx.QueryRowContext(ctx, `SELECT l.id,coalesce(nd.assignee_id::text,''),nd.status,f.status,coalesce(f.current_node,''),s.status,coalesce(sp.settlement_currency,''),coalesce(sp.region,'')
  FROM `+n.table("supplier")+` sp JOIN `+n.table("onboarding_flow")+` f ON f.owner_id=sp.id AND f.kind='SUPPLIER'
  JOIN `+n.table("onboarding_node")+` nd ON nd.flow_id=f.id AND nd.node_key='CONTRACT' AND (NOT $3::boolean OR nd.enabled)
  JOIN `+n.table("operation_log")+` l ON l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'flow_id'=f.id::text AND l."after"->>'supplier_id'=sp.id::text
