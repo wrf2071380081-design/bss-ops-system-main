@@ -257,6 +257,14 @@ func (t *f12RecordTransaction) AuthorizeF12Read(ctx context.Context, actorID, su
 	if !active {
 		return supply.ErrForbidden
 	}
+	// 2026-11-12 产品口径调整：内部员工均可查看与下载合同/授信附件，
+	// 不再限制为「主体责任人或当前办理人」。只放开读——写入口
+	// （AuthorizeF12FlowWrite / AuthorizeF12OrdinaryWrite）仍按原判定执行。
+	// 需要恢复收紧时，把下面这个常量改成 false 即可回到归属/流程校验。
+	const readOpenToAllStaff = true
+	if readOpenToAllStaff {
+		return nil
+	}
 	if flowID != "" || moduleKey != "" {
 		if flowID == "" || moduleKey == "" || t.store.flowAuthorizer == nil {
 			return supply.ErrDependencyUnavailable

@@ -14,6 +14,11 @@ const props = defineProps<{ subjectType: F12SubjectType; subjectId: string; canM
 const emit = defineEmits<{ (event: "refresh-flow-context"): void; (event: "changed"): void; (event: "readiness-change", ready: boolean): void }>();
 // These flags only control the UI. Every write and attachment read is authorized again by the server.
 const canManage = computed(() => canManageF12Subject(props.canManage, Boolean(props.flowContext), props.flowCanManage));
+/**
+ * 附件下载：本版内部员工均可下载查看，不再跟随「维护权限」。
+ * 服务端已同步放开读权限（supplypg.AuthorizeF12Read）；如需收紧，两端一起改回。
+ */
+const canDownloadAttachment = true;
 const historyPageSize = 20;
 const loading = ref(false), saving = ref(false), downloading = ref("");
 const error = ref("");
@@ -505,7 +510,7 @@ async function refreshCreditConflict() {
 }
 
 async function downloadFile(fileID: string | undefined, purpose: "CONTRACT" | "CREDIT", filename: string) {
-  if (!canManage.value || !fileID || downloading.value) return;
+  if (!canDownloadAttachment || !fileID || downloading.value) return;
   const snapshot = captureSubject();
   downloading.value = fileID; error.value = "";
   try {
@@ -557,7 +562,7 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
     </div>
     </div>
     <el-alert v-if="error" type="error" :title="error" :closable="false" show-icon />
-    <el-alert v-if="!canManage" type="info" title="当前为只读查看；合同/授信维护及附件下载仅向主体责任人或当前办理人开放。" :closable="false" />
+    <el-alert v-if="!canManage" type="info" title="当前为只读查看；合同/授信的新增与修改仅向主体责任人或当前办理人开放，附件查看与下载不受限制。" :closable="false" />
     <el-alert v-if="flowContext && readinessError" type="warning" :title="readinessError" :closable="false" show-icon />
     <el-alert v-else-if="flowContext && readiness" :type="readiness.ready ? 'success' : 'warning'" :title="readiness.ready ? `办理资料已齐备 · 流程 R${readiness.source_flow_revision}` : `办理资料待补齐 · 流程 R${readiness.source_flow_revision}`" :closable="false" show-icon>
       <ul v-if="readiness.missing_reasons.length"><li v-for="reason in readiness.missing_reasons" :key="reason">{{ readinessReasonLabel(reason) }}</li></ul>
@@ -575,8 +580,7 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
           <el-table-column label="备注" min-width="140" show-overflow-tooltip><template #default="{ row }">{{ row.note }}</template></el-table-column>
           <el-table-column label="附件" min-width="100">
             <template #default="{ row }">
-              <el-button v-if="canManage && row.fileID" link type="primary" :loading="downloading === row.fileID" @click="downloadFile(row.fileID, row.kind, row.documentName)">下载</el-button>
-              <span v-else-if="row.fileID">需责任人下载</span>
+              <el-button v-if="canDownloadAttachment && row.fileID" link type="primary" :loading="downloading === row.fileID" @click="downloadFile(row.fileID, row.kind, row.documentName)">下载</el-button>
               <span v-else>未关联</span>
             </template>
           </el-table-column>
@@ -597,7 +601,7 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
         <el-table-column prop="document_no" label="合同编号" min-width="140"><template #default="{ row }">{{ row.document_no || "—" }}</template></el-table-column>
         <el-table-column label="版本" width="110"><template #default="{ row }">V{{ row.version }}<span v-if="row.is_latest === true" class="latest-version">当前版本</span><span v-else-if="row.is_latest === false" class="historical-version">历史版本</span></template></el-table-column>
         <el-table-column label="状态" width="100"><template #default="{ row }">{{ row.status === "ARCHIVED" ? "已归档" : "办理中" }}</template></el-table-column>
-        <el-table-column label="附件" min-width="140"><template #default="{ row }"><el-button v-if="canManage && row.file_id" link type="primary" :loading="downloading === row.file_id" @click="downloadFile(row.file_id, 'CONTRACT', row.document_name || 'contract.pdf')">下载 {{ row.has_attachment ? "附件" : "" }}</el-button><span v-else-if="row.file_id">需责任人或当前办理人下载</span><span v-else>{{ row.has_attachment ? "旧附件暂不可下载" : "未关联" }}</span></template></el-table-column>
+        <el-table-column label="附件" min-width="140"><template #default="{ row }"><el-button v-if="canDownloadAttachment && row.file_id" link type="primary" :loading="downloading === row.file_id" @click="downloadFile(row.file_id, 'CONTRACT', row.document_name || 'contract.pdf')">下载 {{ row.has_attachment ? "附件" : "" }}</el-button><span v-else>{{ row.has_attachment ? "旧附件暂不可下载" : "未关联" }}</span></template></el-table-column>
         <el-table-column prop="created_by" :label="subjectType === 'SUPPLIER' ? '操作人' : '登记人ID'" width="100"><template #default="{ row }">{{ row.created_by || "—" }}</template></el-table-column>
         <el-table-column v-if="subjectType !== 'SUPPLIER'" label="实际办理人ID" width="120"><template #default="{ row }">{{ row.actual_operator_id || "—" }}</template></el-table-column>
         <el-table-column v-if="subjectType !== 'SUPPLIER'" label="办理来源" min-width="180"><template #default="{ row }">{{ row.source_flow_id ? `${row.source_module_key} · 流程 ${row.source_flow_id} / R${row.source_flow_revision}` : "普通维护" }}</template></el-table-column>
@@ -623,7 +627,7 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
         <el-table-column prop="document_name" label="依据名称" min-width="150"><template #default="{ row }">{{ row.document_name || "旧结构未记录名称" }}</template></el-table-column>
         <el-table-column prop="document_no" label="依据编号" min-width="130"><template #default="{ row }">{{ row.document_no || "—" }}</template></el-table-column>
         <el-table-column prop="version" label="版本" width="80" />
-        <el-table-column label="附件" min-width="120"><template #default="{ row }"><el-button v-if="canManage && row.file_id" link type="primary" :loading="downloading === row.file_id" @click="downloadFile(row.file_id, 'CREDIT', row.document_name || 'credit.pdf')">下载</el-button><span v-else-if="row.file_id">需责任人或当前办理人下载</span><span v-else>未登记 / 旧附件</span></template></el-table-column>
+        <el-table-column label="附件" min-width="120"><template #default="{ row }"><el-button v-if="canDownloadAttachment && row.file_id" link type="primary" :loading="downloading === row.file_id" @click="downloadFile(row.file_id, 'CREDIT', row.document_name || 'credit.pdf')">下载</el-button><span v-else>未登记 / 旧附件</span></template></el-table-column>
         <el-table-column prop="created_by" :label="subjectType === 'SUPPLIER' ? '操作人' : '登记人ID'" width="100"><template #default="{ row }">{{ row.created_by || "—" }}</template></el-table-column>
         <el-table-column v-if="subjectType !== 'SUPPLIER'" label="实际办理人ID" width="120"><template #default="{ row }">{{ row.actual_operator_id || "—" }}</template></el-table-column>
         <el-table-column v-if="subjectType !== 'SUPPLIER'" label="办理来源" min-width="180"><template #default="{ row }">{{ row.source_flow_id ? `${row.source_module_key} · 流程 ${row.source_flow_id} / R${row.source_flow_revision}` : "普通维护" }}</template></el-table-column>
