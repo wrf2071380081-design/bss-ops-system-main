@@ -431,6 +431,40 @@ const pickerGroups = computed<PickerGroup[]>(() => {
   groups.forEach(group => group.sources.sort((a, b) => Number(a.coefficient) - Number(b.coefficient)));
   return [...groups.values()];
 });
+// 原型「选择报价模型」的四个筛选：供应商公司名称 / 模型公司 / 模型类型 / 部署节点。
+// 候选集本来就是按客户区域拉全量，这里直接在前端筛，不再打接口。
+const pickerFilter = reactive({ supplier: "", company: "", modelType: "", region: "" });
+const pickerFilterOptions = computed(() => {
+  const supplier = new Set<string>(), company = new Set<string>(), modelType = new Set<string>(), region = new Set<string>();
+  for (const row of pickerRows.value) {
+    if (row.supplier_name) supplier.add(row.supplier_name);
+    if (row.company) company.add(row.company);
+    if (row.model_type) modelType.add(row.model_type);
+    if (row.region) region.add(row.region);
+  }
+  return { supplier: [...supplier].sort(), company: [...company].sort(), modelType: [...modelType].sort(), region: [...region].sort() };
+});
+/** 一个模型只要有任意来源命中「供应商 / 部署节点」，整行就保留（模型级展示、来源级筛选）。 */
+const pickerVisibleGroups = computed(() => pickerGroups.value.filter(group => {
+  if (pickerFilter.company && group.company !== pickerFilter.company) return false;
+  if (pickerFilter.modelType && group.modelType !== pickerFilter.modelType) return false;
+  if (pickerFilter.supplier && !group.sources.some(source => source.supplier_name === pickerFilter.supplier)) return false;
+  if (pickerFilter.region && !group.sources.some(source => source.region === pickerFilter.region)) return false;
+  return true;
+}));
+function resetPickerFilter() {
+  pickerFilter.supplier = "";
+  pickerFilter.company = "";
+  pickerFilter.modelType = "";
+  pickerFilter.region = "";
+}
+/** 反选：只对当前筛选结果取反，不影响筛选之外的勾选（原型同口径）。 */
+function invertPickerSelection() {
+  for (const group of pickerVisibleGroups.value) {
+    if (pickerSelected.has(group.key)) pickerSelected.delete(group.key); else pickerSelected.add(group.key);
+  }
+}
+
 function coefficientRange(group: PickerGroup) {
   if (!group.sources.length) return "—";
   const values = group.sources.map(source => source.coefficient);
@@ -467,7 +501,7 @@ function togglePick(modelKey: string) {
   if (pickerSelected.has(modelKey)) pickerSelected.delete(modelKey); else pickerSelected.add(modelKey);
 }
 function selectAllGroups() {
-  pickerGroups.value.forEach(group => pickerSelected.add(group.key));
+  pickerVisibleGroups.value.forEach(group => pickerSelected.add(group.key));
 }
 /** 采购成本 = 官方价 × 采购系数（行内展示「成本」，与候选口径一致）。 */
 function unitCostOf(amount: string, coefficient: string) {
@@ -1376,15 +1410,38 @@ onMounted(async () => {
     <!-- 选择报价模型（对齐原型：按模型勾选，供应商在报价行里选）。
          标题写明区域，让销售一眼知道「这里只可能出现该区域的货源」。 -->
     <el-dialog v-model="pickerVisible" :title="`选择报价模型 · 仅显示${regionText(form.region)}资源`" width="min(880px, 96vw)">
+      <div class="picker-filters">
+        <label>供应商公司名称
+          <el-select v-model="pickerFilter.supplier" clearable placeholder="全部">
+            <el-option v-for="item in pickerFilterOptions.supplier" :key="item" :label="item" :value="item" />
+          </el-select>
+        </label>
+        <label>模型公司
+          <el-select v-model="pickerFilter.company" clearable placeholder="全部">
+            <el-option v-for="item in pickerFilterOptions.company" :key="item" :label="item" :value="item" />
+          </el-select>
+        </label>
+        <label>模型类型
+          <el-select v-model="pickerFilter.modelType" clearable placeholder="全部">
+            <el-option v-for="item in pickerFilterOptions.modelType" :key="item" :label="item" :value="item" />
+          </el-select>
+        </label>
+        <label>部署节点
+          <el-select v-model="pickerFilter.region" clearable placeholder="全部">
+            <el-option v-for="item in pickerFilterOptions.region" :key="item" :label="regionText(item)" :value="item" />
+          </el-select>
+        </label>
+        <el-input v-model="pickerKeyword" class="picker-keyword" placeholder="输入模型名称 / 官方 ID" clearable @keyup.enter="searchCandidates(false)" />
+        <el-button @click="resetPickerFilter">重置</el-button>
+      </div>
       <div class="picker-bar">
-        <el-input v-model="pickerKeyword" placeholder="搜索模型 / 供应商 / 官方 ID" clearable @keyup.enter="searchCandidates(false)" />
-        <el-button type="primary" @click="searchCandidates(false)">搜索</el-button>
-        <el-button text @click="selectAllGroups">全选当前筛选</el-button>
-        <el-button text @click="pickerSelected.clear()">取消当前筛选选择</el-button>
+        <el-button link type="primary" @click="selectAllGroups">全选当前筛选</el-button>
+        <el-button link type="primary" @click="pickerSelected.clear()">取消当前筛选选择</el-button>
+        <el-button link type="primary" @click="invertPickerSelection">反选当前筛选</el-button>
         <span class="muted">已选 {{ pickerSelected.size }} 个模型</span>
       </div>
       <el-alert v-if="pickerError" :title="pickerError" type="error" show-icon :closable="false" />
-      <el-table v-loading="pickerLoading" :data="pickerGroups" row-key="key" max-height="380">
+      <el-table v-loading="pickerLoading" :data="pickerVisibleGroups" row-key="key" max-height="380">
         <el-table-column width="44">
           <template #default="{ row }">
             <el-checkbox :model-value="pickerSelected.has(row.key)" @change="togglePick(row.key)" />
@@ -1404,7 +1461,7 @@ onMounted(async () => {
         </el-table-column>
         <template #empty><el-empty description="没有可报价的模型（需已接入、正式配置已确认、测试证据有效）" :image-size="64" /></template>
       </el-table>
-      <p class="picker-note">只展示对应区域已成功接入的可用资源；在报价表中手动选择具体供应商。</p>
+      <p class="picker-note">只展示对应供应商已成功接入的可用资源；具体供应来源在报价卡片里逐模型选择。</p>
       <el-button v-if="pickerRows.length < pickerTotal" text :loading="pickerLoading" @click="searchCandidates(true)">加载更多</el-button>
       <template #footer>
         <el-button @click="pickerVisible = false">取消</el-button>
@@ -1495,6 +1552,10 @@ onMounted(async () => {
 .severe-lead { margin: 0 0 12px; font-size: 13px; line-height: 1.7; color: #8a5a12; background: #fff8ea; border: 1px solid #f2e2c2; border-radius: 8px; padding: 10px 12px; }
 .severe-tip { margin: 12px 0 0; font-size: 12px; color: var(--app-text-muted); }
 .foot-actions { display: flex; gap: 10px; }
+.picker-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.picker-filters label { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.picker-filters .el-select { width: 140px; }
+.picker-filters .picker-keyword { width: 200px; }
 .picker-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .approval-grid { margin-top: 18px; }
 .dialog-form { margin-top: 16px; }
