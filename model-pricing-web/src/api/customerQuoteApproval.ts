@@ -40,6 +40,10 @@ export interface QuoteApprovalRowDTO {
   reason: string;
   decided_by: number | null;
   decided_at: string | null;
+  /** 后续办理（2026-11）：批准后是否已建立客户资源接入，取值同 customer_resource_link.state。 */
+  handling_state?: string;
+  /** 关联的供应资源 id（未接入时为空串）。 */
+  resource_id?: string;
   /** 提交时的价目快照；老数据为空数组。 */
   price_detail: ApprovalPriceItemDTO[] | null;
 }

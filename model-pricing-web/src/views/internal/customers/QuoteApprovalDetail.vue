@@ -43,6 +43,21 @@ const message = (value: unknown) =>
 
 const statusLabel = (status: string) => APPROVAL_STATUS_LABELS[status] ?? status;
 const statusType = (status: string) => APPROVAL_STATUS_TYPES[status] ?? "info";
+// 后续办理（2026-11）：只列批准的行；状态取 customer_resource_link.state。
+// 「未建立接入」是正常状态（刚批准还没办完），不要显示成异常。
+const approvedRows = computed(() => (detail.value?.rows ?? []).filter(row => row.result === "APPROVED"));
+function handlingLabel(state?: string) {
+  switch (state) {
+    case "ACTIVE": return "服务中";
+    case "DISABLE_PENDING": return "禁用待确认";
+    case "DISABLED": return "已禁用";
+    case "RESTORE_PENDING": return "恢复待确认";
+    case "SUPPLY_OFFLINE_PENDING": return "来源下架待确认";
+    case "SUPPLY_OFFLINE": return "已停用";
+    default: return "未建立接入";
+  }
+}
+
 const rejectedRows = computed(() => (detail.value?.rows ?? []).filter(row => row.result === "REJECTED"));
 const canReapply = computed(() => {
   const current = detail.value;
@@ -207,6 +222,12 @@ watch(() => props.approvalId, () => { void load(); void loadPeople(); }, { immed
           <div class="result-line">
             <b>技术办理人：</b>{{ personName(detail.ops_assignee_id) }}　
             <b>商务办理人：</b>{{ personName(detail.business_assignee_id) }}
+          </div>
+          <div v-if="approvedRows.length" class="result-line">
+            <b>后续办理：</b>
+            <span v-for="row in approvedRows" :key="row.id" class="handling-item">
+              {{ row.model_name }}：{{ handlingLabel(row.handling_state) }}<template v-if="row.resource_id">（资源 #{{ row.resource_id }}）</template>
+            </span>
           </div>
           <div v-if="detail.withdraw_reason" class="result-line"><b>撤回原因：</b>{{ detail.withdraw_reason }}</div>
           <div v-if="canReapply" class="reapply-block">

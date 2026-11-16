@@ -623,6 +623,36 @@ func (r *CustomerSpecialRepo) LoadQuoteApproval(ctx context.Context, approvalID 
 	// 不回算的话审批详情只能显示「2.266668 ~ 11.33334」这种单价区间——
 	// 审批人看不出这是贵还是便宜，也看不到报价系数。
 	var fallback map[int64][]customer.ApprovalPriceItem
+	// 后续办理：批准过的模型是否已建立客户资源接入（按客户 + 标准模型取当条有效 link）。
+	// 读失败不阻断审批详情——办理状态是辅助信息，不能因为它让审批页打不开。
+	linkState := make(map[int64][2]string, len(rows))
+	if len(rows) > 0 {
+		ids := make([]int64, 0, len(rows))
+		for _, row := range rows {
+			ids = append(ids, row.StandardModelID)
+		}
+		var linkRows []struct {
+			StandardModelID int64   `gorm:"column:standard_model_id"`
+			ResourceID      *string `gorm:"column:resource_id"`
+			State           string  `gorm:"column:state"`
+		}
+		if err := r.txOf(ctx).Table("customer_resource_link").
+			Select("standard_model_id, resource_id::text AS resource_id, state").
+			Where("customer_profile_id = ? AND standard_model_id IN ? AND COALESCE(archived,false) = false", head.CustomerID, ids).
+			Order("id DESC").
+			Scan(&linkRows).Error; err == nil {
+			for _, link := range linkRows {
+				resourceID := ""
+				if link.ResourceID != nil {
+					resourceID = *link.ResourceID
+				}
+				if _, exists := linkState[link.StandardModelID]; !exists {
+					linkState[link.StandardModelID] = [2]string{link.State, resourceID}
+				}
+			}
+		}
+	}
+
 	for _, row := range rows {
 		if len(row.PriceDetail) > 0 {
 			continue
@@ -663,6 +693,9 @@ func (r *CustomerSpecialRepo) LoadQuoteApproval(ctx context.Context, approvalID 
 		}
 		if len(row.PriceDetail) > 0 {
 			item.PriceDetail = parseApprovalPriceItems(row.PriceDetail)
+		}
+		if link, ok := linkState[row.StandardModelID]; ok {
+			item.HandlingState, item.ResourceID = link[0], link[1]
 		}
 		if len(item.PriceDetail) == 0 && fallback != nil {
 			item.PriceDetail = fallback[row.StandardModelID]

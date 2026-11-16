@@ -98,6 +98,10 @@ type QuoteApprovalRow struct {
 	Reason          string     `json:"reason"`
 	DecidedBy       *int64     `json:"decided_by"`
 	DecidedAt       *time.Time `json:"decided_at"`
+	// HandlingState / ResourceID 是「后续办理」状态（2026-11）：
+	// 批准后的模型是否已经建立客户资源接入（customer_resource_link），以及接到哪条资源。
+	HandlingState string `json:"handling_state"`
+	ResourceID    string `json:"resource_id"`
 	// PriceDetail 是提交时的价目快照（原型审批详情右侧「报价明细」）。
 	PriceDetail []ApprovalPriceItem `json:"price_detail"`
 }
