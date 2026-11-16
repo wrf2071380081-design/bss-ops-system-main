@@ -126,6 +126,8 @@ type submissionDTO struct {
 	SubmitterName string   `json:"submitter_name"`
 	Region        string   `json:"region"`
 	RowCount      int      `json:"row_count"`
+	// Result 是批次结果派生（2026-11）：通过 / 部分通过 / 不通过 / 进行中。
+	Result        string   `json:"result"`
 	ModelNames    []string `json:"model_names"`
 	// UntestedModelCount 是「还没有连通结果」的行数：提交放行时给审批侧看覆盖有多薄。
 	UntestedModelCount int `json:"untested_model_count"`
@@ -157,6 +159,8 @@ type submissionWriteRow struct {
 
 type submissionWrite struct {
 	Kind             string               `json:"kind"`
+	// Region 是本次申报的部署节点（2026-11）：不再由供应商主体决定，缺省时回落到主体历史区域。
+	Region           string               `json:"region"`
 	ExpectedRevision string               `json:"expected_revision"`
 	Reason           string               `json:"reason"`
 	Rows             []submissionWriteRow `json:"rows"`
@@ -351,9 +355,18 @@ func (h *supplierSubmissionHandler) create(c *gin.Context) {
 	if !ok {
 		return
 	}
-	region, err := h.svc.store.SupplierRegion(c.Request.Context(), supplierID)
-	if err != nil {
-		writeSubmissionError(c, err)
+	// 部署节点由本次申报决定；没传才回落到主体区域（历史数据兼容）。
+	region := strings.ToUpper(strings.TrimSpace(body.Region))
+	if region == "" {
+		fallback, err := h.svc.store.SupplierRegion(c.Request.Context(), supplierID)
+		if err != nil {
+			writeSubmissionError(c, err)
+			return
+		}
+		region = fallback
+	}
+	if region != "CN" && region != "OVERSEAS" {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "region 只支持 CN / OVERSEAS", 400))
 		return
 	}
 	id, err := h.svc.store.CreateDraft(c.Request.Context(), supplierID, kind, region, strings.TrimSpace(body.Reason), rows)
@@ -418,8 +431,9 @@ func (h *supplierSubmissionHandler) submit(c *gin.Context) {
 		return
 	}
 	if header.Kind == submissionKindModelNew {
-		// 原型口径（2026-10-27 确认）：覆盖 + 至少一个压力模型即可提交，不看是否通过。
-		if err := h.evaluateSubmitGate(ctx, supplierID, submissionID); err != nil {
+		// 2026-11 口径：提交时逐模型做**本地模拟连通检查**（不调用生产 API、不写测试结果）。
+		// 任一模型不通过 → 整单不提交、不改状态，把失败模型与原因回给供应商。
+		if err := h.simulateSubmitConnectivity(ctx, supplierID, submissionID); err != nil {
 			writeSubmissionError(c, err)
 			return
 		}
@@ -958,6 +972,77 @@ func groupGateOrder(groups map[int64]supplypg.TestConfigGroupCredential) []suppl
 	return ordered
 }
 
+// simulateSubmitConnectivity 是 2026-11 版本要求的「本地模拟连通检查」。
+//
+// 与旧的 evaluateSubmitGate 的区别：不要求先跑真实测试，也不看压测；
+// 只用**每行绑定的配置组**做本地判定（模型/接口 ID 齐全、组存在且启用、URL 与 Key 可用）。
+// 结果不落库、不产生测试报告——说明文档反复强调"模拟结果不能当作生产联通证据"。
+func (h *supplierSubmissionHandler) simulateSubmitConnectivity(ctx context.Context, supplierID, submissionID int64) error {
+	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
+	if err != nil {
+		return err
+	}
+	groups, err := h.svc.groups.ListCredentials(ctx, supplierID)
+	if err != nil {
+		return err
+	}
+	return checkSimulatedConnectivity(applyConfigGroups(rows[submissionID], groups), groups)
+}
+
+// checkSimulatedConnectivity 是上面那条规则的纯函数版本（不碰数据库，便于单测）。
+func checkSimulatedConnectivity(list []supplypg.SubmissionRowRecord, groups map[int64]supplypg.TestConfigGroupCredential) error {
+	if len(list) == 0 {
+		return apperr.New(apperr.ErrInvalidParams.Code, "请至少填写一个模型后再提交", 400)
+	}
+	failures := make([]string, 0, len(list))
+	for i, row := range list {
+		reason := ""
+		switch {
+		case row.StandardModelID <= 0:
+			reason = "未选择标准模型"
+		case strings.TrimSpace(row.SupplierModelName) == "":
+			reason = "缺少接口模型 ID"
+		case row.TestConfigGroupID == nil || *row.TestConfigGroupID <= 0:
+			reason = "未选择准入配置组"
+		default:
+			group, ok := groups[*row.TestConfigGroupID]
+			switch {
+			case !ok:
+				reason = "绑定的准入配置组不存在"
+			case !group.Enabled:
+				reason = "绑定的是已停用的配置组"
+			case !validTestBaseURL(group.BaseURL):
+				reason = "配置组 Base URL 不是合法的 http/https 地址"
+			case strings.TrimSpace(group.APIKey) == "":
+				reason = "配置组缺少 API Key"
+			}
+		}
+		if reason == "" {
+			continue
+		}
+		name := row.StandardModelName
+		if name == "" {
+			name = row.SupplierModelName
+		}
+		if name == "" {
+			name = fmt.Sprintf("第 %d 行", i+1)
+		}
+		failures = append(failures, name+"："+reason)
+	}
+	if len(failures) == 0 {
+		return nil
+	}
+	shown := failures
+	if len(shown) > 3 {
+		shown = shown[:3]
+	}
+	message := "本地模拟连通检查未通过，本次未提交：" + strings.Join(shown, "；")
+	if len(failures) > 3 {
+		message += fmt.Sprintf("（共 %d 个模型失败）", len(failures))
+	}
+	return apperr.New(apperr.ErrInvalidParams.Code, message, 400)
+}
+
 func (h *supplierSubmissionHandler) evaluateSubmitGate(ctx context.Context, supplierID, submissionID int64) error {
 	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
 	if err != nil {
@@ -1217,6 +1302,35 @@ func formatOptionalID(value *int64) string {
 	return strconv.FormatInt(*value, 10)
 }
 
+// deriveSubmissionResult 派生批次结果（2026-11 口径）：
+//   - 未走到审批结论之前一律「进行中」，不提前给出通过/不通过；
+//   - 审批完成后按行汇总：全通过=通过，部分通过=部分通过，全拒绝=不通过。
+func deriveSubmissionResult(status string, rows []supplypg.SubmissionRowRecord) string {
+	switch status {
+	case submissionDraft, submissionPendingTest, submissionPending, submissionWithdrawn:
+		return "IN_PROGRESS"
+	}
+	approved, rejected := 0, 0
+	for _, row := range rows {
+		switch row.RowStatus {
+		case "ADMITTED":
+			approved++
+		case "REJECTED":
+			rejected++
+		}
+	}
+	switch {
+	case approved > 0 && rejected == 0:
+		return "APPROVED"
+	case approved > 0 && rejected > 0:
+		return "PARTIAL"
+	case approved == 0 && rejected > 0:
+		return "REJECTED"
+	default:
+		return "IN_PROGRESS"
+	}
+}
+
 // buildSubmissionDTO 组装前端契约；顺带推导测试状态与权限。
 func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.SubmissionRowRecord) submissionDTO {
 	submitted := header.Status == submissionPendingTest || header.Status == submissionPending || header.Status == submissionApproved
@@ -1230,6 +1344,7 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 		ModelNames: make([]string, 0, len(rows)),
 	}
 	dto.RowCount = len(rows)
+	dto.Result = deriveSubmissionResult(header.Status, rows)
 	dto.UntestedModelCount = untestedRowCount(rows)
 	for _, row := range rows {
 		item := submissionRowDTO{

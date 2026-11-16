@@ -43,7 +43,8 @@ const filterParams = computed<SupplierSubmissionListParams>(() => {
   if (filters.submitter.length) params.submitter = join(filters.submitter);
   return params;
 });
-const kindOptions = computed(() => options.value?.kinds?.length ? options.value.kinds : ["MODEL_NEW", "PRICE_CHANGE"]);
+// 2026-11：供应商门户只发起「模型新增」；采购改价由内部发起，门户不再提供入口。
+const kindOptions = computed(() => ["MODEL_NEW"]);
 const statusOptions = computed(() => options.value?.statuses?.length ? options.value.statuses : ["PENDING_TEST", "PENDING_APPROVAL", "PROCESSING", "APPROVED", "REJECTED", "WITHDRAWN"]);
 // 部署节点是固定枚举，原型里就是「国内 / 海外」两项；后端存 CN / OVERSEAS。
 const regionOptions = [
@@ -56,6 +57,13 @@ const modelTypeOptions = computed(() => (options.value?.model_types || []).map(i
 const submitterOptions = computed(() => (options.value?.submitters || []).map(item => ({ value: item, label: item })));
 
 function kindLabel(value: string) { return value === "PRICE_CHANGE" ? "价格变更" : "模型新增"; }
+// 批次结果派生（后端给 code，页面给中文；进行中不额外打标签）
+function resultLabel(value?: string) {
+  if (value === "APPROVED") return "批次通过";
+  if (value === "PARTIAL") return "部分通过";
+  if (value === "REJECTED") return "批次不通过";
+  return "";
+}
 function regionLabelOf(value: string) {
   return regionOptions.find(item => item.value === value)?.label || value;
 }
@@ -214,7 +222,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
           <SupplierFilterSelect v-model="filters.company" label="模型公司" :options="companyOptions" :disabled="!companyOptions.length" />
           <SupplierFilterSelect v-model="filters.model_type" label="模型类型" :options="modelTypeOptions" :disabled="!modelTypeOptions.length" />
           <SupplierFilterSelect v-model="filters.region" label="部署节点" :options="regionOptions" />
-          <SupplierFilterSelect v-model="filters.kind" label="申报类型" :options="kindOptions.map(item => ({ value: item, label: kindLabel(item) }))" />
+
           <SupplierFilterSelect v-model="filters.status" label="当前状态" :options="statusOptions.map(item => ({ value: item, label: statusLabel(item) }))" />
           <SupplierFilterSelect v-model="filters.submitter" label="供应商提交人" :options="submitterOptions" :disabled="!submitterOptions.length" />
           <el-input v-model="keyword" size="small" class="record-search" placeholder="搜索申报编号 / 模型名称 / 接口模型 ID" clearable />
@@ -237,6 +245,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
           <el-table-column label="当前状态" width="150" sortable :sort-method="(a: SupplierSubmissionDTO, b: SupplierSubmissionDTO) => statusLabel(a.status).localeCompare(statusLabel(b.status))">
             <template #default="{ row }">
               <el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+              <el-tag v-if="resultLabel(row.result)" size="small" type="info" class="result-tag">{{ resultLabel(row.result) }}</el-tag>
               <div v-if="row.pending_row_count" class="muted">待补 {{ row.pending_row_count }} 个</div>
             </template>
           </el-table-column>

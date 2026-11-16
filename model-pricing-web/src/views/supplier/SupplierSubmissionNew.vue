@@ -216,16 +216,12 @@ function groupHasPassedConnectivity(groupID: string) {
   return rows.value.some(row => row.test_config_group_id === groupID && row.connectivity_tested && row.connectivity_passed);
 }
 const gateError = computed(() => {
+  // 2026-11 口径：提交只校验"模型信息完整 + 每行挂了配置组"，
+  // 连通性由服务端在提交时做**本地模拟检查**（不要求先跑真实测试，也没有压测门槛）。
   if (!rows.value.length) return "请至少添加一条模型。";
   if (rowsWithoutGroup.value.length > 0) return `还有 ${rowsWithoutGroup.value.length} 个模型没有选择准入配置组。`;
-  const failed = usedGroups.value.find(group => !groupHasPassedConnectivity(group.id));
-  if (failed) {
-    const index = groups.value.findIndex(group => group.id === failed.id) + 1;
-    const note = failed.enabled ? "" : "（该组已停用，可改挂其它组）";
-    return `第 ${index} 组「${failed.name}」还没有连通成功的模型，请先在该组发起连通性测试${note}。`;
-  }
-  if (selectedStressCount.value === 0) return "请至少勾选一个压力测试模型。";
-  if (pendingStress.value > 0) return `勾选的模型里还有 ${pendingStress.value} 个没有压力测试结果，请先发起测试。`;
+  const incomplete = rows.value.find(row => !row.standard_model_id || !String(row.interface_model_id || "").trim());
+  if (incomplete) return "每个模型都要选择标准模型并填写接口模型 ID。";
   return "";
 });
 const canSubmitBatch = computed(() => !gateError.value);
@@ -297,12 +293,17 @@ async function loadDraft(id: string) {
     if (!active || request.signal.aborted) return;
     if (result.kind !== "MODEL_NEW") throw new Error("当前申报不是模型新增类型。请从申报记录重新打开。");
     normalizeSaved(result);
+    deployRegion.value = result.region === "OVERSEAS" ? "OVERSEAS" : "CN";
     // 重新打开一张还有任务在跑的草稿时接着盯，别让用户回来只看到「测试中」干等。
     if (hasRunningTest.value) watchTestProgress();
   } catch (value) {
     if (active && !request.signal.aborted) error.value = value instanceof Error ? value.message : "申报详情暂时无法加载。";
   } finally { if (active && !request.signal.aborted) loadingDraft.value = false; }
 }
+// 2026-11：部署节点由本次申报决定（国内部署→国内平台，海外部署→海外平台），
+// 与供应商主体注册地无关；国内部署的资源只能接入国内平台。
+const deployRegion = ref<"CN" | "OVERSEAS">("CN");
+
 function addRow() { rows.value.push(blankRow()); }
 function removeRow(index: number) { rows.value.splice(index, 1); }
 function selectStandardModel(row: EditableRow, id: string | number) {
@@ -321,7 +322,7 @@ function writePayload() {
     participate_test: !!row.participate_test,
     test_config_group_id: row.test_config_group_id || "",
   }));
-  return { kind: "MODEL_NEW" as const, ...(submissionID.value ? { expected_revision: revision.value } : {}), reason: reason.value.trim(), rows: payloadRows };
+  return { kind: "MODEL_NEW" as const, region: deployRegion.value, ...(submissionID.value ? { expected_revision: revision.value } : {}), reason: reason.value.trim(), rows: payloadRows };
 }
 async function saveDraft(): Promise<boolean> {
   if (saving.value || submitting.value || loadingDraft.value || !canEdit.value || draftConflict.value) return false;
@@ -802,12 +803,15 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
     </div>
 
     <div class="batch-actions">
-      <el-button size="small" :loading="importBusy" :disabled="locked" @click="downloadTemplate">下载导入模板</el-button>
-      <el-button size="small" :disabled="locked" @click="triggerImport">导入 Excel</el-button>
-      <input ref="importInput" type="file" accept=".xlsx" hidden @change="onImportFile" />
-      <span class="batch-hint">
-        连通性测试按「每组至少一个通过」校验；压力测试只做勾选的模型（已勾 {{ selectedStressCount }} 个，待测 {{ pendingStress }} 个）<template v-if="untestedCount">；当前共 {{ untestedCount }} 个模型未测</template>。
+      <span class="deploy-region">
+        部署节点
+        <el-select v-model="deployRegion" size="small" style="width: 110px" :disabled="locked">
+          <el-option label="国内" value="CN" />
+          <el-option label="海外" value="OVERSEAS" />
+        </el-select>
       </span>
+      <!-- 2026-11：门户不再提供 Excel 模板与导入 -->
+      <span class="batch-hint">提交时服务端会逐模型做本地模拟连通检查（不调用生产 API，也不代表真实联通）；任一模型不通过则整单不提交。</span>
     </div>
 
     <el-table :data="rows" row-key="id" class="submission-table" :row-class-name="rowClassName" empty-text="还没有模型，点「添加模型」开始">
@@ -840,9 +844,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       <el-table-column label="采购系数" width="130">
         <template #default="{ row }"><el-input v-model="row.coefficient" inputmode="decimal" placeholder="0.6800" :disabled="locked" /></template>
       </el-table-column>
-      <el-table-column label="压力测试" width="100" align="center">
-        <template #default="{ row }"><el-checkbox v-model="row.participate_test" :disabled="locked">参与</el-checkbox></template>
-      </el-table-column>
+      <!-- 2026-11：门户不再提供压力测试 -->
       <el-table-column label="测试" min-width="250">
         <template #default="{ row }">
           <div class="test-cell">
@@ -887,7 +889,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       <el-input v-model="reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="locked" placeholder="选填：补充给办理方的信息" />
     </el-form-item>
     <el-alert v-if="!canSubmitBatch" :title="`尚不能提交：${gateError}`" type="warning" :closable="false" show-icon />
-    <el-alert v-else title="可以提交：覆盖了全部连通性测试并至少有一个压力测试模型。" type="success" :closable="false" show-icon />
+    <el-alert v-else title="可以提交：服务端会在提交时做本地模拟连通检查。" type="success" :closable="false" show-icon />
 
     <el-dialog v-model="importDialog" title="导入预览" width="760px">
       <template v-if="importPreview">

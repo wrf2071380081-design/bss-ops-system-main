@@ -10,7 +10,7 @@ const session = useSessionStore();
 const loggingOut = ref(false);
 
 const menu = [
-  { path: "/supplier/home", label: "申报", mark: "▤" },
+  { path: "/supplier/home", label: "模型新增", mark: "▤" },
   { path: "/supplier/models", label: "模型管理", mark: "◇" },
   { path: "/supplier/profile", label: "账户设置", mark: "○" },
 ];

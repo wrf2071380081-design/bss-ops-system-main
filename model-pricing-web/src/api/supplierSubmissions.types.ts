@@ -67,6 +67,8 @@ export interface SupplierSubmissionDTO {
   model_names?: string[];
   /** 提交后仍未通过的行数 */
   pending_row_count?: number;
+  /** 批次结果派生（2026-11）：IN_PROGRESS / APPROVED / PARTIAL / REJECTED */
+  result?: string;
   kind: SupplierSubmissionKind;
   status: string;
   revision: string;
