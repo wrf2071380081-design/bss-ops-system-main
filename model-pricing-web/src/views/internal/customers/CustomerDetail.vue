@@ -764,6 +764,14 @@ function pendingApprovalOf(quoteID: number) {
   return quoteApprovalRows.value.find(row => row.quote_id === quoteID && row.status === "PENDING");
 }
 
+// 回源原审批（2026-11）：报价记录只要有过审批，就能点回那张单（不限状态）。
+// 取最近一次：同一报价可能被驳回后重新提交，旧单保留可查。
+function latestApprovalOf(quoteID: number) {
+  const list = quoteApprovalRows.value.filter(row => row.quote_id === quoteID);
+  if (!list.length) return undefined;
+  return [...list].sort((a, b) => Number(b.id) - Number(a.id))[0];
+}
+
 function staffId(): number {
   return session.user?.staffId ? Number(session.user.staffId) : 0;
 }
@@ -1416,6 +1424,11 @@ function backToList() {
                 >撤回审批</el-button>
                 <span v-else class="hint">审批中</span>
               </template>
+              <el-button
+                v-else-if="latestApprovalOf(row.id)"
+                link type="primary"
+                @click="openQuoteApproval(latestApprovalOf(row.id)!)"
+              >查看审批</el-button>
               <el-button
                 v-else-if="canQuoteEdit && row.status === 'DRAFT'"
                 link type="primary"

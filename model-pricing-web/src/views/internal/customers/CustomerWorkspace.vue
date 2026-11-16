@@ -953,9 +953,28 @@ onMounted(async () => {
     // 列表接口对他们返回空，硬切过去只会看到「找不到」。
     const approvalId = Number(route.query.approval);
     if (canQuoteApprove.value && Number.isSafeInteger(approvalId) && approvalId > 0) {
-      quoteView.value = "approvals";
-      approvalDetailId.value = approvalId;
-      void loadQuoteApprovals();
+      // 回源校验（2026-11）：先用 id 取一次原审批，确认它属于路由上带的客户，
+      // 再打开详情。错客户 / 无权访问直接拒绝，不给前端留"看一眼别人的单"的口子。
+      try {
+        const approval = await quoteApprovalApi.get(approvalId);
+        const expectedCustomer = Number(route.query.customer_id) || 0;
+        if (expectedCustomer && Number(approval.customer_id) !== expectedCustomer) {
+          ElMessage.warning("该审批单不属于当前客户，已拒绝打开。");
+          const next = { ...route.query } as Record<string, string>;
+          delete next.approval;
+          delete next.customer_id;
+          void router.replace({ path: route.path, query: next });
+        } else {
+          quoteView.value = "approvals";
+          approvalDetailId.value = approvalId;
+          void loadQuoteApprovals();
+        }
+      } catch (error) {
+        ElMessage.warning(`审批单不可访问：${message(error)}`);
+        const next = { ...route.query } as Record<string, string>;
+        delete next.approval;
+        void router.replace({ path: route.path, query: next });
+      }
     }
     // 从客户详情/审批弹窗带过来的关联重报：查一次审批单拿到被驳回的模型名。
     const reapply = Number(route.query.reapply);
