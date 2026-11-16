@@ -8,6 +8,7 @@ import {
   type StaffSummaryDTO,
 } from "../../../api/orgPermissions";
 import { ApiError } from "../../../domain/common";
+import { staffPositionsApi, STAFF_POSITION_LABELS, type StaffPosition } from "../../../api/staffPositions";
 
 // 后端 RoleSummaryDTO 目前不返回 role.code（见 docs/api/12-org-permissions.md §5），
 // 所以「超管 / 领导 / 员工」只能按角色名排到前面。后端补 code 后只改 ROLE_PRIORITY 这一处。
@@ -16,7 +17,25 @@ const ROLE_PRIORITY = ["平台管理员", "领导", "员工"];
 const LOGIN_ID_RE = /^[a-z][a-z0-9_]{3,31}$/;
 const MOBILE_RE = /^1[3-9]\d{9}$/;
 
-const rows = ref<StaffSummaryDTO[]>([]);
+const rows = ref<StaffSummaryDTO[]>([]);
+// 业务岗位（000070）：与权限无关，只是职责展示；保存走独立接口。
+const positions = ref<Record<string, StaffPosition[]>>({});
+const positionSavingID = ref<string>("");
+async function loadPositions() {
+  try { positions.value = await staffPositionsApi.list(); } catch { positions.value = {}; }
+}
+async function savePositions(staffID: string, value: StaffPosition[]) {
+  if (positionSavingID.value) return;
+  positionSavingID.value = staffID;
+  try {
+    positions.value = { ...positions.value, [staffID]: await staffPositionsApi.save(staffID, value, crypto.randomUUID()) };
+    ElMessage.success("业务岗位已保存（不影响系统权限）");
+  } catch (value) {
+    ElMessage.error(value instanceof Error ? value.message : "业务岗位保存失败。");
+    await loadPositions();
+  } finally { positionSavingID.value = ""; }
+}
+const positionLabels = STAFF_POSITION_LABELS;
 const total = ref(0);
 const page = ref(1);
 const size = ref(20);
@@ -119,6 +138,7 @@ function resetSearch() {
 onMounted(() => {
   void loadMeta();
   void load(1);
+  void loadPositions();
 });
 
 // ============================================================
@@ -418,6 +438,22 @@ async function revokeRole(roleId: string, roleName: string) {
             {{ role.name }}
           </el-tag>
           <span v-if="!row.roles.length" class="muted">未授权</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="业务岗位" min-width="190">
+        <template #default="{ row }">
+          <el-select
+            :model-value="positions[row.id] || []"
+            multiple
+            size="small"
+            collapse-tags
+            placeholder="未设置"
+            :loading="positionSavingID === String(row.id)"
+            style="width: 100%"
+            @update:model-value="(value: StaffPosition[]) => savePositions(String(row.id), value)"
+          >
+            <el-option v-for="(label, code) in positionLabels" :key="code" :label="label" :value="code" />
+          </el-select>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="95">

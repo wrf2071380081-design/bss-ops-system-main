@@ -54,6 +54,8 @@ type Deps struct {
 	// SupplierTestConfigGroups 是供应商准入测试**配置组**（000052，原型对齐）。
 	// nil 时 /supplier/test-config-groups 不注册（同一条纪律：没接仓储就不暴露能力）。
 	SupplierTestConfigGroups *SupplierTestConfigGroupService
+	// StaffPositions 是内部人员业务岗位（000070）：只用于展示，不影响权限。
+	StaffPositions *StaffPositionStore
 	// SupplierModels 是供应商门户「模型管理」列表（2026-10-28）。
 	// nil 时 /supplier/models 不注册（同一条纪律：没接仓储就不暴露能力）。
 	SupplierModels *SupplierModelService
@@ -710,6 +712,12 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 		oh := NewOrgPermissionHandler(deps.OrgPermSvc)
 		protected.GET("/org-permissions/organizations", middleware.RequirePerm(perm.M11View), oh.ListOrganizations)
 		protected.GET("/org-permissions/roles", middleware.RequirePerm(perm.M11View), oh.ListRoles)
+		// 业务岗位：展示用，维护需 M11:E。
+		if deps.StaffPositions != nil {
+			sph := NewStaffPositionHandler(deps.StaffPositions)
+			protected.GET("/staff-positions", middleware.RequirePerm(perm.M11View), sph.list)
+			protected.PUT("/staff/:id/positions", middleware.RequirePerm(perm.M11Edit), middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey), sph.save)
+		}
 
 		// 账号管理（M11:E + PLATFORM_ADMIN）。写接口必挂幂等（红线 5）。
 		if deps.StaffStore != nil {

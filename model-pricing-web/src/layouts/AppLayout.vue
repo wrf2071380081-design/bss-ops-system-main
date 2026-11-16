@@ -12,6 +12,7 @@ import { useThemeStore, type ThemeMode } from "../stores/theme";
 import { logout } from "../api/auth";
 import { ElMessage } from "element-plus";
 import { ref } from "vue";
+import { APP_VERSION_LABEL } from "../domain/appVersion";
 
 const route = useRoute();
 const router = useRouter();
@@ -79,6 +80,7 @@ function switchIdentity(value: DevIdentityKey) {
         <span class="app-brand__mark">M</span>
         <span>模型与定价中心<small>MODEL OPERATIONS</small></span>
       </router-link>
+      <div class="app-version">{{ APP_VERSION_LABEL }}</div>
       <div class="app-nav__label">{{ portalNames[portal] }}</div>
       <nav class="app-nav" aria-label="业务导航">
         <router-link

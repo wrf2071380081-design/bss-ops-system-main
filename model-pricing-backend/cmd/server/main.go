@@ -295,6 +295,12 @@ func main() {
 		platformServiceSvc = nil
 	}
 	supplyRoutes.SupplierPlatformServices = platformServiceSvc
+	// 内部人员业务岗位（000070）：只用于展示，不影响权限。
+	staffPositionStore, err := api.NewStaffPositionStore(rawDB, "public")
+	if err != nil {
+		log.Warn("initialize staff position store", zap.Error(err))
+		staffPositionStore = nil
+	}
 	router := api.New(api.Deps{
 		Config:              cfg,
 		Log:                 log,
@@ -302,6 +308,7 @@ func main() {
 		AuthService:         authService,
 		SessionReader:       authRepo,
 		IdemStore:           idemStore,
+		StaffPositions: staffPositionStore,
 		TestJobs:            testJobStarter(testPlatform),
 		TestCallbacks:       testCallbackReceiver(testPlatform),
 		ResourceTestTargets: testTargets(testPlatform),
