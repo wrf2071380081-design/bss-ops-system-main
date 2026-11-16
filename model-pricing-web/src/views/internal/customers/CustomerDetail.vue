@@ -209,6 +209,17 @@ const sortByCompany = byText(row => row.company);
 const sortByType = byText(row => row.model_type);
 const sortByRegion = byText(row => row.region);
 const sortByCoefficient = (row: CustomerModelServiceRow) => Number(row.coefficient) || 0;
+/**
+ * 「最近测试」：原型在模型行直接给一条测试结论。
+ * 取该模型绑定明细里第一条带连通结果的说；都没有就显示「暂无记录」，不编造。
+ */
+function latestTestText(row: CustomerModelServiceRow) {
+  const hit = (row.links || []).find(link => link.test_connection_ms);
+  if (!hit) return "";
+  const parts = [`连通 ${hit.test_connection_ms} ms`];
+  if (hit.test_rps) parts.push(`RPS ${hit.test_rps}`);
+  return parts.join(" · ");
+}
 const sortByAvailable = (row: CustomerModelServiceRow) => row.available_count ?? 0;
 const sortByBound = (row: CustomerModelServiceRow) => row.bound_count ?? 0;
 const sortByRisk = (row: CustomerModelServiceRow) => (row.risk_flags?.length ? 1 : 0);
@@ -1231,7 +1242,7 @@ function backToList() {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="模型名称 / 官方 ID" min-width="210" sortable :sort-by="sortByName">
+        <el-table-column label="模型 / 官方 ID" min-width="210" sortable :sort-by="sortByName">
           <template #default="{ row }">
             <div class="cell-main">{{ row.model_name || `标准模型 #${row.standard_model_id}` }}</div>
             <div class="cell-sub">{{ row.official_id || "官方 ID 待补齐" }}</div>
@@ -1257,11 +1268,17 @@ function backToList() {
         <el-table-column label="采购系数" width="110" sortable :sort-by="sortByCoefficient">
           <template #default="{ row }">{{ row.coefficient ? coefficientText(row.coefficient) : "—" }}</template>
         </el-table-column>
-        <el-table-column label="模型服务状态" width="140">
+        <el-table-column label="登记状态" width="140">
           <template #default="{ row }">
             <el-tag size="small" :type="row.service_state === '服务中' ? 'success' : row.service_state === '已禁用' ? 'info' : 'warning'">
               {{ row.service_state }}
             </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="最近测试" width="160">
+          <template #default="{ row }">
+            <span v-if="latestTestText(row)" class="mono">{{ latestTestText(row) }}</span>
+            <span v-else class="hint">暂无记录</span>
           </template>
         </el-table-column>
         <el-table-column label="有效可用资源数" width="140" align="right" sortable :sort-by="sortByAvailable">
