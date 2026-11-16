@@ -1330,7 +1330,10 @@ function backToList() {
 
       <div class="card">
         <div class="card-head">
-          <div class="card-head-left"><h3 class="card-title">合同与授信</h3></div>
+          <div class="card-head-left">
+            <h3 class="card-title">合同与授信</h3>
+            <span class="hint">独立办理线：合同／授信与模型接入互不阻塞，各自推进。</span>
+          </div>
         </div>
         <F12SubjectPanel
           v-if="profile"
@@ -1346,10 +1349,11 @@ function backToList() {
       <div class="card">
         <div class="card-head">
           <div class="card-head-left">
-            <h3 class="card-title">开通流程</h3>
+            <h3 class="card-title">开通流程（模型接入）</h3>
             <el-tag v-if="flow" size="small" :type="flow.status === 'COMPLETED' ? 'success' : 'warning'">
               {{ flow.status === "COMPLETED" ? "已完成" : "办理中" }}
             </el-tag>
+            <span class="hint">按模型逐条办理，不等待合同／授信完成。</span>
           </div>
           <div class="card-head-right">
             <!-- 审批通过已经派了办理待办（合同与授信 / 客户模型开通）时，流程应该由系统补出来；

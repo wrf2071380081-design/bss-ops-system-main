@@ -876,11 +876,47 @@ async function loadQuotes() {
 
 // 「报价记录」= 全部报价单（原型 3.10 第三步：新单在最上面，靠「当前状态」区分阶段）。
 const recordRows = computed(() => quoteRows.value);
-// 报价操作日志：当前没有独立审计表，用报价单自身的时间/状态/操作人派生（不编造动作）。
-const logRows = computed(() => quoteRows.value.map(row => ({
-  id: row.id, customer: row.customer_name, version: row.version_no,
-  status: row.status, operator: row.owner_name, at: row.created_at,
-})));
+/**
+ * 报价操作日志：**没有独立审计表**（后端未记录报价事件）。
+ * 所以这里只用已有事实拼事件流，不编造动作：
+ *   ① 报价单创建（created_at + 负责人）
+ *   ② 提交审批（approval.submitted_at + 提交人）
+ *   ③ 审批结论（approval.decided_at + 决定人 + 状态）
+ * 每条都标了「来源」，一眼能看出是哪个事实派生的。
+ */
+interface QuoteLogEvent {
+  key: string; at: string; event: string; quoteID: number; version: number;
+  customer: string; operator: string; note: string; source: string;
+}
+const logEvents = computed<QuoteLogEvent[]>(() => {
+  const events: QuoteLogEvent[] = [];
+  for (const quote of quoteRows.value) {
+    events.push({
+      key: `q-${quote.id}-create`, at: quote.created_at, event: "创建报价单",
+      quoteID: quote.id, version: quote.version_no, customer: quote.customer_name || "—",
+      operator: quote.owner_name || "—", note: `共 ${quote.item_count} 个价项`, source: "报价单",
+    });
+  }
+  for (const approval of quoteApprovalRows.value) {
+    const quote = quoteRows.value.find(row => row.id === approval.quote_id);
+    if (approval.submitted_at) {
+      events.push({
+        key: `a-${approval.id}-submit`, at: approval.submitted_at, event: "提交报价审批",
+        quoteID: approval.quote_id, version: quote?.version_no ?? 0, customer: approval.customer_name || quote?.customer_name || "—",
+        operator: approval.submitted_name || `员工 #${approval.submitted_by}`, note: `${approval.model_count} 个模型`, source: "报价审批",
+      });
+    }
+    if (approval.decided_at) {
+      events.push({
+        key: `a-${approval.id}-decide`, at: approval.decided_at, event: `审批${approvalStatusText(approval.status)}`,
+        quoteID: approval.quote_id, version: quote?.version_no ?? 0, customer: approval.customer_name || quote?.customer_name || "—",
+        operator: approval.decided_name || (approval.decided_by ? `员工 #${approval.decided_by}` : "—"),
+        note: `共 ${approval.model_count} 个模型`, source: "报价审批",
+      });
+    }
+  }
+  return events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+});
 
 const statusText = (status: string) => ({ EFFECTIVE: "历史记录", DRAFT: "草稿", PENDING: "待审批", APPROVED: "已批准", PARTIAL: "部分批准", EXPIRED: "历史记录", REJECTED: "已驳回", FORMAL: "历史记录" } as Record<string, string>)[status] || status;
 /** 已生效/过期的报价单只读：不能继续编辑，只能看。 */
@@ -896,7 +932,7 @@ function switchQuoteView(view: "edit" | "records" | "approvals" | "logs") {
   if (view !== "approvals") approvalDetailId.value = null;
   quoteView.value = view;
   if (view !== "edit" && !quoteRows.value.length) void loadQuotes();
-  if (view === "approvals") void loadQuoteApprovals();
+  if (view === "approvals" || view === "logs") void loadQuoteApprovals();
 }
 
 /** 已生效/过期的报价单是只读的：跳到该客户详情的「该客户报价」看明细。 */
@@ -1429,13 +1465,27 @@ onMounted(async () => {
       </template>
 
       <template v-else>
-        <el-table v-loading="quoteLoading" :data="logRows" row-key="id" class="grid">
+        <el-alert
+          v-if="!logEvents.length"
+          type="info"
+          :closable="false"
+          title="还没有可展示的报价事件"
+          description="日志只由已有事实派生（创建 / 提交审批 / 审批结论）；系统尚未记录更细的操作事件。"
+        />
+        <el-table v-else v-loading="quoteLoading" :data="logEvents" row-key="key" class="grid">
           <el-table-column label="时间" width="180"><template #default="{ row }">{{ formatDateTime(row.at, "—", false) }}</template></el-table-column>
-          <el-table-column label="报价编号" width="120"><template #default="{ row }">#{{ row.id }}</template></el-table-column>
-          <el-table-column label="客户名称" min-width="200"><template #default="{ row }">{{ row.customer }}</template></el-table-column>
-          <el-table-column label="版本 / 状态" width="150"><template #default="{ row }">V{{ row.version }} · {{ statusText(row.status) }}</template></el-table-column>
+          <el-table-column label="事件" width="170">
+            <template #default="{ row }"><span class="cell-main">{{ row.event }}</span></template>
+          </el-table-column>
+          <el-table-column label="报价单" width="120">
+            <template #default="{ row }">#{{ row.quoteID }}<span v-if="row.version" class="cell-sub">V{{ row.version }}</span></template>
+          </el-table-column>
+          <el-table-column label="客户" min-width="180"><template #default="{ row }">{{ row.customer }}</template></el-table-column>
           <el-table-column label="操作人" width="130"><template #default="{ row }">{{ row.operator }}</template></el-table-column>
-          <template #empty><el-empty description="暂无报价记录" :image-size="64" /></template>
+          <el-table-column label="说明" min-width="200"><template #default="{ row }">{{ row.note }}</template></el-table-column>
+          <el-table-column label="来源" width="110">
+            <template #default="{ row }"><el-tag size="small" type="info" effect="plain">{{ row.source }}</el-tag></template>
+          </el-table-column>
         </el-table>
       </template>
     </template>
