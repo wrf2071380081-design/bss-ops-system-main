@@ -29,6 +29,8 @@ const lifecycle = ref(crypto.randomUUID());
 const submissionID = ref("");
 const revision = ref("");
 const canEdit = ref(true);
+// 提交成功后不再暂存本地表单（避免下次进来带出已提交的内容）
+const submittedOnce = ref(false);
 const rows = ref<EditableRow[]>([]);
 const modelOptions = ref<SupplierModelOptionDTO[]>([]);
 const modelKeyword = ref("");
@@ -674,23 +676,24 @@ function applyImport() {
 
 async function submitDraft() {
   if (submitting.value || !canEdit.value) return;
-  if (dirty.value || !submissionID.value) {
-    if (!(await saveDraft())) return;
-  }
-  if (!submissionID.value || !revision.value) { error.value = "草稿尚未保存，请先保存后再提交。"; return; }
   if (!canSubmitBatch.value) { error.value = `还不能提交：${gateError.value}`; return; }
   submitting.value = true;
   error.value = "";
   try {
-    await supplierSubmissionsApi.submit(submissionID.value, revision.value, reason.value, lifecycle.value);
+    // 2026-11：不再有草稿。提交时一次性「创建 + 提交」：
+    // 服务端先做本地模拟连通检查，不通过则整单不落库、也不产生待审记录。
+    const payload = writePayload();
+    const saved = submissionID.value
+      ? await supplierSubmissionsApi.update(submissionID.value, payload, lifecycle.value)
+      : await supplierSubmissionsApi.create(payload, lifecycle.value);
+    await supplierSubmissionsApi.submit(saved.id, saved.revision, reason.value, lifecycle.value);
     if (!active) return;
-    // 提交成功后这份草稿就不该再被改：先落基线，再锁编辑态，避免返回前又点一次保存。
-    rememberSaved();
-    canEdit.value = false;
+    submittedOnce.value = true;
+    clearLocal();
     stopPolling();
     ElMessage.success("申报已提交，后续状态以办理进度为准。");
     await router.replace({ path: "/supplier/home", query: { tab: "history" } });
-  } catch (value) { if (active) showError(value, "申报未能提交，草稿和输入已保留。"); }
+  } catch (value) { if (active) showError(value, "申报未能提交，输入内容已保留在页面上。"); }
   finally { if (active) submitting.value = false; }
 }
 async function submitPriceChange() {
@@ -716,26 +719,41 @@ async function submitPriceChange() {
   } catch (value) { if (active) showError(value, "价格变更申报未完成，请重试。"); }
   finally { if (active) submitting.value = false; }
 }
-async function canLeave() {
-  if (saving.value || submitting.value) return false;
-  if (!dirty.value) return true;
+// 2026-11：没有草稿概念，也没有「未保存就离开」的拦截。
+// 切换视图直接走；表单内容暂存在 sessionStorage，回来接着填。
+const LOCAL_KEY = "supplier-submission-draft-v1";
+function persistLocal() {
+  if (submittedOnce.value) return;
   try {
-    await ElMessageBox.confirm("保存当前草稿后离开？", "内容尚未保存", { confirmButtonText: "保存草稿并离开", cancelButtonText: "放弃并离开", distinguishCancelAndClose: true, type: "warning" });
-    return await saveDraft();
-  } catch (action) { return action === "cancel"; }
+    sessionStorage.setItem(LOCAL_KEY, JSON.stringify({ rows: rows.value, reason: reason.value, deployRegion: deployRegion.value }));
+  } catch { /* 隐私模式/配额不足时忽略，不影响使用 */ }
 }
-function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value || saving.value) { event.preventDefault(); event.returnValue = ""; } }
+function restoreLocal(): boolean {
+  try {
+    const raw = sessionStorage.getItem(LOCAL_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw) as { rows?: EditableRow[]; reason?: string; deployRegion?: string };
+    if (!Array.isArray(data.rows) || !data.rows.length) return false;
+    rows.value = data.rows;
+    reason.value = data.reason ?? "";
+    deployRegion.value = data.deployRegion === "OVERSEAS" ? "OVERSEAS" : "CN";
+    return true;
+  } catch { return false; }
+}
+function clearLocal() { try { sessionStorage.removeItem(LOCAL_KEY); } catch { /* ignore */ } }
 
 onMounted(() => {
   void loadModelOptions();
   void loadGroups();
   const id = typeof route.query.id === "string" ? route.query.id : "";
   if (id && !isPriceChange.value) void loadDraft(id);
-  else if (!isPriceChange.value) { rows.value = [blankRow()]; savedBaseline.value = snapshot(); }
-  window.addEventListener("beforeunload", beforeUnload);
+  else if (!isPriceChange.value) {
+    // 之前填过但没提交的内容接着填（sessionStorage，不经过服务端）
+    if (!restoreLocal()) rows.value = [blankRow()];
+    savedBaseline.value = snapshot();
+  }
 });
-onBeforeRouteLeave(canLeave);
-onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); draftRequest?.abort(); window.removeEventListener("beforeunload", beforeUnload); });
+onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); draftRequest?.abort(); persistLocal(); });
 </script>
 
 <template>
@@ -837,18 +855,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
         <template #default="{ row }"><el-input v-model="row.coefficient" inputmode="decimal" placeholder="0.6800" :disabled="locked" /></template>
       </el-table-column>
       <!-- 2026-11：门户不再提供压力测试 -->
-      <el-table-column label="测试" min-width="250">
-        <template #default="{ row }">
-          <div class="test-cell">
-            <span class="test-pill"><el-tag size="small" :type="testTagType(row.connectivity_job, row.connectivity_tested, row.connectivity_passed)">连通 {{ testStateLabel(row.connectivity_job, row.connectivity_tested, row.connectivity_passed) }}</el-tag></span>
-            <span v-if="row.participate_test || row.stress_job" class="test-pill"><el-tag size="small" :type="testTagType(row.stress_job, row.stress_tested, row.stress_passed)">压力 {{ testStateLabel(row.stress_job, row.stress_tested, row.stress_passed) }}</el-tag></span>
-            <small v-if="elapsedLabel(row.connectivity_job)" class="muted">{{ elapsedLabel(row.connectivity_job) }}</small>
-            <small v-if="row.participate_test && elapsedLabel(row.stress_job)" class="muted">{{ elapsedLabel(row.stress_job) }}</small>
-            <small v-if="rowMetrics(row)" class="muted">{{ rowMetrics(row) }}</small>
-            <el-button link type="primary" size="small" :loading="!!row.id && refreshingRow === row.id" :disabled="locked || (!row.connectivity_job && !row.stress_job)" @click="refreshRow(row)">刷新结果</el-button>
-          </div>
-        </template>
-      </el-table-column>
+      <!-- 2026-11：门户不再提供手动连通/压力测试，测试列移除 -->
       <el-table-column label="状态" width="110" align="center">
         <template #default="{ row }">
           <el-tag v-if="row.id" size="small" :type="rowStatusType(row.row_status)">{{ rowStatusLabel(row.row_status) }}</el-tag>
@@ -860,13 +867,11 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       </el-table-column>
     </el-table>
 
-    <p class="rule-note">所有模型均执行连通性测试；至少勾选一个压力测试模型。同一受测配置一次有效测试；配置变化后可重测，仅改报价不增加机会。工具异常的未完成部分可重试。结果不达标也属于有效结果。</p>
+    <p class="rule-note">提交时系统会自动做一次本地模拟连通性检查（不调用真实接口）；全部通过才进入超管审批，任一模型不通过则整单不提交。专业压力测试由内部执行。</p>
 
     <div class="form-actions form-actions--inline">
       <el-button :disabled="locked" @click="addRow">添加模型</el-button>
-      <el-button type="primary" :loading="batchBusy === 'ALL'" :disabled="locked || !rows.length" @click="runBatch">发起测试／异常重试</el-button>
-      <el-button :loading="saving" :disabled="locked || !dirty || draftConflict" @click="saveDraft">{{ draftRefreshed ? '按最新版本重试' : '保存草稿' }}</el-button>
-      <el-button type="success" :loading="submitting" :disabled="locked || !canSubmitBatch || draftConflict" @click="submitDraft">提交申报</el-button>
+      <el-button type="success" :loading="submitting" :disabled="!canSubmitBatch" @click="submitDraft">提交申请</el-button>
     </div>
 
     <el-alert

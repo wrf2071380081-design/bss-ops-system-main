@@ -42,10 +42,11 @@ const regionLabel = computed(() => (account.value?.region === "OVERSEAS" ? "海�
 /** 注册编号的 label 由**已保存**的 region 决定，不跟下拉即时联动（原型实测如此，见测试用例 B05）。 */
 const registrationLabel = computed(() => registrationLabelOf(account.value?.region || "CN"));
 
-/** 主体属性 label：锁定时追加原因，如「主体属性（有上架历史，已锁定）」。 */
-const regionFieldLabel = computed(() =>
-  regionFieldLabelOf({ regionLocked: Boolean(account.value?.regionLocked), regionLockReason: account.value?.regionLockReason }),
-);
+/**
+ * 2026-11：区域不再是主体属性，只是历史资料——不再按「有上架历史，已锁定」追加原因。
+ * 部署位置由每次申报的部署节点决定，同一主体可关联国内、海外两个平台。
+ */
+const regionFieldLabel = computed(() => "首次登记区域（历史资料）");
 
 const licenseName = computed(() => pendingFile.value?.name || account.value?.license?.name || "");
 
@@ -195,8 +196,6 @@ onMounted(loadAccount);
     <el-button text @click="loadAccount">重新加载</el-button>
   </el-alert>
 
-  <el-tabs v-model="activeTab" class="supplier-tabs" @tab-change="onTabChange">
-    <el-tab-pane label="账户资料" name="profile">
       <section v-loading="loading" class="panel account-card">
         <div class="account-card__head"><h2>账户设置</h2></div>
 
@@ -226,6 +225,7 @@ onMounted(loadAccount);
             <el-select v-model="form.region" :disabled="Boolean(account?.regionLocked)" style="width: 100%">
               <el-option v-for="option in REGION_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
+            <span class="account-field__hint">资源部署位置在每次申报中选择；同一主体可关联两个平台。</span>
           </label>
 
           <div class="account-field account-field--license">
@@ -252,35 +252,6 @@ onMounted(loadAccount);
       </section>
     </el-tab-pane>
 
-    <el-tab-pane label="操作记录" name="logs">
-      <section class="panel account-logs">
-        <div class="account-card__head"><h2>操作记录</h2></div>
-        <el-alert v-if="logsError" :title="logsError" type="error" show-icon :closable="false">
-          <el-button text @click="loadLogs">重新加载</el-button>
-        </el-alert>
-        <el-table
-          v-loading="logsLoading"
-          :data="logs"
-          row-key="id"
-          empty-text="暂无操作记录"
-          class="account-logs__table"
-        >
-          <el-table-column label="操作" prop="action" min-width="170" sortable />
-          <el-table-column label="对象" prop="object" min-width="260" show-overflow-tooltip />
-          <el-table-column label="操作人" prop="operator" width="120" sortable />
-          <el-table-column label="时间" prop="operatedAt" min-width="180" sortable>
-            <template #default="{ row }">{{ formatTime(row.operatedAt) }}</template>
-          </el-table-column>
-          <el-table-column label="详情" width="90">
-            <template #default="{ row }">
-              <el-button link type="primary" @click="detail = row">查看</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-        <p class="account-logs__total">共 {{ logsTotal }} 条</p>
-      </section>
-    </el-tab-pane>
-  </el-tabs>
 
   <p class="supplier-footnote">
     Token Ops · 主体池迭代

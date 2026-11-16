@@ -160,7 +160,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
         <template #default="{ row }"><el-tag :type="stateType(row.state)">{{ stateLabel(row.state) }}</el-tag></template>
       </el-table-column>
       <el-table-column label="操作" width="130" align="center">
-        <template #default="{ row }"><el-button size="small" @click="priceChange(row)">价格变更</el-button></template>
+        <template #default><span class="muted">—</span></template>
       </el-table-column>
 
       <template #empty>

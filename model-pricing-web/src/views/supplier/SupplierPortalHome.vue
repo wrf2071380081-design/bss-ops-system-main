@@ -198,19 +198,8 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
         <div class="supplier-start__head"><h2>发起申报</h2></div>
         <div class="supplier-start__body">
           <p>填写模型申报，测试和提交使用同一份申报记录。</p>
-          <div class="supplier-start__actions"><el-button type="primary" @click="newModel">新建模型申报</el-button><el-button @click="activeTab = 'drafts'">查看草稿</el-button></div>
+          <div class="supplier-start__actions"><el-button type="primary" @click="newModel">新建模型申报</el-button></div>
         </div>
-      </section>
-    </el-tab-pane>
-
-    <el-tab-pane label="草稿" name="drafts">
-      <section class="panel supplier-list-panel">
-        <el-alert v-if="error" :title="error" type="error" :closable="false"><el-button text @click="load">重新加载</el-button></el-alert>
-        <el-table v-loading="loading" :data="drafts" row-key="id" empty-text="暂无草稿">
-          <el-table-column label="申报内容" min-width="240"><template #default="{ row }"><strong>{{ row.rows.length }} 个模型</strong><div class="muted">{{ row.reason || '尚未填写说明' }}</div></template></el-table-column>
-          <el-table-column label="最近保存" min-width="170"><template #default="{ row }">{{ formatTime(row.updated_at) }}</template></el-table-column>
-          <el-table-column label="操作" width="120"><template #default="{ row }"><el-button link type="primary" :disabled="!canContinueDraft(row)" @click="editDraft(row)">继续编辑</el-button></template></el-table-column>
-        </el-table>
       </section>
     </el-tab-pane>
 
