@@ -968,8 +968,8 @@ async function openRowQuote(row: CustomerQuoteRow) {
 
 // ---------------- 详情与移交 ----------------
 // 详情已改成独立路由页（B3b 第 1 项）：这里只负责跳转，原弹窗与 F12 面板都搬到详情页。
-function openDetail(row: CustomerWorkspaceRow) {
-  void router.push({ path: `/internal/customers/${row.id}`, query: { tab: "models" } });
+function openDetail(row: CustomerWorkspaceRow, tab: "models" | "onboarding" = "models") {
+  void router.push({ path: `/internal/customers/${row.id}`, query: { tab } });
 }
 
 // 移交：逻辑全部收进 CustomerTransferDialog（B3b 第 4 项），这里只负责"对谁移交"与刷新。
@@ -1054,7 +1054,6 @@ onMounted(async () => {
     <!-- ================= 客户列表 ================= -->
     <template v-if="activeTab === 'list'">
       <div class="filterbar">
-        <el-input v-model="filters.keyword" class="flt keyword" placeholder="搜索客户名称" clearable aria-label="搜索客户名称" />
         <el-select v-model="filters.owners" multiple filterable clearable collapse-tags placeholder="销售" class="flt" filter-placeholder="输入匹配已有选项">
           <el-option v-for="item in options.owners" :key="item" :label="item" :value="item" />
         </el-select>
@@ -1073,6 +1072,7 @@ onMounted(async () => {
         <el-select v-model="filters.handlings" multiple filterable clearable collapse-tags placeholder="办理状态" class="flt" filter-placeholder="输入匹配已有选项">
           <el-option v-for="item in options.handlings" :key="item" :label="item" :value="item" />
         </el-select>
+        <el-input v-model="filters.keyword" class="flt keyword" placeholder="搜索客户名称 / 曾用名" clearable aria-label="搜索客户名称" />
         <el-button text @click="resetFilters">重置</el-button>
       </div>
 
@@ -1113,11 +1113,15 @@ onMounted(async () => {
         <el-table-column label="税率" width="100">
           <template #default="{ row }">{{ formatSupplierTaxRate(row.tax_rate) }}</template>
         </el-table-column>
-        <el-table-column label="合作/商机" width="110">
-          <template #default="{ row }">{{ row.cooperation_stage }}</template>
+        <el-table-column label="合作阶段" width="110">
+          <template #default="{ row }">
+            <el-tag size="small" type="info" effect="plain">{{ row.cooperation_stage }}</el-tag>
+          </template>
         </el-table-column>
-        <el-table-column label="办理状态" width="140">
-          <template #default="{ row }">{{ row.handling_status }}</template>
+        <el-table-column label="办理状态" width="150">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="openDetail(row, 'onboarding')">{{ row.handling_status }}</el-button>
+          </template>
         </el-table-column>
         <!-- 行操作：详情（独立页）+ 移交（共用弹窗）。
              移交必须留在列表里：它是"看谁名下、当场调整"的操作，
