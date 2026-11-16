@@ -84,12 +84,12 @@ onBeforeUnmount(() => { active = false; request?.abort(); });
 <template>
   <section class="model-plaza">
     <template v-if="!directResourceID">
-      <header class="plaza-heading"><div class="eyebrow">TOKEN OPS / MODELS</div><h1>模型管理</h1><p>按标准模型汇总供应资源，采购系数展示当前筛选范围。</p></header>
+      <header class="plaza-heading"><div class="eyebrow">TOKEN OPS / MODELS</div><h1>模型广场</h1><p>按标准模型汇总供应资源，采购系数展示当前筛选范围。</p></header>
       <section class="plaza-panel">
         <header class="plaza-panel-heading"><h2>模型资源目录</h2></header>
         <SourceFilterBar v-model="filters" class="plaza-filters" :rows="[]" :options="choices" :loading="loading" @search="loadOptions" @apply="apply" @reset="reset" />
         <el-alert v-if="optionError" :title="optionError" type="warning" :closable="false" /><p v-if="choices.has_more" class="plaza-note">还有更多选项，请输入名称缩小搜索范围。</p>
-        <el-alert v-if="error" :title="error" type="error" :closable="false"><el-button text @click="load">重新加载模型管理</el-button></el-alert>
+        <el-alert v-if="error" :title="error" type="error" :closable="false"><el-button text @click="load">重新加载模型广场</el-button></el-alert>
         <el-alert v-if="filterError" :title="filterError" type="warning" :closable="false" />
         <div v-loading="loading" class="plaza-scroll" role="region" aria-label="模型资源目录，可横向滚动" tabindex="0">
           <table class="plaza-table"><thead><tr>
