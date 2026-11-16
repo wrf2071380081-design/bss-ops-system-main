@@ -88,6 +88,7 @@ type SupplyDeps struct {
 	SupplierWriter             SupplySupplierWriter
 	SupplierReader             *supply.SupplierReader
 	SupplierTestConfigs        *supply.SupplierTestConfigService
+	SupplierPlatformServices   *SupplierPlatformService
 	SupplierQualificationFiles *supply.SupplierQualificationService
 	SupplierMergePreviewReader SupplySupplierMergePreviewReader
 	Reader                     *supply.ModelReader
@@ -163,6 +164,13 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	suppliers.POST("/:id/formal-configs", idem, fch.create)
 	suppliers.PUT("/:id/formal-configs/:configId", idem, fch.update)
 	suppliers.DELETE("/:id/formal-configs/:configId", idem, fch.disable)
+	if deps.SupplierPlatformServices != nil {
+		psh := &platformServiceHandler{svc: deps.SupplierPlatformServices}
+		suppliers.GET("/:id/platform-services", psh.list)
+		suppliers.POST("/:id/platform-services", idem, psh.create)
+		suppliers.POST("/:id/platform-services/:serviceId/confirm", idem, psh.confirm)
+		suppliers.DELETE("/:id/platform-services/:serviceId", idem, psh.remove)
+	}
 	supplierEntities := internal.Group("/supplier-entities")
 	supplierEntities.Use(requireSupplyInternalStaff)
 	seh := &supplySupplierHandler{writer: deps.SupplierWriter, reader: deps.SupplierReader, qualificationFiles: deps.SupplierQualificationFiles}

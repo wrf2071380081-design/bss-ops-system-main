@@ -92,3 +92,20 @@ func newSupplierTestConfigGroupService(db *gorm.DB) (*api.SupplierTestConfigGrou
 	}
 	return api.NewSupplierTestConfigGroupService(store), nil
 }
+
+// newSupplierPlatformService 装配「供应商生产平台服务商」关联（000069）。
+// 装配失败只让 /suppliers/:id/platform-services 不注册，不影响其它供应商能力。
+func newSupplierPlatformService(db *gorm.DB) (*api.SupplierPlatformService, error) {
+	if db == nil {
+		return nil, nil
+	}
+	raw, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	store, err := supplypg.NewPlatformServiceStore(raw, "public")
+	if err != nil {
+		return nil, err
+	}
+	return api.NewSupplierPlatformService(store), nil
+}

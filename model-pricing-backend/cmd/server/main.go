@@ -288,6 +288,13 @@ func main() {
 		log.Warn("initialize customer onboarding service", zap.Error(err))
 		customerOnboardingSvc = nil
 	}
+	// 供应商生产平台服务商关联（000069）：主体与平台/部署解耦。
+	platformServiceSvc, err := newSupplierPlatformService(dbClient.DB)
+	if err != nil {
+		log.Warn("initialize supplier platform service", zap.Error(err))
+		platformServiceSvc = nil
+	}
+	supplyRoutes.SupplierPlatformServices = platformServiceSvc
 	router := api.New(api.Deps{
 		Config:              cfg,
 		Log:                 log,

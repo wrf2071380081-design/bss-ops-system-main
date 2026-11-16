@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { ElMessage, ElMessageBox, type UploadFile } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 import { supplierEntitiesApi } from "../../../api/supplierEntities";
+import SupplierPlatformServicesCard from "./SupplierPlatformServicesCard.vue";
 import type { SupplierEntityDTO, SupplierEntityForm, SupplierQualificationDTO } from "../../../api/supplierEntities.contract";
 import { resourcesApi } from "../../../api/resources";
 import { buildResourceQuery, resourceCacheDisplay, resourceMetricDisplay, resourceRegionLabels, resourceStateLabels } from "../../../api/resources.contract";
@@ -779,13 +780,14 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
                 <el-form-item label="统一社会信用代码"><el-input v-model="profileDraft.registration_no" maxlength="64" /></el-form-item>
                 <el-form-item label="联系人"><el-input v-model="profileDraft.contact" maxlength="64" /></el-form-item>
                 <el-form-item label="联系电话"><el-input v-model="profileDraft.phone" maxlength="32" /></el-form-item>
-                <el-form-item label="国内／海外"><el-select v-model="profileDraft.region"><el-option label="国内" value="CN" /><el-option label="海外" value="OVERSEAS" /></el-select></el-form-item>
+                <el-form-item label="区域（历史资料）"><el-select v-model="profileDraft.region"><el-option label="国内" value="CN" /><el-option label="海外" value="OVERSEAS" /></el-select></el-form-item>
                 <el-form-item label="税率 %"><el-input v-model="profileDraft.tax_rate_percent" inputmode="decimal" placeholder="可留空，例如 6 或 6.25" /></el-form-item>
                 <el-form-item label="结算币种"><el-select v-model="profileDraft.settlement_currency"><el-option label="人民币 CNY" value="CNY" /><el-option label="美元 USD" value="USD" /></el-select></el-form-item>
                 <el-form-item label="备注" class="span-2"><el-input v-model="profileDraft.remark" type="textarea" :rows="2" maxlength="500" placeholder="选填，例如合作背景或特殊约定" /></el-form-item>
               </el-form>
               <el-alert v-if="profileSaveError" :title="profileSaveError" type="error" :closable="false" />
               <!-- 营业执照／企业证明：原型就是一个文件控件 + 当前状态，不放表格。 -->
+              <SupplierPlatformServicesCard :supplier-id="supplierID" :can-manage="Boolean(profile?.can_edit)" />
               <div ref="qualificationsAnchor" class="supplier-qualification-heading"><h3>营业执照／企业证明</h3></div>
               <div v-loading="qualificationLoading" class="qualification-inline">
                 <el-button v-if="profile.can_edit" size="small" :disabled="qualificationLoading" @click="openQualificationUpload">选择文件</el-button>
