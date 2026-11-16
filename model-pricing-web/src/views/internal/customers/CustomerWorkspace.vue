@@ -372,6 +372,15 @@ function priceFor(item: QuoteItem, line: QuoteLine) {
 // 行内「提示」：把踩线情况直接写在行上，别让人自己去算。
 // 平台不再设毛利红线，只有「低于 3%」这条提示线（对齐原型），低于采购成本才真的提交不过。
 /** 报价明细摘要：模型行「N 项」的悬浮内容（原型点开是明细，我们先给悬浮摘要）。 */
+/** 报价明细弹层（原型点「报价明细」展开一张表）。 */
+const itemDetailLine = ref<QuoteLine>();
+function openItemDetail(line: QuoteLine) { itemDetailLine.value = line; }
+function itemQuotedPrice(item: QuoteItem, line: QuoteLine) {
+  const amount = Number(item.amount), quoted = Number(line.quoteCoefficient);
+  if (!Number.isFinite(amount) || !Number.isFinite(quoted) || amount <= 0 || quoted <= 0) return "—";
+  return roundText(amount * quoted, 4);
+}
+
 function itemsSummary(line: QuoteLine) {
   if (!line.items.length) return "暂无价项";
   return line.items.map(item => `${item.label || item.key}：${item.amount} ${item.currency}`).join("；");
@@ -1276,16 +1285,9 @@ onMounted(async () => {
             </el-table-column>
             <el-table-column label="报价明细" width="110">
               <template #default="{ row }">
-                <el-tooltip placement="top" :content="itemsSummary(row)">
-                  <el-button link type="primary" size="small">{{ row.items.length }} 项</el-button>
-                </el-tooltip>
+                <el-button link type="primary" size="small" @click="openItemDetail(row)">{{ row.items.length }} 项</el-button>
               </template>
             </el-table-column>
-            <el-table-column label="采购系数" width="100" align="right"><template #default="{ row }"><span class="mono">{{ row.coefficient }}</span></template></el-table-column>
-            <el-table-column label="连通 · ms" width="100" align="right"><template #default="{ row }"><span class="mono">{{ row.connectionMS || "未测试" }}</span></template></el-table-column>
-            <el-table-column label="RPS" width="90" align="right"><template #default="{ row }"><span class="mono">{{ row.rps || "未测试" }}</span></template></el-table-column>
-            <el-table-column label="TPS" width="90" align="right"><template #default="{ row }"><span class="mono">{{ row.tps || "未测试" }}</span></template></el-table-column>
-            <el-table-column label="输入缓存命中率" width="130" align="right"><template #default="{ row }"><span class="mono">{{ row.cacheHitRate ? row.cacheHitRate + "%" : "未提供" }}</span></template></el-table-column>
             <el-table-column label="毛利率 %" width="140">
               <template #default="{ row }">
                 <el-input v-model="row.margin" size="small" aria-label="目标毛利率" @change="onMarginChange(row)" />
@@ -1498,6 +1500,30 @@ onMounted(async () => {
         <el-button @click="pickerVisible = false">取消</el-button>
         <el-button type="primary" @click="confirmPicker">确认选择</el-button>
       </template>
+    </el-dialog>
+
+    <!-- 报价明细（原型：模型行点「报价明细」展开一张明细表） -->
+    <el-dialog :model-value="Boolean(itemDetailLine)" :title="`报价明细 · ${itemDetailLine?.modelName || ''}`" width="min(720px, 94vw)" append-to-body @close="itemDetailLine = undefined">
+      <template v-if="itemDetailLine">
+        <p class="hint">官方单价来自标准模型资料；报价单价 = 官方价 × 报价系数（{{ itemDetailLine.quoteCoefficient || "未填" }}）。</p>
+        <el-table :data="itemDetailLine.items" size="small" border class="grid">
+          <el-table-column prop="label" label="计费项" min-width="150">
+            <template #default="{ row }">{{ row.label || row.key }}</template>
+          </el-table-column>
+          <el-table-column prop="amount" label="官方单价" width="130" align="right">
+            <template #default="{ row }"><span class="mono">{{ row.amount }}</span></template>
+          </el-table-column>
+          <el-table-column prop="currency" label="币种" width="80" />
+          <el-table-column label="采购成本" width="130" align="right">
+            <template #default="{ row }"><span class="mono">{{ row.unitCost || "—" }}</span></template>
+          </el-table-column>
+          <el-table-column label="报价单价" width="130" align="right">
+            <template #default="{ row }"><span class="mono">{{ itemQuotedPrice(row, itemDetailLine!) }}</span></template>
+          </el-table-column>
+          <template #empty><el-empty description="该来源没有官方价项" :image-size="56" /></template>
+        </el-table>
+      </template>
+      <template #footer><el-button @click="itemDetailLine = undefined">关闭</el-button></template>
     </el-dialog>
 
     <!-- 严重报价提示：毛利率 < 3% 时先让销售明确知悉，点「已知悉」才继续提交（对齐原型） -->
