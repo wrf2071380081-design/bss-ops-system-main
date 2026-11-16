@@ -7,6 +7,10 @@ import "element-plus/theme-chalk/dark/css-vars.css";
 import "./styles/index.css";
 import App from "./App.vue";
 import { createAppRouter } from "./router";
+import { installSecureRandom } from "./utils/secureRandom";
+
+// 必须在任何组件/路由创建之前执行：HTTP 部署缺少 crypto.randomUUID，页面 setup 会直接抛错。
+installSecureRandom();
 
 const app = createApp(App);
 const pinia = createPinia();
