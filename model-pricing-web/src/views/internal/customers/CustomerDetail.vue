@@ -1371,7 +1371,7 @@ function backToList() {
         <div class="card-head">
           <div class="card-head-left"><h3 class="card-title">该客户报价</h3></div>
           <div class="card-head-right">
-            <el-button v-if="canQuoteEdit" type="primary" @click="newQuote">新建报价</el-button>
+            <el-button type="primary" @click="canQuoteEdit ? newQuote() : ElMessage.warning('当前账号没有客户报价编辑权限，无法新建报价。')">新建报价</el-button>
           </div>
         </div>
         <el-alert v-if="quoteError" :title="quoteError" type="error" show-icon :closable="false" class="block-gap" />

@@ -15,6 +15,15 @@ const emit = defineEmits<{ (event: "refresh-flow-context"): void; (event: "chang
 // These flags only control the UI. Every write and attachment read is authorized again by the server.
 const canManage = computed(() => canManageF12Subject(props.canManage, Boolean(props.flowContext), props.flowCanManage));
 /**
+ * 原型口径：按钮始终可见，无权限时点击给出明确提示（而不是整块消失）。
+ * 之前 v-if="canManage" 把「新增/上传」整个藏掉，产品同事看到的就是「没有新增按钮」。
+ */
+function requireManage(): boolean {
+  if (canManage.value) return true;
+  ElMessage.warning("当前账号没有合同与授信维护权限（需主体责任人或当前办理人）；查看与下载不受限制。");
+  return false;
+}
+/**
  * 附件下载：本版内部员工均可下载查看，不再跟随「维护权限」。
  * 服务端已同步放开读权限（supplypg.AuthorizeF12Read）；如需收紧，两端一起改回。
  */
@@ -414,6 +423,8 @@ const historyRows = computed(() => {
 });
 function openHistory(row: MergedRow) { historyTarget.value = row; }
 function createFromMenu(command: string) {
+  // 原型：按钮常显，权限不足时点击提示，入口不隐藏。
+  if (!requireManage()) return;
   // 原型：首次接入的两个模块没办完之前，「新增」只提示不给开单。
   if (props.addBlockedReason) { ElMessage.warning(props.addBlockedReason); return; }
   if (command === "contract") openCreateContract();
@@ -544,19 +555,19 @@ onBeforeUnmount(() => { ++sequence; ++subjectEpoch; request?.abort(); });
       <div class="heading-actions">
       <!-- 办理上下文（工作台合同授信待办进来）按原型只给两个上传动作：先把合同、授信两份资料传齐。 -->
       <template v-if="flowContext">
-        <el-button v-if="canManage" size="small" :disabled="loading || saving || !!error" @click="openCreateContract">上传合同资料</el-button>
-        <el-button v-if="canManage" size="small" type="primary" :disabled="loading || saving || !!error" @click="openCreditDialog">上传授信资料</el-button>
+        <el-button size="small" :disabled="loading || saving || !!error" @click="requireManage() && openCreateContract()">上传合同资料</el-button>
+        <el-button size="small" type="primary" :disabled="loading || saving || !!error" @click="requireManage() && openCreditDialog()">上传授信资料</el-button>
       </template>
       <template v-else-if="isMerged">
         <!-- 首次接入没办完时「新增」只提示（原型同样只弹提示，不给开单），所以不展开菜单。 -->
-        <el-button v-if="canManage && addBlockedReason" size="small" @click="createFromMenu('contract')">新增</el-button>
-        <el-dropdown v-else-if="canManage" trigger="click" :disabled="loading || saving || !!error" @command="createFromMenu">
+        <el-button v-if="addBlockedReason" size="small" @click="requireManage() && createFromMenu('contract')">新增</el-button>
+        <el-dropdown v-else trigger="click" :disabled="loading || saving || !!error" @command="createFromMenu">
           <el-button size="small" :disabled="loading || saving || !!error">新增</el-button>
           <template #dropdown><el-dropdown-menu><el-dropdown-item command="contract">合同</el-dropdown-item><el-dropdown-item command="credit">授信</el-dropdown-item></el-dropdown-menu></template>
         </el-dropdown>
       </template>
       <template v-else>
-        <el-button v-if="canManage" size="small" :disabled="loading || saving || !!error" @click="openCreateContract">上传合同资料</el-button><el-button v-if="canManage" size="small" type="primary" :disabled="loading || saving || !!error" @click="openCreditDialog">上传授信资料</el-button>
+        <el-button size="small" :disabled="loading || saving || !!error" @click="requireManage() && openCreateContract()">上传合同资料</el-button><el-button size="small" type="primary" :disabled="loading || saving || !!error" @click="requireManage() && openCreditDialog()">上传授信资料</el-button>
       </template>
       <el-button v-if="!isMerged && !flowContext" size="small" :loading="loading" :disabled="saving" @click="load">刷新</el-button>
     </div>
