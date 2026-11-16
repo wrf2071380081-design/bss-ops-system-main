@@ -250,8 +250,6 @@ onMounted(loadAccount);
           <el-button type="primary" size="small" :loading="saving" :disabled="!account" @click="save">保存资料</el-button>
         </div>
       </section>
-    </el-tab-pane>
-
 
   <p class="supplier-footnote">
     Token Ops · 主体池迭代
