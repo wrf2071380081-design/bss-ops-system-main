@@ -41,7 +41,7 @@ const draftConflict = ref(false), draftRefreshed = ref(false), latestDraftReason
 let savedRowIDs: string[] = [];
 const dirty = computed(() => !!savedBaseline.value && savedBaseline.value !== snapshot());
 const locked = computed(() => !canEdit.value || saving.value || submitting.value || loadingDraft.value);
-const testCategories: SupplierTestCategory[] = ["CONNECTIVITY", "STRESS"];
+const testCategories: SupplierTestCategory[] = ["CONNECTIVITY"];
 let active = true;
 let optionRequest: AbortController | undefined;
 let draftRequest: AbortController | undefined;
@@ -202,8 +202,7 @@ async function enableGroup(group: SupplierTestConfigGroupDTO) {
 //   ① 只校验「本表单里实际用到的组」——建了但没用的组不拦人；
 //   ② 连通要看 verdict 通过（不是"有结果就行"）；
 //   ③ 每行必须挂组。
-const selectedStressCount = computed(() => rows.value.filter(row => row.participate_test).length);
-const pendingStress = computed(() => rows.value.filter(row => row.participate_test && !row.stress_tested).length);
+// 2026-11：门户不再提供压力测试，压测相关的前置校验与计数一并移除。
 // 未挂组的行：提交前要拦（对应后端 400）。
 const rowsWithoutGroup = computed(() => rows.value.filter(row => !row.test_config_group_id));
 // 本次表单用到的组，按卡片顺序编号（「第 N 组」与卡片顺序一致）。
@@ -557,14 +556,7 @@ async function reloadKeepingKeys() {
 // 单一入口「发起测试／异常重试」：连通测全部行，压力只测勾选行。
 async function runBatch() {
   if (batchBusy.value || !rows.value.length) return;
-  // 压测是提交门禁的一部分，所以它也是「发起测试」的前置条件：
-  // 一个都没勾时不许先跑连通性。否则连通性白测一轮、压测又补不上，
-  // 用户到提交时才被挡住（2026-10-28 报障）。
-  if (selectedStressCount.value === 0) {
-    error.value = "请至少勾选一个压力测试";
-    ElMessage.warning("请至少勾选一个压力测试");
-    return;
-  }
+
   // 每个用到的组都得先配好 Key：否则发出去也只会被平台拒，白占任务。
   // 这里在**前端就拦掉**，不发起任何请求。
   const missingKey = usedGroups.value.find(group => !group.has_api_key);
@@ -580,7 +572,7 @@ async function runBatch() {
   batchBusy.value = "ALL";
   error.value = "";
   try {
-    const result = await supplierSubmissionsApi.batchTest(submissionID.value, ["CONNECTIVITY", "STRESS"], lifecycle.value);
+    const result = await supplierSubmissionsApi.batchTest(submissionID.value, ["CONNECTIVITY"], lifecycle.value);
     if (!active) return;
     // 每次发起后轮换 lifecycle：否则幂等中间件会把上次响应原样回放，按钮像没反应。
     lifecycle.value = crypto.randomUUID();

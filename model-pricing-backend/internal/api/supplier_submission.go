@@ -351,6 +351,12 @@ func (h *supplierSubmissionHandler) create(c *gin.Context) {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "kind 只支持 MODEL_NEW / PRICE_CHANGE", 400))
 		return
 	}
+	if kind == submissionKindPriceChange {
+		// 2026-11：供应商门户退出「采购改价」入口（改价由内部发起、内部审批、内部登记生效）。
+		// 按原型「已退出的旧入口不得恢复」的口径，这里直接 404，不做兼容分支。
+		response.Error(c, apperr.New(apperr.ErrNotFound.Code, "供应商门户不再支持采购改价申报", 404))
+		return
+	}
 	rows, ok := h.buildRows(c, supplierID, body.Rows)
 	if !ok {
 		return
@@ -695,7 +701,11 @@ func (h *supplierSubmissionHandler) rowTest(c *gin.Context) {
 	}
 	category, platformCategory, ok := resolveTestCategory(rawCategory)
 	if !ok {
-		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 CONNECTIVITY / STRESS", 400))
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "供应商门户只支持连通性测试（CONNECTIVITY）", 400))
+		return
+	}
+	if category == "STRESS" {
+		response.Error(c, apperr.New(apperr.ErrNotFound.Code, "供应商门户不再提供压力测试", 404))
 		return
 	}
 	// 查进度走只读快照，绝不发单。
@@ -828,14 +838,19 @@ func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 		raw = []string{body.Category}
 	}
 	if len(raw) == 0 {
-		raw = []string{"CONNECTIVITY", "STRESS"}
+		// 2026-11：门户只做连通性检查，压测已退出。
+		raw = []string{"CONNECTIVITY"}
 	}
 	type target struct{ label, platform string }
 	targets := make([]target, 0, len(raw))
 	for _, item := range raw {
+		if strings.EqualFold(strings.TrimSpace(item), "STRESS") {
+			response.Error(c, apperr.New(apperr.ErrNotFound.Code, "供应商门户不再提供压力测试", 404))
+			return
+		}
 		label, platformCategory, valid := resolveTestCategory(item)
 		if !valid {
-			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 CONNECTIVITY / STRESS", 400))
+			response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "类别只支持 CONNECTIVITY", 400))
 			return
 		}
 		targets = append(targets, target{label: label, platform: platformCategory})
