@@ -69,6 +69,13 @@ const currencyAmount = (row: SupplierWorkspaceRow) => {
   return Number.isFinite(amount) ? `${symbol}${amount.toLocaleString()}` : row.credit_amount;
 };
 
+// 供应商名称下拉：选项取已加载的名称（随翻页累积）。
+const supplierNameOptions = ref<string[]>([]);
+watch(suppliers, list => {
+  const merged = new Set([...supplierNameOptions.value, ...list.map(row => row.name).filter(Boolean)]);
+  supplierNameOptions.value = [...merged].sort((a, b) => a.localeCompare(b, "zh-CN"));
+}, { immediate: true });
+
 const filteredSuppliers = computed(() => suppliers.value);
 
 async function loadSuppliers() {
@@ -182,7 +189,12 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
         <el-table v-loading="supplierLoading" :data="filteredSuppliers" :default-sort="{ prop: supplierSortBy, order: supplierSortOrder === 'desc' ? 'descending' : 'ascending' }" style="width: 100%" @sort-change="supplierSortChanged">
           <el-table-column prop="name" label="供应商名称" min-width="160" sortable="custom" />
           <el-table-column prop="resource_count" label="资源数" width="80" sortable="custom" />
-          <el-table-column prop="region" label="国内 / 海外" width="100" sortable="custom"><template #default="{ row }">{{ regionLabel(row.region) }}</template></el-table-column>
+          <el-table-column prop="region" label="平台／资源覆盖" width="130" sortable="custom">
+            <template #default="{ row }">
+              <span v-if="row.platform_coverage">{{ row.platform_coverage }}</span>
+              <span v-else class="hint">未登记</span>
+            </template>
+          </el-table-column>
           <el-table-column label="授信额度" width="130">
             <template #default="{ row }"><strong>{{ currencyAmount(row) }}</strong></template>
           </el-table-column>
@@ -217,6 +229,7 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
 .supplier-workspace { padding: 18px 20px; }
 .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .filters-keyword { flex: 1; min-width: 240px; }
+.filters-name { width: 180px; }
 .supplier-pagination { justify-content: flex-end; margin-top: 16px; }
 .muted { display: block; color: var(--app-text-muted); font-size: 12px; margin-top: 4px; }
 </style>

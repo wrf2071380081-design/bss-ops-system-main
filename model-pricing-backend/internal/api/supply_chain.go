@@ -214,6 +214,9 @@ type SupplierWorkspaceRow struct {
 	ContractStatus     string   `json:"contract_status"`
 	CooperationStage   string   `json:"cooperation_stage"`
 	HandlingStatus     string   `json:"handling_status"`
+	// PlatformCoverage 是「平台／资源覆盖」（2026-11）：一个主体可同时挂国内/海外平台，
+	// 由 supplier_platform_service 的人工登记记录聚合；未登记为空串（前端显示「未登记」）。
+	PlatformCoverage string `json:"platform_coverage"`
 }
 
 type SupplierWorkspaceQuery struct {
@@ -311,10 +314,66 @@ func (r *SupplyChainRuntime) ListSuppliersPage(ctx context.Context, query Suppli
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
+	if len(list) > 0 {
+		ids := make([]int64, 0, len(list))
+		for _, item := range list {
+			ids = append(ids, item.ID)
+		}
+		coverage := loadSupplierPlatformCoverage(ctx, tx, ids)
+		for i := range list {
+			list[i].PlatformCoverage = coverage[list[i].ID]
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return &SupplierWorkspacePage{List: list, Total: total, Page: query.Page, Size: query.Size}, nil
+}
+
+// loadSupplierPlatformCoverage 汇总每个主体已登记的平台（国内 / 海外）。
+//
+// 读失败不阻断列表：覆盖信息是辅助列，表还没数据时显示「未登记」即可，
+// 不能因为它让整个供应商列表打不开。
+func loadSupplierPlatformCoverage(ctx context.Context, tx *sql.Tx, ids []int64) map[int64]string {
+	out := make(map[int64]string, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT supplier_id, platform FROM public.supplier_platform_service
+WHERE supplier_id IN (`+strings.Join(placeholders, ",")+`) AND deleted_at IS NULL`, args...)
+	if err != nil {
+		return out
+	}
+	defer func() { _ = rows.Close() }()
+	seen := make(map[int64]map[string]bool, len(ids))
+	for rows.Next() {
+		var supplierID int64
+		var platform string
+		if err := rows.Scan(&supplierID, &platform); err != nil {
+			return out
+		}
+		if seen[supplierID] == nil {
+			seen[supplierID] = map[string]bool{}
+		}
+		seen[supplierID][platform] = true
+	}
+	for supplierID, set := range seen {
+		labels := make([]string, 0, 2)
+		if set["CN"] {
+			labels = append(labels, "国内")
+		}
+		if set["OVERSEAS"] {
+			labels = append(labels, "海外")
+		}
+		out[supplierID] = strings.Join(labels, "、")
+	}
+	return out
 }
 
 func supplierWorkspaceListQuery(aliasTableAvailable bool) string {

@@ -37,6 +37,8 @@ export interface SupplierWorkspaceRow {
   contract_status: "办理中" | "已归档" | "未登记";
   cooperation_stage: string;
   handling_status: string;
+  /** 平台／资源覆盖（2026-11）：已登记的平台，如「国内、海外」；未登记为空串。 */
+  platform_coverage?: string;
 }
 
 export interface SupplierWorkspaceQuery {
