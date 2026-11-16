@@ -1011,16 +1011,43 @@ async function loadLogs(force = false) {
 function resetLogFilters() { logFilters.operator = ""; logFilters.action = ""; logFilters.range = []; void loadLogs(true); }
 
 const logDetail = ref<CustomerOperationLogDTO>();
-/** before/after 是 JSON 字符串：能解析就格式化，解析不了原样展示（不要让详情弹窗白屏）。 */
-function prettyJson(raw: string) {
-  const text = (raw ?? "").trim();
-  if (!text) return "（空）";
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2);
-  } catch {
-    return text;
+/**
+ * 操作记录详情只展示「可证实的变化」，不把 before/after 原始 JSON 摊给用户看（2026-11）。
+ * 原始事件仍留在后端 audit/operation log，需要时由研发查。
+ *
+ * 做法：把两侧对象按一层 key 展平（`data.xxx` 这种再拆一层），只比较原始值；
+ * 相同的不列，缺失的一侧显示「—」。解析不了就返回空，由模板提示「未记录可证实的变化」。
+ */
+type LogChange = { field: string; from: string; to: string };
+function flattenLogValue(value: unknown, prefix = "", out: Record<string, string> = {}) {
+  if (value === null || value === undefined) return out;
+  if (typeof value !== "object") { out[prefix || "值"] = String(value); return out; }
+  if (Array.isArray(value)) { out[prefix || "值"] = `${value.length} 项`; return out; }
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (item !== null && typeof item === "object" && !Array.isArray(item) && prefix.split(".").length < 2) {
+      flattenLogValue(item, path, out);
+    } else if (Array.isArray(item)) {
+      out[path] = `${item.length} 项`;
+    } else {
+      out[path] = item === null || item === undefined ? "—" : String(item);
+    }
   }
+  return out;
 }
+const logChanges = computed<LogChange[]>(() => {
+  const parse = (raw: string) => { try { return JSON.parse(raw || "null") as unknown; } catch { return null; } };
+  const before = flattenLogValue(parse(logDetail.value?.before ?? ""));
+  const after = flattenLogValue(parse(logDetail.value?.after ?? ""));
+  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
+  const changes: LogChange[] = [];
+  for (const key of keys) {
+    const from = before[key] ?? "—";
+    const to = after[key] ?? "—";
+    if (from !== to) changes.push({ field: key, from, to });
+  }
+  return changes;
+});
 
 // ---------------- 移交（共用弹窗） ----------------
 const transferVisible = ref(false);
@@ -1684,12 +1711,13 @@ function backToList() {
           <el-descriptions-item label="说明">{{ logDetail.reason || "—" }}</el-descriptions-item>
         </el-descriptions>
         <div class="json-block">
-          <div class="json-title">变更前</div>
-          <pre class="json">{{ prettyJson(logDetail.before) }}</pre>
-        </div>
-        <div class="json-block">
-          <div class="json-title">变更后</div>
-          <pre class="json">{{ prettyJson(logDetail.after) }}</pre>
+          <div class="json-title">可证实的变化</div>
+          <el-table v-if="logChanges.length" :data="logChanges" size="small" border>
+            <el-table-column prop="field" label="字段" min-width="160" />
+            <el-table-column prop="from" label="变更前" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="to" label="变更后" min-width="180" show-overflow-tooltip />
+          </el-table>
+          <p v-else class="hint">该记录没有可证实的变化（可能是状态流转或原始事件未保存），原始事件已保留在服务端。</p>
         </div>
       </template>
     </el-dialog>
