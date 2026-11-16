@@ -74,7 +74,7 @@ onBeforeUnmount(() => { active = false; clearTimeout(keywordTimer); request?.abo
 
 <template>
   <section class="standard-library">
-    <header class="library-heading"><div><div class="eyebrow">TOKEN OPS / CATALOG</div><h1>标准模型库</h1><p>官方模型资料与独立更新结果，维护操作完整留痕。</p></div><el-button type="primary" @click="open()">＋ 新增模型</el-button></header>
+    <header class="library-heading"><div><div class="eyebrow">TOKEN OPS / CATALOG</div><h1>标准模型库</h1><p>官方模型资料与独立更新结果，维护操作完整留痕。</p></div><el-button type="primary" @click="open()">＋ 增加模型</el-button></header>
     <el-tabs v-model="activeTab" class="catalog-tabs"><el-tab-pane label="标准模型" name="models" /><el-tab-pane label="操作记录" name="records" /></el-tabs>
     <section v-if="activeTab === 'records'" class="catalog-panel"><header class="catalog-heading"><h2>操作记录</h2></header><StandardModelOperationRecords  /></section>
     <template v-else>
