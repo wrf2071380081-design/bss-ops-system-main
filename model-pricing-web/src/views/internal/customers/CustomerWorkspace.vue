@@ -371,6 +371,17 @@ function priceFor(item: QuoteItem, line: QuoteLine) {
 }
 // 行内「提示」：把踩线情况直接写在行上，别让人自己去算。
 // 平台不再设毛利红线，只有「低于 3%」这条提示线（对齐原型），低于采购成本才真的提交不过。
+/** 报价明细摘要：模型行「N 项」的悬浮内容（原型点开是明细，我们先给悬浮摘要）。 */
+function itemsSummary(line: QuoteLine) {
+  if (!line.items.length) return "暂无价项";
+  return line.items.map(item => `${item.label || item.key}：${item.amount} ${item.currency}`).join("；");
+}
+/** 展开行里按「该来源的采购系数」算毛利率，方便横向比较换供应商的收益。 */
+function sourceMargin(line: QuoteLine, source: ResourceQuoteCandidate) {
+  const margin = marginFromCoefficient(source.coefficient, line.quoteCoefficient);
+  return margin === "" ? "—" : `${margin}%`;
+}
+
 function lineHint(line: QuoteLine) {
   if (!isDecimalAmount(line.quoteCoefficient) || Number(line.quoteCoefficient) <= 0) return "待填报价系数";
   const margin = lineMargin(line);
@@ -1195,7 +1206,7 @@ onMounted(async () => {
                 <el-option v-for="mode in PRICING_MODES" :key="mode.value" :value="mode.value" :label="mode.label" />
               </el-select>
               <el-input v-model="pricingValue" class="margin-input" :placeholder="pricingHint" aria-label="统一定价值" />
-              <el-button @click="applyPricing">统一当前全部模型</el-button>
+              <el-button @click="applyPricing">统一全库模型</el-button>
             </div>
           </div>
 
@@ -1217,6 +1228,15 @@ onMounted(async () => {
                     <el-table-column label="压力 · RPS" width="110" align="right"><template #default="{ row: source }"><span class="mono">{{ source.test_rps || "未测试" }}</span></template></el-table-column>
                     <el-table-column label="压力 · TPS" width="110" align="right"><template #default="{ row: source }"><span class="mono">{{ source.test_tps || "未测试" }}</span></template></el-table-column>
                     <el-table-column label="输入缓存命中率" min-width="140" align="right"><template #default="{ row: source }"><span class="mono">{{ source.test_cache_hit_rate ? source.test_cache_hit_rate + "%" : "未提供" }}</span></template></el-table-column>
+                    <el-table-column label="毛利率 %" width="100" align="right"><template #default="{ row: source }"><span class="mono">{{ sourceMargin(line, source) }}</span></template></el-table-column>
+                    <el-table-column label="报价系数" width="100" align="right"><template #default><span class="mono">{{ line.quoteCoefficient || "—" }}</span></template></el-table-column>
+                    <el-table-column label="提示" min-width="140">
+                      <template #default="{ row: source }">
+                        <span :class="{ warn: String(source.resource_id) === line.resourceId && lineHint(line) !== '—' }">
+                          {{ String(source.resource_id) === line.resourceId ? lineHint(line) : "非当前来源" }}
+                        </span>
+                      </template>
+                    </el-table-column>
                     <el-table-column label="操作" width="80">
                       <template #default="{ row: source }">
                         <el-button link type="primary" :disabled="String(source.resource_id) === line.resourceId" @click="onSupplierChange(line, String(source.resource_id))">
@@ -1250,6 +1270,13 @@ onMounted(async () => {
                 <div v-else class="cell-sub">{{ row.supplierName }} · {{ regionText(row.region) }}</div>
               </template>
             </el-table-column>
+            <el-table-column label="报价明细" width="110">
+              <template #default="{ row }">
+                <el-tooltip placement="top" :content="itemsSummary(row)">
+                  <el-button link type="primary" size="small">{{ row.items.length }} 项</el-button>
+                </el-tooltip>
+              </template>
+            </el-table-column>
             <el-table-column label="采购系数" width="100" align="right"><template #default="{ row }"><span class="mono">{{ row.coefficient }}</span></template></el-table-column>
             <el-table-column label="连通 · ms" width="100" align="right"><template #default="{ row }"><span class="mono">{{ row.connectionMS || "未测试" }}</span></template></el-table-column>
             <el-table-column label="RPS" width="90" align="right"><template #default="{ row }"><span class="mono">{{ row.rps || "未测试" }}</span></template></el-table-column>
@@ -1280,7 +1307,7 @@ onMounted(async () => {
               <el-button type="primary" :loading="submitting" :disabled="!canQuote" @click="requestSave(false, true)">提交审批</el-button>
             </div>
             <div class="foot-actions">
-              <el-button :loading="submitting" :disabled="!canQuote" @click="requestSave(false)">保存草稿</el-button>
+              <el-button :loading="submitting" :disabled="!canQuote" @click="requestSave(false)">保存报价</el-button>
               <el-button :loading="submitting" :disabled="!canQuote" @click="requestSave(true)">导出报价单</el-button>
             </div>
           </div>
