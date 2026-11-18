@@ -36,16 +36,29 @@ var ErrSignature = errors.New("test platform: callback signature rejected")
 // ErrNotFound 表示任务或报告不存在。
 var ErrNotFound = errors.New("test platform: not found")
 
-// Category 是测试门类。一期只有 baseline / stress。
+// Category 是测试门类。
+//
+// 2026-11-18 对齐测试平台开放接口（v1）：
+//   · comprehensive 是**唯一可创建的准入门类**，勾 L1 即为"连通性/可用性"检查；
+//   · baseline 已被平台下线（创建返回 40001「门类已下线，请改用综合测试」），仅保留用于读历史；
+//   · videoquality 是视频模型的唯一门类（画质 + 连通一起测），且**没有压测**。
 type Category string
 
 const (
-	CategoryBaseline Category = "baseline"
-	CategoryStress   Category = "stress"
+	CategoryBaseline      Category = "baseline"      // 已下线，仅历史
+	CategoryComprehensive Category = "comprehensive" // 连通性/协议（L1）
+	CategoryStress        Category = "stress"        // 压测
+	CategoryVideoQuality  Category = "videoquality"  // 视频：画质 + 连通
 )
 
-// Valid 判断门类是否在本期范围内。
-func (c Category) Valid() bool { return c == CategoryBaseline || c == CategoryStress }
+// Valid 判断门类是否可创建。
+func (c Category) Valid() bool {
+	switch c {
+	case CategoryComprehensive, CategoryStress, CategoryVideoQuality:
+		return true
+	}
+	return false
+}
 
 // Target 是被测目标（供应商提供的测试接口）。
 type Target struct {

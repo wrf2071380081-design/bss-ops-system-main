@@ -162,10 +162,25 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "请求体格式不正确", 400))
 		return
 	}
-	category := tpdomain.Category(strings.TrimSpace(body.Category))
-	if !category.Valid() {
-		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 baseline 或 stress", 400))
-		return
+	// 门类映射（2026-11-18 对齐平台 v1）：
+	//   CONNECTIVITY（前端叫法）/ BASELINE（旧口径）/ COMPREHENSIVE → comprehensive + layers=[L1]
+	//   STRESS → stress；VIDEO → videoquality。
+	// baseline 已被平台下线，这里只做**兼容翻译**，不再原样透传。
+	raw := strings.ToUpper(strings.TrimSpace(body.Category))
+	category := tpdomain.CategoryComprehensive
+	params := map[string]any{"layers": []string{"L1"}}
+	switch raw {
+	case "", "CONNECTIVITY", "BASELINE", "COMPREHENSIVE":
+		category = tpdomain.CategoryComprehensive
+	case "STRESS":
+		category = tpdomain.CategoryStress
+		params = nil
+	case "VIDEO", "VIDEOQUALITY":
+		category = tpdomain.CategoryVideoQuality
+		params = nil
+	default:
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 connectivity / stress / video", 400))
+		return
 	}
 	if h.targets == nil {
 		supplyHTTPError(c, supply.ErrDependencyUnavailable)
@@ -189,6 +204,7 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 		ResourceID:        resourceID,
 		ActorID:           strconv.FormatInt(operator.StaffID, 10),
 		Category:          category,
+		Params:            params,
 		Owner:             owner,
 		Target:            tpdomain.Target{Model: target.Model, BaseURL: target.BaseURL, APIKey: target.SealedAPIKey},
 		TargetFingerprint: target.TargetFingerprint,
