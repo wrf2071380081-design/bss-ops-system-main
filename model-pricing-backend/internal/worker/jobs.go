@@ -119,9 +119,12 @@ func RegisterTestPlatformPollJob(s *Scheduler, workerCfg config.Worker, tp confi
 			log.Error("test-platform-poll failed", zap.Error(err), zap.Int("scanned", result.Scanned))
 			return err
 		}
-		if result.Completed > 0 || result.Failed > 0 {
+		// 每轮只要有待收口任务就留一条：没有这条日志时，线上无法区分
+		// 「轮询没跑」与「跑了但任务还非终态」（2026-11-18 排查卡在这里）。
+		if result.Scanned > 0 {
 			log.Info("test-platform-poll finished",
-				zap.Int("scanned", result.Scanned), zap.Int("completed", result.Completed), zap.Int("failed", result.Failed))
+				zap.Int("scanned", result.Scanned), zap.Int("completed", result.Completed),
+				zap.Int("failed", result.Failed), zap.Int("skipped", result.Skipped))
 		}
 		return nil
 	}, interval, "")
