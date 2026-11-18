@@ -5,6 +5,7 @@ import { formatDateTime } from "../../../domain/date";
 import { standardModelsApi } from "../../../api/standardModels";
 import { factLabels, modelTypeLabels, standardFieldLabel } from "../../../api/standardModels.contract";
 import type { ModelFilterOptions, StandardFact, StandardModelDTO, StandardModelQuery } from "../../../api/standardModels.types";
+import { supplierEntitiesApi } from "../../../api/supplierEntities";
 import StandardModelMaintainDialog from "./StandardModelMaintainDialog.vue";
 import StandardModelOperationRecords from "./StandardModelOperationRecords.vue";
 import CatalogFilterSelect from "./CatalogFilterSelect.vue";
@@ -56,7 +57,48 @@ async function load(reset = false) {
 }
 function reset() { clearTimeout(keywordTimer); Object.assign(query, { page: 1, size: 100, keyword: "", companies: [], model_types: [], supplier_ids: [], regions: [], verify_status: "", sort_by: "updated_at", order: "desc" }); void load(); void loadOptions(); }
 function open(model?: StandardModelDTO, panel: 'profile' | 'history' | 'records' | 'advanced' = 'profile') { editID.value = model?.id; editorPanel.value = panel; editorOpen.value = true; }
-function openMore(model: StandardModelDTO, panel: unknown) { if (panel === 'history' || panel === 'records' || panel === 'advanced') open(model, panel); }
+function openMore(model: StandardModelDTO, panel: unknown) {
+  if (panel === "resource") { void openManualResource(model); return; }
+  if (panel === 'history' || panel === 'records' || panel === 'advanced') open(model, panel);
+}
+// 零货源模型手工登记一条资源（运营兜底）。
+// 落库是 PENDING_TEST，仍然要过测试与准入；这里只是省掉"必须先有供应商申报"这一步。
+const resOpen = ref(false);
+const resModel = ref<StandardModelDTO>();
+const resSaving = ref(false);
+const resError = ref("");
+const resForm = reactive({ supplier_id: "", supplier_model_name: "", coefficient: "", region: "CN", reason: "" });
+const resSuppliers = ref<{ id: string; name: string }[]>([]);
+async function openManualResource(model: StandardModelDTO) {
+  resModel.value = model;
+  resError.value = "";
+  resForm.supplier_id = "";
+  resForm.supplier_model_name = model.official_id || model.name;
+  resForm.coefficient = "";
+  resForm.region = "CN";
+  resForm.reason = "人工补录线下已确认的货源";
+  resOpen.value = true;
+  if (!resSuppliers.value.length) {
+    try {
+      const page = await supplierEntitiesApi.list({ page: 1, size: 200 });
+      resSuppliers.value = page.list.map((item: { id: number | string; name: string }) => ({ id: String(item.id), name: item.name }));
+    } catch { resSuppliers.value = []; }
+  }
+}
+async function submitManualResource() {
+  if (resSaving.value || !resModel.value) return;
+  resError.value = "";
+  resSaving.value = true;
+  try {
+    await standardModelsApi.manualResource(String(resModel.value.id), { ...resForm }, undefined);
+    ElMessage.success("已登记一条资源（待测试）。测试与准入通过后才可用于报价");
+    resOpen.value = false;
+    await load();
+  } catch (value) {
+    resError.value = value instanceof Error ? value.message : "登记失败，请重试。";
+  } finally { resSaving.value = false; }
+}
+
 const factText = (fact: StandardFact) => fact.disclosure === "DISCLOSED" ? fact.value : factLabels[fact.disclosure] || "未核实";
 // 抓取状态条：原型这一条是演示态——没有真实抓取接口，「手动更新」只更新尝试时间与失败标记。
 const lastSuccess = ref(""), lastAttempt = ref(formatDateTime(new Date().toISOString(), "尚未执行", false)), refreshAttempted = ref(false);
@@ -107,12 +149,13 @@ onBeforeUnmount(() => { active = false; clearTimeout(keywordTimer); request?.abo
             <td><span class="model-type">{{ modelTypeLabels[model.model_type] || '类型待补齐' }}</span><p class="spec-line">输入：{{ model.input_modalities.map(value => modelTypeLabels[value]).join('、') || '待补齐' }}</p><p class="spec-line">输出：{{ model.output_modalities.map(value => modelTypeLabels[value]).join('、') || '待补齐' }}</p></td>
             <td><p v-for="fact in model.capacity" :key="fact.key" class="spec-line" :class="{ unknown: fact.disclosure !== 'DISCLOSED' }">{{ modelParameterLabel(fact.key) }}：{{ factText(fact) }}</p><span v-if="!model.capacity.length" class="unknown">待补齐</span></td>
             <td><p v-for="ability in model.abilities" :key="ability.key" class="spec-line" :class="{ unknown: !['SUPPORTED', 'UNSUPPORTED'].includes(ability.state) }">{{ modelParameterLabel(ability.key) }} {{ ability.state === 'SUPPORTED' ? '✓' : ability.state === 'UNSUPPORTED' ? '×' : ability.state === 'UNDISCLOSED' ? '：未披露' : '：未核实' }}<span v-if="ability.description">（{{ ability.description }}）</span></p><span v-if="!model.abilities.length" class="unknown">待补齐</span></td>
-            <td><div v-for="group in modelPriceGroups(model.price_items)" :key="group.key" class="price-group"><p v-for="line in group.lines" :key="line" class="spec-line">{{ line }}</p><p class="spec-line">{{ group.unit }}</p><p v-if="group.condition" class="spec-line price-condition">{{ group.condition }}</p><p v-for="value in group.dimensions" :key="value" class="spec-line">{{ value }}</p></div><span v-if="!model.price_items.length" class="unknown">未知价格 · 待补齐</span></td>
+            <td class="price-cell" title="点击编辑官方价格与计费项" @click="open(model)"><div v-for="group in modelPriceGroups(model.price_items)" :key="group.key" class="price-group"><p v-for="line in group.lines" :key="line" class="spec-line">{{ line }}</p><p class="spec-line">{{ group.unit }}</p><p v-if="group.condition" class="spec-line price-condition">{{ group.condition }}</p><p v-for="value in group.dimensions" :key="value" class="spec-line">{{ value }}</p></div><span v-if="!model.price_items.length" class="unknown">未知价格 · 点此补齐</span></td>
             <td><p v-for="fact in model.api_access" :key="fact.key" class="spec-line" :class="{ unknown: fact.disclosure !== 'DISCLOSED' }">{{ modelParameterLabel(fact.key) }}：{{ factText(fact) }}</p><span v-if="!model.api_access.length" class="unknown">待补齐</span></td>
             <td><p v-for="fact in model.lifecycle" :key="fact.key" class="spec-line" :class="{ unknown: fact.disclosure !== 'DISCLOSED' }">{{ modelParameterLabel(fact.key) }}：{{ factText(fact) }}</p><span v-if="!model.lifecycle.length" class="unknown">待补齐</span></td>
             <td><span class="update-state" :class="{ failed: refreshResult === '失败' }">{{ refreshResult }}</span><span class="meta">资料核验：{{ model.checked_at || '未记录' }}</span></td>
             <td><span class="meta">{{ lastSuccessText }}</span></td>
-            <td><el-button size="small" @click="open(model)">维护</el-button><el-dropdown trigger="click" @command="openMore(model, $event)"><el-button text size="small" aria-label="更多模型操作">更多</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item command="history">历史版本</el-dropdown-item><el-dropdown-item command="records">操作记录</el-dropdown-item><el-dropdown-item command="advanced">补充资料</el-dropdown-item></el-dropdown-menu></template></el-dropdown></td>
+            <td><el-button size="small" @click="open(model)">维护</el-button><el-dropdown trigger="click" @command="openMore(model, $event)"><el-button text size="small" aria-label="更多模型操作">更多</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item command="history">历史版本</el-dropdown-item><el-dropdown-item command="records">操作记录</el-dropdown-item><el-dropdown-item command="advanced">补充资料</el-dropdown-item>
+<el-dropdown-item command="resource">登记货源</el-dropdown-item></el-dropdown-menu></template></el-dropdown></td>
           </tr>
           <tr v-if="!loading && !error && !data?.list.length"><td colspan="10" class="empty-row">当前筛选暂无模型</td></tr>
         </tbody></table>
@@ -122,8 +165,42 @@ onBeforeUnmount(() => { active = false; clearTimeout(keywordTimer); request?.abo
     </template>
     <StandardModelMaintainDialog v-if="editorOpen" :id="editID" :initial-panel="editorPanel" @close="editorOpen = false" @saved="load()" />
   </section>
+
+  <!-- 登记货源：零货源模型手工补一条资源（待测试，不等于准入） -->
+  <el-dialog v-model="resOpen" :title="`登记货源 · ${resModel?.name || ''}`" width="min(560px, 94vw)">
+    <el-alert type="info" :closable="false" show-icon
+      title="登记后资源状态为「待测试」，仍需通过测试与准入才可用于报价；已有货源的模型请到供应商侧维护。" />
+    <el-alert v-if="resError" :title="resError" type="error" :closable="false" show-icon />
+    <el-form label-position="top">
+      <el-form-item label="供应商">
+        <el-select v-model="resForm.supplier_id" filterable placeholder="选择供应商" style="width: 100%">
+          <el-option v-for="item in resSuppliers" :key="item.id" :label="item.name" :value="item.id" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="接口模型名（供应商侧的调用名）">
+        <el-input v-model="resForm.supplier_model_name" maxlength="128" placeholder="例如 deepseek-v3" />
+      </el-form-item>
+      <el-form-item label="采购系数（相对官方价的折扣）">
+        <el-input v-model="resForm.coefficient" inputmode="decimal" placeholder="例如 0.5200" />
+      </el-form-item>
+      <el-form-item label="部署节点">
+        <el-select v-model="resForm.region" style="width: 100%">
+          <el-option label="国内" value="CN" /><el-option label="海外" value="OVERSEAS" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="登记说明（必填，会进操作记录）">
+        <el-input v-model="resForm.reason" maxlength="200" placeholder="例如：线下已确认，先补录以便走测试" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button :disabled="resSaving" @click="resOpen = false">取消</el-button>
+      <el-button type="primary" :loading="resSaving" @click="submitManualResource">登记</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
 .standard-library{color:#1c1d1f;--el-color-primary:#315ee8}.library-heading{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:16px}.library-heading h1{font-size:22px;margin:0 0 7px}.library-heading p{color:#8a9099;font-size:12px;margin:0}.catalog-tabs{margin-bottom:16px}.catalog-tabs:deep(.el-tabs__header){margin:0}.catalog-tabs:deep(.el-tabs__item){font-size:13px;height:44px;font-weight:500}.catalog-tabs:deep(.el-tabs__nav-wrap:after){height:1px}.crawl-status{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border:1px solid #e3e6eb;border-radius:6px;background:#fafbfc;font-size:12px;margin-bottom:16px}.crawl-unavailable{color:#9a761d}.catalog-panel{border:1px solid #e3e6eb;background:#fff;border-radius:8px;overflow:hidden}.catalog-heading{padding:14px 16px;border-bottom:1px solid #e3e6eb}.catalog-heading h2{font-size:15px;font-weight:600;margin:0;line-height:20px}.catalog-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid #e3e6eb}.catalog-search{flex:1;min-width:180px;width:220px}.catalog-filters>.el-button{margin:0}.options-hint{margin:0;padding:8px 16px;font-size:12px;color:#8d929a}.catalog-note{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 16px;font-size:12px;color:#8d929a}.official-scroll{width:100%;overflow:auto;min-height:180px;overscroll-behavior:contain}.official-table{width:100%;min-width:1150px;border-collapse:collapse;table-layout:fixed;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums}.official-table th,.official-table td{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid #eceef1;overflow-wrap:anywhere;white-space:normal}.official-table th{background:#edf3f3;color:#536a70;font-size:12px;font-weight:500}.official-table th:first-child{width:12%}.official-table th:nth-child(5){width:15%}.official-table th:nth-last-child(2){width:13%}.official-table th:last-child{width:76px}.official-table th:first-child,.official-table td:first-child{position:sticky;left:0;z-index:1;border-right:1px solid #eceef1}.official-table td{background:white}.official-table tbody tr:nth-child(even) td{background:#f8fafb}.official-table tbody tr:hover td{background:#f4f7fa}.official-table strong{display:block;font-size:13px;font-weight:500}.official-table code{display:block;margin:5px 0;font-size:11px;color:#617a82;word-break:break-word}.spec-line{margin:3px 0;line-height:1.5;white-space:pre-line}.model-type,.update-state.failed{color:#c45656}.update-state{display:inline-block;font-size:11px;padding:2px 7px;border-radius:5px;background:#f0f1f4;color:#727985;margin-bottom:4px;line-height:18px}.meta{display:block;font-size:12px;color:#8b9098;margin-top:3px;line-height:16px}.unknown,.price-condition{color:#8b9299}.price-group+.price-group{margin-top:10px}.official-table td.empty-row{text-align:center;padding:40px 20px;color:#8b9098}.catalog-pagination{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;font-size:12px;color:#91969f}.catalog-pagination :deep(.el-pagination){font-weight:400}:deep(.el-button--primary){--el-button-bg-color:#315ee8;--el-button-border-color:#315ee8}@media(max-width:900px){.official-table{min-width:1100px}}@media(max-width:700px){.library-heading{align-items:flex-start;flex-wrap:wrap}.catalog-search{flex-basis:100%}.catalog-note{align-items:flex-start}.catalog-filters:deep(.catalog-select){width:158px}}
+.price-cell { cursor: pointer; }
+.price-cell:hover { background: #f5f9ff; }
 </style>

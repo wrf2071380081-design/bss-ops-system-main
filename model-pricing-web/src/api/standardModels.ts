@@ -37,4 +37,12 @@ export const standardModelsApi = {
     const url = current ? `${base}/${standardModelVersion(current.id)}/manual-completion` : `${base}/manual-completion`;
     return normalizeStandardModel(await apiRequest<StandardModelDTO>({ method: current ? "PUT" : "POST", url, data: body, idempotency: { scope: url, payload: body, lifecycle } }));
   },
+  /**
+   * 零货源模型手工登记一条资源。
+   * 落库状态固定 PENDING_TEST（待测试），不绕过测试与准入——只是省掉"先有申报才能有货源"这一步。
+   */
+  async manualResource(modelId: string, payload: { supplier_id: string; supplier_model_name: string; coefficient: string; region: string; reason: string }, lifecycle?: string) {
+    const url = `${base}/${standardModelVersion(modelId)}/manual-resource`;
+    return apiRequest<{ id: string; state: string }>({ method: "POST", url, data: payload, idempotency: { scope: url, payload, ...(lifecycle ? { lifecycle } : {}) } });
+  },
 };

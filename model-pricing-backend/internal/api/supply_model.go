@@ -6,6 +6,7 @@ import (
 	"math"
 	"model_bss/internal/api/middleware"
 	"model_bss/internal/domain/supply"
+	"model_bss/internal/infra/supplypg"
 	infra "model_bss/internal/infra/middleware"
 	"model_bss/pkg/apperr"
 	"model_bss/pkg/perm"
@@ -18,6 +19,8 @@ import (
 
 type supplyModelHandler struct {
 	reader       *supply.ModelReader
+	// manualResources 用于「零货源模型手工登记一条资源」（运营兜底，落 PENDING_TEST）。
+	manualResources *supplypg.ManualResourceStore
 	writer       SupplyModelWriter
 	manualWriter SupplyManualModelWriter
 	operations   *supply.SourceOperationReader

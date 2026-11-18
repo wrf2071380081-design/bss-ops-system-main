@@ -5,6 +5,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"model_bss/internal/api/middleware"
 	"model_bss/internal/domain/supply"
+	"model_bss/internal/infra/supplypg"
 	"model_bss/pkg/apperr"
 	"model_bss/pkg/response"
 	"net/http"
@@ -73,6 +74,8 @@ type SupplyDeps struct {
 	PricePlanWriter            SupplyPricePlanWriter
 	PlanExecutor               SupplyPlanExecutor
 	ResourceAdmitter           SupplyResourceAdmitter
+	// ManualResources 允许给零货源模型手工登记一条资源（PENDING_TEST）。
+	ManualResources *supplypg.ManualResourceStore
 	ResourceStages             SupplyResourceStages
 	ResourceConfigBinder       SupplyResourceConfigBinder
 	ApprovedPriceWriter        SupplyApprovedPriceWriter
@@ -117,7 +120,7 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	group := internal.Group("/standard-models")
 	group.Use(requireSupplyInternalStaff)
 	manualWriter, _ := deps.Writer.(SupplyManualModelWriter)
-	h := &supplyModelHandler{reader: deps.Reader, writer: deps.Writer, manualWriter: manualWriter, operations: deps.SourceOperations}
+	h := &supplyModelHandler{reader: deps.Reader, writer: deps.Writer, manualWriter: manualWriter, operations: deps.SourceOperations, manualResources: deps.ManualResources}
 	group.GET("", h.list)
 	group.GET("/filter-options", h.options)
 	group.GET("/operations", h.modelOperations)
@@ -138,6 +141,7 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	group.POST("/manual-completion", idem, h.manualCreate)
 	group.PUT("/:id/manual-completion", idem, h.manualUpdate)
 	group.POST("/:id/verify", idem, h.verify)
+	group.POST("/:id/manual-resource", idem, h.manualResource)
 	resources := internal.Group("/resources")
 	resources.Use(requireSupplyInternalStaff)
 	rh := &supplyResourceHandler{reader: deps.Resources}

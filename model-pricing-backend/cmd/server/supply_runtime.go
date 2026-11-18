@@ -211,6 +211,10 @@ func newSupplyRuntimeDeps(db *gorm.DB, idem middleware.IdempotencyStore, workflo
 	deps.PlanWriter = planWriter
 	deps.PricePlanWriter = planWriter
 	deps.PlanExecutor = supply.NewPlanExecutionService(supplypg.NewPlanExecutionWork(planStore, configs, report), time.Now)
+	// 零货源模型的手工登记：只建 PENDING_TEST，不绕过测试与准入。
+	if manualResources, err := supplypg.NewManualResourceStore(raw, "public"); err == nil {
+		deps.ManualResources = manualResources
+	}
 	return deps, nil
 }
 
