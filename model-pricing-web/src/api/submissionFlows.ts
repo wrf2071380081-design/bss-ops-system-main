@@ -19,6 +19,15 @@ export interface SubmissionFlowView {
 }
 export interface SupplierProgressNode {resource_id:string;submission_id:string;node_id:string;key:string;status:string;assignee_id:string;assignee_name:string;row_status:string}
 export const submissionFlowsApi={
+  /**
+   * 手工登记一次测试结果（临时：LLM 测试平台未接入）。
+   * 后端写 test_job + test_report，source=MANUAL_SIMULATED，并回填资源的最新报告 id，
+   * 使准入门禁能读到证据；等测试平台可用后退役。
+   */
+  async recordManualTest(rowID: string, payload: { category: string; connection_ms?: string; rps?: string; tps?: string; verdict: string; note: string }) {
+    const url = `/internal/submission-rows/${rowID}/manual-test-report`;
+    return apiRequest<{ report_id: number; verdict: string; source: string }>({ method: "POST", url, data: payload, idempotency: { scope: url, payload } });
+  },
  async supplierProgress(id:string,signal?:AbortSignal){return apiRequest<{supplier_id:string;list:SupplierProgressNode[]}>({url:`/internal/flows/suppliers/${standardModelVersion(id)}/progress`,signal});},
  /** status 非空时服务端不分页（待办清单要一次看全）；exclude_status 用于「审批记录」排除待审批。 */
  async supplierHistory(id:string,page=1,size=20,signal?:AbortSignal,filter?:{status?:string;exclude_status?:string}){return apiRequest<{list:SubmissionFlowView[];total:number;page:number;size:number}>({url:`/internal/flows/suppliers/${standardModelVersion(id)}/submissions`,params:{page,size,...(filter??{})},signal});},

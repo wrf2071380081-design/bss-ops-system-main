@@ -310,6 +310,7 @@ func main() {
 		IdemStore:           idemStore,
 		StaffPositions: staffPositionStore,
 		TestJobs:            testJobStarter(testPlatform),
+		ManualTests:         api.NewManualTestStore(rawDB),
 		TestCallbacks:       testCallbackReceiver(testPlatform),
 		ResourceTestTargets: testTargets(testPlatform),
 		SupplyRoutes:        &supplyRoutes,

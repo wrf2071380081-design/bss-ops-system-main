@@ -118,6 +118,14 @@ func registerSubmissionRoutes(g *gin.RouterGroup, protected *gin.RouterGroup, po
 	if portal == "internal" {
 		handler := &submissionTestHandler{starter: deps.TestJobs, targets: deps.ResourceTestTargets}
 		protected.GET("/resources/:id/tests/options", handler.options)
+		// 测试平台未接入前的临时通道：内部登记一次测试结果，报告标记 MANUAL_SIMULATED。
+		if deps.ManualTests != nil {
+			recorder := &submissionTestRecorder{store: deps.ManualTests}
+			protected.POST("/submission-rows/:rowId/manual-test-report",
+				middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
+				recorder.record,
+			)
+		}
 		protected.POST("/resources/:id/tests",
 			middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey),
 			handler.start,

@@ -26,6 +26,31 @@ const route = useRoute();
 const router = useRouter();
 const submissionID = computed(() => String(route.params.submissionId || ""));
 
+// 手工登记测试结果（临时通道）：测试平台未接入前，先把业务流跑通。
+const manualTestOpen = ref(false);
+const manualTestRow = ref<SubmissionFlowView["rows"][number]>();
+const manualTestSaving = ref(false);
+const manualTestError = ref("");
+const manualTestForm = ref({ category: "BOTH", connection_ms: "", rps: "", tps: "", verdict: "pass", note: "测试平台未接入，按线下实测结果登记" });
+function openManualTest(row: SubmissionFlowView["rows"][number]) {
+  manualTestRow.value = row; manualTestError.value = "";
+  manualTestForm.value = { category: "BOTH", connection_ms: "", rps: "", tps: "", verdict: "pass", note: "测试平台未接入，按线下实测结果登记" };
+  manualTestOpen.value = true;
+}
+async function submitManualTest() {
+  const row = manualTestRow.value;
+  if (!row || manualTestSaving.value) return;
+  manualTestSaving.value = true; manualTestError.value = "";
+  try {
+    await submissionFlowsApi.recordManualTest(String(row.id), { ...manualTestForm.value });
+    ElMessage.success("已登记测试结果（模拟）。可以继续提交审批");
+    manualTestOpen.value = false;
+    await load();
+  } catch (value) {
+    manualTestError.value = value instanceof Error ? value.message : "登记失败，请重试。";
+  } finally { manualTestSaving.value = false; }
+}
+
 const view = ref<SubmissionFlowView>();
 const people = ref<WorkbenchPersonDTO[]>([]);
 const loading = ref(false);
@@ -424,6 +449,36 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
       </div>
     </el-drawer>
   </section>
+
+    <!-- 手工登记测试结果（临时：测试平台未接入）。产出的报告标记 MANUAL_SIMULATED，
+         准入门禁据此放行；等平台接入后这条通道应退役。 -->
+    <el-dialog v-model="manualTestOpen" title="登记测试结果（模拟）" width="min(520px, 94vw)">
+      <el-alert type="warning" :closable="false" show-icon
+        title="当前未接入 LLM 测试平台。这里登记的是一份标记为「模拟」的测试报告，仅用于跑通业务流程；接入平台后应以平台实测报告为准。" />
+      <el-alert v-if="manualTestError" :title="manualTestError" type="error" :closable="false" show-icon />
+      <el-form label-position="top">
+        <el-form-item label="测试类别">
+          <el-select v-model="manualTestForm.category" style="width: 100%">
+            <el-option label="连通 + 压力" value="BOTH" />
+            <el-option label="仅连通" value="CONNECTIVITY" />
+            <el-option label="仅压力" value="STRESS" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="连通耗时（ms）"><el-input v-model="manualTestForm.connection_ms" inputmode="decimal" placeholder="如 320" /></el-form-item>
+        <el-form-item label="压力 · RPS"><el-input v-model="manualTestForm.rps" inputmode="decimal" placeholder="如 12.5" /></el-form-item>
+        <el-form-item label="压力 · TPS"><el-input v-model="manualTestForm.tps" inputmode="decimal" placeholder="如 48" /></el-form-item>
+        <el-form-item label="结论">
+          <el-select v-model="manualTestForm.verdict" style="width: 100%">
+            <el-option label="通过" value="pass" /><el-option label="不通过" value="fail" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="说明（必填，会进操作记录）"><el-input v-model="manualTestForm.note" maxlength="200" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="manualTestSaving" @click="manualTestOpen = false">取消</el-button>
+        <el-button type="primary" :loading="manualTestSaving" @click="submitManualTest">登记</el-button>
+      </template>
+    </el-dialog>
 </template>
 
 <style scoped>

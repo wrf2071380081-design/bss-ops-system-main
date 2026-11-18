@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"model_bss/internal/api/middleware"
+	"model_bss/internal/infra/supplypg"
 	"model_bss/internal/domain/auth"
 	"model_bss/internal/domain/cost"
 	"model_bss/internal/domain/customer"
@@ -43,6 +44,8 @@ type Deps struct {
 	SupplyRoutes *SupplyDeps
 	// TestJobs 是 B 线测试平台发起端口；未配置测试平台时保持 nil（路由不注册）。
 	TestJobs TestJobStarter
+	// ManualTests 是内部手工登记测试结果（临时：测试平台未接入时先跑通业务流程）。
+	ManualTests *supplypg.ManualTestStore
 	// TestCallbacks 是测试平台终态回调接收端口；未配置 webhook secret 时保持 nil。
 	TestCallbacks TestCallbackReceiver
 	// SupplierSubmissions 是供应商申报（B-1）服务；未配置时申报路由不注册。
