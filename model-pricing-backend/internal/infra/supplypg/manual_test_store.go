@@ -93,6 +93,17 @@ RETURNING id`, in.RowID, in.ActorID, now).Scan(&resourceID)
 		}
 	}
 
+	// 审批环节还要求申报行带测试指纹（与真实测试同一门槛：没指纹就不认这份证据）。
+	// 真实测试的指纹由配置组 URL/Key 计算；手工登记没有这些输入，
+	// 这里给一个可追溯的稳定标记，并同时写到 job 上，保证门禁的"指纹一致"校验成立。
+	targetFingerprint := strings.TrimSpace(fingerprint.String)
+	if targetFingerprint == "" {
+		targetFingerprint = fmt.Sprintf("manual:%d:%s", in.RowID, now.Format("20060102T150405Z"))
+		if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("submission_row")+` SET test_fingerprint = $1 WHERE id = $2`, targetFingerprint, in.RowID); err != nil {
+			return 0, fmt.Errorf("写入测试指纹失败: %w", err)
+		}
+	}
+
 	categories := []string{in.Category}
 	if in.Category == "BOTH" {
 		categories = []string{"CONNECTIVITY", "STRESS"}
@@ -104,7 +115,7 @@ RETURNING id`, in.RowID, in.ActorID, now).Scan(&resourceID)
 (resource_id, category, status, verdict, request_payload, created_by, created_at, finished_at, target_fingerprint)
 VALUES ($1,$2,'SUCCEEDED',$3,$4::jsonb,$5,$6,$6,NULLIF($7,''))
 RETURNING id`, resourceID, category, in.Verdict,
-			fmt.Sprintf(`{"manual":true,"note":%q}`, in.Note), in.ActorID, now, fingerprint.String).Scan(&jobID)
+			fmt.Sprintf(`{"manual":true,"note":%q}`, in.Note), in.ActorID, now, targetFingerprint).Scan(&jobID)
 		if err != nil {
 			return 0, fmt.Errorf("insert test job: %w", err)
 		}
