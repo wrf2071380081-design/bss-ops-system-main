@@ -270,6 +270,12 @@ const backLabel = computed(() => queryString(route.query.return_to) === "supplie
   ? "← 返回供应商列表"
   : queryString(route.query.from_model_id) ? "← 返回模型详情" : "← 返回模型广场");
 const stateLabel = (state: string) => resourceStateLabels[state] || state;
+// 状态列的口径：PENDING_TEST 只表示"尚未准入"，不代表没测过。
+// 已经跑出连通/压力数据、但仍未接入的，显示「测试已通过 · 待接入」，避免看着像没测。
+function stateRowText(row: { state: string; connection_ms?: string | null; rps?: string | null }) {
+  if (row.state === "PENDING_TEST" && (row.connection_ms || row.rps)) return "测试已通过 · 待接入";
+  return stateLabel(row.state);
+}
 const regionLabel = (region: string) => resourceRegionLabels[region] || region;
 
 function queryString(value: unknown) {
@@ -744,7 +750,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-table-column label="TPS" width="100"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.tps, row.test.status) }}</template></el-table-column>
             <el-table-column label="输入缓存命中率" width="130"><template #default="{ row }">{{ resourceCacheDisplay(row.test.cache_stats, row.test.status) }}</template></el-table-column>
             <el-table-column label="最近上架时间" width="170"><template #default="{ row }">{{ row.admitted_at ? formatDateTime(row.admitted_at) : "未记录" }}</template></el-table-column>
-            <el-table-column label="状态" min-width="150"><template #default="{ row }"><el-tag :type="row.state === 'ADMITTED' ? 'success' : 'info'" size="small">{{ stateLabel(row.state) }}</el-tag><span class="muted">{{rowHandling(row.id)}}</span></template></el-table-column>
+            <el-table-column label="状态" min-width="150"><template #default="{ row }"><el-tag :type="row.state === 'ADMITTED' ? 'success' : row.state === 'PENDING_TEST' && (row.connection_ms || row.rps) ? 'warning' : 'info'" size="small">{{ stateRowText(row) }}</el-tag><span class="muted">{{rowHandling(row.id)}}</span></template></el-table-column>
             <el-table-column label="测试与报告" width="112" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click.stop="openReports(row)">测试与报告</el-button></template></el-table-column>
             <!-- 原型末列「资源操作」里就是「接口配置」；行点击仍会选中行看下方详情，不再单占一列。 -->
             <el-table-column label="资源操作" width="110" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click.stop="openInterfaceConfig(row)">接口配置</el-button></template></el-table-column>
