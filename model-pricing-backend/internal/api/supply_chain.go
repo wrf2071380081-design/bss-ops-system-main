@@ -672,18 +672,29 @@ VALUES ('submission', $1, 'REJECT', $2::jsonb, $3, $4, now(), $5, (SELECT name F
 	}
 	var flowID int64
 	if err := tx.QueryRowContext(ctx, `INSERT INTO public.onboarding_flow(kind,owner_id,status,current_node)
-VALUES('SUPPLIER',$1,'PROCESSING','CONFIG') RETURNING id`, supplierID).Scan(&flowID); err != nil {
-		return err
+SELECT 'SUPPLIER',$1,'PROCESSING','CONFIG'
+WHERE NOT EXISTS (SELECT 1 FROM public.onboarding_flow WHERE kind='SUPPLIER' AND owner_id=$1 AND status='PROCESSING')
+RETURNING id`, supplierID).Scan(&flowID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// 已有进行中的流程：复用它，不再新建（历史脏数据就是重复建出来的）
+			if err := tx.QueryRowContext(ctx, `SELECT id FROM public.onboarding_flow WHERE kind='SUPPLIER' AND owner_id=$1 AND status='PROCESSING' ORDER BY id DESC LIMIT 1`, supplierID).Scan(&flowID); err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO public.onboarding_node(flow_id,node_key,status,assignee_id)
-VALUES($1,'CONFIG','IN_PROGRESS',$2)`, flowID, testAssignee); err != nil {
+SELECT $1,'CONFIG','IN_PROGRESS',$2
+WHERE NOT EXISTS (SELECT 1 FROM public.onboarding_node WHERE flow_id=$1 AND node_key='CONFIG')`, flowID, testAssignee); err != nil {
 		return err
 	}
 	if firstModel && contractAssignee > 0 {
 		// 技术（CONFIG）与商务（CONTRACT）是并行的两条腿，和原型一致：
 		// 审批一通过两条腿同时可办，谁先完成都可以，两个都完成才收口整单。
 		if _, err := tx.ExecContext(ctx, `INSERT INTO public.onboarding_node(flow_id,node_key,status,assignee_id)
-VALUES($1,'CONTRACT','IN_PROGRESS',$2)`, flowID, contractAssignee); err != nil {
+SELECT $1,'CONTRACT','IN_PROGRESS',$2
+WHERE NOT EXISTS (SELECT 1 FROM public.onboarding_node WHERE flow_id=$1 AND node_key='CONTRACT')`, flowID, contractAssignee); err != nil {
 			return err
 		}
 	}
