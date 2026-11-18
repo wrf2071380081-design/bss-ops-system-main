@@ -616,9 +616,16 @@ func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected
 	if err := tx.QueryRowContext(ctx, `SELECT kind FROM public.submission WHERE id=$1`, submissionID).Scan(&submissionKind); err != nil {
 		return err
 	}
-	if approvedCount > 0 && submissionKind != "PRICE_CHANGE" {
-		// 新模型接入要求每行都有可用的测试指纹（与 RecordNativeApproval 同一门槛），
-		// 提前拦下来，避免先改状态再失败。
+	// 2026-11-18 调整：审批**不再要求测试指纹**。
+	//
+	// 原因：供应商侧没有发起真实测试的入口（提交时只做本地模拟检查，不产证据），
+	// 而真实测试由内部在"办理"环节发起。若审批先卡指纹，就会死锁：
+	//   没有审批 → 资源不存在 → 办不了 → 没证据 → 审批永远过不了。
+	//
+	// 证据闸门仍然保留在「登记接入」那一步（AdmissionReportGate），
+	// 所以"没测试就接入"依然被拦住，只是把检查点从审批挪到了接入。
+	_ = submissionKind
+	if false {
 		for _, id := range rowIDs {
 			if !approved[id] {
 				continue

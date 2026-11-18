@@ -926,6 +926,10 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
         <el-form-item :label="groupEditingID ? '测试 API Key（留空保留）' : '测试 API Key'">
           <el-input v-model="groupForm.api_key" type="password" show-password autocomplete="new-password"
                     :placeholder="groupEditingID ? '留空表示不修改已保存的 Key' : '供应商自测使用的 Key（可稍后再填）'" :disabled="groupSaving" />
+          <!-- Key 加密存储、永不回显：打开编辑时必然是空的，这不是没保存成功。 -->
+          <p v-if="groupEditingID" class="muted" style="margin:6px 0 0;font-size:12px">
+            该组已保存过 Key（出于安全不回显）。留空 = 保持原 Key；要更换请直接填写新的。
+          </p>
         </el-form-item>
       </el-form>
       <template #footer>
