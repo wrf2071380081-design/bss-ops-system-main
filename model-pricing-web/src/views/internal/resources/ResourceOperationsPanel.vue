@@ -333,7 +333,14 @@ onBeforeUnmount(() => { active = false; configRequest?.abort(); workflowRequest?
     <el-form label-position="top" :disabled="configBusy">
       <el-form-item label="配置名称 *"><el-input v-model="configForm.scope" maxlength="255" /></el-form-item>
       <el-form-item label="服务地址 *"><el-input v-model="configForm.base_url" placeholder="https://api.example.com" /></el-form-item>
-      <el-form-item :label="editingConfig ? '轮换 API Key（留空保留）' : 'API Key *'"><el-input v-model="configForm.api_key" type="password" show-password autocomplete="new-password" /></el-form-item>
+      <el-form-item :label="editingConfig ? '轮换 API Key（留空保留）' : 'API Key *'">
+        <el-input v-model="configForm.api_key" type="password" show-password autocomplete="new-password" />
+        <!-- Key 加密存储、永不回显：保存成功后这里必然是空的，不是没保存上。 -->
+        <p class="muted" style="margin:6px 0 0;font-size:12px">
+          <template v-if="editingConfig">该配置已保存过 Key（出于安全不回显）。留空 = 保留原 Key；要更换直接粘贴新的。</template>
+          <template v-else>粘贴 Key 后保存即可；出于安全，保存后不会再显示明文。</template>
+        </p>
+      </el-form-item>
       <el-form-item label="操作原因 *"><el-input v-model="configForm.reason" type="textarea" :rows="2" maxlength="300" show-word-limit /></el-form-item>
       <el-checkbox v-model="configForm.externalConfirmed">已在外部平台完成对应配置</el-checkbox>
     </el-form>

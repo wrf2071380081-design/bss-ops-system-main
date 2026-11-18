@@ -32,7 +32,14 @@ func (n *nativeWorkflowActions) GetResourceWorkflow(ctx context.Context, actor, 
 	}
 	result := &ResourceWorkflowActions{ApprovedPrices: []ApprovedPriceOption{}}
 	proof, err := n.native.Proof(ctx, tx, resource)
-	if err == nil && proof.AssigneeID == actor && !resource.EverAdmitted {
+	// 2026-11-18 口径：本版不做细分权限，只区分「领导（超管）/ 普通员工」。
+	// 只要能进到这一步的内部员工、且资源还没正式接入，就允许绑定配置与登记接入。
+	// 不再要求"恰好是指定的那个技术办理人"——那会把被派活的人挡在门外。
+	_ = proof
+	// 不依赖 Proof 的授权结果：它按"CONTRACT 节点办理人"判定，
+	// 技术办理人会被误判成无权（2026-11-18 实测：沈安 can_bind=false）。
+	// 本版只要求"内部员工 + 资源未正式接入"。
+	if !resource.EverAdmitted {
 		result.CanBind = true
 		result.CanRefreshTests = true
 		// 待测试也可直接接入：测试是可选的质量动作，不作为技术接入的前置条件。
