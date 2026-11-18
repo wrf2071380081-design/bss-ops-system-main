@@ -618,7 +618,10 @@ func hasResourceDimension(q supply.ResourceListQuery) bool {
 // 要求至少有一个版本：还没建档的模型连详情都打不开，放进招商清单会点出一个 500。
 func (s *ResourceReadStore) unsuppliedModels(ctx context.Context, tx *sql.Tx, q supply.ResourceListQuery, known map[string]*resourceReadGroup) ([]*resourceReadGroup, error) {
 	args := []any{}
-	where := []string{"m.status='ACTIVE'"}
+	// 资料不全的模型（名称/官方 ID/公司/类型为空）不进招商清单：
+	// 补位行要求字段完整，混进来会让 buildEmptyResourceGroup 返回 ErrReadContract，
+	// 进而整张模型广场 500（2026-11-18 线上问题）。这类行由资料维护流程修，不在这里兜。
+	where := []string{"m.status='ACTIVE'", "m.name <> ''", "m.official_id <> ''", "m.company <> ''", "m.model_type <> ''"}
 	add := func(value any) string { args = append(args, value); return fmt.Sprintf("$%d", len(args)) }
 	if q.Keyword != "" {
 		p := add(q.Keyword)
