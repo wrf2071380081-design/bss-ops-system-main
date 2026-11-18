@@ -147,7 +147,8 @@ func (s *ModelService) SaveManual(ctx context.Context, meta WriteMeta, id string
 			if err = tx.Create(ctx, model.Clone()); err != nil {
 				return err
 			}
-			if err = appendModelChange(ctx, tx, nil, model, meta, "MANUAL_SAVE"); err != nil {
+			// 新建与补全是两件事：操作记录里要能分辨「新增标准模型」和「手动补全」。
+			if err = appendModelChange(ctx, tx, nil, model, meta, "MANUAL_CREATE"); err != nil {
 				return err
 			}
 			result = model.Clone()

@@ -88,7 +88,16 @@ function currencyLabel(value: SupplierEntityDTO["settlement_currency"]) { return
 function formatDate(value: string) { return new Date(value).toLocaleString("zh-CN", { hour12: false }); }
 function changePage(value: number) { page.value = value; void load(); }
 function openF12(profile: SupplierEntityDTO) { f12Supplier.value = profile; f12Open.value = true; }
-onMounted(load);
+onMounted(async () => {
+  await load();
+  // 从供应商管理点「新建供应商」过来：直接打开新建表单，省一次点击。
+  if (route.query.create === "1") {
+    resetForm();
+    const next = { ...route.query } as Record<string, string>;
+    delete next.create;
+    void router.replace({ path: route.path, query: next });
+  }
+});
 onBeforeUnmount(() => { active = false; listRequest?.abort(); });
 </script>
 

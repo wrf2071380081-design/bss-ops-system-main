@@ -55,6 +55,7 @@ export const OPERATION_ACTION_LABELS: Record<string, string> = {
   MODEL_CRAWL_AUTO_FAILED_SIM: "自动抓取尝试失败（模拟）",
   MODEL_CRAWL_MANUAL_FAILED: "手动抓取尝试失败",
   MODEL_CRAWL_MANUAL_FAILED_SIM: "手动抓取尝试失败（模拟）",
+  MANUAL_CREATE: "新增标准模型",
   MANUAL_SAVE: "手动补全标准模型",
   MANUAL_SAVE_NOOP: "手动补全标准模型（无变化）",
   PRICE_CHANGE: "采购改价整批",

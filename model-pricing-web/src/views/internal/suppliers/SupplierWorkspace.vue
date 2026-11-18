@@ -132,6 +132,11 @@ function openSupplier(row: SupplierWorkspaceRow, tab: "models" | "profile" = "mo
     supplier_sort_by: supplierSortBy.value, supplier_sort_order: supplierSortOrder.value,
   } });
 }
+// 「新建供应商」直接落到主体档案页并打开新建表单：
+// 供应商只能从主体建档开始（先有主体，才有货源与申报）。
+function createSupplier() {
+  void router.push({ path: "/internal/supplier-entities", query: { create: "1" } });
+}
 function openSupplierEntities() {
   const query: Record<string, string> = { return_to: "suppliers" };
   if (filters.keyword) query.keyword = filters.keyword;
@@ -160,6 +165,7 @@ onBeforeUnmount(() => { supplierLoadRevision += 1; });
   <section class="page-heading">
     <div><div class="eyebrow">INTERNAL / SUPPLIERS</div><h1>供应商管理</h1><p>查看供应商主体、合作阶段、合同状态与业务摘要。</p></div>
     <div class="heading-actions">
+      <el-button type="primary" @click="createSupplier">新建供应商</el-button>
       <el-button @click="openSupplierEntities">供应商主体档案</el-button>
       <el-button @click="openWorkbenchTodos">打开工作台待办</el-button>
       <el-button :loading="supplierLoading" @click="loadSuppliers">刷新</el-button>

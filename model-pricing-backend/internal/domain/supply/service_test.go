@@ -373,7 +373,7 @@ func TestModelServiceManualSaveAttestsCompleteVersionAtomically(t *testing.T) {
 	if created.VerifyStatus != "VERIFIED" || created.CheckedBy != "7" || created.VersionNo != 1 || created.Revision != 1 || !created.Readiness().Ready {
 		t.Fatalf("complete manual creation should be attested as its initial version: %+v", created)
 	}
-	if len(db.state.versions[created.ID]) != 1 || len(db.state.operations) != 1 || db.state.operations[0].Action != "MANUAL_SAVE" || db.state.operations[0].After.VerifyStatus != "VERIFIED" {
+	if len(db.state.versions[created.ID]) != 1 || len(db.state.operations) != 1 || db.state.operations[0].Action != "MANUAL_CREATE" || db.state.operations[0].After.VerifyStatus != "VERIFIED" {
 		t.Fatal("model, attested version and manual-save audit were not persisted together")
 	}
 

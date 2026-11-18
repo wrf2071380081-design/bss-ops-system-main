@@ -311,6 +311,13 @@ func (h *supplyModelHandler) manualCreate(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
+	// 新增必须有最小必填集：名称/官方 ID/公司/类型。
+	// 以前什么都不填也能建，直接落出「名称与官方 ID 为空」的行——这类行会让列表与模型广场
+	// 的一致性校验失败（2026-11-18 两处 500 的根因），因此在入口就拦掉。
+	if msg := validateNewModel(req.ModelData); msg != "" {
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, msg, 400))
+		return
+	}
 	meta, err := supplyWriteMeta(c, req.Reason)
 	if err != nil {
 		supplyHTTPError(c, err)
@@ -318,6 +325,25 @@ func (h *supplyModelHandler) manualCreate(c *gin.Context) {
 	}
 	model, err := h.manualWriter.SaveManual(c.Request.Context(), meta, "", 0, req.ModelData)
 	h.writeResult(c, model, err, 0)
+}
+
+// validateNewModel 返回第一条不满足的必填提示；空串表示通过。
+func validateNewModel(data supply.ModelData) string {
+	if strings.TrimSpace(data.Name) == "" {
+		return "请填写标准模型名称"
+	}
+	if strings.TrimSpace(data.OfficialID) == "" {
+		return "请填写官方模型 ID（模型厂商的原始标识，如 deepseek-ai/DeepSeek-V3）"
+	}
+	if strings.TrimSpace(data.Company) == "" {
+		return "请填写模型公司"
+	}
+	switch strings.TrimSpace(data.ModelType) {
+	case "TEXT", "IMAGE", "VIDEO", "AUDIO":
+	default:
+		return "请选择模型类型（TEXT / IMAGE / VIDEO / AUDIO）"
+	}
+	return ""
 }
 
 // @Summary 整体替换标准模型可编辑资料
