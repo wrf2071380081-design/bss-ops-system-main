@@ -89,7 +89,9 @@ func (s *ModelReadStore) listQuery(q supply.ModelListQuery) (string, string, []a
 		return "", "", nil, supply.ErrReadContract
 	}
 	args := []any{}
-	where := []string{"TRUE"}
+	// 资料不全的模型不进列表：名称/官方 ID/公司/类型为空的行会让展示层契约校验失败，
+	// 进而整页 500（2026-11-18 标准模型库与模型广场各遇到一次）。这类行由资料维护流程修。
+	where := []string{"TRUE", "m.name <> ''", "m.official_id <> ''", "m.company <> ''", "m.model_type <> ''"}
 	add := func(value any) string { args = append(args, value); return fmt.Sprintf("$%d", len(args)) }
 	in := func(column string, values []string, valid func(string) bool) error {
 		if len(values) > 50 {
