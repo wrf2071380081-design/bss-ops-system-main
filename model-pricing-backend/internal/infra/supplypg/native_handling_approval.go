@@ -89,9 +89,11 @@ func RecordNativeApproval(ctx context.Context, tx *sql.Tx, state *ResourceStateS
 			}
 			r.ExpectedRevision = current.Revision
 		} else {
-			if r.Fingerprint == "" {
-				return supply.ErrTestEvidenceRequired
-			}
+			// 2026-11-18：审批不再要求测试指纹。
+			// 供应商侧没有发起真实测试的入口，真实测试由内部在办理环节发起；
+			// 若这里要求指纹，就会出现「没审批→没资源→没法测→没指纹→审批过不了」的死锁。
+			// 证据闸门保留在登记接入（AdmissionReportGate），另见 gate 里对空/占位指纹的处理。
+
 			buyer := ""
 			if err := tx.QueryRowContext(ctx, `SELECT new_staff_id::text FROM `+state.table("assignment_log")+` WHERE entity_type='supplier' AND entity_id=$1 AND field='buyer_id' ORDER BY id DESC LIMIT 1`, a.SupplierID).Scan(&buyer); err != nil {
 				return err

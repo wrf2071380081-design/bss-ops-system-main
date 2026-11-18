@@ -59,7 +59,9 @@ func (s *TestPlatformStore) InternalRetestResource(ctx context.Context, actorID,
 			rows.Close()
 			return nil, err
 		}
-		assignees = append(assignees, id.String)
+		if id.Valid {
+			assignees = append(assignees, id.String)
+		}
 	}
 	err = rows.Err()
 	rows.Close()
@@ -80,8 +82,19 @@ func (s *TestPlatformStore) InternalRetestResource(ctx context.Context, actorID,
 		if !buyer.Valid || buyer.String != actorID {
 			return nil, supply.ErrForbidden
 		}
-	} else if len(assignees) != 1 || assignees[0] != actorID {
-		return nil, supply.ErrForbidden
+	} else {
+		// 同一供应商可能残留多条 PROCESSING 流程（历史脏数据），会把同一办理人查出多次；
+		// 按去重后的集合判断：当前人在办理人里就放行，不再要求“恰好一条”。
+		allowed := false
+		for _, id := range assignees {
+			if id == actorID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return nil, supply.ErrForbidden
+		}
 	}
 	result := &ResourceTestTarget{StandardModelID: standardModelID, SupplierID: supplierID}
 	err = tx.QueryRowContext(ctx, `SELECT m.official_id,s.name FROM `+s.table("standard_model")+` m JOIN `+s.table("supplier")+` s ON s.id=$2 AND s.status='ACTIVE' WHERE m.id=$1`, standardModelID, supplierID).Scan(&result.Model, &result.SupplierName)

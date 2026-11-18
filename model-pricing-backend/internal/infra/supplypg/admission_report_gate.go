@@ -136,7 +136,14 @@ LIMIT 1`, reportID.Int64).Scan(&rowFingerprint, &jobFingerprint)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if rowFingerprint.Valid && jobFingerprint.Valid && rowFingerprint.String != jobFingerprint.String {
+	// 指纹一致性的目的：测试目标（地址/Key/模型）改过，旧报告就不能再当依据。
+	// 但审批放行时可能还没有指纹（内部测试后才产生），这种情况不能判"失效"，
+	// 否则等于又把审批的死锁搬到了接入。空值 / pending: 占位都视为"未记录指纹"，跳过比较。
+	rowFP := rowFingerprint.String
+	if strings.HasPrefix(rowFP, "pending:") {
+		rowFP = ""
+	}
+	if rowFP != "" && jobFingerprint.Valid && rowFP != jobFingerprint.String {
 		return supply.ErrTestEvidenceRequired
 	}
 	return nil
