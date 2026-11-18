@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -373,6 +374,13 @@ func inboxDeeplink(item InboxItem) string {
 		// 从「供应资源接入」待办点进来就是要看"这批还差哪些模型没接上"，
 		// 再回供应商列表按名字搜一次纯属多绕一步。
 		if item.FlowKind == "SUPPLIER" && item.FlowOwnerID > 0 {
+			// 商务节点（合同与授信）落到「档案与办理」的当前办理范围，
+			// 而不是接入模型列表——办理合同和看模型清单是两件事（2026-11-18 反馈）。
+			// contract_flow 传的是流程 id（v_work_item.biz_id 即 flow_id），
+			// 前端据此切到档案页并滚到「当前办理范围」。
+			if strings.Contains(item.Title, "合同") || strings.Contains(item.Title, "商务") {
+				return fmt.Sprintf("/internal/suppliers/%d/models?contract_flow=%d", item.FlowOwnerID, item.BizID)
+			}
 			return fmt.Sprintf("/internal/suppliers/%d/models", item.FlowOwnerID)
 		}
 		// 取不到 kind 的防御分支保持原有行为：落到供应商列表并按供应商名过滤。
