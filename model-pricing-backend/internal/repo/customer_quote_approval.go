@@ -954,11 +954,14 @@ func ensureCustomerFlow(tx *gorm.DB, customerID int64, needsBusiness bool, opsAs
 	if flowID == 0 {
 		return nil
 	}
+	// 合同与授信、模型接入是两条**并行**的办理线（业务已明确：互不阻塞）。
+	// 以前首单把 CONFIG 挂成 WAITING_PREDECESSOR 等合同完成，技术代理人虽然拿到了
+	// 「客户模型开通」待办，但节点不可办，等于没有待办（2026-11-18 PM 反馈）。
 	if needsBusiness {
 		if err := insertFlowNode(tx, flowID, "CONTRACT", "IN_PROGRESS", bizAssigneeID); err != nil {
 			return err
 		}
-		if err := insertFlowNode(tx, flowID, "CONFIG", "WAITING_PREDECESSOR", opsAssigneeID); err != nil {
+		if err := insertFlowNode(tx, flowID, "CONFIG", "IN_PROGRESS", opsAssigneeID); err != nil {
 			return err
 		}
 	} else if err := insertFlowNode(tx, flowID, "CONFIG", "IN_PROGRESS", opsAssigneeID); err != nil {
