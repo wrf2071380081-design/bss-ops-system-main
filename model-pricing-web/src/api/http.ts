@@ -34,7 +34,7 @@ export interface ApiRequestConfig extends AxiosRequestConfig {
 
 const http = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || "/api",
-  timeout: 15_000,
+  timeout: 60_000, // 合同/授信附件走 base64，2MB 文件编码 + 加密会超过 15s（假"网络连接失败"）
 });
 
 http.interceptors.request.use((config) => {

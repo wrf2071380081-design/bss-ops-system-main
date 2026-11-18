@@ -160,8 +160,16 @@ async function saveFormalConfig() {
     selectedConfigID.value = saved.id;
     configDialogOpen.value = false;
     configForm.api_key = "";
-    ElMessage.success(editingConfig.value ? "正式配置已更新" : "正式配置已创建");
+    const created = !editingConfig.value;
+    ElMessage.success(created ? "正式配置已创建" : "正式配置已更新");
     await loadConfigs();
+    // 一步到位：新建后如果当前模型正在等配置，直接自动关联，
+    // 不再让办理人"建完→再选中→再点关联"三下（2026-11-18 反馈）。
+    if (created && workflow.value?.can_bind && saved.id) {
+      selectedConfigID.value = saved.id;
+      if (!bindReason.value.trim()) bindReason.value = "新建正式配置后自动关联";
+      await bindConfig();
+    }
   } catch (error) { if (active) configError.value = error instanceof Error ? error.message : "正式配置保存失败，请重试。"; }
   finally { if (active) configBusy.value = false; }
 }

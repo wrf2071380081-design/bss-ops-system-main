@@ -805,7 +805,10 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
               <!-- 合同与授信紧跟基础资料（原型顺序）；接入模型与办理状态在「接入模型」页签，这里不再重复。
                    从工作台合同授信待办进来时带上 flowContext：此时这里上传的资料绑定本批次，
                    并对非本批办理人自动转为只读（权限由 F12 面板按 flowContext 判定）。 -->
-              <div ref="f12Anchor"><F12SubjectPanel v-if="profile" subject-type="SUPPLIER" :subject-id="profile.id" :can-manage="profile.can_edit" :flow-context="contractFlowContext" :flow-can-manage="contractCanHandle" :currency="f12Currency" layout="merged" :add-blocked-reason="addBlockedReason" @changed="loadProfile" /></div>
+              <!-- 说明：这张表是供应商**档案级**的合同/授信历史，不是本批次办理记录。
+                 本批次要在下方「当前办理范围」里新增，别在这里改历史。 -->
+            <p class="muted" style="margin:0 0 8px;font-size:12px">以下是该供应商的历史合同与授信记录（档案）；本次申报的办理请在下方「当前办理范围」中新增。</p>
+            <div ref="f12Anchor"><F12SubjectPanel v-if="profile" subject-type="SUPPLIER" :subject-id="profile.id" :can-manage="profile.can_edit" :flow-context="contractFlowContext" :flow-can-manage="contractCanHandle" :currency="f12Currency" layout="merged" :add-blocked-reason="addBlockedReason" @changed="loadProfile" /></div>
 
               <!-- 原型页脚的「未完成申请」：还在办理中的开通流程，可跳审批记录与操作流水。 -->
               <template v-if="hasOpenOnboarding">

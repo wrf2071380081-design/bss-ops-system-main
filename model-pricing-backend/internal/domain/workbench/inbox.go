@@ -379,7 +379,7 @@ func inboxDeeplink(item InboxItem) string {
 			// contract_flow 传的是流程 id（v_work_item.biz_id 即 flow_id），
 			// 前端据此切到档案页并滚到「当前办理范围」。
 			if strings.Contains(item.Title, "合同") || strings.Contains(item.Title, "商务") {
-				return fmt.Sprintf("/internal/suppliers/%d/models?contract_flow=%d", item.FlowOwnerID, item.BizID)
+				return fmt.Sprintf("/internal/suppliers/%d/models?tab=profile", item.FlowOwnerID)
 			}
 			return fmt.Sprintf("/internal/suppliers/%d/models", item.FlowOwnerID)
 		}
