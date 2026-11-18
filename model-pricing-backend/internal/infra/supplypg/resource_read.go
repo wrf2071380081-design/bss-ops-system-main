@@ -191,12 +191,12 @@ func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		// 容错：单条资源读不到控制快照（或快照与投影不一致）时**跳过这一条**，
+		// 不要让整页 500。2026-11-18 实测：运营手工登记的资源没有 A 线控制快照，
+		// 过去会把「模型广场」整个打挂；一条脏数据不该拖垮整页。
 		f, err := s.facts(ctx, tx, p)
-		if err != nil {
-			return nil, err
-		}
-		if f == nil || f.ResourceID != p.ID || !f.ProjectionUpdatedAt.Equal(p.UpdatedAt) || !resourceProjectionEqual(f.Projection, p) || f.Revision == 0 || f.LatestReportSequence > math.MaxInt64 || (f.FormalConfigID == "") != (f.FormalConfigRevision == 0) {
-			return nil, supply.ErrReadContract
+		if err != nil || f == nil || f.ResourceID != p.ID || !f.ProjectionUpdatedAt.Equal(p.UpdatedAt) || !resourceProjectionEqual(f.Projection, p) || f.Revision == 0 || f.LatestReportSequence > math.MaxInt64 || (f.FormalConfigID == "") != (f.FormalConfigRevision == 0) {
+			continue
 		}
 		r := &supply.Resource{ID: p.ID, SupplierID: p.SupplierID, StandardModelID: p.StandardModelID, Region: p.Region, SupplierModelID: p.SupplierModelID, Coefficient: p.Coefficient, BuyerID: p.BuyerID, State: p.State, EverAdmitted: p.EverAdmitted, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 			Revision: f.Revision, OriginRowID: f.OriginRowID, OriginRowVersion: f.OriginRowVersion, TargetVersion: f.TargetVersion, FormalConfigID: f.FormalConfigID, FormalConfigRevision: f.FormalConfigRevision, LatestReportID: p.LatestReportID, LatestReportSequence: f.LatestReportSequence}

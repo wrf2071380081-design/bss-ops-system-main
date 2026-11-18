@@ -268,6 +268,21 @@ RETURNING id`,
 	if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("test_report")+` SET report_file=$2 WHERE id=$1`, reportID, fileName); err != nil {
 		return "", err
 	}
+	// 回写申报行：供应商门户看的是申报行，不是资源。
+	// 不回写的话，测试明明通过了，供应商那边仍显示「连通性测试未完成」（2026-11-18 反馈）。
+	if _, err := tx.ExecContext(ctx, `
+UPDATE `+s.table("submission_row")+` sr
+SET test_job_id = CASE WHEN j.category = 'STRESS' THEN sr.test_job_id ELSE $1 END,
+    stress_job_id = CASE WHEN j.category = 'STRESS' THEN $1 ELSE sr.stress_job_id END,
+    test_fingerprint = COALESCE(NULLIF(sr.test_fingerprint, ''), j.target_fingerprint)
+FROM `+s.table("test_job")+` j
+WHERE j.id = $1 AND sr.resource_id = $2 AND sr.row_status <> 'CANCELED'`, jobID, resourceID); err != nil {
+		return "", err
+	}
+	// 资源上的"当前报告"也一并指向这份，页面读的是它。
+	if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("resource")+` SET latest_test_report_id=$2 WHERE id=$1`, resourceID, reportID); err != nil {
+		return "", err
+	}
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}

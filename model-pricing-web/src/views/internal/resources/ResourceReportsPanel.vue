@@ -68,6 +68,13 @@ function resultSummary(row: ResourceReport) {
     return `RPS ${rps} / TPS ${tps}`;
   }
   if (row.test_item === "baseline") return `${metricText(row.metrics.connection_ms, row.status)} ms · ${resultText(row.connectivity_passed)}`;
+  // 综合测试（comprehensive）：只跑了连通性（L1）时不要拼上"压力不通过"——
+  // 平台根本没跑压力，pressure_passed=false 只代表"没测"，不是"没通过"。
+  const hasPressure = row.metrics.rps != null || row.metrics.tps != null;
+  if (!hasPressure) {
+    const ms = row.metrics.connection_ms == null ? "" : `${metricText(row.metrics.connection_ms, row.status)} ms · `;
+    return `${ms}${resultText(row.connectivity_passed)}`;
+  }
   return `${resultText(row.connectivity_passed)} / ${resultText(row.pressure_passed)}`;
 }
 /** 测试场景：来源 + 场景（原型的「准入 · 模拟」是把来源与真实性合起来说）。 */
