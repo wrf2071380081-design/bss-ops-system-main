@@ -461,10 +461,14 @@ func (h *supplierSubmissionHandler) submit(c *gin.Context) {
 			writeSubmissionError(c, err)
 			return
 		}
-		// ② 真实连通性探测只作提示，不阻断提交：网络/鉴权失败由办理环节补测。
+		// ② 真实连通性探测（本地 HTTP 打 /models，秒级，不花钱）：
+		//    结果落 submission_row.connectivity_status，供"查看申报"显示红绿。
 		if probeErr := h.probeSubmitConnectivity(ctx, supplierID, submissionID); probeErr != nil {
 			_ = probeErr
 		}
+		// ③ 自动在测试平台发起 L1（综合测试的可用性层），每行一单。
+		//    发不出去不影响提交——办理环节还能补测。
+		h.startSubmitRowTests(ctx, supplierID, submissionID)
 	}
 	submitter, _ := h.svc.store.SubmitterName(ctx, supplierID)
 	// 原型：提交即「待审批」。PENDING_TEST 只留给改造前的历史数据。
@@ -524,6 +528,29 @@ const (
 
 // startRowTest 对单行发起一次测试并回写任务号（T-03）。
 // 返回 action 描述本次动作：发起 / 跳过（已有有效结果或正在跑）/ 重测 / 未勾选。
+// startSubmitRowTests 在提交成功后，为每个模型自动发起一次平台 L1 测试。
+//
+// 为什么在这里发：业务上"提交即要有测试结论"，而平台任务要 3~5 分钟，
+// 所以提交只负责**发起**（返回后页面显示"测试中"），结果由轮询回写。
+// 失败一律吞掉：提交不能被测试平台拖垮，办理环节仍可重测。
+func (h *supplierSubmissionHandler) startSubmitRowTests(ctx context.Context, supplierID, submissionID int64) {
+	if h.svc == nil || h.svc.starter == nil {
+		return
+	}
+	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
+	if err != nil {
+		return
+	}
+	for _, row := range rows[submissionID] {
+		if row.TestConfigGroupID == nil || *row.TestConfigGroupID <= 0 {
+			continue
+		}
+		// 幂等键按"申报单+行"固定：重复提交/重试不会重复建任务。
+		key := fmt.Sprintf("submit-%d-%d", submissionID, row.ID)
+		_, _, _ = h.startRowTest(ctx, supplierID, submissionID, row.ID, "comprehensive", key)
+	}
+}
+
 func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID, submissionID, rowID int64,
 	platformCategory, idempotencyKey string) (string, string, error) {
 	row, err := h.svc.store.TestRow(ctx, supplierID, submissionID, rowID)
@@ -562,6 +589,11 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		return "", actionFailed, err
 	}
 	params := map[string]any(nil)
+	if platformCategory == "comprehensive" {
+		// 提交阶段的连通性测试只要 L1（API 可用性门控）：
+		// 不传 layers 会用门类默认值（L1~L6 全跑），既慢又会真花钱。
+		params = map[string]any{"layers": []string{"L1"}}
+	}
 	if platformCategory == "stress" {
 		// 真机实测：stress 必须显式声明参考引擎，否则 400。
 		params = map[string]any{
@@ -579,7 +611,9 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		Owner:             row.SupplierName,
 		Target: tpdomain.Target{
 			// 平台按官方 ID 识别模型；供应商自定义名只用于展示。
-			Model:   modelForTest(baseURL, row.OfficialID, row.SupplierModelName),
+			// 优先用「接口模型 ID」（供应商在该通道实际调用的名字，如 deepseek/deepseek-v3.2）；
+			// official_id 是我们目录里的规范名，很多时候不带厂商前缀，发给平台会 404。
+			Model:   modelForTest(baseURL, row.SupplierModelName, row.OfficialID),
 			BaseURL: baseURL, Protocol: "openai", APIKey: apiKey,
 		},
 		Params:         params,
