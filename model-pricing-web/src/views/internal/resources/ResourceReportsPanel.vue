@@ -99,15 +99,33 @@ function isCurrentReport(report?: { id?: string; test_report_id?: string } | nul
 
 /** 没有显式 currentReportID 时，取列表中最新的那一份报告 id。 */
 const fallbackCurrentID = computed(() => {
-  for (const row of rows.value) {
-    const id = row.test_report_id || row.id;
-    if (id) return id;
-  }
-  return "";
+  // 按**测试时间**取最新一份，不能依赖列表顺序：
+  // 「未记录/未提供结论」的空报告会混在列表里，按顺序取会指错（2026-11-19 反馈）。
+  // 「当前引用」= 作为准入依据的那份：只认连通性/综合测试，压测不算准入依据。
+  // 同一类里取**时间最新**的一份（补测后新报告自动成为当前引用）。
+  const pick = (onlyConnectivity: boolean) => {
+    let best = "", bestAt = -1;
+    for (const row of rows.value) {
+      const id = row.test_report_id || row.id;
+      if (!id) continue;
+      if (onlyConnectivity && String(row.test_item) === "stress") continue;
+      const at = Date.parse(String(row.tested_at || row.created_at || "")) || 0;
+      if (at > bestAt) { bestAt = at; best = id; }
+    }
+    return best;
+  };
+  return pick(true) || pick(false);
 });
 const historyRows = computed<HistoryRow[]>(() => {
   const merged: HistoryRow[] = [];
   for (const row of rows.value) {
+    // 没有报告体的行不是"报告"，是任务：还在跑的保留（显示生成中），
+    // 已终止/中止的直接不展示——否则会出现"连通性没做过"这种幽灵记录。
+    const hasBody = Boolean(row.test_report_id || row.id);
+    if (!hasBody) {
+      const st = String(row.status || "").toUpperCase();
+      if (st !== "RUNNING" && st !== "QUEUED") continue;
+    }
     merged.push({ key: `report-${row.id}`, kind: "report", project: projectText(row.test_item), scene: sceneText(row), time: timeText(row.tested_at), summary: resultSummary(row), report: row });
   }
   // 上传报告没有分页，只在第一页与平台报告一起出现，避免翻页时重复。
@@ -123,13 +141,16 @@ function message(value: unknown) {
   if (value instanceof ApiError && [404, 501, 503].includes(value.httpStatus)) return "报告服务暂不可用，请联系测试办理人员；当前报告摘要仍可查看。";
   return value instanceof Error ? value.message : "报告加载失败，请重试。";
 }
-async function load() {
+async function load(silent = false) {
   if(pollTimer)clearTimeout(pollTimer);
   listRequest?.abort(); const request = listRequest = new AbortController();
-  loading.value = true; error.value = ""; rows.value = []; total.value = 0;
+  // 轮询刷新时**不能**清空 rows，否则表格每 5 秒被清一次又填回来，
+  // 视觉上就是"弹窗一直在闪"（2026-11-19 反馈）。静默刷新只换数据。
+  if (!silent) { loading.value = true; rows.value = []; total.value = 0; }
+  error.value = "";
   try { const result = await resourceReportsApi.list(props.resourceID, page.value, request.signal); if (!request.signal.aborted) { rows.value = result.list; total.value = result.total; } }
   catch (value) { if (!request.signal.aborted) error.value = message(value); }
-  finally { if (!request.signal.aborted) {loading.value = false;if(active&&!error.value&&rows.value.some(row=>row.status==="RUNNING"))pollTimer=setTimeout(()=>void load(),5000);} }
+  finally { if (!request.signal.aborted) {if(!silent)loading.value = false;if(active&&!error.value&&rows.value.some(row=>row.status==="RUNNING"))pollTimer=setTimeout(()=>void load(true),5000);} }
 }
 async function openRetest(){
  retestOpen.value=true;retestOptions.value=undefined;retestError.value="";retestMessage.value="";retestLoading.value=true;
@@ -201,8 +222,9 @@ onBeforeUnmount(() => { active = false; listRequest?.abort(); detailRequest?.abo
         <el-table-column label="结果 / 内容" min-width="220"><template #default="{ row }">{{ row.summary }}</template></el-table-column>
         <el-table-column label="查看" width="76">
           <template #default="{ row }">
-            <el-button v-if="row.kind === 'report'" link type="primary" @click="openDetail(row.report!.id)">查看</el-button>
-            <span v-else class="muted">仅留档</span>
+            <span v-if="row.kind === 'upload'" class="muted">仅留档</span>
+            <span v-else-if="!row.report?.id" class="muted"><el-icon class="is-loading"><Loading /></el-icon> 生成中</span>
+            <el-button v-else link type="primary" @click="openDetail(row.report!.id)">查看</el-button>
           </template>
         </el-table-column>
       </el-table>
