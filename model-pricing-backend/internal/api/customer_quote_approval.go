@@ -47,6 +47,9 @@ func quoteApprovalErrToAppErr(err error) apperr.Error {
 		errors.Is(err, customer.ErrQuoteApprovalNotApprover),
 		errors.Is(err, customer.ErrQuoteApprovalNotOwner):
 		return apperr.New(apperr.ErrForbidden.Code, err.Error(), apperr.ErrForbidden.Status)
+	case errors.Is(err, customer.ErrQuoteApprovalOnboardingBusy):
+		// 同模型接入还没办完：属于状态冲突，用 409，前端直接把 message 弹出来即可。
+		return apperr.New(apperr.ErrConflict.Code, err.Error(), apperr.ErrConflict.Status)
 	case errors.Is(err, customer.ErrQuoteApprovalNotPending),
 		errors.Is(err, customer.ErrQuoteAlreadyPending),
 		errors.Is(err, customer.ErrQuoteApprovalQuoteStatus):
