@@ -177,7 +177,7 @@ async function approve() {
   if (!detail || busy.value) return;
   if (approvedCount.value === 0) { ElMessage.warning("未勾选任何模型：整单驳回请用「驳回申报」。"); return; }
   if (!test.value) { ElMessage.warning("请选择「测试与资源配置」办理人。"); return; }
-  if (detail.first_model && !contract.value) { ElMessage.warning("首次模型申报需要指定「合同与授信」办理人。"); return; }
+  if ((detail.needs_contract ?? detail.first_model) && !contract.value) { ElMessage.warning("该供应商还没有办理过合同与授信，需要指定办理人。"); return; }
   if (rejectedCount.value > 0 && !reason.value.trim()) { ElMessage.warning("有模型不通过时必须填写审批意见（说明不通过原因）。"); return; }
   if (!confirmed.value) { confirmed.value = true; return; }
   busy.value = true;
@@ -299,7 +299,8 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
             <span>申请编号：{{ view.id }}</span>
             <span>提交人：{{ view.submitter || "未记录" }}</span>
             <span>提交时间：{{ view.submitted_at ? formatDateTime(view.submitted_at) : "未记录" }}</span>
-            <span v-if="view.first_model">首次接入：需同时办理测试与资源配置、合同与授信</span>
+            <span v-if="view.needs_contract ?? view.first_model">需同时办理测试与资源配置、合同与授信</span>
+            <span v-else>该供应商已有合同与授信，本次只需办理测试与资源配置</span>
           </div>
         </div>
 
@@ -406,7 +407,7 @@ onBeforeUnmount(() => { active = false; controller?.abort(); });
                   <el-option v-for="person in people" :key="person.id" :value="String(person.id)" :label="person.name" />
                 </el-select>
               </el-form-item>
-              <el-form-item v-if="view.first_model" label="合同与授信办理人">
+              <el-form-item v-if="view.needs_contract ?? view.first_model" label="合同与授信办理人">
                 <el-select v-model="contract" placeholder="首次模型申报需选择" aria-label="合同与授信办理人" style="width:220px">
                   <el-option v-for="person in people" :key="person.id" :value="String(person.id)" :label="person.name" />
                 </el-select>

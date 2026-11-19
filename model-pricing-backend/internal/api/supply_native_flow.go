@@ -56,6 +56,7 @@ type nativeFlowView struct {
 	Kind                string           `json:"kind"`
 	Region              string           `json:"region"`
 	FirstModel          bool             `json:"first_model"`
+	NeedsContract       bool             `json:"needs_contract"`
 	CanApprove          bool             `json:"can_approve"`
 	CanHandle           bool             `json:"can_handle"`
 	Rows                []nativeFlowRow  `json:"rows"`
@@ -100,7 +101,7 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 		id = sub
 	}
 	var v nativeFlowView
-	err := r.raw.QueryRowContext(ctx, `SELECT s.id::text,s.supplier_id::text,sp.name,s.revision::text,s.status,s.kind,s.region,NOT EXISTS(SELECT 1 FROM public.resource r WHERE r.supplier_id=s.supplier_id AND r.ever_admitted),s.created_at,s.submitted_at,coalesce(s.submitter_name,'') FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id WHERE s.id=$1`, id).Scan(&v.ID, &v.SupplierID, &v.SupplierName, &v.Revision, &v.Status, &v.Kind, &v.Region, &v.FirstModel, &v.CreatedAt, &v.SubmittedAt, &v.Submitter)
+	err := r.raw.QueryRowContext(ctx, `SELECT s.id::text,s.supplier_id::text,sp.name,s.revision::text,s.status,s.kind,s.region,NOT EXISTS(SELECT 1 FROM public.resource r WHERE r.supplier_id=s.supplier_id AND r.ever_admitted),NOT EXISTS(SELECT 1 FROM public.onboarding_node n JOIN public.onboarding_flow f ON f.id=n.flow_id WHERE f.owner_id=s.supplier_id AND f.kind='SUPPLIER' AND n.node_key='CONTRACT' AND n.status='COMPLETED'),s.created_at,s.submitted_at,coalesce(s.submitter_name,'') FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id WHERE s.id=$1`, id).Scan(&v.ID, &v.SupplierID, &v.SupplierName, &v.Revision, &v.Status, &v.Kind, &v.Region, &v.FirstModel, &v.NeedsContract, &v.CreatedAt, &v.SubmittedAt, &v.Submitter)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}

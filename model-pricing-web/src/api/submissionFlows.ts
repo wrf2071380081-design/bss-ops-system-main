@@ -1,7 +1,7 @@
 import {apiRequest} from './http';
 import {standardModelVersion} from './standardModels.contract';
 export interface SubmissionFlowView {
- id:string;supplier_id:string;supplier_name:string;revision:string;status:string;kind:string;region:string;first_model:boolean;can_approve:boolean;can_handle:boolean;
+ id:string;supplier_id:string;supplier_name:string;revision:string;status:string;kind:string;region:string;first_model:boolean;needs_contract?:boolean;can_approve:boolean;can_handle:boolean;
  rows:Array<{id:string;model_id:string;model_name:string;interface_model_id:string;coefficient:string;/** 价格变更：该模型现有资源当前生效的系数（新增单为空串）。 */current_coefficient?:string;status:string;resource_id:string;decision?:'PENDING'|'APPROVED'|'REJECTED';company?:string;model_type?:string;
   /** 该行供应资源最近一次测试（原型审批页四列指标）；无报告时 test_status=NOT_TESTED。 */
   test_status?:'NOT_TESTED'|'PASSED'|'FAILED'|'INCOMPLETE';connection_ms?:string;rps?:string;tps?:string;cache_hit_rate?:string;cache_available?:boolean;
@@ -41,7 +41,7 @@ export const submissionFlowsApi={
   * 未出现在 map 里的行后端按「不勾=不通过」处理。
   */
  async approve(current:SubmissionFlowView,test:string,contract:string,reason:string,lifecycle:string,decisions:Record<string,boolean>){
-  if(!current.can_approve||(current.first_model&&!contract))throw new Error('请选择办理人。');
+  if(!current.can_approve||((current.needs_contract ?? current.first_model)&&!contract))throw new Error('请选择办理人。');
   const rows=current.rows.map(row=>({id:standardModelVersion(row.id),decision:decisions[row.id]?'APPROVED':'REJECTED'}));
   if(rows.length&&!rows.some(row=>row.decision==='APPROVED'))throw new Error('请至少勾选一个模型通过，否则请用「驳回申报」。');
   const data={expected_revision:standardModelVersion(current.revision),test_assignee_id:standardModelVersion(test),...(contract?{contract_assignee_id:standardModelVersion(contract)}:{}),...(reason.trim()?{reason:reason.trim()}:{}),rows};

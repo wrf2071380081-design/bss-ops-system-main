@@ -628,7 +628,17 @@ func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected
 	if err := tx.QueryRowContext(ctx, `SELECT NOT EXISTS (SELECT 1 FROM public.resource WHERE supplier_id=$1 AND ever_admitted=true)`, supplierID).Scan(&firstModel); err != nil {
 		return err
 	}
-	if expected > 0 && firstModel && contractAssignee <= 0 {
+	// 该供应商是否**已经办过**合同与授信（任一历史流程的 CONTRACT 节点已完成）。
+	// 已办过的话，本次申报不需要再分配商务，只分配技术与资源配置即可。
+	var hasContract bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+  SELECT 1 FROM public.onboarding_node n
+  JOIN public.onboarding_flow f ON f.id = n.flow_id
+  WHERE f.owner_id = $1 AND f.kind = 'SUPPLIER' AND n.node_key = 'CONTRACT' AND n.status = 'COMPLETED')`, supplierID).Scan(&hasContract); err != nil {
+		return err
+	}
+	needsContract := !hasContract
+	if expected > 0 && needsContract && contractAssignee <= 0 {
 		return &supply.FieldError{Path: "contract_assignee_id", Reason: "first model requires a contract handler"}
 	}
 	// 校验全部通过后才落库：这道事务在 idempotency 中间件里提交，
@@ -711,12 +721,32 @@ SELECT $1,'CONFIG','IN_PROGRESS',$2
 WHERE NOT EXISTS (SELECT 1 FROM public.onboarding_node WHERE flow_id=$1 AND node_key='CONFIG')`, flowID, testAssignee); err != nil {
 		return err
 	}
-	if firstModel && contractAssignee > 0 {
+	// 每次审批都可以换人：复用流程时把"未完成"节点的办理人改成这次选的。
+	// （2026-11-19：之前复用流程不更新 assignee，第二次申报派谁都不生效）
+	if _, err := tx.ExecContext(ctx, `UPDATE public.onboarding_node
+SET assignee_id=$3, status='IN_PROGRESS'
+WHERE flow_id=$1 AND node_key='CONFIG' AND status<>'COMPLETED'`, flowID, supplierID, testAssignee); err != nil {
+		return err
+	}
+	if needsContract && contractAssignee > 0 {
 		// 技术（CONFIG）与商务（CONTRACT）是并行的两条腿，和原型一致：
 		// 审批一通过两条腿同时可办，谁先完成都可以，两个都完成才收口整单。
 		if _, err := tx.ExecContext(ctx, `INSERT INTO public.onboarding_node(flow_id,node_key,status,assignee_id)
 SELECT $1,'CONTRACT','IN_PROGRESS',$2
 WHERE NOT EXISTS (SELECT 1 FROM public.onboarding_node WHERE flow_id=$1 AND node_key='CONTRACT')`, flowID, contractAssignee); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE public.onboarding_node
+SET assignee_id=$3, status='IN_PROGRESS'
+WHERE flow_id=$1 AND node_key='CONTRACT' AND status<>'COMPLETED'`, flowID, supplierID, contractAssignee); err != nil {
+			return err
+		}
+	} else if !needsContract {
+		// 已经办过合同：不再要求商务办理。历史 flow 里若残留 IN_PROGRESS 的 CONTRACT 节点，
+		// 直接收口，否则整单永远等不到"两条腿都完成"。
+		if _, err := tx.ExecContext(ctx, `UPDATE public.onboarding_node
+SET status='COMPLETED', completed_at=COALESCE(completed_at, now())
+WHERE flow_id=$1 AND node_key='CONTRACT' AND status<>'COMPLETED'`, flowID); err != nil {
 			return err
 		}
 	}

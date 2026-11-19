@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -1031,13 +1034,164 @@ func (h *supplierSubmissionHandler) probeSubmitConnectivity(ctx context.Context,
 	if len(list) == 0 {
 		return nil
 	}
+
+	// 按配置组**去重**：同一组下 3 个模型只打 1 次 /models，结果给这 3 行复用。
+	// 不同组之间**并发**：3 个组就是 3 个 goroutine，总耗时≈最慢那一组。
+	type groupResult struct {
+		ok        bool
+		reason    string
+		modelSet  map[string]struct{}
+		hasModels bool
+	}
+	keys := make([]int64, 0, len(list))
+	seen := map[int64]bool{}
+	for _, row := range list {
+		if row.TestConfigGroupID == nil || *row.TestConfigGroupID <= 0 || seen[*row.TestConfigGroupID] {
+			continue
+		}
+		seen[*row.TestConfigGroupID] = true
+		keys = append(keys, *row.TestConfigGroupID)
+	}
+	groupResults := make(map[int64]groupResult, len(keys))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8) // 并发上限，避免一次打爆网络
+	for _, gid := range keys {
+		gid := gid
+		group, ok := groups[gid]
+		if !ok || !group.Enabled || !validTestBaseURL(strings.TrimSpace(group.BaseURL)) || strings.TrimSpace(group.APIKey) == "" {
+			groupResults[gid] = groupResult{ok: false, reason: describeGroupProblem(gid, groups)}
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			res := probeGroupModels(ctx, strings.TrimSpace(group.BaseURL), strings.TrimSpace(group.APIKey))
+			mu.Lock()
+			groupResults[gid] = res
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
 	results := make(map[int64]supplypg.RowConnectivity, len(list))
 	for _, row := range list {
-		status, note := probeRowConnectivity(ctx, row, groups)
-		results[row.ID] = supplypg.RowConnectivity{Status: status, Note: note}
+		if row.TestConfigGroupID == nil || *row.TestConfigGroupID <= 0 {
+			results[row.ID] = supplypg.RowConnectivity{Status: "FAIL", Note: "未选择准入配置组"}
+			continue
+		}
+		gr, ok := groupResults[*row.TestConfigGroupID]
+		if !ok {
+			results[row.ID] = supplypg.RowConnectivity{Status: "FAIL", Note: "绑定的准入配置组不存在"}
+			continue
+		}
+		if !gr.ok {
+			results[row.ID] = supplypg.RowConnectivity{Status: "FAIL", Note: gr.reason}
+			continue
+		}
+		// 组已连通：再校验"这个模型 ID 在不在该通道的模型列表里"。
+		// /models 不返回列表时跳过这项（有些网关不实现），只做连通判定。
+		if gr.hasModels && !modelListed(gr.modelSet, row.SupplierModelName) {
+			results[row.ID] = supplypg.RowConnectivity{Status: "FAIL", Note: "该通道的模型列表里没有这个接口模型 ID"}
+			continue
+		}
+		results[row.ID] = supplypg.RowConnectivity{Status: "PASS"}
 	}
 	// 落库供「查看申报」与审批过滤使用（迁移 000071）。
 	return h.svc.store.SetRowConnectivity(ctx, results)
+}
+
+// probeGroupModels 对一个配置组做一次连通性探测（不按行重复打）。
+func probeGroupModels(ctx context.Context, base, key string) struct {
+	ok        bool
+	reason    string
+	modelSet  map[string]struct{}
+	hasModels bool
+} {
+	out := struct {
+		ok        bool
+		reason    string
+		modelSet  map[string]struct{}
+		hasModels bool
+	}{}
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, strings.TrimRight(base, "/")+"/models", nil)
+	if err != nil {
+		out.reason = "地址无法解析"
+		return out
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		out.reason = "连接失败（超时或域名不可达）"
+		return out
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		out.ok = true
+	case resp.StatusCode == 401 || resp.StatusCode == 403:
+		out.reason = fmt.Sprintf("鉴权失败（HTTP %d，Key 无效或无权限）", resp.StatusCode)
+		return out
+	case resp.StatusCode == 404:
+		out.reason = "地址不是 OpenAI 兼容入口（/models 返回 404）"
+		return out
+	default:
+		out.reason = fmt.Sprintf("上游不可用（HTTP %d）", resp.StatusCode)
+		return out
+	}
+	// 解析模型列表（拿不到就只算连通）
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if jsonErr := json.Unmarshal(body, &payload); jsonErr == nil && len(payload.Data) > 0 {
+		out.hasModels = true
+		out.modelSet = make(map[string]struct{}, len(payload.Data))
+		for _, m := range payload.Data {
+			out.modelSet[strings.ToLower(strings.TrimSpace(m.ID))] = struct{}{}
+		}
+	}
+	return out
+}
+
+// modelListed 判断接口模型 ID 是否在该组的模型列表里（容忍大小写与厂商前缀差异）。
+func modelListed(set map[string]struct{}, model string) bool {
+	name := strings.ToLower(strings.TrimSpace(model))
+	if name == "" {
+		return true
+	}
+	if _, ok := set[name]; ok {
+		return true
+	}
+	// 有的网关列表只给短名（glm-5.3-flash），申报里写的是 z-ai/glm-5.3-flash
+	if idx := strings.LastIndex(name, "/"); idx >= 0 && idx+1 < len(name) {
+		if _, ok := set[name[idx+1:]]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// describeGroupProblem 给结构性配置问题一个可读原因。
+func describeGroupProblem(gid int64, groups map[int64]supplypg.TestConfigGroupCredential) string {
+	group, ok := groups[gid]
+	switch {
+	case !ok:
+		return "绑定的准入配置组不存在"
+	case !group.Enabled:
+		return "绑定的是已停用的配置组"
+	case !validTestBaseURL(strings.TrimSpace(group.BaseURL)):
+		return "配置组 Base URL 不是合法的 http/https 地址"
+	case strings.TrimSpace(group.APIKey) == "":
+		return "配置组缺少 API Key"
+	}
+	return "配置组不可用"
 }
 
 // probeRowConnectivity 返回空串表示通过，否则返回失败原因。
