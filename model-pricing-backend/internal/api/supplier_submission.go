@@ -541,14 +541,25 @@ func (h *supplierSubmissionHandler) startSubmitRowTests(ctx context.Context, sup
 	if err != nil {
 		return
 	}
+	// 并行发单：3 个模型串行会让提交按钮"卡几秒"（每次都是一个平台往返）。
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
 	for _, row := range rows[submissionID] {
 		if row.TestConfigGroupID == nil || *row.TestConfigGroupID <= 0 {
 			continue
 		}
-		// 幂等键按"申报单+行"固定：重复提交/重试不会重复建任务。
-		key := fmt.Sprintf("submit-%d-%d", submissionID, row.ID)
-		_, _, _ = h.startRowTest(ctx, supplierID, submissionID, row.ID, "comprehensive", key)
+		rowID := row.ID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			// 幂等键按"申报单+行"固定：重复提交/重试不会重复建任务。
+			key := fmt.Sprintf("submit-%d-%d", submissionID, rowID)
+			_, _, _ = h.startRowTest(ctx, supplierID, submissionID, rowID, "comprehensive", key)
+		}()
 	}
+	wg.Wait()
 }
 
 func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID, submissionID, rowID int64,
@@ -1177,14 +1188,27 @@ func probeGroupModels(ctx context.Context, base, key string) struct {
 		out.reason = fmt.Sprintf("上游不可用（HTTP %d）", resp.StatusCode)
 		return out
 	}
-	// 解析模型列表（拿不到就只算连通）
+	// 必须是 JSON：很多网站对任意路径都返回 200 + HTML（SPA 兜底页），
+	// 只看状态码会把「官网首页」判成「可用的 API」，进而让平台任务全部中断。
+	// 2026-11-19 实测：https://www.tokenplus.cn/ 返回 200 HTML，被误判通过。
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" || !json.Valid([]byte(trimmed)) {
+		out.ok = false
+		out.reason = "该地址返回的是网页/非 JSON（不是 API 入口，通常是官网首页或路径不对）"
+		return out
+	}
 	var payload struct {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if jsonErr := json.Unmarshal(body, &payload); jsonErr == nil && len(payload.Data) > 0 {
+	if jsonErr := json.Unmarshal([]byte(trimmed), &payload); jsonErr != nil {
+		out.ok = false
+		out.reason = "该地址返回的 JSON 不是模型列表格式（不是 OpenAI 兼容入口）"
+		return out
+	}
+	if len(payload.Data) > 0 {
 		out.hasModels = true
 		out.modelSet = make(map[string]struct{}, len(payload.Data))
 		for _, m := range payload.Data {

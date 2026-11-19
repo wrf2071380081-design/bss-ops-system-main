@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { supplierSubmissionsApi } from "../../api/supplierSubmissions";
 import { supplierTestCredentialApi } from "../../api/supplierTestCredential";
-import type { SupplierSubmissionDTO, SupplierSubmissionTestDTO } from "../../api/supplierSubmissions.types";
+import type { SupplierSubmissionDTO, SupplierSubmissionRowDTO, SupplierSubmissionTestDTO } from "../../api/supplierSubmissions.types";
 
 /**
  * 「查看申报」只读弹窗（原型 2026-10-27 版）。
@@ -57,6 +57,24 @@ function testText(job?: SupplierSubmissionTestDTO) {
   if (!job.tested) return job.status === "RUNNING" || job.status === "QUEUED" ? "测试中" : "未完成";
   return job.passed ? "完成 · 通过" : job.verdict ? "完成 · 未通过" : "完成";
 }
+/** 连通性单元格：平台任务优先（在跑=测试中，终态=结论），否则退回提交时的探测结果。 */
+function connectivityTag(row: SupplierSubmissionRowDTO) {
+  const job = row.connectivity_job;
+  const status = (job?.status || "").toUpperCase();
+  if (job && (status === "QUEUED" || status === "RUNNING")) {
+    return { text: "测试中", type: "info" as const, note: status === "QUEUED" ? "排队中" : "平台执行中" };
+  }
+  if (job && job.tested) {
+    return job.passed
+      ? { text: "通过", type: "success" as const, note: connectivityMetrics(job) }
+      : { text: "未通过", type: "danger" as const, note: job.verdict ? `平台结论：${job.verdict}` : "" };
+  }
+  if (job && job.stale) return { text: "已失效", type: "warning" as const, note: "测试目标已变更，需重测" };
+  if (row.probe_status === "PASS") return { text: "通过", type: "success" as const, note: "提交时探测" };
+  if (row.probe_status === "FAIL") return { text: "未通过", type: "danger" as const, note: row.probe_note || "" };
+  return { text: job ? testText(job) : "未测试", type: "info" as const, note: "" };
+}
+
 function testType(job?: SupplierSubmissionTestDTO): "success" | "danger" | "info" | "warning" {
   if (!job || job.stale) return "info";
   if (!job.tested) return "info";
@@ -125,16 +143,10 @@ watch(() => [props.modelValue, props.submissionId], ([open]) => {
             <template #default="{ row }">
               <!-- 优先显示"提交时探测"的结果：这是供应商提交那一刻真实打通的证据；
                    没有探测记录（历史数据）时退回平台测试任务的状态。 -->
-              <template v-if="row.probe_status">
-                <el-tag size="small" :type="row.probe_status === 'PASS' ? 'success' : 'danger'">
-                  {{ row.probe_status === 'PASS' ? '通过' : '未通过' }}
-                </el-tag>
-                <small v-if="row.probe_note" class="muted" style="display:block">{{ row.probe_note }}</small>
-              </template>
-              <template v-else>
-                <el-tag size="small" :type="testType(row.connectivity_job)">{{ testText(row.connectivity_job) }}</el-tag>
-                <small v-if="connectivityMetrics(row.connectivity_job)" class="muted">{{ connectivityMetrics(row.connectivity_job) }}</small>
-              </template>
+              <!-- 优先级：平台任务状态 > 提交时探测。
+                   平台任务在跑时不能说"通过"——那只是本地探测的结果。 -->
+              <el-tag size="small" :type="connectivityTag(row).type">{{ connectivityTag(row).text }}</el-tag>
+              <small v-if="connectivityTag(row).note" class="muted" style="display:block">{{ connectivityTag(row).note }}</small>
             </template>
           </el-table-column>
           <el-table-column label="压力测试" min-width="150">
