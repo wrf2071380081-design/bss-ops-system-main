@@ -311,7 +311,17 @@ function onSupplierChange(line: QuoteLine, resourceId: string) {
   const next = buildLine(line.modelKey, source);
   next.margin = line.margin;
   next.quoteCoefficient = coefficientFromMargin(next.coefficient, next.margin);
-  lines.value = lines.value.map(item => item.modelKey === line.modelKey ? next : item);
+  const current = lines.value.find(item => item.modelKey === line.modelKey);
+  if (!current) return;
+  // 2026-11-19：原地更新，不换对象。
+  // 「对比来源」是展开行，展开单元格里拿到的 row 是渲染那一刻的行对象；如果这里用
+  // map 换成一个新对象，主表格会刷新，但展开区里那份引用还指向旧对象——于是点了「选用」，
+  // 数据已经切过去，来源表里的「当前 / 选用」却永远停在被点之前的样子。
+  Object.assign(current, next);
+}
+/** 取当前最新的行对象：展开区里的行引用可能是旧的，用它兜底。 */
+function lineByKey(modelKey: string): QuoteLine {
+  return lines.value.find(item => item.modelKey === modelKey) || lines.value[0];
 }
 function sourcesOf(modelKey: string) {
   return sourcesByModel.value.get(modelKey) || [];
@@ -1278,15 +1288,15 @@ onMounted(async () => {
                     <el-table-column label="报价系数" width="100" align="right"><template #default><span class="mono">{{ line.quoteCoefficient || "—" }}</span></template></el-table-column>
                     <el-table-column label="提示" min-width="140">
                       <template #default="{ row: source }">
-                        <span :class="{ warn: String(source.resource_id) === line.resourceId && lineHint(line) !== '—' }">
-                          {{ String(source.resource_id) === line.resourceId ? lineHint(line) : "非当前来源" }}
+                        <span :class="{ warn: String(source.resource_id) === lineByKey(line.modelKey).resourceId && lineHint(lineByKey(line.modelKey)) !== '—' }">
+                          {{ String(source.resource_id) === lineByKey(line.modelKey).resourceId ? lineHint(lineByKey(line.modelKey)) : "非当前来源" }}
                         </span>
                       </template>
                     </el-table-column>
                     <el-table-column label="操作" width="80">
                       <template #default="{ row: source }">
-                        <el-button link type="primary" :disabled="String(source.resource_id) === line.resourceId" @click="onSupplierChange(line, String(source.resource_id))">
-                          {{ String(source.resource_id) === line.resourceId ? "当前" : "选用" }}
+                        <el-button link type="primary" :disabled="String(source.resource_id) === lineByKey(line.modelKey).resourceId" @click="onSupplierChange(lineByKey(line.modelKey), String(source.resource_id))">
+                          {{ String(source.resource_id) === lineByKey(line.modelKey).resourceId ? "当前" : "选用" }}
                         </el-button>
                       </template>
                     </el-table-column>
