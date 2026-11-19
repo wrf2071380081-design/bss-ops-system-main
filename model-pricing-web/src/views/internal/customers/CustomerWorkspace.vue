@@ -1285,14 +1285,10 @@ onMounted(async () => {
                     <el-table-column label="压力 · TPS" width="110" align="right"><template #default="{ row: source }"><span class="mono">{{ source.test_tps || "未测试" }}</span></template></el-table-column>
                     <el-table-column label="输入缓存命中率" min-width="140" align="right"><template #default="{ row: source }"><span class="mono">{{ source.test_cache_hit_rate ? source.test_cache_hit_rate + "%" : "未提供" }}</span></template></el-table-column>
                     <el-table-column label="毛利率 %" width="100" align="right"><template #default="{ row: source }"><span class="mono">{{ sourceMargin(line, source) }}</span></template></el-table-column>
-                    <el-table-column label="报价系数" width="100" align="right"><template #default><span class="mono">{{ line.quoteCoefficient || "—" }}</span></template></el-table-column>
-                    <el-table-column label="提示" min-width="140">
-                      <template #default="{ row: source }">
-                        <span :class="{ warn: String(source.resource_id) === lineByKey(line.modelKey).resourceId && lineHint(lineByKey(line.modelKey)) !== '—' }">
-                          {{ String(source.resource_id) === lineByKey(line.modelKey).resourceId ? lineHint(lineByKey(line.modelKey)) : "非当前来源" }}
-                        </span>
-                      </template>
-                    </el-table-column>
+                    <!-- 2026-11-19：删掉「报价系数」「提示」两列。
+                         报价系数全表同值（就是本行填的那个），占一列但没有比较价值；
+                         「提示」只对当前来源有意义，非当前来源恒显示"非当前来源"，
+                         当前来源的提示在主表格那一行本来就有，这里重复。 -->
                     <el-table-column label="操作" width="80">
                       <template #default="{ row: source }">
                         <el-button link type="primary" :disabled="String(source.resource_id) === lineByKey(line.modelKey).resourceId" @click="onSupplierChange(lineByKey(line.modelKey), String(source.resource_id))">
