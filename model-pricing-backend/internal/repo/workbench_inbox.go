@@ -54,7 +54,9 @@ SELECT assignee_id, item_type, state, biz_type, biz_id, title, biz_object, regio
        NULL::bigint AS plan_id
 FROM v_work_item
 WHERE biz_type <> 'PLAN'
-  AND NOT (biz_type='ONBOARDING_NODE' AND title IN ('CONFIG','CONTRACT') AND EXISTS(SELECT 1 FROM operation_log l WHERE l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'flow_id'=v_work_item.biz_id::text))
+  -- 2026-11-18：只排除 CONTRACT（商务在档案页办），CONFIG（技术接入）必须留在收件箱，
+  -- 否则审批一过、技术办理人的待办就凭空消失。
+  AND NOT (biz_type='ONBOARDING_NODE' AND title IN ('CONTRACT') AND EXISTS(SELECT 1 FROM operation_log l WHERE l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'flow_id'=v_work_item.biz_id::text))
   -- 客户开通流程的节点不进收件箱（2026-11-08 走查结论）。
   --
   -- 客户侧要办的就两件事，已经由「报价审批通过即派单」写进 todo_task：
