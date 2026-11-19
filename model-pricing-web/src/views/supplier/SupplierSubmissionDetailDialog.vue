@@ -35,6 +35,8 @@ function formatTime(value?: string | null) {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
+/** 已有审批决定的行（PENDING 视为"还没决定"）。 */
+const decidedRows = computed(() => (detail.value?.rows || []).filter(row => row.decision && row.decision !== "PENDING"));
 const submittedAt = computed(() => formatTime(detail.value?.submitted_at || detail.value?.updated_at));
 const reasonText = computed(() => detail.value?.reason?.trim() || "无补充说明");
 
@@ -119,10 +121,20 @@ watch(() => [props.modelValue, props.submissionId], ([open]) => {
           </el-table-column>
           <el-table-column label="接口模型 ID" prop="interface_model_id" min-width="150" />
           <el-table-column label="申报供货报价系数" prop="coefficient" width="130" />
-          <el-table-column label="连通性测试" min-width="130">
+          <el-table-column label="连通性" min-width="150">
             <template #default="{ row }">
-              <el-tag size="small" :type="testType(row.connectivity_job)">{{ testText(row.connectivity_job) }}</el-tag>
-              <small v-if="connectivityMetrics(row.connectivity_job)" class="muted">{{ connectivityMetrics(row.connectivity_job) }}</small>
+              <!-- 优先显示"提交时探测"的结果：这是供应商提交那一刻真实打通的证据；
+                   没有探测记录（历史数据）时退回平台测试任务的状态。 -->
+              <template v-if="row.probe_status">
+                <el-tag size="small" :type="row.probe_status === 'PASS' ? 'success' : 'danger'">
+                  {{ row.probe_status === 'PASS' ? '通过' : '未通过' }}
+                </el-tag>
+                <small v-if="row.probe_note" class="muted" style="display:block">{{ row.probe_note }}</small>
+              </template>
+              <template v-else>
+                <el-tag size="small" :type="testType(row.connectivity_job)">{{ testText(row.connectivity_job) }}</el-tag>
+                <small v-if="connectivityMetrics(row.connectivity_job)" class="muted">{{ connectivityMetrics(row.connectivity_job) }}</small>
+              </template>
             </template>
           </el-table-column>
           <el-table-column label="压力测试" min-width="150">
@@ -142,7 +154,19 @@ watch(() => [props.modelValue, props.submissionId], ([open]) => {
           <p class="muted">供货报价系数沿用既有计价口径。<template v-if="credentialUrl">测试接口：{{ credentialUrl }}；测试 Key：{{ hasCredentialKey ? '••••••••' : '未登记' }}。</template></p>
           <p>申报说明：{{ reasonText }}</p>
           <p>审核状态：{{ statusLabel(detail.status) }}</p>
-          <p v-if="detail.status === 'APPROVED' || detail.status === 'REJECTED'">审核结果详见办理记录。</p>
+          <!-- 审批结果：谁过的、谁没过、领导的留言，逐模型列出 -->
+          <template v-if="decidedRows.length">
+            <p v-if="detail.reason">领导留言：{{ detail.reason }}</p>
+            <ul class="decision-list">
+              <li v-for="row in decidedRows" :key="row.id">
+                <el-tag size="small" :type="row.decision === 'APPROVED' ? 'success' : 'danger'">
+                  {{ row.decision === 'APPROVED' ? '通过' : '不通过' }}
+                </el-tag>
+                <span class="decision-name">{{ row.standard_model_name || row.interface_model_id }}</span>
+                <small class="muted">{{ row.decided_by_name || '—' }} · {{ formatTime(row.decided_at) }}</small>
+              </li>
+            </ul>
+          </template>
           <p v-else class="muted">本次尚无审核结果。</p>
         </div>
       </template>

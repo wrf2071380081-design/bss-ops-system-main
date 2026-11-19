@@ -53,6 +53,13 @@ export interface SupplierSubmissionRowDTO {
   connectivity_passed: boolean;
   stress_tested: boolean;
   stress_passed: boolean;
+  /** 提交时的连通性探测结果：PASS / FAIL / 空串=未探测（000071） */
+  probe_status?: string;
+  probe_note?: string;
+  /** 该行的审批决定：PENDING / APPROVED / REJECTED */
+  decision?: string;
+  decided_at?: string;
+  decided_by_name?: string;
   connectivity_job?: SupplierSubmissionTestDTO;
   stress_job?: SupplierSubmissionTestDTO;
 }

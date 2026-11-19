@@ -1,10 +1,11 @@
 package supplypg
 
 import (
-	"fmt"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,18 +24,18 @@ type SubmissionStore struct {
 
 // SubmissionHeader 是申报单头。
 type SubmissionHeader struct {
-	ID           int64
-	SubmissionNo string
+	ID            int64
+	SubmissionNo  string
 	SubmitterName string
-	SupplierID  int64
-	Kind        string
-	Region      string
-	Status      string
-	Reason      string
-	Revision    int64
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	SubmittedAt *time.Time
+	SupplierID    int64
+	Kind          string
+	Region        string
+	Status        string
+	Reason        string
+	Revision      int64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	SubmittedAt   *time.Time
 }
 
 // SubmissionRowRecord 是申报行及其测试产物（只读投影）。
@@ -63,6 +64,15 @@ type SubmissionRowRecord struct {
 	// Stale 表示该测试目标的指纹与发单时不一致（改了地址/Key/模型）→ 结果不可用。
 	ConnectivityStale bool
 	StressStale       bool
+	// 提交时的连通性探测结果（000071）：PASS / FAIL / 空=未探测。
+	// 与上面的 ConnectivityStatus（平台测试任务）是两件事：那个是"真跑过"，
+	// 这个是"提交那一刻地址和 Key 通不通"。
+	ProbeStatus   string
+	ProbeNote     string
+	// 审批决定（供应商侧展示用）：PENDING / APPROVED / REJECTED。
+	Decision      string
+	DecidedAt     *time.Time
+	DecidedByName string
 	// 发单时测试平台记录的指纹（000046 起用于按当前配置组重算「是否失效」）。
 	ConnectivityJobFingerprint string
 	StressJobFingerprint       string
@@ -656,8 +666,8 @@ type TestRow struct {
 	SupplierModelName string
 	// ParticipateTest 表示该行勾选了压力测试。
 	ParticipateTest bool
-	TestBaseURL       string
-	SealedAPIKey      string
+	TestBaseURL     string
+	SealedAPIKey    string
 	// EffectiveBaseURL / EffectiveAPIKey 是**该行所挂配置组的当前凭据**（000052）。
 	// 发测试只用它们；上面两列只是行上的历史快照。
 	EffectiveBaseURL string
@@ -667,24 +677,24 @@ type TestRow struct {
 	TestConfigGroupID      int64
 	TestConfigGroupName    string
 	TestConfigGroupEnabled bool
-	Coefficient       string
-	Region            string
-	SupplierID        int64
-	SupplierName      string
-	TestFingerprint   string
-	ResourceID        *int64
-	TestJobID         *int64
-	StressJobID       *int64
+	Coefficient            string
+	Region                 string
+	SupplierID             int64
+	SupplierName           string
+	TestFingerprint        string
+	ResourceID             *int64
+	TestJobID              *int64
+	StressJobID            *int64
 	// 下面几组用于判断「能否跳过重测」：状态 + 发单时指纹 + 有没有报告。
-	TestJobStatus      string
-	TestJobFingerprint string
-	TestJobVerdict     string
-	TestJobHasReport   bool
+	TestJobStatus        string
+	TestJobFingerprint   string
+	TestJobVerdict       string
+	TestJobHasReport     bool
 	StressJobStatus      string
 	StressJobFingerprint string
 	StressJobVerdict     string
 	StressJobHasReport   bool
-	SubmissionStatus  string
+	SubmissionStatus     string
 }
 
 // TestRow 取某一行（限定供应商，防越权）。
@@ -1098,4 +1108,58 @@ SET connectivity_status=$2, connectivity_note=NULLIF($3,'') WHERE id=$1`, id, r.
 type RowConnectivity struct {
 	Status string // PASS / FAIL
 	Note   string // 失败原因，PASS 时为空
+}
+
+// RowProbeState 是一行的「探测结果 + 审批决定」，供供应商查看申报展示。
+type RowProbeState struct {
+	ProbeStatus   string
+	ProbeNote     string
+	Decision      string
+	DecidedAt     *time.Time
+	DecidedByName string
+}
+
+// RowProbeAndDecisions 批量取探测结果与审批决定。
+//
+// 容错：000071 迁移未执行时 connectivity_* 列不存在，这里返回空 map 且不报错——
+// "查看申报"不能因为一个可选列没迁移就打不开。
+func (s *SubmissionStore) RowProbeAndDecisions(ctx context.Context, submissionIDs []int64) map[int64]RowProbeState {
+	out := map[int64]RowProbeState{}
+	if len(submissionIDs) == 0 {
+		return out
+	}
+	placeholders := make([]string, 0, len(submissionIDs))
+	args := make([]any, 0, len(submissionIDs))
+	for i, id := range submissionIDs {
+		args = append(args, id)
+		placeholders = append(placeholders, "$"+itoa(i+1))
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT r.id::text, COALESCE(r.connectivity_status,''), COALESCE(r.connectivity_note,''),
+       r.decision, r.decided_at, COALESCE(st.name,'')
+FROM `+s.table("submission_row")+` r
+LEFT JOIN `+s.table("internal_staff")+` st ON st.id = r.decided_by
+WHERE r.submission_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return out
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var rawID, status, note, decision, name string
+		var decidedAt sql.NullTime
+		if err := rows.Scan(&rawID, &status, &note, &decision, &decidedAt, &name); err != nil {
+			return map[int64]RowProbeState{}
+		}
+		id, convErr := strconv.ParseInt(rawID, 10, 64)
+		if convErr != nil {
+			continue
+		}
+		item := RowProbeState{ProbeStatus: status, ProbeNote: note, Decision: decision, DecidedByName: name}
+		if decidedAt.Valid {
+			t := decidedAt.Time.UTC()
+			item.DecidedAt = &t
+		}
+		out[id] = item
+	}
+	return out
 }

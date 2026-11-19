@@ -104,8 +104,15 @@ type submissionRowDTO struct {
 	// ParticipateTest 是压力测试勾选（原型「压力测试」列）。
 	ParticipateTest bool `json:"participate_test"`
 	// SupplementRequired 表示该行已提交但仍未通过（原型「待补」）。
-	SupplementRequired bool               `json:"supplement_required"`
-	RowStatus          string             `json:"row_status"`
+	SupplementRequired bool   `json:"supplement_required"`
+	RowStatus          string `json:"row_status"`
+	// ProbeStatus 是**提交时**的连通性探测结果（PASS/FAIL/空串=未探测），
+	// 与下面基于平台测试任务的 connectivity_tested 不是一回事。
+	ProbeStatus        string             `json:"probe_status"`
+	ProbeNote          string             `json:"probe_note"`
+	Decision           string             `json:"decision"`
+	DecidedAt          string             `json:"decided_at"`
+	DecidedByName      string             `json:"decided_by_name"`
 	ConnectivityTested bool               `json:"connectivity_tested"`
 	ConnectivityPassed bool               `json:"connectivity_passed"`
 	StressTested       bool               `json:"stress_tested"`
@@ -239,6 +246,7 @@ func (h *supplierSubmissionHandler) list(c *gin.Context) {
 	}
 	list := make([]submissionDTO, 0, len(headers))
 	for _, header := range headers {
+		h.enrichProbeState(c.Request.Context(), []int64{header.ID}, rows)
 		list = append(list, buildSubmissionDTO(header, applyConfigGroups(rows[header.ID], groups)))
 	}
 	response.Success(c, gin.H{"list": list, "total": total, "page": page, "size": size})
@@ -291,6 +299,7 @@ func (h *supplierSubmissionHandler) detail(c *gin.Context) {
 		writeSubmissionError(c, err)
 		return
 	}
+	h.enrichProbeState(c.Request.Context(), []int64{id}, rows)
 	response.Success(c, buildSubmissionDTO(*header, applyConfigGroups(rows[id], groups)))
 }
 
@@ -1375,6 +1384,7 @@ func (h *supplierSubmissionHandler) respondWithDTO(c *gin.Context, supplierID, i
 		writeSubmissionError(c, err)
 		return false
 	}
+	h.enrichProbeState(c.Request.Context(), []int64{id}, rows)
 	response.Success(c, buildSubmissionDTO(*header, applyConfigGroups(rows[id], groups)))
 	return true
 }
@@ -1441,6 +1451,42 @@ func deriveSubmissionResult(status string, rows []supplypg.SubmissionRowRecord) 
 	}
 }
 
+// formatOptionalTime 把可选时间格式化成 RFC3339（空指针返回空串）。
+func formatOptionalTime(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// enrichProbeState 把「提交时探测结果 + 审批决定」补进行记录。
+//
+// 单独一次宽容查询（000071 未迁移时返回空），不塞进主查询：
+// 主查询是多表 join，加列会让"查看申报"在未迁移的库上直接打不开。
+func (h *supplierSubmissionHandler) enrichProbeState(ctx context.Context, ids []int64, rows map[int64][]supplypg.SubmissionRowRecord) {
+	if h == nil || h.svc == nil || h.svc.store == nil || len(ids) == 0 {
+		return
+	}
+	states := h.svc.store.RowProbeAndDecisions(ctx, ids)
+	if len(states) == 0 {
+		return
+	}
+	for id, list := range rows {
+		for i := range list {
+			st, ok := states[list[i].ID]
+			if !ok {
+				continue
+			}
+			list[i].ProbeStatus = st.ProbeStatus
+			list[i].ProbeNote = st.ProbeNote
+			list[i].Decision = st.Decision
+			list[i].DecidedAt = st.DecidedAt
+			list[i].DecidedByName = st.DecidedByName
+		}
+		rows[id] = list
+	}
+}
+
 // buildSubmissionDTO 组装前端契约；顺带推导测试状态与权限。
 func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.SubmissionRowRecord) submissionDTO {
 	submitted := header.Status == submissionPendingTest || header.Status == submissionPending || header.Status == submissionApproved
@@ -1462,6 +1508,11 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			StandardModelID: strconv.FormatInt(row.StandardModelID, 10), StandardModelName: row.StandardModelName,
 			OfficialID: row.OfficialID, Coefficient: row.Coefficient, TestBaseURL: row.TestBaseURL,
 			ParticipateTest: row.ParticipateTest,
+			ProbeStatus:     row.ProbeStatus,
+			ProbeNote:       row.ProbeNote,
+			Decision:        row.Decision,
+			DecidedByName:   row.DecidedByName,
+			DecidedAt:       formatOptionalTime(row.DecidedAt),
 			// 000052：这三列仓储已经 SELECT+Scan 进来了，这里必须**搬进 DTO**。
 			// 漏搬不会编译报错、不会类型报错，但会让前端「准入配置组」下拉全空、
 			// rowsWithoutGroup 恒真 → 提交按钮永久禁用（QA 报的 P0 就是这个）。

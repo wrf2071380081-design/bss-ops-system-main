@@ -101,6 +101,19 @@ func (r *SupplyChainRuntime) Reject(ctx context.Context, submissionID, expectedR
 			return err
 		}
 		defer tx.Rollback()
+	} else {
+		// 关键：非自有事务（幂等中间件持有）时，函数返回错误**不会自动回滚**，
+		// 中间件仍会 Commit —— 于是"状态已推进 + 后续步骤失败"会留下半截数据，
+		// 下一次重试就会因为 status 已是 PROCESSING 而报 409（2026-11-18/19 反复遇到）。
+		// 这里用 SAVEPOINT 兜底：出错就回滚到进入函数时的状态。
+		if _, spErr := tx.ExecContext(ctx, "SAVEPOINT approve_ep"); spErr != nil {
+			return spErr
+		}
+		defer func() {
+			if err != nil {
+				_, _ = tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT approve_ep")
+			}
+		}()
 	}
 	var qualified bool
 	if err := tx.QueryRowContext(ctx, `SELECT can_approve_supplier AND status='ACTIVE' FROM public.internal_staff WHERE id=$1 FOR SHARE`, staffID).Scan(&qualified); err != nil || !qualified {
@@ -499,7 +512,7 @@ func (r *SupplyChainRuntime) ApproveVersioned(ctx context.Context, submissionID,
 	}
 	return r.approve(ctx, submissionID, expected, actorID, testAssignee, contractAssignee, reason, requestID, decisions)
 }
-func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected, actorID, testAssignee, contractAssignee int64, reason, requestID string, decisions map[int64]bool) error {
+func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected, actorID, testAssignee, contractAssignee int64, reason, requestID string, decisions map[int64]bool) (err error) {
 	ok, err := r.isApprover(ctx, actorID)
 	if err != nil {
 		return err
