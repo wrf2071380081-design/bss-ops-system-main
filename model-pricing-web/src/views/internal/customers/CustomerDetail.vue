@@ -99,8 +99,26 @@ function selectTab(tab: TabKey) {
 const profile = ref<CustomerProfileDTO>();
 const profileLoading = ref(false);
 const profileError = ref("");
-const canManageF12 = computed(() =>
-  Boolean(profile.value && session.user?.staffId && String(profile.value.owner_sales_operator_id) === String(session.user.staffId)));
+/**
+ * 谁能维护这一单的合同与授信（新增 / 修订 / 归档 / 授信版本）。
+ *
+ * 这里必须与后端 `supplypg.authorizeSubjectOwner` 的口径**逐条对齐**，否则就会出现
+ * 「后端允许、前端拦截」——典型症状是商务点「上传合同资料」弹一句
+ * 「当前账号没有合同与授信维护权限」，却连一个请求都没发出去。
+ * 后端允许两类人（2026-11-09 ddfcf68 起）：
+ *   1) 主体责任人：customer_profile.owner_sales_operator_id（客户绑定的销售，随移交而变）；
+ *   2) 当前办理人：该客户 PROCESSING 流程里 CONTRACT 节点的办理人。
+ * 本页此前只判了第 1 条，商务（平台部）派了单也传不了资料，合同授信永远办不完。
+ */
+const canManageF12 = computed(() => {
+  if (!profile.value || !session.user?.staffId) return false;
+  const me = String(session.user.staffId);
+  if (String(profile.value.owner_sales_operator_id) === me) return true;
+  const current = flow.value;
+  if (!current || current.status !== "PROCESSING") return false;
+  return (current.nodes || []).some(node =>
+    node.key === "CONTRACT" && (node.status === "IN_PROGRESS" || node.status === "WAITING_PREDECESSOR") && String(node.assignee_id) === me);
+});
 
 async function loadProfile() {
   if (!customerId.value) return;
