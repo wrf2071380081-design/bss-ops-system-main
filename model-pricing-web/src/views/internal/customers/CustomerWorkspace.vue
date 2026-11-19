@@ -1491,7 +1491,7 @@ onMounted(async () => {
 
     <!-- 选择报价模型（对齐原型：按模型勾选，供应商在报价行里选）。
          标题写明区域，让销售一眼知道「这里只可能出现该区域的货源」。 -->
-    <el-dialog v-model="pickerVisible" :title="`选择报价模型 · 仅显示${regionText(form.region)}资源`" width="min(880px, 96vw)">
+    <el-dialog v-model="pickerVisible" :title="`选择报价模型 · 仅显示${regionText(form.region)}资源`" width="min(1200px, 96vw)">
       <div class="picker-filters">
         <label>供应商公司名称
           <el-select v-model="pickerFilter.supplier" clearable placeholder="全部">
@@ -1658,10 +1658,13 @@ onMounted(async () => {
 .severe-lead { margin: 0 0 12px; font-size: 13px; line-height: 1.7; color: #8a5a12; background: #fff8ea; border: 1px solid #f2e2c2; border-radius: 8px; padding: 10px 12px; }
 .severe-tip { margin: 12px 0 0; font-size: 12px; color: var(--app-text-muted); }
 .foot-actions { display: flex; gap: 10px; }
-.picker-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.picker-filters label { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
-.picker-filters .el-select { width: 140px; }
-.picker-filters .picker-keyword { width: 200px; }
+/* 2026-11-19：筛选条改成一行（对齐原型）。弹窗加宽到 1200px，五个控件 + 重置排一行；
+   窄屏（<1100px）才允许换行，避免控件被压扁或溢出。 */
+.picker-filters { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; margin-bottom: 8px; }
+.picker-filters label { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; flex: 0 0 auto; }
+.picker-filters .el-select { width: 132px; }
+.picker-filters .picker-keyword { width: 220px; flex: 0 0 auto; }
+@media (max-width: 1100px) { .picker-filters { flex-wrap: wrap; } }
 .picker-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .approval-grid { margin-top: 18px; }
 .dialog-form { margin-top: 16px; }
