@@ -1091,9 +1091,8 @@ onMounted(async () => {
         <button class="tab" :class="{ active: activeTab === 'list' }" @click="activeTab = 'list'">客户列表</button>
         <button class="tab" :class="{ active: activeTab === 'quote' }" @click="activeTab = 'quote'">客户报价单</button>
       </div>
-      <div class="tabbar-actions">
-        <el-button v-if="activeTab === 'list' && canQuote" type="primary" @click="startNewQuote()">新建报价</el-button>
-      </div>
+      <!-- 2026-11-19：列表页顶部的「新建报价」已下线。报价统一从「客户报价单」页签发起，
+           避免同一件事有两个入口、且这里的入口不带对应客户上下文容易建错。 -->
     </div>
 
     <!-- ================= 客户列表 ================= -->
@@ -1168,14 +1167,12 @@ onMounted(async () => {
             <el-button link type="primary" @click="openDetail(row, 'onboarding')">{{ row.handling_status }}</el-button>
           </template>
         </el-table-column>
-        <!-- 行操作：详情（独立页）+ 移交（共用弹窗）。
-             移交必须留在列表里：它是"看谁名下、当场调整"的操作，
-             进详情再移交会把用户原来的路径变远——技术重构不该改用户的习惯。
-             权限沿用 M8:E（CUSTOMER_EDIT），无权限不显示。 -->
-        <el-table-column label="操作" width="130" fixed="right">
+        <!-- 行操作：详情（独立页）。
+             2026-11-19：「移交」按钮按 PM 要求隐藏，当前版本不做客户移交；
+             弹窗与接口都还在（CustomerTransferDialog / transfer 接口），要恢复只需把按钮加回来。 -->
+        <el-table-column label="操作" width="90" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
-            <el-button v-if="canTransfer" link type="primary" @click="openTransfer(row)">移交</el-button>
           </template>
         </el-table-column>
         <template #empty><el-empty description="没有符合条件的客户" :image-size="64" /></template>
