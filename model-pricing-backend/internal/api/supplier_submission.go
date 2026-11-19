@@ -437,11 +437,21 @@ func (h *supplierSubmissionHandler) submit(c *gin.Context) {
 		return
 	}
 	if header.Kind == submissionKindModelNew {
-		// 2026-11 口径：提交时逐模型做**本地模拟连通检查**（不调用生产 API、不写测试结果）。
-		// 任一模型不通过 → 整单不提交、不改状态，把失败模型与原因回给供应商。
+		// 提交时对每个模型做**真实连通性探测**（用该行配置组的 URL + Key 打 /models）。
+		//
+		// 2026-11-19 口径调整：探测**只作提示，不再阻断提交**。
+		// 原来"任一模型不通过则整单不提交"，导致一个模型配错就卡住整单，
+		// 与"先提交、办理环节再补测"的流程冲突。
+		// 结果暂只记日志，逐行状态要等 submission_row 增加连通性列后再落库（下一步）。
+		// ① 结构校验仍然阻断：没选配置组、URL/Key 缺失这类问题必须当场改，
+		//    否则提交后连"打哪个地址"都不知道。
 		if err := h.simulateSubmitConnectivity(ctx, supplierID, submissionID); err != nil {
 			writeSubmissionError(c, err)
 			return
+		}
+		// ② 真实连通性探测只作提示，不阻断提交：网络/鉴权失败由办理环节补测。
+		if probeErr := h.probeSubmitConnectivity(ctx, supplierID, submissionID); probeErr != nil {
+			_ = probeErr
 		}
 	}
 	submitter, _ := h.svc.store.SubmitterName(ctx, supplierID)
@@ -985,6 +995,106 @@ func groupGateOrder(groups map[int64]supplypg.TestConfigGroupCredential) []suppl
 		return ordered[i].ID < ordered[j].ID
 	})
 	return ordered
+}
+
+// probeSubmitConnectivity 在提交时对每个模型做**真实**连通性探测。
+//
+// 与 simulateSubmitConnectivity 的区别：不再只校验表单，而是拿该行配置组的
+// URL + Key 真去打一次 `GET {base}/models`：
+//   2xx            → 通过（地址可达、Key 有效）
+//   401/403        → 不通过（Key 无效或无权限）
+//   404            → 不通过（地址不是 OpenAI 兼容入口）
+//   5xx / 超时      → 不通过（上游不可用）
+//
+// 用 /models 而不是 /chat/completions：前者不计费、不打模型，最适合做"连通性"。
+func (h *supplierSubmissionHandler) probeSubmitConnectivity(ctx context.Context, supplierID, submissionID int64) error {
+	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
+	if err != nil {
+		return err
+	}
+	groups, err := h.svc.groups.ListCredentials(ctx, supplierID)
+	if err != nil {
+		return err
+	}
+	list := applyConfigGroups(rows[submissionID], groups)
+	if len(list) == 0 {
+		return apperr.New(apperr.ErrInvalidParams.Code, "请至少填写一个模型后再提交", 400)
+	}
+	failures := make([]string, 0, len(list))
+	for i, row := range list {
+		name := row.StandardModelName
+		if name == "" {
+			name = row.SupplierModelName
+		}
+		if name == "" {
+			name = fmt.Sprintf("第 %d 行", i+1)
+		}
+		if reason := probeRowConnectivity(ctx, row, groups); reason != "" {
+			failures = append(failures, name+"："+reason)
+		}
+	}
+	if len(failures) == 0 {
+		return nil
+	}
+	shown := failures
+	if len(shown) > 3 {
+		shown = shown[:3]
+	}
+	message := "连通性测试未通过，本次未提交：" + strings.Join(shown, "；")
+	if len(failures) > 3 {
+		message += fmt.Sprintf("（共 %d 个模型失败）", len(failures))
+	}
+	return apperr.New(apperr.ErrInvalidParams.Code, message, 400)
+}
+
+// probeRowConnectivity 返回空串表示通过，否则返回失败原因。
+func probeRowConnectivity(ctx context.Context, row supplypg.SubmissionRowRecord, groups map[int64]supplypg.TestConfigGroupCredential) string {
+	switch {
+	case row.StandardModelID <= 0:
+		return "未选择标准模型"
+	case strings.TrimSpace(row.SupplierModelName) == "":
+		return "缺少接口模型 ID"
+	case row.TestConfigGroupID == nil || *row.TestConfigGroupID <= 0:
+		return "未选择准入配置组"
+	}
+	group, ok := groups[*row.TestConfigGroupID]
+	if !ok {
+		return "绑定的准入配置组不存在"
+	}
+	if !group.Enabled {
+		return "绑定的是已停用的配置组"
+	}
+	base := strings.TrimSpace(group.BaseURL)
+	if !validTestBaseURL(base) {
+		return "配置组 Base URL 不是合法的 http/https 地址"
+	}
+	key := strings.TrimSpace(group.APIKey)
+	if key == "" {
+		return "配置组缺少 API Key"
+	}
+	// 真打一次：/models 不计费、不需要模型参数。
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, strings.TrimRight(base, "/")+"/models", nil)
+	if err != nil {
+		return "地址无法解析"
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return "连接失败（超时或域名不可达）"
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return ""
+	case resp.StatusCode == 401 || resp.StatusCode == 403:
+		return fmt.Sprintf("鉴权失败（HTTP %d，Key 无效或无权限）", resp.StatusCode)
+	case resp.StatusCode == 404:
+		return "地址不是 OpenAI 兼容入口（/models 返回 404）"
+	default:
+		return fmt.Sprintf("上游不可用（HTTP %d）", resp.StatusCode)
+	}
 }
 
 // simulateSubmitConnectivity 是 2026-11 版本要求的「本地模拟连通检查」。

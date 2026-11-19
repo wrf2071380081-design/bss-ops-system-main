@@ -110,7 +110,12 @@ async function saveGroup() {
   const name = groupForm.value.name.trim();
   const baseURL = groupForm.value.base_url.trim();
   if (!name) { groupError.value = "请填写配置组名称。"; return; }
-  if (!baseURL) { groupError.value = "请填写测试接口 URL。"; return; }
+  if (!baseURL) { groupError.value = "请填写接口地址。"; return; }
+  // 新建时 Key 必填（没有 Key 这条通道根本打不通）；编辑时留空=保留原 Key。
+  if (!groupEditingID.value && !groupForm.value.api_key.trim()) {
+    groupError.value = "请填写 API Key。";
+    return;
+  }
   groupSaving.value = true;
   groupError.value = "";
   error.value = "";
@@ -821,7 +826,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
         </el-select>
       </span>
       <!-- 2026-11：门户不再提供 Excel 模板与导入 -->
-      <span class="batch-hint">提交时服务端会逐模型做本地模拟连通检查（不调用生产 API，也不代表真实联通）；任一模型不通过则整单不提交。</span>
+      <span class="batch-hint">提交时服务端会对每个模型尝试一次连通性探测；未通过的模型<b>不影响本次提交</b>，可在后续办理环节补测。</span>
     </div>
 
     <el-table :data="rows" row-key="id" class="submission-table" :row-class-name="rowClassName" empty-text="还没有模型，点「添加模型」开始">
@@ -867,7 +872,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       </el-table-column>
     </el-table>
 
-    <p class="rule-note">提交时系统会自动做一次本地模拟连通性检查（不调用真实接口）；全部通过才进入超管审批，任一模型不通过则整单不提交。专业压力测试由内部执行。</p>
+    <p class="rule-note">提交时系统会对每个模型尝试一次连通性探测（用该行配置组的地址与 API Key）。探测未通过不阻断提交，进入审批后由技术办理人在办理环节补测；专业压力测试由内部执行。</p>
 
     <div class="form-actions form-actions--inline">
       <el-button :disabled="locked" @click="addRow">添加模型</el-button>
@@ -886,7 +891,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       <el-input v-model="reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="locked" placeholder="选填：补充给办理方的信息" />
     </el-form-item>
     <el-alert v-if="!canSubmitBatch" :title="`尚不能提交：${gateError}`" type="warning" :closable="false" show-icon />
-    <el-alert v-else title="可以提交：服务端会在提交时做本地模拟连通检查。" type="success" :closable="false" show-icon />
+    <el-alert v-else title="可以提交：服务端会在提交时尝试连通性探测（失败不阻断）。" type="success" :closable="false" show-icon />
 
     <el-dialog v-model="importDialog" title="导入预览" width="760px">
       <template v-if="importPreview">
@@ -920,12 +925,12 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
         <el-form-item label="组名" required>
           <el-input v-model="groupForm.name" maxlength="64" placeholder="如：原单组配置 / 华东通道" :disabled="groupSaving" />
         </el-form-item>
-        <el-form-item label="测试接口 URL" required>
+        <el-form-item label="接口地址" required>
           <el-input v-model="groupForm.base_url" placeholder="https://api.example.com/v1（填 demo 使用平台演示模型）" :disabled="groupSaving" />
         </el-form-item>
-        <el-form-item :label="groupEditingID ? '测试 API Key（留空保留）' : '测试 API Key'">
+        <el-form-item :label="groupEditingID ? 'API Key（留空保留）' : 'API Key'" required>
           <el-input v-model="groupForm.api_key" type="password" show-password autocomplete="new-password"
-                    :placeholder="groupEditingID ? '留空表示不修改已保存的 Key' : '供应商自测使用的 Key（可稍后再填）'" :disabled="groupSaving" />
+                    :placeholder="groupEditingID ? '留空表示不修改已保存的 Key' : '该通道的 API Key'" :disabled="groupSaving" />
           <!-- Key 加密存储、永不回显：打开编辑时必然是空的，这不是没保存成功。 -->
           <p v-if="groupEditingID" class="muted" style="margin:6px 0 0;font-size:12px">
             该组已保存过 Key（出于安全不回显）。留空 = 保持原 Key；要更换请直接填写新的。
