@@ -25,22 +25,22 @@ func (s *TestPlatformStore) InternalRetestResource(ctx context.Context, actorID,
 		}
 		defer tx.Rollback()
 	}
-	// 这里刻意用**窄查询**读资源，不走 A 线 ResourceStateStore.Current：
-	// 那套契约要求「申报单来源 + facts 对齐」，运营手工登记的资源（无申报行）会被判
-	// ErrReadContract，导致这类资源永远不能自测（2026-11-18 实测）。
-	// 复测只需要 4 个字段，直接查即可（申报行另查，可能没有）。
-	var standardModelID, supplierID, region string
-	var originRow sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT standard_model_id::text, supplier_id::text, region FROM `+s.table("resource")+` WHERE id=$1`, resourceID).Scan(&standardModelID, &supplierID, &region); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, supply.ErrNotFound
-		}
-		return nil, err
+	// 这里刻意用**窄查询**读资源，不走 A 线 ResourceStateStore.Current：
+	// 那套契约要求「申报单来源 + facts 对齐」，运营手工登记的资源（无申报行）会被判
+	// ErrReadContract，导致这类资源永远不能自测（2026-11-18 实测）。
+	// 复测只需要 4 个字段，直接查即可（申报行另查，可能没有）。
+	var standardModelID, supplierID, region string
+	var originRow sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT standard_model_id::text, supplier_id::text, region FROM `+s.table("resource")+` WHERE id=$1`, resourceID).Scan(&standardModelID, &supplierID, &region); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, supply.ErrNotFound
+		}
+		return nil, err
 	}
-	// 资源对应的申报行（手工登记的资源没有申报行，保持 NULL 即可）
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM `+s.table("submission_row")+` WHERE resource_id=$1 ORDER BY id DESC LIMIT 1`, resourceID).Scan(&originRow); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
-	}
+	// 资源对应的申报行（手工登记的资源没有申报行，保持 NULL 即可）
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM `+s.table("submission_row")+` WHERE resource_id=$1 ORDER BY id DESC LIMIT 1`, resourceID).Scan(&originRow); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT n.assignee_id::text
  FROM `+s.table("submission_row")+` sr
  JOIN `+s.table("submission")+` sub ON sub.id=sr.submission_id
@@ -68,20 +68,20 @@ func (s *TestPlatformStore) InternalRetestResource(ctx context.Context, actorID,
 	if err != nil {
 		return nil, err
 	}
-	// 授权口径：
-	//
-	//   ① 资源来自供应商申报：必须是该申报单 CONFIG 节点的办理人（原口径，保持严格）；
-	//   ② 资源是运营手工登记的（没有申报行）：允许**该资源的登记人（buyer）**自测。
-	//      手工登记的用途就是"先把货源记下来、再补测试"，如果这里一刀切禁掉，
-	//      这条通道就永远测不了（2026-11-18 实测卡点）。
-	if len(assignees) == 0 {
-		var buyer sql.NullString
-		if err := tx.QueryRowContext(ctx, `SELECT buyer_id::text FROM `+s.table("resource")+` WHERE id=$1`, resourceID).Scan(&buyer); err != nil {
-			return nil, err
-		}
-		if !buyer.Valid || buyer.String != actorID {
-			return nil, supply.ErrForbidden
-		}
+	// 授权口径：
+	//
+	//   ① 资源来自供应商申报：必须是该申报单 CONFIG 节点的办理人（原口径，保持严格）；
+	//   ② 资源是运营手工登记的（没有申报行）：允许**该资源的登记人（buyer）**自测。
+	//      手工登记的用途就是"先把货源记下来、再补测试"，如果这里一刀切禁掉，
+	//      这条通道就永远测不了（2026-11-18 实测卡点）。
+	if len(assignees) == 0 {
+		var buyer sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT buyer_id::text FROM `+s.table("resource")+` WHERE id=$1`, resourceID).Scan(&buyer); err != nil {
+			return nil, err
+		}
+		if !buyer.Valid || buyer.String != actorID {
+			return nil, supply.ErrForbidden
+		}
 	} else {
 		// 同一供应商可能残留多条 PROCESSING 流程（历史脏数据），会把同一办理人查出多次；
 		// 按去重后的集合判断：当前人在办理人里就放行，不再要求“恰好一条”。
@@ -97,7 +97,15 @@ func (s *TestPlatformStore) InternalRetestResource(ctx context.Context, actorID,
 		}
 	}
 	result := &ResourceTestTarget{StandardModelID: standardModelID, SupplierID: supplierID}
-	err = tx.QueryRowContext(ctx, `SELECT m.official_id,s.name FROM `+s.table("standard_model")+` m JOIN `+s.table("supplier")+` s ON s.id=$2 AND s.status='ACTIVE' WHERE m.id=$1`, standardModelID, supplierID).Scan(&result.Model, &result.SupplierName)
+	// 优先用**该资源的接口模型 ID**（供应商通道里的真实调用名，如 deepseek/deepseek-v4.1-flash）。
+	// official_id 是目录规范名，常常没有厂商前缀，直接发给平台会 404 或跑错模型。
+	// 2026-11-19 实测：资源 49（v4.1）发起内部压测，平台却跑了 deepseek-v3.2
+	// ——因为当时用的是全局 internal_model 覆盖。
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(r.supplier_model_name,''), m.official_id), s.name
+FROM `+s.table("resource")+` r
+JOIN `+s.table("standard_model")+` m ON m.id=r.standard_model_id
+JOIN `+s.table("supplier")+` s ON s.id=r.supplier_id AND s.status='ACTIVE'
+WHERE r.id=$1`, resourceID).Scan(&result.Model, &result.SupplierName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}

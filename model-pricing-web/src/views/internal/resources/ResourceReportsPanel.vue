@@ -87,6 +87,11 @@ type HistoryRow = {
   report?: ResourceReport; upload?: UploadedReport;
 };
 /** 历史列表：平台报告与外部上传报告合成一张表（原型也是同一张表，靠「测试项目」区分）。 */
+/** 是否为"当前引用报告"：必须两边都有 id 且相等（避免 undefined===undefined 误判）。 */
+function isCurrentReport(report?: { id?: string; test_report_id?: string } | null) {
+  const id = report?.test_report_id || report?.id;
+  return Boolean(id) && id === props.currentReportID;
+}
 const historyRows = computed<HistoryRow[]>(() => {
   const merged: HistoryRow[] = [];
   for (const row of rows.value) {
@@ -173,7 +178,9 @@ onBeforeUnmount(() => { active = false; listRequest?.abort(); detailRequest?.abo
         <el-table-column label="测试项目" min-width="150">
           <template #default="{ row }">
             <span :class="{ 'is-upload': row.kind === 'upload' }">{{ row.project }}</span>
-            <el-tag v-if="row.report && (row.report.test_report_id || row.report.id) === currentReportID" size="small" class="ref-tag">当前引用</el-tag>
+            <!-- 两个 id 都为空时会 undefined === undefined 成立，导致多行同时标"当前引用"；
+                   这里要求 id 非空才比较。 -->
+            <el-tag v-if="isCurrentReport(row.report)" size="small" class="ref-tag">当前引用</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="测试场景" min-width="110"><template #default="{ row }">{{ row.scene }}</template></el-table-column>
@@ -198,7 +205,7 @@ onBeforeUnmount(() => { active = false; listRequest?.abort(); detailRequest?.abo
         <h3 class="detail-title">{{ projectText(detail.test_item) }}<span v-if="modelName" class="detail-sub"> · {{ modelName }}</span></h3>
         <el-alert v-if="!detail.target_matches" title="本报告尚未确认适用于当前资源目标，不作为当前接入依据。" type="warning" :closable="false" />
         <dl class="g02-facts">
-          <dt>报告状态</dt><dd>{{ labels[detail.status] }}<span v-if="(detail.test_report_id || detail.id) === currentReportID"> · 当前引用</span></dd>
+          <dt>报告状态</dt><dd>{{ labels[detail.status] }}<span v-if="isCurrentReport(detail)"> · 当前引用</span></dd>
           <dt>测试场景</dt><dd>{{ sceneText(detail) }}</dd>
           <dt>报告身份</dt><dd class="mono">{{ detail.test_report_id || detail.id }}</dd>
           <dt>原执行</dt><dd class="mono">{{ detail.test_job_id || "无（外部上传）" }}</dd>

@@ -48,8 +48,10 @@ func (r resourceTestTargets) TestTarget(ctx context.Context, actorID, resourceID
 		return nil, err
 	}
 	modelID, _ := strconv.ParseInt(target.StandardModelID, 10, 64)
-	modelName := target.Model
-	if strings.TrimSpace(r.model) != "" {
+	// 以资源自己的模型名为准；internal_model 只作兜底（历史配置）。
+	// 之前无条件覆盖，导致"在 A 资源上点压测，平台跑的是 B 模型"。
+	modelName := strings.TrimSpace(target.Model)
+	if modelName == "" {
 		modelName = strings.TrimSpace(r.model)
 	}
 	return &api.ResourceTestTarget{
