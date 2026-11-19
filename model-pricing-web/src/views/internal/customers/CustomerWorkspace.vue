@@ -395,12 +395,6 @@ function itemsSummary(line: QuoteLine) {
   if (!line.items.length) return "暂无价项";
   return line.items.map(item => `${item.label || item.key}：${item.amount} ${item.currency}`).join("；");
 }
-/** 展开行里按「该来源的采购系数」算毛利率，方便横向比较换供应商的收益。 */
-function sourceMargin(line: QuoteLine, source: ResourceQuoteCandidate) {
-  const margin = marginFromCoefficient(source.coefficient, line.quoteCoefficient);
-  return margin === "" ? "—" : `${margin}%`;
-}
-
 function lineHint(line: QuoteLine) {
   if (!isDecimalAmount(line.quoteCoefficient) || Number(line.quoteCoefficient) <= 0) return "待填报价系数";
   const margin = lineMargin(line);
@@ -1284,11 +1278,13 @@ onMounted(async () => {
                     <el-table-column label="压力 · RPS" width="110" align="right"><template #default="{ row: source }"><span class="mono">{{ source.test_rps || "未测试" }}</span></template></el-table-column>
                     <el-table-column label="压力 · TPS" width="110" align="right"><template #default="{ row: source }"><span class="mono">{{ source.test_tps || "未测试" }}</span></template></el-table-column>
                     <el-table-column label="输入缓存命中率" min-width="140" align="right"><template #default="{ row: source }"><span class="mono">{{ source.test_cache_hit_rate ? source.test_cache_hit_rate + "%" : "未提供" }}</span></template></el-table-column>
-                    <el-table-column label="毛利率 %" width="100" align="right"><template #default="{ row: source }"><span class="mono">{{ sourceMargin(line, source) }}</span></template></el-table-column>
-                    <!-- 2026-11-19：删掉「报价系数」「提示」两列。
+                    <!-- 2026-11-19：删掉「报价系数」「提示」「毛利率 %」三列。
                          报价系数全表同值（就是本行填的那个），占一列但没有比较价值；
                          「提示」只对当前来源有意义，非当前来源恒显示"非当前来源"，
-                         当前来源的提示在主表格那一行本来就有，这里重复。 -->
+                         当前来源的提示在主表格那一行本来就有，这里重复；
+                         「毛利率 %」按当前报价系数反算，属于推导值，来源表只留客观指标
+                         （采购系数 / 测试数据），要看收益直接切过去看主表格那一行。
+                         对应函数 sourceMargin 已一并删除。 -->
                     <el-table-column label="操作" width="80">
                       <template #default="{ row: source }">
                         <el-button link type="primary" :disabled="String(source.resource_id) === lineByKey(line.modelKey).resourceId" @click="onSupplierChange(lineByKey(line.modelKey), String(source.resource_id))">
