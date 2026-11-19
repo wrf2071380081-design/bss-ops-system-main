@@ -73,13 +73,24 @@ function groupLabel(id?: string) {
   return `${group.name}${group.enabled ? "" : "（已停用）"}`;
 }
 
+/** 清掉指向"已不存在配置组"的行值——避免下拉显示裸 id。 */
+function pruneUnknownGroups() {
+  const known = new Set(groups.value.map(group => group.id));
+  for (const row of rows.value) {
+    if (row.test_config_group_id && !known.has(row.test_config_group_id)) row.test_config_group_id = "";
+  }
+}
+
 async function loadGroups() {
   groupsLoading.value = true;
   try {
     const list = await supplierTestConfigGroupsApi.list();
     if (!active) return;
     groups.value = list;
-    // 新行/未挂组的行默认选第一个启用组，避免"加一行就红"。
+    // 新行/未挂组的行默认选第一个启用组，避免"加一行就红"；
+    // 同时清理**指向已不存在组**的历史值——否则 el-select 会直接把裸 id（如 5）
+    // 显示出来，用户还没建组就看到一个数字，且选了新组也不生效（2026-11-19 反馈）。
+    pruneUnknownGroups();
     for (const row of rows.value) {
       if (!row.test_config_group_id) row.test_config_group_id = defaultGroupID.value;
     }
@@ -299,6 +310,7 @@ async function loadDraft(id: string) {
     if (!active || request.signal.aborted) return;
     if (result.kind !== "MODEL_NEW") throw new Error("当前申报不是模型新增类型。请从申报记录重新打开。");
     normalizeSaved(result);
+    pruneUnknownGroups();
     deployRegion.value = result.region === "OVERSEAS" ? "OVERSEAS" : "CN";
     // 重新打开一张还有任务在跑的草稿时接着盯，别让用户回来只看到「测试中」干等。
     if (hasRunningTest.value) watchTestProgress();
