@@ -1026,6 +1026,37 @@ func enqueueCustomerTask(tx *gorm.DB, bizType string, customerID, assigneeID int
 		return fmt.Errorf("check active todo %s/%d: %w", bizType, customerID, err)
 	}
 	if active > 0 {
+		// 2026-11-19：同一客户同一模块已经有「还没办完」的待办时，不能直接跳过。
+		//
+		// 二次报价审批会重新指定办理人（ops_assignee_id / business_assignee_id）。
+		// 此前这里直接 return，结果：新办理人工作台一条待办都没有，旧办理人手里
+		// 还留着这条活——审批时的「确认或调整办理人」等于没生效。
+		// 现在改成把它改派给本次指定的人，并同步流程节点上的办理人，
+		// 保证「谁被指派谁就能看到、能办」。
+		now := time.Now()
+		const reassignTodo = `
+			UPDATE todo_task t SET assignee_id = ?, updated_at = ?
+			 WHERE t.biz_type = ? AND t.biz_id = ? AND t.status = 'OPEN'
+			   AND t.assignee_id <> ?
+			   AND NOT EXISTS (
+			       SELECT 1 FROM onboarding_node n
+			         JOIN onboarding_flow f ON f.id = n.flow_id
+			        WHERE f.kind = 'CUSTOMER' AND f.owner_id = t.biz_id
+			          AND n.node_key = ? AND n.status = 'COMPLETED' AND n.completed_at >= t.created_at
+			   )`
+		if err := tx.Exec(reassignTodo, assigneeID, now, bizType, customerID, assigneeID, nodeKey).Error; err != nil {
+			return fmt.Errorf("reassign todo %s/%d: %w", bizType, customerID, err)
+		}
+		// 节点办理人同步：只改进行中流程里「还没完成」的那个节点，历史/已完成节点不动。
+		const reassignNode = `
+			UPDATE onboarding_node n SET assignee_id = ?
+			  FROM onboarding_flow f
+			 WHERE f.id = n.flow_id AND f.kind = 'CUSTOMER' AND f.owner_id = ?
+			   AND f.status = 'PROCESSING' AND n.node_key = ? AND n.status <> 'COMPLETED'
+			   AND n.assignee_id <> ?`
+		if err := tx.Exec(reassignNode, assigneeID, customerID, nodeKey, assigneeID).Error; err != nil {
+			return fmt.Errorf("reassign node %s/%d: %w", bizType, customerID, err)
+		}
 		return nil
 	}
 	now := time.Now()
