@@ -90,8 +90,21 @@ type HistoryRow = {
 /** 是否为"当前引用报告"：必须两边都有 id 且相等（避免 undefined===undefined 误判）。 */
 function isCurrentReport(report?: { id?: string; test_report_id?: string } | null) {
   const id = report?.test_report_id || report?.id;
-  return Boolean(id) && id === props.currentReportID;
+  if (!id) return false;
+  // 资源的 latest_test_report_id 由 A 线控制快照维护，正常就是 NULL；
+  // 所以没有显式引用时，把**列表里最新的一份**（后端按时间倒序）当作当前。
+  const current = props.currentReportID || fallbackCurrentID.value;
+  return Boolean(current) && id === current;
 }
+
+/** 没有显式 currentReportID 时，取列表中最新的那一份报告 id。 */
+const fallbackCurrentID = computed(() => {
+  for (const row of rows.value) {
+    const id = row.test_report_id || row.id;
+    if (id) return id;
+  }
+  return "";
+});
 const historyRows = computed<HistoryRow[]>(() => {
   const merged: HistoryRow[] = [];
   for (const row of rows.value) {

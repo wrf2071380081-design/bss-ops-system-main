@@ -279,10 +279,11 @@ FROM `+s.table("test_job")+` j
 WHERE j.id = $1 AND sr.resource_id = $2 AND sr.row_status <> 'CANCELED'`, jobID, resourceID); err != nil {
 		return "", err
 	}
-	// 资源上的"当前报告"也一并指向这份，页面读的是它。
-	if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("resource")+` SET latest_test_report_id=$2 WHERE id=$1`, resourceID, reportID); err != nil {
-		return "", err
-	}
+	// 千万不要在这里写 resource.latest_test_report_id：
+	// 该列由 A 线的控制快照统一维护（审批时明确写 NULL），读侧会把
+	// 「列值」与「快照里的字段」逐项比对，单方面改列会让整条资源被判定不一致，
+	// 表现为"模型从列表里消失"「详情记录不存在」（2026-11-19 实测）。
+	// 报告的展示由 test_report 表按时间取最新即可。
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
