@@ -1112,9 +1112,11 @@ function backToList() {
         </div>
         <div class="head-sub" v-else-if="profileLoading">加载中…</div>
       </div>
-      <div class="head-actions">
-        <el-button v-if="canEdit && profile" @click="transferVisible = true">移交客户</el-button>
-      </div>
+      <!-- 2026-11-20：按 PM 要求隐藏「移交客户」——本版不做客户移交。
+           列表页的「移交」已于 2026-11-19 以同样理由隐藏（b478d5e）。
+           弹窗 CustomerTransferDialog、transferVisible 与 transfer 接口全部保留，
+           恢复时把按钮加回这个 head-actions 即可（后端 OPS_ADMIN / PLATFORM_ADMIN 校验一并恢复生效）。 -->
+      <div class="head-actions"></div>
     </div>
 
     <el-alert v-if="profileError" :title="profileError" type="error" show-icon :closable="false" class="block-gap" />
