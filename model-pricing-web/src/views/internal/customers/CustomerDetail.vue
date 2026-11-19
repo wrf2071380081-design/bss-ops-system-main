@@ -99,8 +99,26 @@ function selectTab(tab: TabKey) {
 const profile = ref<CustomerProfileDTO>();
 const profileLoading = ref(false);
 const profileError = ref("");
-const canManageF12 = computed(() =>
-  Boolean(profile.value && session.user?.staffId && String(profile.value.owner_sales_operator_id) === String(session.user.staffId)));
+/**
+ * 谁能维护这一单的合同与授信（新增 / 修订 / 归档 / 授信版本）。
+ *
+ * 这里必须与后端 `supplypg.authorizeSubjectOwner` 的口径**逐条对齐**，否则就会出现
+ * 「后端允许、前端拦截」——典型症状是商务点「上传合同资料」弹一句
+ * 「当前账号没有合同与授信维护权限」，却连一个请求都没发出去。
+ * 后端允许两类人（2026-11-09 ddfcf68 起）：
+ *   1) 主体责任人：customer_profile.owner_sales_operator_id（客户绑定的销售，随移交而变）；
+ *   2) 当前办理人：该客户 PROCESSING 流程里 CONTRACT 节点的办理人。
+ * 本页此前只判了第 1 条，商务（平台部）派了单也传不了资料，合同授信永远办不完。
+ */
+const canManageF12 = computed(() => {
+  if (!profile.value || !session.user?.staffId) return false;
+  const me = String(session.user.staffId);
+  if (String(profile.value.owner_sales_operator_id) === me) return true;
+  const current = flow.value;
+  if (!current || current.status !== "PROCESSING") return false;
+  return (current.nodes || []).some(node =>
+    node.key === "CONTRACT" && (node.status === "IN_PROGRESS" || node.status === "WAITING_PREDECESSOR") && String(node.assignee_id) === me);
+});
 
 async function loadProfile() {
   if (!customerId.value) return;
@@ -1094,9 +1112,11 @@ function backToList() {
         </div>
         <div class="head-sub" v-else-if="profileLoading">加载中…</div>
       </div>
-      <div class="head-actions">
-        <el-button v-if="canEdit && profile" @click="transferVisible = true">移交客户</el-button>
-      </div>
+      <!-- 2026-11-20：按 PM 要求隐藏「移交客户」——本版不做客户移交。
+           列表页的「移交」已于 2026-11-19 以同样理由隐藏（b478d5e）。
+           弹窗 CustomerTransferDialog、transferVisible 与 transfer 接口全部保留，
+           恢复时把按钮加回这个 head-actions 即可（后端 OPS_ADMIN / PLATFORM_ADMIN 校验一并恢复生效）。 -->
+      <div class="head-actions"></div>
     </div>
 
     <el-alert v-if="profileError" :title="profileError" type="error" show-icon :closable="false" class="block-gap" />

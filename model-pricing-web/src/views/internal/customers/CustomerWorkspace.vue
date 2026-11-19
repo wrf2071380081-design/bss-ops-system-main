@@ -311,7 +311,17 @@ function onSupplierChange(line: QuoteLine, resourceId: string) {
   const next = buildLine(line.modelKey, source);
   next.margin = line.margin;
   next.quoteCoefficient = coefficientFromMargin(next.coefficient, next.margin);
-  lines.value = lines.value.map(item => item.modelKey === line.modelKey ? next : item);
+  const current = lines.value.find(item => item.modelKey === line.modelKey);
+  if (!current) return;
+  // 2026-11-19：原地更新，不换对象。
+  // 「对比来源」是展开行，展开单元格里拿到的 row 是渲染那一刻的行对象；如果这里用
+  // map 换成一个新对象，主表格会刷新，但展开区里那份引用还指向旧对象——于是点了「选用」，
+  // 数据已经切过去，来源表里的「当前 / 选用」却永远停在被点之前的样子。
+  Object.assign(current, next);
+}
+/** 取当前最新的行对象：展开区里的行引用可能是旧的，用它兜底。 */
+function lineByKey(modelKey: string): QuoteLine {
+  return lines.value.find(item => item.modelKey === modelKey) || lines.value[0];
 }
 function sourcesOf(modelKey: string) {
   return sourcesByModel.value.get(modelKey) || [];
@@ -385,12 +395,6 @@ function itemsSummary(line: QuoteLine) {
   if (!line.items.length) return "暂无价项";
   return line.items.map(item => `${item.label || item.key}：${item.amount} ${item.currency}`).join("；");
 }
-/** 展开行里按「该来源的采购系数」算毛利率，方便横向比较换供应商的收益。 */
-function sourceMargin(line: QuoteLine, source: ResourceQuoteCandidate) {
-  const margin = marginFromCoefficient(source.coefficient, line.quoteCoefficient);
-  return margin === "" ? "—" : `${margin}%`;
-}
-
 function lineHint(line: QuoteLine) {
   if (!isDecimalAmount(line.quoteCoefficient) || Number(line.quoteCoefficient) <= 0) return "待填报价系数";
   const margin = lineMargin(line);
@@ -1091,9 +1095,8 @@ onMounted(async () => {
         <button class="tab" :class="{ active: activeTab === 'list' }" @click="activeTab = 'list'">客户列表</button>
         <button class="tab" :class="{ active: activeTab === 'quote' }" @click="activeTab = 'quote'">客户报价单</button>
       </div>
-      <div class="tabbar-actions">
-        <el-button v-if="activeTab === 'list' && canQuote" type="primary" @click="startNewQuote()">新建报价</el-button>
-      </div>
+      <!-- 2026-11-19：列表页顶部的「新建报价」已下线。报价统一从「客户报价单」页签发起，
+           避免同一件事有两个入口、且这里的入口不带对应客户上下文容易建错。 -->
     </div>
 
     <!-- ================= 客户列表 ================= -->
@@ -1168,14 +1171,12 @@ onMounted(async () => {
             <el-button link type="primary" @click="openDetail(row, 'onboarding')">{{ row.handling_status }}</el-button>
           </template>
         </el-table-column>
-        <!-- 行操作：详情（独立页）+ 移交（共用弹窗）。
-             移交必须留在列表里：它是"看谁名下、当场调整"的操作，
-             进详情再移交会把用户原来的路径变远——技术重构不该改用户的习惯。
-             权限沿用 M8:E（CUSTOMER_EDIT），无权限不显示。 -->
-        <el-table-column label="操作" width="130" fixed="right">
+        <!-- 行操作：详情（独立页）。
+             2026-11-19：「移交」按钮按 PM 要求隐藏，当前版本不做客户移交；
+             弹窗与接口都还在（CustomerTransferDialog / transfer 接口），要恢复只需把按钮加回来。 -->
+        <el-table-column label="操作" width="90" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
-            <el-button v-if="canTransfer" link type="primary" @click="openTransfer(row)">移交</el-button>
           </template>
         </el-table-column>
         <template #empty><el-empty description="没有符合条件的客户" :image-size="64" /></template>
@@ -1277,19 +1278,17 @@ onMounted(async () => {
                     <el-table-column label="压力 · RPS" width="110" align="right"><template #default="{ row: source }"><span class="mono">{{ source.test_rps || "未测试" }}</span></template></el-table-column>
                     <el-table-column label="压力 · TPS" width="110" align="right"><template #default="{ row: source }"><span class="mono">{{ source.test_tps || "未测试" }}</span></template></el-table-column>
                     <el-table-column label="输入缓存命中率" min-width="140" align="right"><template #default="{ row: source }"><span class="mono">{{ source.test_cache_hit_rate ? source.test_cache_hit_rate + "%" : "未提供" }}</span></template></el-table-column>
-                    <el-table-column label="毛利率 %" width="100" align="right"><template #default="{ row: source }"><span class="mono">{{ sourceMargin(line, source) }}</span></template></el-table-column>
-                    <el-table-column label="报价系数" width="100" align="right"><template #default><span class="mono">{{ line.quoteCoefficient || "—" }}</span></template></el-table-column>
-                    <el-table-column label="提示" min-width="140">
-                      <template #default="{ row: source }">
-                        <span :class="{ warn: String(source.resource_id) === line.resourceId && lineHint(line) !== '—' }">
-                          {{ String(source.resource_id) === line.resourceId ? lineHint(line) : "非当前来源" }}
-                        </span>
-                      </template>
-                    </el-table-column>
+                    <!-- 2026-11-19：删掉「报价系数」「提示」「毛利率 %」三列。
+                         报价系数全表同值（就是本行填的那个），占一列但没有比较价值；
+                         「提示」只对当前来源有意义，非当前来源恒显示"非当前来源"，
+                         当前来源的提示在主表格那一行本来就有，这里重复；
+                         「毛利率 %」按当前报价系数反算，属于推导值，来源表只留客观指标
+                         （采购系数 / 测试数据），要看收益直接切过去看主表格那一行。
+                         对应函数 sourceMargin 已一并删除。 -->
                     <el-table-column label="操作" width="80">
                       <template #default="{ row: source }">
-                        <el-button link type="primary" :disabled="String(source.resource_id) === line.resourceId" @click="onSupplierChange(line, String(source.resource_id))">
-                          {{ String(source.resource_id) === line.resourceId ? "当前" : "选用" }}
+                        <el-button link type="primary" :disabled="String(source.resource_id) === lineByKey(line.modelKey).resourceId" @click="onSupplierChange(lineByKey(line.modelKey), String(source.resource_id))">
+                          {{ String(source.resource_id) === lineByKey(line.modelKey).resourceId ? "当前" : "选用" }}
                         </el-button>
                       </template>
                     </el-table-column>
@@ -1492,7 +1491,7 @@ onMounted(async () => {
 
     <!-- 选择报价模型（对齐原型：按模型勾选，供应商在报价行里选）。
          标题写明区域，让销售一眼知道「这里只可能出现该区域的货源」。 -->
-    <el-dialog v-model="pickerVisible" :title="`选择报价模型 · 仅显示${regionText(form.region)}资源`" width="min(880px, 96vw)">
+    <el-dialog v-model="pickerVisible" :title="`选择报价模型 · 仅显示${regionText(form.region)}资源`" width="min(1200px, 96vw)">
       <div class="picker-filters">
         <label>供应商公司名称
           <el-select v-model="pickerFilter.supplier" clearable placeholder="全部">
@@ -1659,10 +1658,13 @@ onMounted(async () => {
 .severe-lead { margin: 0 0 12px; font-size: 13px; line-height: 1.7; color: #8a5a12; background: #fff8ea; border: 1px solid #f2e2c2; border-radius: 8px; padding: 10px 12px; }
 .severe-tip { margin: 12px 0 0; font-size: 12px; color: var(--app-text-muted); }
 .foot-actions { display: flex; gap: 10px; }
-.picker-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.picker-filters label { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
-.picker-filters .el-select { width: 140px; }
-.picker-filters .picker-keyword { width: 200px; }
+/* 2026-11-19：筛选条改成一行（对齐原型）。弹窗加宽到 1200px，五个控件 + 重置排一行；
+   窄屏（<1100px）才允许换行，避免控件被压扁或溢出。 */
+.picker-filters { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; margin-bottom: 8px; }
+.picker-filters label { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; flex: 0 0 auto; }
+.picker-filters .el-select { width: 132px; }
+.picker-filters .picker-keyword { width: 220px; flex: 0 0 auto; }
+@media (max-width: 1100px) { .picker-filters { flex-wrap: wrap; } }
 .picker-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .approval-grid { margin-top: 18px; }
 .dialog-form { margin-top: 16px; }

@@ -1007,7 +1007,7 @@ VALUES($1,$2::jsonb,$3,$4,$4) RETURNING id::text`, e.EventType, string(e.Payload
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE public.onboarding_node SET status='DONE',completed_at=now() WHERE id=$1`, nodeID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE public.onboarding_node SET status='COMPLETED',completed_at=now() WHERE id=$1`, nodeID); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE public.submission SET status='COMPLETED',completed_at=now() WHERE id=$1`, submissionID); err != nil {

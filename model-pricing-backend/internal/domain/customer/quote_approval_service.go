@@ -58,6 +58,10 @@ var (
 	// ErrQuoteApprovalNotApprover 对齐业务口径：报价审批只有「超管」（can_approve_customer_quote）能做。
 	// 与权限点 M9:A 分开——销售也持着 M9:A，但批价不该由销售角色顺带获得。
 	ErrQuoteApprovalNotApprover = errors.New("只有超管可以审批客户报价")
+	// ErrQuoteApprovalOnboardingBusy 报价里的模型还在办理接入（开通流程未结束）。
+	// 同一客户同一模型不能同时挂两条接入事项，否则工作台会出现两条一样的待办、
+	// 两条流程互相打架；所以拦在"提交审批"这一步，而不是审批通过后再去重。
+	ErrQuoteApprovalOnboardingBusy = errors.New("同模型接入办理尚未结束，当前不能另行提交报价变更")
 	// 关联重报（原型「关联驳回模型新申请」）：新一版报价只对被驳回的模型再走一次审批。
 	ErrQuoteApprovalReapplyStatus = errors.New("只有部分批准或已驳回的审批才能作为重报来源")
 	ErrQuoteApprovalReapplyOther  = errors.New("重报来源不属于同一个客户")

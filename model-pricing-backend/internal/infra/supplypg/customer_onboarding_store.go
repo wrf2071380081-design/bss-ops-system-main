@@ -458,7 +458,7 @@ UPDATE %s SET status = 'COMPLETED', completed_at = $2, note = $3 WHERE id = $1`,
 
 	var remaining int
 	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`
-SELECT count(*) FROM %s WHERE flow_id = $1 AND enabled AND status NOT IN ('COMPLETED','CANCELED')`,
+SELECT count(*) FROM %s WHERE flow_id = $1 AND enabled AND status NOT IN ('COMPLETED','DONE','CANCELED')`,
 		s.table("onboarding_node")), in.FlowID).Scan(&remaining); err != nil {
 		return nil, mapOnboardingError(err)
 	}
@@ -541,13 +541,31 @@ UPDATE %s SET status = 'IN_PROGRESS' WHERE flow_id = $1 AND enabled AND node_key
 		s.table("onboarding_node")), in.FlowID); err != nil {
 		return nil, mapOnboardingError(err)
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+	// 收口判断（2026-11-19 修）：CONFIG 与 CONTRACT 现在是并行办理，技术可能先办完 CONFIG。
+	// 此前这里无条件把 current_node 改回 'CONFIG'，于是「先 CONFIG 后 CONTRACT」时
+	// 两个节点都已完成、流程却永远停在 PROCESSING，档案页一直显示「办理中」，
+	// 也无法再发起下一单。改为：没有剩余节点就整单收口。
+	var remaining int
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`
+SELECT count(*) FROM %s WHERE flow_id = $1 AND enabled AND status NOT IN ('COMPLETED','DONE','CANCELED')`,
+		s.table("onboarding_node")), in.FlowID).Scan(&remaining); err != nil {
+		return nil, mapOnboardingError(err)
+	}
+	nextNode := "CONFIG"
+	if remaining == 0 {
+		nextNode = ""
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+UPDATE %s SET status = 'COMPLETED', current_node = NULL, updated_at = $2 WHERE id = $1`,
+			s.table("onboarding_flow")), in.FlowID, now); err != nil {
+			return nil, mapOnboardingError(err)
+		}
+	} else if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 UPDATE %s SET current_node = 'CONFIG', updated_at = $2 WHERE id = $1`,
 		s.table("onboarding_flow")), in.FlowID, now); err != nil {
 		return nil, mapOnboardingError(err)
 	}
 	after := map[string]any{
-		"node_key": "CONTRACT", "node_status": "COMPLETED", "current_node": "CONFIG",
+		"node_key": "CONTRACT", "node_status": "COMPLETED", "current_node": nextNode,
 		"confirmation": "合同与授信已归档（办理人确认，客户侧不走 F12 就绪快照）",
 	}
 	if in.F12Reference != "" {

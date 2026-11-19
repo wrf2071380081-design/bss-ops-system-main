@@ -171,6 +171,15 @@ func (r *CustomerSpecialRepo) SubmitQuoteApprovalTx(ctx context.Context, quoteID
 			// 非重报却传了模型范围：不静默忽略，避免调用方以为生效了。
 			return customer.ErrQuoteApprovalReapplyModel
 		}
+		// 2026-11-19：同客户同模型还有未结束的接入办理时，不允许再提交一次报价审批。
+		//
+		// 之前只在「派单」那一步去重（同客户同模块已有未办待办就不新建），
+		// 结果是审批照常通过、待办却不新增，办理人工作台看不到任何变化，
+		// 旧的那条还挂在原来的人名下——比直接拦住更难解释。
+		// 现在把约束前移到提交这一步，并给出明确文案。
+		if err := ensureNoBusyOnboarding(tx, quote.CustomerID, groups); err != nil {
+			return err
+		}
 		now := time.Now()
 		note := fmt.Sprintf("报价单 #%d V%d 提交审批", quoteID, quote.VersionNo)
 		var previous any
@@ -1004,6 +1013,48 @@ func insertFlowNode(tx *gorm.DB, flowID int64, key, status string, assigneeID in
 //
 //	还存在一条「对应节点未完成」的同类待办 → 不重复派；
 //	上一条已经因为节点完成而在工作台转成 DONE → 派新的。
+// ensureNoBusyOnboarding 同客户 + 同标准模型还有未结束的开通节点 → 拒绝提交审批。
+//
+// 为什么拦在「提交」而不是「派单」：派单那边只能做到"不新建"，对用户来说
+// 审批照样通过、工作台却没有任何变化，属于静默失败；而在提交时就拦住，
+// 文案能直接告诉销售"同模型接入办理尚未结束，当前不能另行提交报价变更"。
+//
+// 判定口径：
+//   - 流程必须是该客户的进行中客户开通流程（CUSTOMER / PROCESSING）；
+//   - 该流程下还存在启用中、且未达终态的 CONFIG 或 CONTRACT 节点；
+//   - 该流程带的模型与本次要提交审批的模型有交集。
+func ensureNoBusyOnboarding(tx *gorm.DB, customerID int64, groups []quoteModelGroup) error {
+	if tx == nil || customerID <= 0 || len(groups) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(groups))
+	for _, group := range groups {
+		if group.StandardModelID > 0 {
+			ids = append(ids, group.StandardModelID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	const busyQuery = `
+		SELECT count(*)
+		  FROM onboarding_flow f
+		  JOIN onboarding_node n ON n.flow_id = f.id
+		  JOIN customer_onboarding_model m ON m.flow_id = f.id
+		 WHERE f.kind = 'CUSTOMER' AND f.status = 'PROCESSING' AND f.owner_id = ?
+		   AND n.enabled AND n.node_key IN ('CONFIG','CONTRACT')
+		   AND n.status NOT IN ('COMPLETED','DONE','CANCELED')
+		   AND m.standard_model_id IN ?`
+	var busy int64
+	if err := tx.Raw(busyQuery, customerID, ids).Scan(&busy).Error; err != nil {
+		return fmt.Errorf("check busy onboarding customer=%d: %w", customerID, err)
+	}
+	if busy > 0 {
+		return customer.ErrQuoteApprovalOnboardingBusy
+	}
+	return nil
+}
+
 func enqueueCustomerTask(tx *gorm.DB, bizType string, customerID, assigneeID int64, title, bizObject string, operatorID int64, requestID string) error {
 	if assigneeID <= 0 || customerID <= 0 {
 		return nil
@@ -1026,6 +1077,12 @@ func enqueueCustomerTask(tx *gorm.DB, bizType string, customerID, assigneeID int
 		return fmt.Errorf("check active todo %s/%d: %w", bizType, customerID, err)
 	}
 	if active > 0 {
+		// 去重保护：同客户 + 同模块已有「还没办完」的待办，就不再新建，
+		// 免得工作台堆出两条一模一样的「客户模型开通」。
+		//
+		// 注意：这里**不做改派**。二次报价想换办理人，应该在「提交审批」时被拦住
+		// （见 SubmitQuoteApprovalTx 的 ErrQuoteApprovalOnboardingBusy），
+		// 而不是悄悄把别人手里的活改走。
 		return nil
 	}
 	now := time.Now()
