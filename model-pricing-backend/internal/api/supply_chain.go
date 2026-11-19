@@ -724,8 +724,8 @@ WHERE NOT EXISTS (SELECT 1 FROM public.onboarding_node WHERE flow_id=$1 AND node
 	// 每次审批都可以换人：复用流程时把"未完成"节点的办理人改成这次选的。
 	// （2026-11-19：之前复用流程不更新 assignee，第二次申报派谁都不生效）
 	if _, err := tx.ExecContext(ctx, `UPDATE public.onboarding_node
-SET assignee_id=$3, status='IN_PROGRESS'
-WHERE flow_id=$1 AND node_key='CONFIG' AND status<>'COMPLETED'`, flowID, supplierID, testAssignee); err != nil {
+SET assignee_id=$2, status='IN_PROGRESS'
+WHERE flow_id=$1 AND node_key='CONFIG' AND status<>'COMPLETED'`, flowID, testAssignee); err != nil {
 		return err
 	}
 	if needsContract && contractAssignee > 0 {
@@ -737,8 +737,8 @@ WHERE NOT EXISTS (SELECT 1 FROM public.onboarding_node WHERE flow_id=$1 AND node
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE public.onboarding_node
-SET assignee_id=$3, status='IN_PROGRESS'
-WHERE flow_id=$1 AND node_key='CONTRACT' AND status<>'COMPLETED'`, flowID, supplierID, contractAssignee); err != nil {
+SET assignee_id=$2, status='IN_PROGRESS'
+WHERE flow_id=$1 AND node_key='CONTRACT' AND status<>'COMPLETED'`, flowID, contractAssignee); err != nil {
 			return err
 		}
 	} else if !needsContract {
