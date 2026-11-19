@@ -95,6 +95,12 @@ SELECT t.assignee_id,
        'TODO'::varchar(8) AS item_type,
        CASE
          WHEN t.status <> 'OPEN' THEN 'DONE'
+         -- 流程整体已完成也算办完：即使节点终态词是历史的 'DONE'、或节点完成时间
+         -- 早于派单时间（补建流程/重复派单），也不会把已办的事继续挂在待办里。
+         WHEN EXISTS (
+           SELECT 1 FROM onboarding_flow f
+            WHERE f.kind = 'CUSTOMER' AND f.owner_id = t.biz_id AND f.status = 'COMPLETED'
+         ) THEN 'DONE'
          WHEN EXISTS (
            SELECT 1 FROM onboarding_node n
              JOIN onboarding_flow f ON f.id = n.flow_id
@@ -167,19 +173,21 @@ SELECT st.id,'TODO'::varchar(8),CASE WHEN s.status='PENDING_APPROVAL' THEN 'TODO
  LEFT JOIN LATERAL(SELECT operator_id FROM operation_log WHERE entity_type='submission' AND entity_id=s.id AND (action='REJECT' OR (action='APPROVE' AND "after"->>'contract'='supply.handling_approval')) ORDER BY id DESC LIMIT 1) decided ON TRUE
  WHERE s.status='PENDING_APPROVAL' OR (decided.operator_id=st.id AND s.status IN('REJECTED','PROCESSING','COMPLETED'))
 UNION ALL
-SELECT n.assignee_id,'TODO'::varchar(8),CASE WHEN n.status='COMPLETED' THEN 'DONE' ELSE 'TODO' END::varchar(16),
+-- 终态同时认 'COMPLETED' 与历史遗留的 'DONE'：000051 在视图层做过同样的兼容，
+-- 这里若只认 'COMPLETED'，历史节点办完了仍会挂在待办里（或整行消失、不进已办）。
+SELECT n.assignee_id,'TODO'::varchar(8),CASE WHEN n.status IN('COMPLETED','DONE') THEN 'DONE' ELSE 'TODO' END::varchar(16),
  'SUBMISSION_HANDLING'::varchar(32),n.id,'供应资源接入'::varchar(256),sp.name || ' · ' || s.submission_no,s.region,'MID'::varchar(8),coalesce(n.completed_at,f.created_at),NULL::bigint
  FROM onboarding_node n JOIN onboarding_flow f ON f.id=n.flow_id
  JOIN operation_log l ON l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'node_id'=n.id::text
  JOIN submission s ON s.id=l.entity_id JOIN supplier sp ON sp.id=s.supplier_id
- WHERE n.node_key='CONFIG' AND n.enabled AND n.assignee_id IS NOT NULL AND n.status IN('IN_PROGRESS','COMPLETED')
+ WHERE n.node_key='CONFIG' AND n.enabled AND n.assignee_id IS NOT NULL AND n.status IN('IN_PROGRESS','COMPLETED','DONE')
 UNION ALL
-SELECT n.assignee_id,'TODO'::varchar(8),CASE WHEN n.status='COMPLETED' THEN 'DONE' ELSE 'TODO' END::varchar(16),
+SELECT n.assignee_id,'TODO'::varchar(8),CASE WHEN n.status IN('COMPLETED','DONE') THEN 'DONE' ELSE 'TODO' END::varchar(16),
  'SUBMISSION_CONTRACT'::varchar(32),n.id,'合同与授信办理'::varchar(256),sp.name || ' · ' || s.submission_no,s.region,'MID'::varchar(8),coalesce(n.completed_at,f.created_at),NULL::bigint
  FROM onboarding_node n JOIN onboarding_flow f ON f.id=n.flow_id
  JOIN operation_log l ON l.entity_type='submission' AND l.action='APPROVE' AND l."after"->>'contract'='supply.handling_approval' AND l."after"->>'flow_id'=n.flow_id::text
  JOIN submission s ON s.id=l.entity_id JOIN supplier sp ON sp.id=s.supplier_id
- WHERE n.node_key='CONTRACT' AND n.enabled AND n.assignee_id IS NOT NULL AND n.status IN('IN_PROGRESS','COMPLETED')
+ WHERE n.node_key='CONTRACT' AND n.enabled AND n.assignee_id IS NOT NULL AND n.status IN('IN_PROGRESS','COMPLETED','DONE')
 UNION ALL
 SELECT CASE WHEN p.kind='PRICE_CHANGE' THEN NULLIF(p."after"->'plan'->>'assignee_id','')::bigint ELSE p.created_by END AS assignee_id,
        'TODO'::varchar(8) AS item_type,
