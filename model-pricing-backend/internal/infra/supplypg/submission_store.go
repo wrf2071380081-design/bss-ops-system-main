@@ -1070,3 +1070,32 @@ WHERE supplier_id = $1 AND COALESCE(submitter_name,'') <> '' ORDER BY 1`, []any{
 	}
 	return option, nil
 }
+
+// SetRowConnectivity 写入某次申报各行的连通性探测结果。
+//
+// 迁移 000071 新增两列：connectivity_status（PASS/FAIL/NULL=未探测）与
+// connectivity_note（失败原因）。历史数据为 NULL，审批侧按「视为通过」处理，
+// 避免旧单被卡住。
+func (s *SubmissionStore) SetRowConnectivity(ctx context.Context, results map[int64]RowConnectivity) error {
+	if len(results) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for id, r := range results {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("submission_row")+`
+SET connectivity_status=$2, connectivity_note=NULLIF($3,'') WHERE id=$1`, id, r.Status, r.Note); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// RowConnectivity 是一行的探测结论。
+type RowConnectivity struct {
+	Status string // PASS / FAIL
+	Note   string // 失败原因，PASS 时为空
+}

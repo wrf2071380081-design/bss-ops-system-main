@@ -121,14 +121,14 @@ type submissionPermissionsDTO struct {
 }
 
 type submissionDTO struct {
-	ID            string   `json:"id"`
-	SubmissionNo  string   `json:"submission_no"`
-	SubmitterName string   `json:"submitter_name"`
-	Region        string   `json:"region"`
-	RowCount      int      `json:"row_count"`
+	ID            string `json:"id"`
+	SubmissionNo  string `json:"submission_no"`
+	SubmitterName string `json:"submitter_name"`
+	Region        string `json:"region"`
+	RowCount      int    `json:"row_count"`
 	// Result 是批次结果派生（2026-11）：通过 / 部分通过 / 不通过 / 进行中。
-	Result        string   `json:"result"`
-	ModelNames    []string `json:"model_names"`
+	Result     string   `json:"result"`
+	ModelNames []string `json:"model_names"`
 	// UntestedModelCount 是「还没有连通结果」的行数：提交放行时给审批侧看覆盖有多薄。
 	UntestedModelCount int `json:"untested_model_count"`
 	// PendingRowCount 是「提交后仍未通过」的行数，前端用于显示"待补 N 个"。
@@ -158,7 +158,7 @@ type submissionWriteRow struct {
 }
 
 type submissionWrite struct {
-	Kind             string               `json:"kind"`
+	Kind string `json:"kind"`
 	// Region 是本次申报的部署节点（2026-11）：不再由供应商主体决定，缺省时回落到主体历史区域。
 	Region           string               `json:"region"`
 	ExpectedRevision string               `json:"expected_revision"`
@@ -554,8 +554,8 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		// 真机实测：stress 必须显式声明参考引擎，否则 400。
 		params = map[string]any{
 			"engine": "reference-performance-v1", "concurrency": []int{1},
-			"duration":      durationParam(stressDuration),
-			"warmup":        true,
+			"duration":        durationParam(stressDuration),
+			"warmup":          true,
 			"warmup_duration": durationParam(stressWarmup),
 		}
 	}
@@ -599,9 +599,9 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 // 规则（对齐任务书「同一受测配置一次有效测试；配置变化后可重测」）：
 //   - 无任务 → 不跳过
 //   - 有任务且指纹与当前行一致：
-//       排队/运行中 → 跳过（避免重复建任务）
-//       已终态且已有报告 → 跳过（结果有效，含不达标）
-//       已终态但没有报告（工具异常）→ 重测
+//     排队/运行中 → 跳过（避免重复建任务）
+//     已终态且已有报告 → 跳过（结果有效，含不达标）
+//     已终态但没有报告（工具异常）→ 重测
 //   - 指纹不一致（改了地址/Key/模型）→ 重测
 //
 // 判「有没有结果」看的是**报告是否存在**，不是 verdict 是否非空。
@@ -822,8 +822,9 @@ func verdictTextOK(value string) bool {
 // batchTests 是「发起测试／异常重试」的唯一入口。
 //
 // 入参两种写法都支持：
-//   {"categories":["CONNECTIVITY","STRESS"]}  自动模式（前端单按钮用这个）
-//   {"category":"CONNECTIVITY"}               兼容旧调用
+//
+//	{"categories":["CONNECTIVITY","STRESS"]}  自动模式（前端单按钮用这个）
+//	{"category":"CONNECTIVITY"}               兼容旧调用
 //
 // 自动模式的语义：所有行做连通；压力只做勾选了 participate_test 的行。
 // 已有有效结果或正在跑的行跳过；配置变了或上次工具异常的行重测。
@@ -1001,10 +1002,11 @@ func groupGateOrder(groups map[int64]supplypg.TestConfigGroupCredential) []suppl
 //
 // 与 simulateSubmitConnectivity 的区别：不再只校验表单，而是拿该行配置组的
 // URL + Key 真去打一次 `GET {base}/models`：
-//   2xx            → 通过（地址可达、Key 有效）
-//   401/403        → 不通过（Key 无效或无权限）
-//   404            → 不通过（地址不是 OpenAI 兼容入口）
-//   5xx / 超时      → 不通过（上游不可用）
+//
+//	2xx            → 通过（地址可达、Key 有效）
+//	401/403        → 不通过（Key 无效或无权限）
+//	404            → 不通过（地址不是 OpenAI 兼容入口）
+//	5xx / 超时      → 不通过（上游不可用）
 //
 // 用 /models 而不是 /chat/completions：前者不计费、不打模型，最适合做"连通性"。
 func (h *supplierSubmissionHandler) probeSubmitConnectivity(ctx context.Context, supplierID, submissionID int64) error {
@@ -1018,82 +1020,64 @@ func (h *supplierSubmissionHandler) probeSubmitConnectivity(ctx context.Context,
 	}
 	list := applyConfigGroups(rows[submissionID], groups)
 	if len(list) == 0 {
-		return apperr.New(apperr.ErrInvalidParams.Code, "请至少填写一个模型后再提交", 400)
-	}
-	failures := make([]string, 0, len(list))
-	for i, row := range list {
-		name := row.StandardModelName
-		if name == "" {
-			name = row.SupplierModelName
-		}
-		if name == "" {
-			name = fmt.Sprintf("第 %d 行", i+1)
-		}
-		if reason := probeRowConnectivity(ctx, row, groups); reason != "" {
-			failures = append(failures, name+"："+reason)
-		}
-	}
-	if len(failures) == 0 {
 		return nil
 	}
-	shown := failures
-	if len(shown) > 3 {
-		shown = shown[:3]
+	results := make(map[int64]supplypg.RowConnectivity, len(list))
+	for _, row := range list {
+		status, note := probeRowConnectivity(ctx, row, groups)
+		results[row.ID] = supplypg.RowConnectivity{Status: status, Note: note}
 	}
-	message := "连通性测试未通过，本次未提交：" + strings.Join(shown, "；")
-	if len(failures) > 3 {
-		message += fmt.Sprintf("（共 %d 个模型失败）", len(failures))
-	}
-	return apperr.New(apperr.ErrInvalidParams.Code, message, 400)
+	// 落库供「查看申报」与审批过滤使用（迁移 000071）。
+	return h.svc.store.SetRowConnectivity(ctx, results)
 }
 
 // probeRowConnectivity 返回空串表示通过，否则返回失败原因。
-func probeRowConnectivity(ctx context.Context, row supplypg.SubmissionRowRecord, groups map[int64]supplypg.TestConfigGroupCredential) string {
+func probeRowConnectivity(ctx context.Context, row supplypg.SubmissionRowRecord, groups map[int64]supplypg.TestConfigGroupCredential) (string, string) {
 	switch {
 	case row.StandardModelID <= 0:
-		return "未选择标准模型"
+		return "FAIL", "未选择标准模型"
 	case strings.TrimSpace(row.SupplierModelName) == "":
-		return "缺少接口模型 ID"
+		return "FAIL", "缺少接口模型 ID"
 	case row.TestConfigGroupID == nil || *row.TestConfigGroupID <= 0:
-		return "未选择准入配置组"
+		return "FAIL", "未选择准入配置组"
 	}
 	group, ok := groups[*row.TestConfigGroupID]
 	if !ok {
-		return "绑定的准入配置组不存在"
+		return "FAIL", "绑定的准入配置组不存在"
 	}
 	if !group.Enabled {
-		return "绑定的是已停用的配置组"
+		return "FAIL", "绑定的是已停用的配置组"
 	}
 	base := strings.TrimSpace(group.BaseURL)
 	if !validTestBaseURL(base) {
-		return "配置组 Base URL 不是合法的 http/https 地址"
+		return "FAIL", "配置组 Base URL 不是合法的 http/https 地址"
 	}
 	key := strings.TrimSpace(group.APIKey)
 	if key == "" {
-		return "配置组缺少 API Key"
+		return "FAIL", "配置组缺少 API Key"
 	}
 	// 真打一次：/models 不计费、不需要模型参数。
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, strings.TrimRight(base, "/")+"/models", nil)
 	if err != nil {
-		return "地址无法解析"
+		return "FAIL", "地址无法解析"
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
-		return "连接失败（超时或域名不可达）"
+		return "FAIL", "连接失败（超时或域名不可达）"
 	}
 	defer func() { _ = resp.Body.Close() }()
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		return ""
+		return "PASS", ""
 	case resp.StatusCode == 401 || resp.StatusCode == 403:
-		return fmt.Sprintf("鉴权失败（HTTP %d，Key 无效或无权限）", resp.StatusCode)
+		return "FAIL", fmt.Sprintf("鉴权失败（HTTP %d，Key 无效或无权限）", resp.StatusCode)
 	case resp.StatusCode == 404:
-		return "地址不是 OpenAI 兼容入口（/models 返回 404）"
+		return "FAIL", "地址不是 OpenAI 兼容入口（/models 返回 404）"
 	default:
-		return fmt.Sprintf("上游不可用（HTTP %d）", resp.StatusCode)
+		return "FAIL", fmt.Sprintf("上游不可用（HTTP %d）", resp.StatusCode)
 	}
 }
 
@@ -1322,6 +1306,7 @@ func resolveTestCategory(raw string) (string, string, bool) {
 //   - 组不存在 / 不属于本主体 → 400 可读文案，不静默存 NULL；
 //   - 组已停用**不拦**：在途申报里的行可能仍挂在停用组上，
 //     允许继续保存与测试（提交门槛会提示「该组已停用」，供应商自己决定要不要改挂）。
+//
 // 行快照里的 URL/Key 一律取该组当前值，前端传的 test_base_url / test_api_key 忽略。
 func (h *supplierSubmissionHandler) buildRows(c *gin.Context, supplierID int64, input []submissionWriteRow) ([]supplypg.SubmissionRowInput, bool) {
 	if len(input) == 0 {

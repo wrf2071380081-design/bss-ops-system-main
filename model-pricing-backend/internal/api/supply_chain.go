@@ -584,6 +584,15 @@ func (r *SupplyChainRuntime) approve(ctx context.Context, submissionID, expected
 			approved[id] = decisions[id]
 		}
 	}
+	// 连通性未通过的行不进审批：提交时探测结果为 FAIL 的行强制按"不通过"处理，
+	// 历史数据（NULL）视为通过，避免旧单被卡住。
+	failedRows, err := connectivityFailedRows(ctx, tx, rowIDs)
+	if err != nil {
+		return err
+	}
+	for _, id := range failedRows {
+		approved[id] = false
+	}
 	approvedCount := 0
 	for _, id := range rowIDs {
 		if approved[id] {
@@ -1171,4 +1180,38 @@ func (h *SupplyChainHandler) Simulate(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"resource_id": res.ID, "state": res.State, "revision": res.Revision})
+}
+
+// connectivityFailedRows 取本次申报中连通性探测为 FAIL 的行 id。
+// NULL（未探测，多为历史数据）不算失败。
+func connectivityFailedRows(ctx context.Context, tx *sql.Tx, rowIDs []int64) ([]int64, error) {
+	if len(rowIDs) == 0 {
+		return nil, nil
+	}
+	// 用显式占位符拼 IN（避免依赖 pq.Array）
+	placeholders := make([]string, 0, len(rowIDs))
+	args := make([]any, 0, len(rowIDs))
+	for i, id := range rowIDs {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, id)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id::text FROM public.submission_row
+WHERE id IN (`+strings.Join(placeholders, ",")+`) AND connectivity_status = 'FAIL'`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []int64
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		id, convErr := strconv.ParseInt(raw, 10, 64)
+		if convErr != nil {
+			return nil, supply.ErrReadContract
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
