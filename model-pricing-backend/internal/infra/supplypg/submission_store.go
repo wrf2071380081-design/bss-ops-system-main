@@ -72,6 +72,9 @@ type SubmissionRowRecord struct {
 	// 平台报告 id（供应商「已有报告」列用）：来自 test_report 最新一条。
 	ConnectivityReportID *int64
 	StressReportID       *int64
+	// 按门类分开的目标指纹（000075）
+	ConnectivityFingerprint string
+	StressFingerprint       string
 	// 审批决定（供应商侧展示用）：PENDING / APPROVED / REJECTED。
 	Decision      string
 	DecidedAt     *time.Time
@@ -269,7 +272,8 @@ SELECT r.submission_id, r.id, r.standard_model_id, m.name, COALESCE(m.official_i
        COALESCE(m.company,''), COALESCE(m.model_type,''),
        r.test_fingerprint, cj.status, crep.id, crep.verdict, crep.connection_ms::text, cj.target_fingerprint,
        sj.status, srep.id, srep.verdict, srep.rps::text, srep.tps::text, sj.target_fingerprint,
-       r.test_config_group_id, COALESCE(g.name,''), COALESCE(g.enabled, false)
+       r.test_config_group_id, COALESCE(g.name,''), COALESCE(g.enabled, false),
+       COALESCE(r.connectivity_fingerprint,''), COALESCE(r.stress_fingerprint,'')
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
 LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
@@ -301,7 +305,8 @@ ORDER BY r.submission_id, r.id`, args...)
 			&item.ParticipateTest, &item.Company, &item.ModelType,
 			&rowFP, &connStatus, &connRepoID, &connVerdict, &conn, &connFP,
 			&stressStatus, &stressReportID, &stressVerdict, &rps, &tps, &stressFP,
-			&groupID, &item.TestConfigGroupName, &item.TestConfigGroupEnabled); err != nil {
+			&groupID, &item.TestConfigGroupName, &item.TestConfigGroupEnabled,
+			&item.ConnectivityFingerprint, &item.StressFingerprint); err != nil {
 			return nil, err
 		}
 		if groupID.Valid {
@@ -917,12 +922,20 @@ func (s *SubmissionStore) TestCredentialLegacy(ctx context.Context, supplierID i
 //
 // 发单前调用：让「行指纹」与「即将发出去的任务指纹」从同一份凭据算出来，
 // 之后供应商改凭据 → 两者不等 → 结果被判失效，准入侧也拿不到旧报告的背书。
-func (s *SubmissionStore) RefreshRowSnapshot(ctx context.Context, rowID int64, baseURL, apiKey, fingerprint string) error {
+func (s *SubmissionStore) RefreshRowSnapshot(ctx context.Context, rowID int64, baseURL, apiKey, fingerprint, category string) error {
 	if rowID <= 0 {
 		return supply.ErrNotFound
 	}
+	// 指纹按门类分开存：连通与压测共用一列时，压测会把连通性的指纹覆盖掉，
+	// 供应商侧就莫名其妙变成"需重测 · 测试目标已变更"（000075）。
+	column := "test_fingerprint"
+	if category == "stress" {
+		column = "stress_fingerprint"
+	} else {
+		column = "connectivity_fingerprint"
+	}
 	_, err := s.db.ExecContext(ctx, `UPDATE `+s.table("submission_row")+`
-SET test_base_url = NULLIF($2,''), test_api_key_enc = NULLIF($3,''), test_fingerprint = NULLIF($4,'')
+SET test_base_url = NULLIF($2,''), test_api_key_enc = NULLIF($3,''), `+column+` = NULLIF($4,''), test_fingerprint = NULLIF($4,'')
 WHERE id = $1`, rowID, strings.TrimSpace(baseURL), apiKey, fingerprint)
 	return err
 }

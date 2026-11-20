@@ -143,6 +143,11 @@ function resourceNodes(id:string){return progress.value.filter(n=>n.resource_id=
 // 不再跳走单条资源的详情抽屉——那样看不到同批其他模型，也没法对照办理进度。
 // 三个字段与「完成当前模型技术登记」都由 ResourceOperationsPanel 渲染，这里只维护开关与当前行。
 const ifaceOpen = ref(false), ifaceRow = ref<ResourceRow>();
+/** 把「接入模型」行转成接口配置面板要的资源：只读与否只看 state 是否真的已接入。 */
+function asAccessResource(row: any) {
+  return { ...row, ever_admitted: String(row?.state || "").toUpperCase() === "ADMITTED" };
+}
+
 function openInterfaceConfig(row: ResourceRow) { ifaceRow.value = row; ifaceOpen.value = true; }
 /** 配置登记/接入完成后刷新列表与进度（弹窗不关，方便接着看下一项）。 */
 function afterInterfaceChange() { void load(); }
@@ -974,7 +979,9 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
 
     <!-- 原型「接口配置 · 模型名」：三个字段与登记动作都由下面的面板渲染，弹窗只负责标题与证据入口。 -->
     <el-dialog v-if="ifaceRow" v-model="ifaceOpen" class="iface-dialog" :title="`接口配置 · ${ifaceRow.model_name}`" width="min(940px, 96vw)" top="6vh" append-to-body :close-on-click-modal="false">
-      <ResourceOperationsPanel :resource="ifaceRow" variant="plain" @updated="afterInterfaceChange" />
+      <!-- 关键：是否只读由**这一行的真实状态**决定，不能指望上游字段。
+         ifaceRow 里没有可靠的 ever_admitted，导致待测试的行也被锁成只读（2026-11-20）。 -->
+      <ResourceOperationsPanel :resource="asAccessResource(ifaceRow)" variant="plain" @updated="afterInterfaceChange" />
       <template #footer>
         <el-button @click="ifaceOpen = false">关闭</el-button>
         <el-button @click="openReports(ifaceRow)">历史版本与证据</el-button>
