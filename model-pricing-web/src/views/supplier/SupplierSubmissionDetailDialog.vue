@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { ElMessage } from "element-plus";
 import { supplierSubmissionsApi } from "../../api/supplierSubmissions";
 import { supplierTestCredentialApi } from "../../api/supplierTestCredential";
 import type { SupplierSubmissionDTO, SupplierSubmissionRowDTO, SupplierSubmissionTestDTO } from "../../api/supplierSubmissions.types";
@@ -37,6 +38,31 @@ function formatTime(value?: string | null) {
 }
 /** 已有审批决定的行（PENDING 视为"还没决定"）。 */
 const decidedRows = computed(() => (detail.value?.rows || []).filter(row => row.decision && row.decision !== "PENDING"));
+
+/** 本次申报「配置组 → 模型」的关系（原型下方的表格）。 */
+const configGroups = computed(() => {
+  const map = new Map<string, { name: string; url: string; hasKey: boolean; enabled: boolean; models: string[] }>();
+  for (const row of detail.value?.rows || []) {
+    const id = row.test_config_group_id || "";
+    if (!map.has(id)) {
+      map.set(id, {
+        name: row.test_config_group_name || "未分组",
+        url: row.test_base_url || "",
+        hasKey: Boolean(row.test_api_key_configured),
+        enabled: row.test_config_group_enabled !== false,
+        models: [],
+      });
+    }
+    const label = row.standard_model_name || row.interface_model_id;
+    if (label) map.get(id)!.models.push(label);
+  }
+  return [...map.values()];
+});
+
+/** 报告在「供应商接入模型 → 测试与报告」，这里只提示入口，不重复实现一套。 */
+function openReportHint() {
+  ElMessage.info("报告在「供应商接入模型 → 测试与报告」里按资源查看。");
+}
 const submittedAt = computed(() => formatTime(detail.value?.submitted_at || detail.value?.updated_at));
 const reasonText = computed(() => detail.value?.reason?.trim() || "无补充说明");
 
@@ -65,11 +91,19 @@ function connectivityTag(row: SupplierSubmissionRowDTO) {
     return { text: "测试中", type: "info" as const, note: status === "QUEUED" ? "排队中" : "平台执行中" };
   }
   if (job && job.tested) {
-    return job.passed
-      ? { text: "通过", type: "success" as const, note: connectivityMetrics(job) }
-      : { text: "未通过", type: "danger" as const, note: job.verdict ? `平台结论：${job.verdict}` : "" };
+    // 平台对部分门类不给 verdict（如压测）：那是"完成（未判定）"，不能算未通过。
+    const base = job.passed
+      ? { text: "通过", type: "success" as const }
+      : job.verdict
+        ? { text: "未通过", type: "danger" as const }
+        : { text: "已完成", type: "info" as const };
+    // 结论照实显示，失效只作补充说明——用「已失效」顶掉结论会让供应商误读。
+    const note = job.stale
+      ? `${connectivityMetrics(job) || ""}（测试目标已变更，需重测）`.trim()
+      : connectivityMetrics(job);
+    return { ...base, note };
   }
-  if (job && job.stale) return { text: "已失效", type: "warning" as const, note: "测试目标已变更，需重测" };
+  if (job && job.stale) return { text: "需重测", type: "warning" as const, note: "测试目标已变更" };
   if (row.probe_status === "PASS") return { text: "通过", type: "success" as const, note: "提交时探测" };
   if (row.probe_status === "FAIL") return { text: "未通过", type: "danger" as const, note: row.probe_note || "" };
   return { text: job ? testText(job) : "未测试", type: "info" as const, note: "" };
@@ -155,9 +189,12 @@ watch(() => [props.modelValue, props.submissionId], ([open]) => {
               <small v-if="stressMetrics(row.stress_job)" class="muted">{{ stressMetrics(row.stress_job) }}</small>
             </template>
           </el-table-column>
-          <el-table-column label="已有报告" min-width="120">
+          <el-table-column label="已有报告" min-width="130">
             <template #default="{ row }">
-              <small class="muted">{{ reportText(row.stress_job || row.connectivity_job) }}</small>
+              <el-button v-if="row.stress_job?.report_id || row.connectivity_job?.report_id" link type="primary" @click="openReportHint()">
+                测试与报告
+              </el-button>
+              <small v-else class="muted">{{ reportText(row.stress_job || row.connectivity_job) }}</small>
             </template>
           </el-table-column>
         </el-table>
@@ -166,20 +203,45 @@ watch(() => [props.modelValue, props.submissionId], ([open]) => {
           <p class="muted">供货报价系数沿用既有计价口径。<template v-if="credentialUrl">测试接口：{{ credentialUrl }}；测试 Key：{{ hasCredentialKey ? '••••••••' : '未登记' }}。</template></p>
           <p>申报说明：{{ reasonText }}</p>
           <p>审核状态：{{ statusLabel(detail.status) }}</p>
-          <!-- 审批结果：谁过的、谁没过、领导的留言，逐模型列出 -->
-          <template v-if="decidedRows.length">
-            <p v-if="detail.reason">领导留言：{{ detail.reason }}</p>
-            <ul class="decision-list">
-              <li v-for="row in decidedRows" :key="row.id">
+
+          <!-- 审批结果（原型：中间一张表，模型 / 结果 / 原因） -->
+          <h4 class="section-title">审批结果</h4>
+          <el-table v-if="decidedRows.length" :data="decidedRows" size="small" class="decision-table">
+            <el-table-column label="模型" min-width="180">
+              <template #default="{ row }">{{ row.standard_model_name || row.interface_model_id }}</template>
+            </el-table-column>
+            <el-table-column label="结果" width="100">
+              <template #default="{ row }">
                 <el-tag size="small" :type="row.decision === 'APPROVED' ? 'success' : 'danger'">
                   {{ row.decision === 'APPROVED' ? '通过' : '不通过' }}
                 </el-tag>
-                <span class="decision-name">{{ row.standard_model_name || row.interface_model_id }}</span>
-                <small class="muted">{{ row.decided_by_name || '—' }} · {{ formatTime(row.decided_at) }}</small>
-              </li>
-            </ul>
-          </template>
+              </template>
+            </el-table-column>
+            <el-table-column label="原因" min-width="180">
+              <template #default="{ row }">{{ row.decision === 'APPROVED' ? '—' : (detail.reason || '—') }}</template>
+            </el-table-column>
+          </el-table>
           <p v-else class="muted">本次尚无审核结果。</p>
+          <p v-if="decidedRows.length" class="muted decision-foot">
+            审批意见：{{ detail.reason || '—' }} · 审批人：{{ decidedRows[0]?.decided_by_name || '—' }} · 审批时间：{{ formatTime(decidedRows[0]?.decided_at) }}
+          </p>
+
+          <!-- 本次申报配置与模型关系（原型同款） -->
+          <h4 class="section-title">本次申报配置与模型关系</h4>
+          <el-table :data="configGroups" size="small" class="decision-table">
+            <el-table-column label="配置组" min-width="160">
+              <template #default="{ row }">{{ row.name }}<span v-if="!row.enabled" class="muted">（已停用）</span></template>
+            </el-table-column>
+            <el-table-column label="准入 URL" min-width="220">
+              <template #default="{ row }"><span class="mono">{{ row.url || '未登记' }}</span></template>
+            </el-table-column>
+            <el-table-column label="API Key" width="110">
+              <template #default="{ row }">{{ row.hasKey ? '已配置（脱敏）' : '未配置' }}</template>
+            </el-table-column>
+            <el-table-column label="关联模型" min-width="220">
+              <template #default="{ row }">{{ row.models.join('、') }}</template>
+            </el-table-column>
+          </el-table>
         </div>
       </template>
     </div>
