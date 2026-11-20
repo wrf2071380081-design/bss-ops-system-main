@@ -71,10 +71,12 @@ const accessResult = ref<FormalConfigOption>();
 const boundConfig = computed(() => accessResult.value ?? configs.value.find(item => item.id === props.resource.formal_config_id));
 // 只有该资源的指定技术办理人（服务端下发 can_bind / can_admit）才给可编辑表单，其余账号只读。
 const canHandleAccess = computed(() => Boolean(workflow.value?.can_bind || workflow.value?.can_admit));
-const showQuickAccess = computed(() => !props.resource.ever_admitted && !accessDone.value && canHandleAccess.value);
+// 只有"真的已接入 / 真的绑过配置"才给只读摘要。
+// 之前还加了一条 `workflow && !canHandleAccess`，结果未接入的模型也被判定成
+// "已有有效生产配置"并锁死表单（2026-11-20 反馈：v4.1 / GLM 无法配置）。
+const showQuickAccess = computed(() => !props.resource.ever_admitted && !accessDone.value && !props.resource.formal_config_id);
 const showAccessSummary = computed(() => !showQuickAccess.value &&
-  (Boolean(props.resource.formal_config_id) || props.resource.ever_admitted || accessDone.value ||
-   Boolean(workflow.value && !canHandleAccess.value)));
+  (Boolean(props.resource.formal_config_id) || props.resource.ever_admitted || accessDone.value));
 // 该地址已有正式配置时可复用，API Key 可以留空（原型里同一供应商的配置也是复用的）。
 const reuseConfig = computed(() => eligibleConfigs.value.find(item => item.base_url === accessForm.base_url.trim()));
 // 能用「接口配置」一步走完时，分步面板收起；不能时自动展开，避免功能被藏起来。
@@ -262,7 +264,7 @@ onBeforeUnmount(() => { active = false; configRequest?.abort(); workflowRequest?
     <section v-else-if="showAccessSummary" class="operation-card">
       <h3>接口配置</h3>
       <p class="muted">
-        <template v-if="resource.ever_admitted || accessDone">当前模型已有有效生产配置。</template>
+        <template v-if="resource.ever_admitted || accessDone || resource.formal_config_id">当前模型已有有效生产配置。</template>
         <template v-else-if="configGroup?.config_group_id">
           当前模型属于「{{ configGroup.config_group_name || '未命名' }}」配置组：同组配置可复用，
           <template v-if="foreignConfigs.length">其他组的 {{ foreignConfigs.length }} 条配置不可直接选用（需为本组单独登记）。</template>
