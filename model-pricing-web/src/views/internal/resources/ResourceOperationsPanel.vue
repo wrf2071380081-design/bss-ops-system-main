@@ -74,9 +74,11 @@ const canHandleAccess = computed(() => Boolean(workflow.value?.can_bind || workf
 // 只有"真的已接入 / 真的绑过配置"才给只读摘要。
 // 之前还加了一条 `workflow && !canHandleAccess`，结果未接入的模型也被判定成
 // "已有有效生产配置"并锁死表单（2026-11-20 反馈：v4.1 / GLM 无法配置）。
-const showQuickAccess = computed(() => !props.resource.ever_admitted && !accessDone.value && !props.resource.formal_config_id);
-const showAccessSummary = computed(() => !showQuickAccess.value &&
-  (Boolean(props.resource.formal_config_id) || props.resource.ever_admitted || accessDone.value));
+// 只读摘要**只**用于「真的已经接入了」的资源。
+// 之前还看 formal_config_id：供应商接入模型页传进来的行不带这个字段，
+// 却因为别处给了个值而被判定"已有配置"，表单被锁死在只读态（2026-11-20 二次反馈）。
+const showAccessSummary = computed(() => Boolean(props.resource.ever_admitted) || accessDone.value);
+const showQuickAccess = computed(() => !showAccessSummary.value);
 // 该地址已有正式配置时可复用，API Key 可以留空（原型里同一供应商的配置也是复用的）。
 const reuseConfig = computed(() => eligibleConfigs.value.find(item => item.base_url === accessForm.base_url.trim()));
 // 能用「接口配置」一步走完时，分步面板收起；不能时自动展开，避免功能被藏起来。
