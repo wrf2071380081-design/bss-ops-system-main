@@ -171,15 +171,13 @@ func (r *CustomerSpecialRepo) SubmitQuoteApprovalTx(ctx context.Context, quoteID
 			// 非重报却传了模型范围：不静默忽略，避免调用方以为生效了。
 			return customer.ErrQuoteApprovalReapplyModel
 		}
-		// 2026-11-19：同客户同模型还有未结束的接入办理时，不允许再提交一次报价审批。
+		// 2026-11-20：不再拦「同客户同模型还在办理」。
 		//
-		// 之前只在「派单」那一步去重（同客户同模块已有未办待办就不新建），
-		// 结果是审批照常通过、待办却不新增，办理人工作台看不到任何变化，
-		// 旧的那条还挂在原来的人名下——比直接拦住更难解释。
-		// 现在把约束前移到提交这一步，并给出明确文案。
-		if err := ensureNoBusyOnboarding(tx, quote.CustomerID, groups); err != nil {
-			return err
-		}
+		// 原来这条拦截是为了解决"审批照过、待办不新增"的静默失败，但它把
+		// 「同一模型的多通道」也一起挡掉了（业务要的正是同一客户同一模型多个报价）。
+		// 现在静默失败的根因从派单侧解决：流程与待办按**报价单**拆分
+		// （onboarding_flow.customer_quote_id / todo_task.flow_id），
+		// 每张报价各自一条流程、一条待办，互不影响，不需要在提交时串行化。
 		now := time.Now()
 		note := fmt.Sprintf("报价单 #%d V%d 提交审批", quoteID, quote.VersionNo)
 		var previous any
@@ -455,20 +453,21 @@ func (r *CustomerSpecialRepo) DecideQuoteApprovalTx(ctx context.Context, approva
 		}
 		// 审批即派发：批准的模型立刻变成两条待办，落到刚指定的两个人头上。
 		if approved > 0 {
-			// 待办要能真的点进去办：先把客户接入流程建出来（原型里审批通过即存在流程，
-			// 商务直接办合同与授信、技术直接配来源）。不建流程的话「合同与授信」待办
-			// 点进去只有一句"尚未发起开通"，商务还得自己去点发起开通并选供应来源——那不是他的活。
-			if err := ensureCustomerFlow(tx, quote.CustomerID, in.BusinessAssigneeID > 0,
-				in.OpsAssigneeID, in.BusinessAssigneeID, operatorID, requestID); err != nil {
+			// 待办要能真的点进去办：先把**这张报价单**的接入流程建出来（业务口径：
+			// 一个报价就是一个办理事务，A 单卡住不影响 B 单）。流程按
+			// (客户, 报价单) 唯一，不再按客户唯一。
+			flowID, err := ensureCustomerFlow(tx, quote.CustomerID, approval.QuoteID, approvalID,
+				in.BusinessAssigneeID > 0, in.OpsAssigneeID, in.BusinessAssigneeID, operatorID, requestID)
+			if err != nil {
 				return err
 			}
 			customerName := customerDisplayName(tx, quote.CustomerID)
-			if err := enqueueCustomerTask(tx, taskKindCustomerModels, quote.CustomerID, in.OpsAssigneeID,
+			if err := enqueueCustomerTask(tx, taskKindCustomerModels, quote.CustomerID, flowID, in.OpsAssigneeID,
 				"客户模型开通", customerName+" · "+fmt.Sprintf("%d 个模型", approved), operatorID, requestID); err != nil {
 				return err
 			}
 			if in.BusinessAssigneeID > 0 {
-				if err := enqueueCustomerTask(tx, taskKindCustomerContract, quote.CustomerID, in.BusinessAssigneeID,
+				if err := enqueueCustomerTask(tx, taskKindCustomerContract, quote.CustomerID, flowID, in.BusinessAssigneeID,
 					"合同与授信", customerName, operatorID, requestID); err != nil {
 					return err
 				}
@@ -925,56 +924,82 @@ func (r *CustomerSpecialRepo) CustomerNeedsBusiness(ctx context.Context, quoteID
 	return needs, nil
 }
 
-// ensureCustomerFlow 在审批事务内建客户接入流程（对齐原型：审批通过即派活）。
+// ensureCustomerFlow 在审批事务内建**这张报价单**的客户接入流程（审批通过即派活）。
 //
-// 为什么不写模型明细：审批时只知道「批了哪几个模型」，供应来源要技术后续在
-// 「接入模型 → 配置资源」里挑（POST /customers/:id/onboarding/models 追加）；
-// customer_onboarding_model.resource_id 是 NOT NULL，这会儿没有来源可填。
+// 粒度（2026-11-20）：一个客户可以为不同报价单各开一条进行中流程。
+// 原来按客户唯一（uk_flow_customer_processing），第二张报价审批时必然撞索引，
+// 这里只能静默跳过，导致"审批过了、流程和待办都没动"——多通道场景下就是丢单。
 //
-// 节点顺序沿用既有开通语义：
-//   - 需要商务（合同未归档）→ CONTRACT 立刻办理，CONFIG 挂等待；
-//   - 不需要商务 → 只有 CONFIG，直接办理。
+// 模型明细直接按批准行写：报价单本身已经确定了供应来源（customer_quote_item.resource_id），
+// 不再需要技术后续在「接入模型 → 配置资源」里二次挑选。
+// customer_onboarding_model.resource_id 是 NOT NULL，这里正好有值可填。
 //
-// 幂等：已有进行中的流程就跳过（并发由部分唯一索引 uk_flow_customer_processing 兜底）。
-func ensureCustomerFlow(tx *gorm.DB, customerID int64, needsBusiness bool, opsAssigneeID, bizAssigneeID, operatorID int64, requestID string) error {
+// 节点顺序沿用既有开通语义（合同与授信、模型接入两条线并行办理）。
+//
+// 幂等：同一张报价单重复审批时直接复用已有流程（并发由
+// uk_flow_customer_quote_processing 兜底）。
+func ensureCustomerFlow(tx *gorm.DB, customerID, quoteID, approvalID int64, needsBusiness bool, opsAssigneeID, bizAssigneeID, operatorID int64, requestID string) (int64, error) {
 	if customerID <= 0 {
-		return nil
+		return 0, nil
 	}
 	currentNode := "CONFIG"
 	if needsBusiness {
 		currentNode = "CONTRACT"
 	}
-	res := tx.Exec(`INSERT INTO onboarding_flow (kind, owner_id, status, current_node)
-	                VALUES ('CUSTOMER', ?, 'PROCESSING', ?)
-	                ON CONFLICT DO NOTHING`, customerID, currentNode)
+	var quoteArg any
+	if quoteID > 0 {
+		quoteArg = quoteID
+	}
+	res := tx.Exec(`INSERT INTO onboarding_flow (kind, owner_id, status, current_node, customer_quote_id)
+	                VALUES ('CUSTOMER', ?, 'PROCESSING', ?, ?)
+	                ON CONFLICT DO NOTHING`, customerID, currentNode, quoteArg)
 	if res.Error != nil {
-		return fmt.Errorf("insert customer flow: %w", res.Error)
+		return 0, fmt.Errorf("insert customer flow: %w", res.Error)
 	}
-	if res.RowsAffected == 0 {
-		// 已经有一条进行中的流程：审批重复提交或上一轮还没办完，保持原样。
-		return nil
-	}
+	created := res.RowsAffected > 0
 	var flowID int64
 	if err := tx.Raw(`SELECT id FROM onboarding_flow
-	                   WHERE kind = 'CUSTOMER' AND owner_id = ? AND status = 'PROCESSING'`,
-		customerID).Scan(&flowID).Error; err != nil {
-		return fmt.Errorf("load customer flow id: %w", err)
+	                   WHERE kind = 'CUSTOMER' AND owner_id = ? AND status = 'PROCESSING'
+	                     AND COALESCE(customer_quote_id, 0) = ?
+	                   ORDER BY id DESC LIMIT 1`,
+		customerID, quoteID).Scan(&flowID).Error; err != nil {
+		return 0, fmt.Errorf("load customer flow id: %w", err)
 	}
 	if flowID == 0 {
-		return nil
+		return 0, nil
 	}
 	// 合同与授信、模型接入是两条**并行**的办理线（业务已明确：互不阻塞）。
 	// 以前首单把 CONFIG 挂成 WAITING_PREDECESSOR 等合同完成，技术代理人虽然拿到了
 	// 「客户模型开通」待办，但节点不可办，等于没有待办（2026-11-18 PM 反馈）。
 	if needsBusiness {
 		if err := insertFlowNode(tx, flowID, "CONTRACT", "IN_PROGRESS", bizAssigneeID); err != nil {
-			return err
+			return 0, err
 		}
 		if err := insertFlowNode(tx, flowID, "CONFIG", "IN_PROGRESS", opsAssigneeID); err != nil {
-			return err
+			return 0, err
 		}
 	} else if err := insertFlowNode(tx, flowID, "CONFIG", "IN_PROGRESS", opsAssigneeID); err != nil {
-		return err
+		return 0, err
+	}
+	// 本次批准的模型 × 该报价明细里的来源，直接成为流程的模型明细。
+	// 一个模型在一张报价里只有一条来源（报价行按模型聚合），MIN 只是保证取数确定性。
+	if approvalID > 0 && quoteID > 0 {
+		if err := tx.Exec(`INSERT INTO customer_onboarding_model (flow_id, standard_model_id, resource_id)
+		                   SELECT ?, r.standard_model_id, MIN(cqi.resource_id)
+		                     FROM customer_quote_approval_row r
+		                     JOIN customer_quote_item cqi ON cqi.customer_quote_id = ?
+		                     JOIN resource res ON res.id = cqi.resource_id
+		                    WHERE r.approval_id = ? AND r.result = ?
+		                      AND res.standard_model_id = r.standard_model_id
+		                    GROUP BY r.standard_model_id
+		                   ON CONFLICT (flow_id, resource_id) DO NOTHING`,
+			flowID, quoteID, approvalID, customer.ApprovalRowApproved).Error; err != nil {
+			return 0, fmt.Errorf("seed onboarding models flow=%d: %w", flowID, err)
+		}
+	}
+	if !created {
+		// 同报价重复审批：流程、节点、模型明细都已存在，保持原样即可。
+		return flowID, nil
 	}
 	// 与开通模块的审计同一张表、同一 entity_type，审批详情里串起来看得到。
 	if err := tx.Exec(`INSERT INTO operation_log (entity_type, entity_id, action, operator_id, operator_name_snapshot,
@@ -982,12 +1007,12 @@ func ensureCustomerFlow(tx *gorm.DB, customerID int64, needsBusiness bool, opsAs
 	                   VALUES ('onboarding_flow', ?, 'START', ?,
 	                           (SELECT name FROM internal_staff WHERE id = ?), ?::jsonb, ?, now())`,
 		flowID, operatorID, operatorID,
-		fmt.Sprintf(`{"from":"quote-approval","customer_id":%d,"first_order":%t,"current_node":%q}`,
-			customerID, needsBusiness, currentNode),
+		fmt.Sprintf(`{"from":"quote-approval","customer_id":%d,"quote_id":%d,"first_order":%t,"current_node":%q}`,
+			customerID, quoteID, needsBusiness, currentNode),
 		nullableString(requestID)).Error; err != nil {
-		return fmt.Errorf("audit customer flow start: %w", err)
+		return 0, fmt.Errorf("audit customer flow start: %w", err)
 	}
-	return nil
+	return flowID, nil
 }
 
 // insertFlowNode 建一个开通节点；assignee 为 0 时不指派（老数据兜底）。
@@ -1006,89 +1031,36 @@ func insertFlowNode(tx *gorm.DB, flowID int64, key, status string, assigneeID in
 
 // enqueueCustomerTask 在审批事务内派一条待办。
 //
-// 去重口径与收件箱的显示口径必须一致：判定用的是「这条待办还看不看得见（TODO）」，
-// 不是表里的 status——待办的状态是按办理节点算出来的，表里永远是 OPEN。
-// 只按 status 判存在的话，这个客户第一次审批之后再也派不出新待办；
-// 反过来无脑新建，工作台又会堆出两条一模一样的「客户模型开通」。所以：
+// 去重口径（2026-11-20 改为按流程）：同一条开通流程的同类待办只派一次。
+// 不同报价 = 不同流程 → 各自派一条，互不影响（这正是多通道要的行为）。
 //
-//	还存在一条「对应节点未完成」的同类待办 → 不重复派；
-//	上一条已经因为节点完成而在工作台转成 DONE → 派新的。
-// ensureNoBusyOnboarding 同客户 + 同标准模型还有未结束的开通节点 → 拒绝提交审批。
-//
-// 为什么拦在「提交」而不是「派单」：派单那边只能做到"不新建"，对用户来说
-// 审批照样通过、工作台却没有任何变化，属于静默失败；而在提交时就拦住，
-// 文案能直接告诉销售"同模型接入办理尚未结束，当前不能另行提交报价变更"。
-//
-// 判定口径：
-//   - 流程必须是该客户的进行中客户开通流程（CUSTOMER / PROCESSING）；
-//   - 该流程下还存在启用中、且未达终态的 CONFIG 或 CONTRACT 节点；
-//   - 该流程带的模型与本次要提交审批的模型有交集。
-func ensureNoBusyOnboarding(tx *gorm.DB, customerID int64, groups []quoteModelGroup) error {
-	if tx == nil || customerID <= 0 || len(groups) == 0 {
-		return nil
-	}
-	ids := make([]int64, 0, len(groups))
-	for _, group := range groups {
-		if group.StandardModelID > 0 {
-			ids = append(ids, group.StandardModelID)
-		}
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	const busyQuery = `
-		SELECT count(*)
-		  FROM onboarding_flow f
-		  JOIN onboarding_node n ON n.flow_id = f.id
-		  JOIN customer_onboarding_model m ON m.flow_id = f.id
-		 WHERE f.kind = 'CUSTOMER' AND f.status = 'PROCESSING' AND f.owner_id = ?
-		   AND n.enabled AND n.node_key IN ('CONFIG','CONTRACT')
-		   AND n.status NOT IN ('COMPLETED','DONE','CANCELED')
-		   AND m.standard_model_id IN ?`
-	var busy int64
-	if err := tx.Raw(busyQuery, customerID, ids).Scan(&busy).Error; err != nil {
-		return fmt.Errorf("check busy onboarding customer=%d: %w", customerID, err)
-	}
-	if busy > 0 {
-		return customer.ErrQuoteApprovalOnboardingBusy
-	}
-	return nil
-}
-
-func enqueueCustomerTask(tx *gorm.DB, bizType string, customerID, assigneeID int64, title, bizObject string, operatorID int64, requestID string) error {
+// 为什么不再按「该客户有没有未办完的同类待办」判：那会让第二张报价的待办派不出来，
+// 而收件箱又按"该客户任意流程的节点完成"把待办刷成 DONE——审批通过却无人办理。
+func enqueueCustomerTask(tx *gorm.DB, bizType string, customerID, flowID, assigneeID int64, title, bizObject string, operatorID int64, requestID string) error {
 	if assigneeID <= 0 || customerID <= 0 {
 		return nil
-	}
-	nodeKey := "CONFIG"
-	if bizType == taskKindCustomerContract {
-		nodeKey = "CONTRACT"
 	}
 	var active int64
 	const activeQuery = `
 		SELECT count(*) FROM todo_task t
 		 WHERE t.biz_type = ? AND t.biz_id = ? AND t.status = 'OPEN'
-		   AND NOT EXISTS (
-		       SELECT 1 FROM onboarding_node n
-		         JOIN onboarding_flow f ON f.id = n.flow_id
-		        WHERE f.kind = 'CUSTOMER' AND f.owner_id = t.biz_id
-		          AND n.node_key = ? AND n.status = 'COMPLETED' AND n.completed_at >= t.created_at
-		   )`
-	if err := tx.Raw(activeQuery, bizType, customerID, nodeKey).Scan(&active).Error; err != nil {
-		return fmt.Errorf("check active todo %s/%d: %w", bizType, customerID, err)
+		   AND COALESCE(t.flow_id, 0) = ?`
+	if err := tx.Raw(activeQuery, bizType, customerID, flowID).Scan(&active).Error; err != nil {
+		return fmt.Errorf("check active todo %s/%d/flow=%d: %w", bizType, customerID, flowID, err)
 	}
 	if active > 0 {
-		// 去重保护：同客户 + 同模块已有「还没办完」的待办，就不再新建，
-		// 免得工作台堆出两条一模一样的「客户模型开通」。
-		//
-		// 注意：这里**不做改派**。二次报价想换办理人，应该在「提交审批」时被拦住
-		// （见 SubmitQuoteApprovalTx 的 ErrQuoteApprovalOnboardingBusy），
-		// 而不是悄悄把别人手里的活改走。
+		// 同一条流程已经派过：审批重复提交时保持原样，不重复派、也不改派。
 		return nil
+	}
+	var flowArg any
+	if flowID > 0 {
+		flowArg = flowID
 	}
 	now := time.Now()
 	if err := tx.Table("todo_task").Create(map[string]any{
 		"biz_type":    bizType,
 		"biz_id":      customerID,
+		"flow_id":     flowArg,
 		"assignee_id": assigneeID,
 		"title":       title,
 		"priority":    "MID",
@@ -1098,7 +1070,7 @@ func enqueueCustomerTask(tx *gorm.DB, bizType string, customerID, assigneeID int
 		"created_by":  operatorID,
 		"request_id":  requestID,
 	}).Error; err != nil {
-		return fmt.Errorf("insert todo %s/%d: %w", bizType, customerID, err)
+		return fmt.Errorf("insert todo %s/%d/flow=%d: %w", bizType, customerID, flowID, err)
 	}
 	return nil
 }

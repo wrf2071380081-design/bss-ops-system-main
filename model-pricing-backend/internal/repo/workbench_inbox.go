@@ -95,8 +95,24 @@ SELECT t.assignee_id,
        'TODO'::varchar(8) AS item_type,
        CASE
          WHEN t.status <> 'OPEN' THEN 'DONE'
-         -- 流程整体已完成也算办完：即使节点终态词是历史的 'DONE'、或节点完成时间
-         -- 早于派单时间（补建流程/重复派单），也不会把已办的事继续挂在待办里。
+         -- 新待办（2026-11-20）：只看自己那条流程。每个报价一条流程，
+         -- A 单办完不会把 B 单的待办刷成 DONE。
+         WHEN t.flow_id IS NOT NULL THEN
+           CASE
+             WHEN EXISTS (
+               SELECT 1 FROM onboarding_flow f
+                WHERE f.id = t.flow_id AND f.status = 'COMPLETED'
+             ) THEN 'DONE'
+             WHEN EXISTS (
+               SELECT 1 FROM onboarding_node n
+                WHERE n.flow_id = t.flow_id
+                  AND n.node_key = CASE WHEN t.biz_type = 'CUSTOMER_CONTRACT' THEN 'CONTRACT' ELSE 'CONFIG' END
+                  AND n.status = 'COMPLETED'
+                  AND n.completed_at >= t.created_at
+             ) THEN 'DONE'
+             ELSE 'TODO'
+           END
+         -- 历史待办（flow_id 为空）：保持原口径「按客户判」，否则老数据会永远挂在待办里。
          WHEN EXISTS (
            SELECT 1 FROM onboarding_flow f
             WHERE f.kind = 'CUSTOMER' AND f.owner_id = t.biz_id AND f.status = 'COMPLETED'

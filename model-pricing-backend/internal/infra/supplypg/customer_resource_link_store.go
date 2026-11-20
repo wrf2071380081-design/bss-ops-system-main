@@ -435,9 +435,11 @@ pending_raw AS (
       JOIN %s f ON f.id = m.flow_id
       LEFT JOIN %s r2 ON r2.id = m.resource_id
      WHERE f.kind = 'CUSTOMER' AND f.owner_id = $1 AND f.status = 'PROCESSING'
+       -- 判据落到「资源」而不是「模型」：多通道下同模型可有第二条来源，
+       -- 按模型判会把它当成"已经配过"，第二个通道就永远不出现在待配置列表里。
        AND NOT EXISTS (SELECT 1 FROM %s l2
                         WHERE l2.customer_profile_id = $1
-                          AND l2.standard_model_id = m.standard_model_id
+                          AND l2.resource_id = m.resource_id
                           AND l2.archived = FALSE)
     UNION ALL
     -- b) 报价审批已批准、但还没配来源的模型（取每张报价单最新那次审批的批准行）
