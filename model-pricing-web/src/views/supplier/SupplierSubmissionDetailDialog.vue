@@ -59,9 +59,27 @@ const configGroups = computed(() => {
   return [...map.values()];
 });
 
-/** 报告在「供应商接入模型 → 测试与报告」，这里只提示入口，不重复实现一套。 */
-function openReportHint() {
-  ElMessage.info("报告在「供应商接入模型 → 测试与报告」里按资源查看。");
+/** 供应商查看自己的测试报告：直接列出该行连通/压测的平台结论与报告编号。 */
+const reportOpen = ref(false), reportRow = ref<SupplierSubmissionRowDTO | null>(null);
+function openReportHint(row: SupplierSubmissionRowDTO) {
+  reportRow.value = row;
+  reportOpen.value = true;
+}
+function reportLines(row: SupplierSubmissionRowDTO | null) {
+  if (!row) return [];
+  const out: { name: string; status: string; verdict: string; extra: string; report: string }[] = [];
+  const conn = row.connectivity_job;
+  if (conn) out.push({
+    name: "连通性测试", status: conn.status || "", verdict: conn.verdict || (conn.passed ? "pass" : ""),
+    extra: conn.connection_ms ? `${conn.connection_ms} ms` : "", report: conn.report_id || "",
+  });
+  const stress = row.stress_job;
+  if (stress) out.push({
+    name: "压力测试", status: stress.status || "", verdict: stress.verdict || "",
+    extra: [stress.rps ? `RPS ${stress.rps}` : "", stress.tps ? `TPS ${stress.tps}` : ""].filter(Boolean).join(" · "),
+    report: stress.report_id || "",
+  });
+  return out;
 }
 const submittedAt = computed(() => formatTime(detail.value?.submitted_at || detail.value?.updated_at));
 const reasonText = computed(() => detail.value?.reason?.trim() || "无补充说明");
@@ -191,7 +209,7 @@ watch(() => [props.modelValue, props.submissionId], ([open]) => {
           </el-table-column>
           <el-table-column label="已有报告" min-width="130">
             <template #default="{ row }">
-              <el-button v-if="row.stress_job?.report_id || row.connectivity_job?.report_id" link type="primary" @click="openReportHint()">
+              <el-button v-if="row.stress_job?.report_id || row.connectivity_job?.report_id" link type="primary" @click="openReportHint(row)">
                 测试与报告
               </el-button>
               <small v-else class="muted">{{ reportText(row.stress_job || row.connectivity_job) }}</small>
@@ -245,6 +263,27 @@ watch(() => [props.modelValue, props.submissionId], ([open]) => {
         </div>
       </template>
     </div>
+    <!-- 供应商自己的测试报告（连通/压测）：结论与报告编号，不涉及其他客户数据 -->
+    <el-dialog v-model="reportOpen" title="测试与报告" width="min(680px, 94vw)" append-to-body>
+      <p class="muted">{{ reportRow?.standard_model_name || reportRow?.interface_model_id }}</p>
+      <el-table :data="reportLines(reportRow)" size="small" empty-text="暂无测试记录">
+        <el-table-column label="测试类型" prop="name" width="120" />
+        <el-table-column label="状态" prop="status" width="110" />
+        <el-table-column label="结论" width="110">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.verdict === 'pass' ? 'success' : row.verdict ? 'danger' : 'info'">
+              {{ row.verdict === "pass" ? "通过" : row.verdict ? "未通过" : "已完成" }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="指标" prop="extra" min-width="150" />
+        <el-table-column label="报告编号" min-width="110">
+          <template #default="{ row }"><span class="mono">{{ row.report || "—" }}</span></template>
+        </el-table-column>
+      </el-table>
+      <p class="muted">报告由测试平台出具；如需 PDF/Excel 原件，请联系对接的技术办理人。</p>
+      <template #footer><el-button @click="reportOpen = false">关闭</el-button></template>
+    </el-dialog>
     <template #footer>
       <el-button @click="visible = false">关闭</el-button>
     </template>

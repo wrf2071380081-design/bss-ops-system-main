@@ -226,6 +226,22 @@ SET status=$2, verdict=NULLIF($3,''), response_summary=$4::jsonb, finished_at=$5
 		jobID, done.FinalStatus, done.Verdict, summary, done.FinishedAt.UTC()); err != nil {
 		return "", err
 	}
+	// 内部补测是「资源」维度的，申报行不知道它跑过。这里把任务回写到对应的申报行，
+	// 否则供应商「查看申报」的压力测试列永远是"未选择"（2026-11-20 反馈）。
+	// 只认该资源最新一条申报行；字段按门类分别落，互不覆盖。
+	if _, err := tx.ExecContext(ctx, `
+UPDATE `+s.table("submission_row")+` r
+SET test_job_id = CASE WHEN j.category = 'stress' THEN r.test_job_id ELSE $1 END,
+    stress_job_id = CASE WHEN j.category = 'stress' THEN $1 ELSE r.stress_job_id END,
+    connectivity_fingerprint = CASE WHEN j.category = 'stress' THEN r.connectivity_fingerprint
+                                    ELSE COALESCE(j.target_fingerprint,'') END,
+    stress_fingerprint = CASE WHEN j.category = 'stress' THEN COALESCE(j.target_fingerprint,'')
+                              ELSE r.stress_fingerprint END
+FROM `+s.table("test_job")+` j
+WHERE j.id = $1 AND r.id = (SELECT id FROM `+s.table("submission_row")+`
+                            WHERE resource_id = $2 ORDER BY id DESC LIMIT 1)`, jobID, resourceID); err != nil {
+		return "", err
+	}
 	if done.FinalStatus != "SUCCEEDED" || len(done.ReportJSON) == 0 {
 		if err := tx.Commit(); err != nil {
 			return "", err
