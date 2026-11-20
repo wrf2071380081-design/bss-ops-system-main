@@ -36,7 +36,9 @@ DROP INDEX IF EXISTS public.uk_flow_customer_processing;
 -- 同一客户 + 同一报价单：同时只能有一条进行中流程（原「一客户一条」的按报价版本）。
 -- COALESCE 是为了让历史 NULL 行仍互相唯一——PostgreSQL 里 NULL 互不相等，
 -- 不占位的话历史手工流程会失去并发保护。
-CREATE UNIQUE INDEX uk_flow_customer_quote_processing
+-- IF NOT EXISTS 是 2026-11-20 补的：撞号期间有的库已经把这份内容当 000072 跑过，
+-- 记账却停在 72，重跑到这里会因索引已存在而整条迁移失败（并置 dirty）。
+CREATE UNIQUE INDEX IF NOT EXISTS uk_flow_customer_quote_processing
   ON public.onboarding_flow(owner_id, COALESCE(customer_quote_id, 0))
   WHERE kind = 'CUSTOMER' AND status = 'PROCESSING';
 
