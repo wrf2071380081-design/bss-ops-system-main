@@ -132,22 +132,39 @@ func (s *CustomerOnboardingStore) CustomerRegion(ctx context.Context, customerPr
 
 // CustomerBusinessDocsReady 判断客户合同与授信资料是否已齐（完成 CONTRACT 节点的前置条件）。
 //
-// 口径与 F12 档案页一致，不另立一套：
-//   - 合同：存在 subject_type='CUSTOMER' 且状态已归档（ARCHIVED）的记录；
-//   - 授信：存在我方给客户的授信（direction='US_TO_CUSTOMER'）且额度 > 0。
+// 口径对齐原型（Token-Ops v0.1.0 里 `key==='business'` 的完成校验）：
+//   - 最新合同版本：资料编号非空 + 有附件；
+//   - 最新授信版本（我方→客户）：资料编号非空 + 有附件 + 额度 > 0。
+//
+// 原型**没有「归档」这个动作**，「合同状态：办理中 / 已归档」是节点状态与
+// 「是否存在带编号的合同」推导出来的展示标签。早先这里要求 contract.status='ARCHIVED'，
+// 于是商务在「合同与授信」卡片上传完资料（状态停在办理中）后，办理弹窗却提示
+// 「还差：合同资料」，与原型不一致。归档仍保留为档案维护动作，但不再是办理前置条件。
 //
 // 只认这两条事实，不看 customer_profile.contract_status（那个字段没有写入路径）。
 func (s *CustomerOnboardingStore) CustomerBusinessDocsReady(ctx context.Context, customerProfileID int64) (bool, error) {
 	query := fmt.Sprintf(`
-SELECT EXISTS (
-         SELECT 1 FROM %s c
-          WHERE c.subject_type = 'CUSTOMER' AND c.subject_id = $1 AND c.status = 'ARCHIVED'
-       )
-   AND EXISTS (
-         SELECT 1 FROM %s cl
-          WHERE cl.subject_type = 'CUSTOMER' AND cl.subject_id = $1
-            AND cl.direction = 'US_TO_CUSTOMER' AND cl.amount > 0
-       )`, s.table("contract"), s.table("credit_line"))
+WITH latest_contract AS (
+    SELECT document_no, file_id
+      FROM %s
+     WHERE subject_type = 'CUSTOMER' AND subject_id = $1
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1
+), latest_credit AS (
+    SELECT document_no, file_id, amount
+      FROM %s
+     WHERE subject_type = 'CUSTOMER' AND subject_id = $1 AND direction = 'US_TO_CUSTOMER'
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1
+)
+SELECT
+  EXISTS (SELECT 1 FROM latest_contract
+           WHERE NULLIF(btrim(COALESCE(document_no, '')), '') IS NOT NULL
+             AND NULLIF(btrim(COALESCE(file_id, '')), '') IS NOT NULL)
+  AND EXISTS (SELECT 1 FROM latest_credit
+               WHERE NULLIF(btrim(COALESCE(document_no, '')), '') IS NOT NULL
+                 AND NULLIF(btrim(COALESCE(file_id, '')), '') IS NOT NULL
+                 AND amount > 0)`, s.table("contract"), s.table("credit_line"))
 	var ready bool
 	if err := s.db.QueryRowContext(ctx, query, customerProfileID).Scan(&ready); err != nil {
 		return false, mapOnboardingError(err)
