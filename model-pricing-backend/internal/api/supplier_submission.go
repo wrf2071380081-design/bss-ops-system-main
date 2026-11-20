@@ -1739,6 +1739,7 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			item.ConnectivityJob = &submissionTestDTO{
 				Category: "CONNECTIVITY", Status: *row.ConnectivityStatus, Tested: tested && !row.ConnectivityStale,
 				Passed: passed, Verdict: deref(row.ConnectivityVerdict), Stale: row.ConnectivityStale, ConnectionMS: row.ConnectionMS,
+				ReportID: formatOptionalID(row.ConnectivityReportID),
 			}
 			item.ConnectivityTested, item.ConnectivityPassed = tested && !row.ConnectivityStale, passed && !row.ConnectivityStale
 		}
@@ -1748,6 +1749,7 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			item.StressJob = &submissionTestDTO{
 				Category: "STRESS", Status: *row.StressStatus, Tested: tested && !row.StressStale,
 				Passed: passed, Verdict: deref(row.StressVerdict), Stale: row.StressStale, RPS: row.RPS, TPS: row.TPS,
+				ReportID: formatOptionalID(row.StressReportID),
 			}
 			item.StressTested, item.StressPassed = tested && !row.StressStale, passed && !row.StressStale
 		}

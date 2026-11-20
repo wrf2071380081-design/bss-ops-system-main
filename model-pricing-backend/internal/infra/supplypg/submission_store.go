@@ -67,8 +67,11 @@ type SubmissionRowRecord struct {
 	// 提交时的连通性探测结果（000071）：PASS / FAIL / 空=未探测。
 	// 与上面的 ConnectivityStatus（平台测试任务）是两件事：那个是"真跑过"，
 	// 这个是"提交那一刻地址和 Key 通不通"。
-	ProbeStatus   string
-	ProbeNote     string
+	ProbeStatus string
+	ProbeNote   string
+	// 平台报告 id（供应商「已有报告」列用）：来自 test_report 最新一条。
+	ConnectivityReportID *int64
+	StressReportID       *int64
 	// 审批决定（供应商侧展示用）：PENDING / APPROVED / REJECTED。
 	Decision      string
 	DecidedAt     *time.Time
@@ -264,19 +267,19 @@ func (s *SubmissionStore) Rows(ctx context.Context, submissionIDs []int64) (map[
 SELECT r.submission_id, r.id, r.standard_model_id, m.name, COALESCE(m.official_id,''), r.supplier_model_name,
        r.coefficient::text, COALESCE(r.test_base_url,''), r.row_status, r.participate_test,
        COALESCE(m.company,''), COALESCE(m.model_type,''),
-       r.test_fingerprint, cj.status, crep.verdict, crep.connection_ms::text, cj.target_fingerprint,
-       sj.status, srep.verdict, srep.rps::text, srep.tps::text, sj.target_fingerprint,
+       r.test_fingerprint, cj.status, crep.id, crep.verdict, crep.connection_ms::text, cj.target_fingerprint,
+       sj.status, srep.id, srep.verdict, srep.rps::text, srep.tps::text, sj.target_fingerprint,
        r.test_config_group_id, COALESCE(g.name,''), COALESCE(g.enabled, false)
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
 LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
 LEFT JOIN LATERAL (
-  SELECT verdict, connection_ms FROM `+s.table("test_report")+`
+  SELECT id, verdict, connection_ms FROM `+s.table("test_report")+`
   WHERE test_job_id = cj.id ORDER BY id DESC LIMIT 1
 ) crep ON TRUE
 LEFT JOIN `+s.table("test_job")+` sj ON sj.id = r.stress_job_id
 LEFT JOIN LATERAL (
-  SELECT verdict, rps, tps FROM `+s.table("test_report")+`
+  SELECT id, verdict, rps, tps FROM `+s.table("test_report")+`
   WHERE test_job_id = sj.id ORDER BY id DESC LIMIT 1
 ) srep ON TRUE
 LEFT JOIN `+s.table("supplier_test_config_group")+` g ON g.id = r.test_config_group_id
@@ -291,12 +294,13 @@ ORDER BY r.submission_id, r.id`, args...)
 		var item SubmissionRowRecord
 		var connStatus, connVerdict, conn, stressStatus, stressVerdict, rps, tps sql.NullString
 		var rowFP, connFP, stressFP sql.NullString
+		var connRepoID, stressReportID sql.NullInt64
 		var groupID sql.NullInt64
 		if err := rows.Scan(&submissionID, &item.ID, &item.StandardModelID, &item.StandardModelName, &item.OfficialID,
 			&item.SupplierModelName, &item.Coefficient, &item.TestBaseURL, &item.RowStatus,
 			&item.ParticipateTest, &item.Company, &item.ModelType,
-			&rowFP, &connStatus, &connVerdict, &conn, &connFP,
-			&stressStatus, &stressVerdict, &rps, &tps, &stressFP,
+			&rowFP, &connStatus, &connRepoID, &connVerdict, &conn, &connFP,
+			&stressStatus, &stressReportID, &stressVerdict, &rps, &tps, &stressFP,
 			&groupID, &item.TestConfigGroupName, &item.TestConfigGroupEnabled); err != nil {
 			return nil, err
 		}
@@ -313,6 +317,12 @@ ORDER BY r.submission_id, r.id`, args...)
 		item.StressStale = fingerprintChanged(stressFP)
 		item.ConnectivityJobFingerprint = connFP.String
 		item.StressJobFingerprint = stressFP.String
+		if connRepoID.Valid {
+			item.ConnectivityReportID = &connRepoID.Int64
+		}
+		if stressReportID.Valid {
+			item.StressReportID = &stressReportID.Int64
+		}
 		item.ConnectivityStatus = nullableString(connStatus)
 		item.ConnectivityVerdict = nullableString(connVerdict)
 		item.ConnectionMS = nullableString(conn)
