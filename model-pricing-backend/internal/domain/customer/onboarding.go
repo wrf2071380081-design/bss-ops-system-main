@@ -507,8 +507,9 @@ func (s *OnboardingService) CompleteNode(ctx context.Context, in CompleteNodeInp
 			// 还在 WAITING_PREDECESSOR：说明前序（理论上无）没完成，或节点未启用。
 			return nil, ErrOnboardingNodeNotReady
 		}
-		// 对齐原型：商务完成 = 合同与授信两份资料真的在档，不是"点一下确认"。
-		// 资料没齐就不放行，避免客户按「已归档」去配资源、实际没有合同依据。
+		// 对齐原型：商务完成 = 合同与授信两份资料真的在档（编号 + 附件 + 有效额度），
+		// 而不是「必须先点一次归档」。原型里没有归档动作，归档只是状态标签；
+		// 资料没齐仍然不放行，避免客户按「已归档」去配资源、实际没有合同依据。
 		ready, err := s.store.CustomerBusinessDocsReady(ctx, node.CustomerProfileID)
 		if err != nil {
 			return nil, err

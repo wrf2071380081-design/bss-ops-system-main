@@ -20,8 +20,8 @@ import (
 //	  go test ./internal/infra/supplypg -run TestCustomerResourceLinkStore -v
 //
 // 覆盖需求里「必须由真实数据库证明」的部分：
-//   - 两个部分唯一索引（uk_crl_customer_resource / uk_crl_customer_model）真的生效，
-//     且 23505 被翻译成可读的领域错误（不是原始 SQL 错误）；
+//   - 部分唯一索引 uk_crl_customer_resource 真的生效，23505 被翻译成可读的领域错误；
+//     同客户同模型的**不同资源**多条 ACTIVE 自 000072 起允许（多通道并行销售）；
 //   - 归档后名额释放，可以重建同客户同来源的绑定；
 //   - 下架 → 待处理（archived=false，客户仍可用）→ 人工确认 → 归档，状态机与 SQL 一致；
 //   - 重新配置来源在同一事务内完成；
@@ -167,11 +167,15 @@ func TestCustomerResourceLinkStoreUniqueIndexes(t *testing.T) {
 	if _, err := store.CreateLink(ctx, base); !errors.Is(err, customer.ErrLinkDuplicateResource) {
 		t.Fatalf("同资源重复：期望 ErrLinkDuplicateResource，got %v", err)
 	}
-	// ② 同客户同模型第二条 ACTIVE → 必须提示先归档旧绑定。
+	// ② 同客户同模型、**不同资源**的第二条 ACTIVE → 多通道，必须允许（000072 起）。
 	second := base
 	second.ResourceID = f.cnResB
-	if _, err := store.CreateLink(ctx, second); !errors.Is(err, customer.ErrLinkModelAlreadyActive) {
-		t.Fatalf("同模型第二条生效：期望 ErrLinkModelAlreadyActive，got %v", err)
+	multi, err := store.CreateLink(ctx, second)
+	if err != nil {
+		t.Fatalf("同模型第二条来源应允许（多通道）：%v", err)
+	}
+	if multi.State != customer.LinkStateActive || multi.ResourceID != f.cnResB {
+		t.Fatalf("第二条来源字段不符：%+v", multi)
 	}
 	// ③ 乐观锁：旧 revision 更新被拒。
 	if _, err := store.ApplyTransition(ctx, customer.TransitionRecord{
@@ -267,7 +271,7 @@ func TestCustomerResourceLinkStoreRebind(t *testing.T) {
 		t.Fatalf("get old: %v", err)
 	}
 	if !reloaded.Archived {
-		t.Fatal("旧绑定必须被归档，否则 uk_crl_customer_model 会挡住新绑定")
+		t.Fatal("旧绑定必须被归档：换源是归档旧的 + 新建一条，历史不能删")
 	}
 
 	// 审计：换源是"这个客户的这个模型改由哪个货源供给"，比禁用/恢复更实质，必须留痕。

@@ -31,7 +31,8 @@ func timeNow() time.Time { return time.Now().UTC() }
 //
 // 这里验的都是「只有真库能证明」的东西：
 //   - 首单/非首单的节点与 current_node；
-//   - 部分唯一索引 uk_flow_customer_processing 真的拦得住第二条进行中流程；
+//   - 部分唯一索引 uk_flow_customer_quote_processing 拦得住「同客户同报价」的第二条进行中流程，
+//     不同报价的并行流程则允许（多通道）；
 //   - CONFIG 完成时按模型 1:1 写绑定；任一冲突整批回滚；
 //   - CONTRACT 完成把 CONFIG 推到 IN_PROGRESS；
 //   - 审计每条动作恰好一行；
@@ -237,15 +238,22 @@ func TestCustomerOnboardingStoreProcessingBlockedByIndex(t *testing.T) {
 		t.Fatalf("重复发起应返回 ErrOnboardingInProgress，got %v", err)
 	}
 
-	// ② 绕过应用层，直接插一条 PROCESSING：必须撞 uk_flow_customer_processing。
+	// ② 绕过应用层，直接插一条 PROCESSING（不带报价 = 与手工流程同口径）：必须撞唯一索引。
 	_, err := db.ExecContext(ctx, `
 INSERT INTO public.onboarding_flow(kind, owner_id, status, current_node)
 VALUES ('CUSTOMER', $1, 'PROCESSING', 'CONFIG')`, f.customerID)
 	if err == nil {
-		t.Fatal("部分唯一索引未生效：同一客户出现了两条进行中流程")
+		t.Fatal("部分唯一索引未生效：同一客户出现了两条同报价口径的进行中流程")
 	}
-	if !isUniqueViolation(err, "uk_flow_customer_processing") {
-		t.Fatalf("应撞 uk_flow_customer_processing，实际错误：%v", err)
+	if !isUniqueViolation(err, "uk_flow_customer_quote_processing") {
+		t.Fatalf("应撞 uk_flow_customer_quote_processing，实际错误：%v", err)
+	}
+
+	// ③ 不同报价单的第二条进行中流程：多通道并行销售，必须允许（000072）。
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO public.onboarding_flow(kind, owner_id, status, current_node, customer_quote_id)
+VALUES ('CUSTOMER', $1, 'PROCESSING', 'CONFIG', 987654321)`, f.customerID); err != nil {
+		t.Fatalf("不同报价应允许并行流程，实际错误：%v", err)
 	}
 }
 
@@ -313,7 +321,8 @@ func TestCustomerOnboardingStoreCompleteConfigRollsBackOnConflict(t *testing.T) 
 	ctx := context.Background()
 
 	// 先给「模型甲 + 资源 A」建一条 ACTIVE 绑定：
-	// 之后流程里再给模型甲配资源 B，就会撞 uk_crl_customer_model（一客户一模型只能一个生效来源）。
+	// 之后流程里再给**同一条资源 A** 配一次，会撞 uk_crl_customer_resource（同客户同资源只能一条未归档）。
+	// 注意：同模型换一条资源（多通道）从 000072 起是允许的，不再是冲突来源。
 	now := timeNow()
 	if _, err := links.CreateLink(ctx, customer.CreateLinkRecord{
 		CustomerProfileID: f.customerID, StandardModelID: f.modelID, ResourceID: f.resA,
@@ -325,7 +334,7 @@ func TestCustomerOnboardingStoreCompleteConfigRollsBackOnConflict(t *testing.T) 
 
 	flow, err := svc.Start(ctx, customer.StartOnboardingInput{
 		CustomerProfileID: f.customerID, ConfigAssigneeID: f.staffB,
-		Models: f.models(f.resB, f.resC), Reason: "含冲突的批量开通",
+		Models: f.models(f.resA, f.resC), Reason: "含冲突的批量开通",
 	}, f.staffB, "qa-onboarding-conflict")
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -333,8 +342,8 @@ func TestCustomerOnboardingStoreCompleteConfigRollsBackOnConflict(t *testing.T) 
 	config := findNode(flow, "CONFIG")
 	if _, err := svc.CompleteNode(ctx, customer.CompleteNodeInput{
 		NodeID: config.ID, Reason: "配置完成", Operator: f.staffB, Request: "qa-onboarding-conflict",
-	}); !errors.Is(err, customer.ErrLinkModelAlreadyActive) {
-		t.Fatalf("应返回可读的「已有生效来源」冲突，got %v", err)
+	}); !errors.Is(err, customer.ErrLinkDuplicateResource) {
+		t.Fatalf("应返回可读的「该资源已绑定」冲突，got %v", err)
 	}
 
 	// 关键：模型乙那条（本来可以成功）**必须一起回滚**，不能留下半个批次。

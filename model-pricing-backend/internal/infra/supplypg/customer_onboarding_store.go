@@ -49,7 +49,9 @@ func (s *CustomerOnboardingStore) table(name string) string { return s.schema + 
 // mapOnboardingError 把 PG 错误翻译成领域错误。
 //
 // 23505 要分两种：
-//   - uk_flow_customer_processing → 「该客户已有进行中流程」（应用层已先查，这里是并发兜底）；
+//   - 流程唯一索引 → 「该客户已有进行中流程」（应用层已先查，这里是并发兜底）。
+//     000072 起索引换成 (owner_id, COALESCE(customer_quote_id,0))，
+//     旧名保留是为了迁移未跑的环境也能给出同一句人话；
 //   - 其它唯一冲突（绑定索引）→ 沿用绑定仓储的映射，保证与单条创建同一套文案。
 func mapOnboardingError(err error) error {
 	if err == nil {
@@ -62,7 +64,8 @@ func mapOnboardingError(err error) error {
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
 		case "23505":
-			if pgErr.ConstraintName == "uk_flow_customer_processing" {
+			if pgErr.ConstraintName == "uk_flow_customer_quote_processing" ||
+				pgErr.ConstraintName == "uk_flow_customer_processing" {
 				return customer.ErrOnboardingInProgress
 			}
 			return mapLinkStorageError(err)
@@ -129,22 +132,39 @@ func (s *CustomerOnboardingStore) CustomerRegion(ctx context.Context, customerPr
 
 // CustomerBusinessDocsReady 判断客户合同与授信资料是否已齐（完成 CONTRACT 节点的前置条件）。
 //
-// 口径与 F12 档案页一致，不另立一套：
-//   - 合同：存在 subject_type='CUSTOMER' 且状态已归档（ARCHIVED）的记录；
-//   - 授信：存在我方给客户的授信（direction='US_TO_CUSTOMER'）且额度 > 0。
+// 口径对齐原型（Token-Ops v0.1.0 里 `key==='business'` 的完成校验）：
+//   - 最新合同版本：资料编号非空 + 有附件；
+//   - 最新授信版本（我方→客户）：资料编号非空 + 有附件 + 额度 > 0。
+//
+// 原型**没有「归档」这个动作**，「合同状态：办理中 / 已归档」是节点状态与
+// 「是否存在带编号的合同」推导出来的展示标签。早先这里要求 contract.status='ARCHIVED'，
+// 于是商务在「合同与授信」卡片上传完资料（状态停在办理中）后，办理弹窗却提示
+// 「还差：合同资料」，与原型不一致。归档仍保留为档案维护动作，但不再是办理前置条件。
 //
 // 只认这两条事实，不看 customer_profile.contract_status（那个字段没有写入路径）。
 func (s *CustomerOnboardingStore) CustomerBusinessDocsReady(ctx context.Context, customerProfileID int64) (bool, error) {
 	query := fmt.Sprintf(`
-SELECT EXISTS (
-         SELECT 1 FROM %s c
-          WHERE c.subject_type = 'CUSTOMER' AND c.subject_id = $1 AND c.status = 'ARCHIVED'
-       )
-   AND EXISTS (
-         SELECT 1 FROM %s cl
-          WHERE cl.subject_type = 'CUSTOMER' AND cl.subject_id = $1
-            AND cl.direction = 'US_TO_CUSTOMER' AND cl.amount > 0
-       )`, s.table("contract"), s.table("credit_line"))
+WITH latest_contract AS (
+    SELECT document_no, file_id
+      FROM %s
+     WHERE subject_type = 'CUSTOMER' AND subject_id = $1
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1
+), latest_credit AS (
+    SELECT document_no, file_id, amount
+      FROM %s
+     WHERE subject_type = 'CUSTOMER' AND subject_id = $1 AND direction = 'US_TO_CUSTOMER'
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1
+)
+SELECT
+  EXISTS (SELECT 1 FROM latest_contract
+           WHERE NULLIF(btrim(COALESCE(document_no, '')), '') IS NOT NULL
+             AND NULLIF(btrim(COALESCE(file_id, '')), '') IS NOT NULL)
+  AND EXISTS (SELECT 1 FROM latest_credit
+               WHERE NULLIF(btrim(COALESCE(document_no, '')), '') IS NOT NULL
+                 AND NULLIF(btrim(COALESCE(file_id, '')), '') IS NOT NULL
+                 AND amount > 0)`, s.table("contract"), s.table("credit_line"))
 	var ready bool
 	if err := s.db.QueryRowContext(ctx, query, customerProfileID).Scan(&ready); err != nil {
 		return false, mapOnboardingError(err)
@@ -378,9 +398,10 @@ func (s *CustomerOnboardingStore) CompleteConfig(ctx context.Context, in custome
 
 	var ownerID int64
 	var flowStatus, currentNode string
+	var flowQuoteID sql.NullInt64
 	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`
-SELECT owner_id, status, COALESCE(current_node, '') FROM %s WHERE id = $1 AND kind = 'CUSTOMER' FOR UPDATE`,
-		s.table("onboarding_flow")), in.FlowID).Scan(&ownerID, &flowStatus, &currentNode); err != nil {
+SELECT owner_id, status, COALESCE(current_node, ''), customer_quote_id FROM %s WHERE id = $1 AND kind = 'CUSTOMER' FOR UPDATE`,
+		s.table("onboarding_flow")), in.FlowID).Scan(&ownerID, &flowStatus, &currentNode, &flowQuoteID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, customer.ErrOnboardingFlowNotFound
 		}
@@ -432,21 +453,29 @@ SELECT standard_model_id, resource_id FROM %s WHERE flow_id = $1 ORDER BY id`,
 		return nil, customer.ErrOnboardingModelsRequired
 	}
 
-	// 逐条写绑定：任何一条撞唯一索引（该模型已有生效来源 / 该资源已绑定）都整体回滚。
+	// 逐条写绑定：任何一条撞唯一索引（该资源已绑定）都整体回滚。
+	// 多通道（同客户同模型多条来源）已放开，这里不再会因为「同模型已有生效来源」整批失败。
 	now := time.Now().UTC()
 	note := fmt.Sprintf("客户开通流程完成资源配置（流程 %d）", in.FlowID)
+	// 绑定记住"依据哪张报价"：流程按报价拆分后，这是按报价追溯绑定/待配置的唯一线索。
+	var quoteRef *int64
+	if flowQuoteID.Valid && flowQuoteID.Int64 > 0 {
+		quoteID := flowQuoteID.Int64
+		quoteRef = &quoteID
+	}
 	for _, m := range models {
 		if _, err := s.links.createLinkWith(ctx, tx, customer.CreateLinkRecord{
 			CustomerProfileID: ownerID,
 			StandardModelID:   m.standardModelID,
 			ResourceID:        m.resourceID,
+			QuoteID:           quoteRef,
 			State:             customer.LinkStateActive,
 			ActivationNote:    note,
 			ActivatedAt:       &now,
 			CreatedBy:         in.OperatorID,
 			RequestID:         in.RequestID,
 		}); err != nil {
-			return nil, err // 已经是领域错误（ErrLinkModelAlreadyActive 等），整批回滚
+			return nil, err // 已经是领域错误（ErrLinkDuplicateResource 等），整批回滚
 		}
 	}
 
@@ -583,11 +612,16 @@ UPDATE %s SET current_node = 'CONFIG', updated_at = $2 WHERE id = $1`,
 	return s.GetFlow(ctx, ownerID)
 }
 
-// GetFlow 读该客户最近一条开通流程（含节点、模型明细、绑定）。
+// GetFlow 读该客户**当前**的一条开通流程（含节点、模型明细、绑定）。
+//
+// 2026-11-20 起一个客户可以有多条流程（每张报价一条）。"当前"取法：
+// 先取进行中（PROCESSING），都没有再取最新一条历史流程——否则第二张报价一提交，
+// 第一张还在办的流程就从客户详情里消失，办理人点进去看不到自己在办的那一单。
 func (s *CustomerOnboardingStore) GetFlow(ctx context.Context, customerProfileID int64) (*customer.OnboardingFlow, error) {
 	flowQuery := fmt.Sprintf(`
 SELECT id, owner_id, status, COALESCE(current_node, ''), created_at, updated_at
-  FROM %s WHERE kind = 'CUSTOMER' AND owner_id = $1 ORDER BY id DESC LIMIT 1`, s.table("onboarding_flow"))
+  FROM %s WHERE kind = 'CUSTOMER' AND owner_id = $1
+ ORDER BY (status = 'PROCESSING') DESC, id DESC LIMIT 1`, s.table("onboarding_flow"))
 	flow := customer.OnboardingFlow{CustomerProfileID: customerProfileID}
 	if err := s.db.QueryRowContext(ctx, flowQuery, customerProfileID).Scan(
 		&flow.ID, &flow.CustomerProfileID, &flow.Status, &flow.CurrentNode, &flow.CreatedAt, &flow.UpdatedAt,

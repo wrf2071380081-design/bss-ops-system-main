@@ -8,8 +8,8 @@
  * 两列四格（资料名称 / 资料编号 / 授信额度 / 附件上传）+ 备注整行 + 取消 / 保存资料。
  * 字段、文案、校验提示都与供应商侧一致，商务在这两处看到的界面不该是两套。
  *
- * 与供应商侧的差异只有一处：这里**上传即归档**。后端完成 CONTRACT 的判据是
- * 「已归档合同 + 授信额度 > 0」，供应商侧要多点一次「归档」，客户这边让商务少这一步。
+ * 与供应商侧的差异只有一处：客户侧的合同状态按「是否已有带编号的合同 + 节点是否完成」
+ * 推导显示，**没有单独的归档动作**（与原型一致，归档只是档案页的维护操作）。
  *
  * 模型清单来自客户「接入模型」投影（报价审批通过即出现），不是 flow.models——
  * 审批建流程时不写模型明细（那时还没有供应来源），从 flow 取会是空表。
@@ -58,11 +58,22 @@ const error = ref("");
 /** 与供应商面板同一句币种文案（授信额度标签用）。 */
 const currencyText = computed(() => (props.currency === "USD" ? "美元 USD" : "人民币 CNY"));
 
-/** 合同与授信资料是否齐备（与后端 CustomerBusinessDocsReady 同一判据）。 */
+/**
+ * 合同与授信资料是否齐备。
+ *
+ * 判据与后端 CustomerBusinessDocsReady 一致、也与原型一致：
+ *   合同：最新版本有编号 + 有附件；授信：最新版本有编号 + 有附件 + 额度 > 0。
+ * **不要求先归档**——原型里没有归档动作，「已归档」只是状态标签。
+ * seen 用来区分「压根没传」和「传了但缺编号/附件」，不然界面会把已有档案说成「未上传」。
+ */
 const checking = ref(false);
 const contractOk = ref(false);
 const creditOk = ref(false);
+const contractSeen = ref(false);
+const creditSeen = ref(false);
 const docsReady = computed(() => contractOk.value && creditOk.value);
+const contractLabel = computed(() => (contractOk.value ? "已登记" : contractSeen.value ? "待补编号/附件" : "未上传"));
+const creditLabel = computed(() => (creditOk.value ? "已登记" : creditSeen.value ? "待补编号/附件" : "未上传"));
 
 const contractNode = computed(() => props.nodes.find(node => node.key === "CONTRACT"));
 const assigneeName = computed(() => contractNode.value?.assignee_name || "—");
@@ -91,12 +102,22 @@ async function checkDocs() {
       f12SubjectRecordsApi.credits("CUSTOMER", props.customerId),
     ]);
     const latest = contracts.list.find(item => item.is_latest) ?? contracts.list[0];
-    contractOk.value = Boolean(latest && latest.status === "ARCHIVED");
     const current = credits.current?.find(item => item.direction === "US_TO_CUSTOMER");
-    creditOk.value = Boolean(current?.record && Number(current.record.amount) > 0);
+    const record = current?.record;
+    contractSeen.value = Boolean(latest);
+    creditSeen.value = Boolean(record);
+    contractOk.value = Boolean(latest
+      && (latest.document_no ?? "").trim()
+      && (latest.has_attachment || (latest.file_id ?? "").trim()));
+    creditOk.value = Boolean(record
+      && (record.document_no ?? "").trim()
+      && (record.file_id ?? "").trim()
+      && Number(record.amount) > 0);
   } catch {
     contractOk.value = false;
     creditOk.value = false;
+    contractSeen.value = false;
+    creditSeen.value = false;
   } finally {
     checking.value = false;
   }
@@ -113,6 +134,8 @@ watch(() => props.visible, visible => {
   attested.value = false;
   contractOk.value = false;
   creditOk.value = false;
+  contractSeen.value = false;
+  creditSeen.value = false;
   void checkDocs();
 });
 
@@ -191,15 +214,11 @@ async function saveContract() {
     } else {
       await f12SubjectRecordsApi.createContract(input, crypto.randomUUID());
     }
-    // 归档：后端完成 CONTRACT 校验的是「已归档合同」，不归档等于没传。
-    const after = await f12SubjectRecordsApi.contracts("CUSTOMER", subjectID);
-    const created = after.list.find(item => item.is_latest) ?? after.list[0];
-    if (created && created.status !== "ARCHIVED") {
-      await f12SubjectRecordsApi.archiveContract(created, "上传合同资料后自动归档", crypto.randomUUID());
-    }
+    // 不再自动归档：原型里没有归档动作，完成 CONTRACT 只要求编号 + 附件 + 额度。
+    // 归档保留为「合同与授信」档案页的独立维护动作，不再挂在办理链路上。
     contractOpen.value = false;
     await checkDocs();
-    ElMessage.success("合同资料已上传并归档。");
+    ElMessage.success("合同资料已登记。");
   } catch (value) {
     contractError.value = message(value);
   } finally {
@@ -290,7 +309,11 @@ async function saveCredit() {
 async function submit() {
   if (busy.value || !props.nodeId) return;
   if (!docsReady.value) {
-    error.value = `还差：${[contractOk.value ? "" : "合同资料", creditOk.value ? "" : "授信资料"].filter(Boolean).join("、")}，请先用上面两个按钮上传。`;
+    const missing = [
+      contractOk.value ? "" : "合同资料（编号 + 附件）",
+      creditOk.value ? "" : "授信资料（编号 + 附件 + 额度 > 0）",
+    ].filter(Boolean).join("、");
+    error.value = `还差：${missing}，请先用上面两个按钮登记。`;
     return;
   }
   if (!attested.value) { error.value = "请勾选「已完成合同与授信并上传资料」后再确认。"; return; }
@@ -342,8 +365,8 @@ async function submit() {
         <el-button :disabled="!canManage" @click="openContractUpload">上传合同资料</el-button>
         <el-button :disabled="!canManage" @click="openCreditUpload">上传授信资料</el-button>
         <span class="doc-state">
-          合同：<b :class="contractOk ? 'ok' : 'pending'">{{ contractOk ? "已归档" : "未上传" }}</b>
-          · 授信：<b :class="creditOk ? 'ok' : 'pending'">{{ creditOk ? "已登记" : "未上传" }}</b>
+          合同：<b :class="contractOk ? 'ok' : 'pending'">{{ contractLabel }}</b>
+          · 授信：<b :class="creditOk ? 'ok' : 'pending'">{{ creditLabel }}</b>
         </span>
       </div>
 
