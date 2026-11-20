@@ -43,9 +43,22 @@ async function applyPrice(){
  catch(error){if(active)priceError.value=error instanceof Error?error.message:'改价应用失败，输入已保留。';}
  finally{if(active)priceBusy.value=false;}
 }
+/** 该资源所属的准入配置组（同组共用一条正式配置；不同组必须各配一次）。 */
+const configGroup = ref<{ config_group_id?: string; config_group_name?: string; base_url?: string; has_api_key?: boolean } | null>(null);
 const bindable = computed(() => canBindFormalConfig(props.resource));
 const admissible = computed(() => canAdmitResource(props.resource));
-const eligibleConfigs = computed(() => configs.value.filter(config => config.supplier_id === props.resource.supplier_id && config.region === props.resource.region && config.status === "ACTIVE" && config.has_api_key && config.revision === config.confirmed_revision));
+const sameSupplierActive = computed(() => configs.value.filter(config => config.supplier_id === props.resource.supplier_id && config.region === props.resource.region && config.status === "ACTIVE" && config.has_api_key && config.revision === config.confirmed_revision));
+/** 只有**同配置组**的配置可以复用；历史数据没有组信息（空）时按兼容处理。 */
+const eligibleConfigs = computed(() => {
+  const group = configGroup.value?.config_group_id || "";
+  if (!group) return sameSupplierActive.value;
+  return sameSupplierActive.value.filter(config => !config.config_group_id || config.config_group_id === group);
+});
+/** 其他组的配置：仅展示，不能选（不同组必须单独配）。 */
+const foreignConfigs = computed(() => {
+  const eligible = new Set(eligibleConfigs.value.map(item => item.id));
+  return sameSupplierActive.value.filter(item => !eligible.has(item.id));
+});
 let active = true, configRequest: AbortController | undefined;
 
 // ---- 原型「接口配置」：接口模型 ID / Base URL / API Key 三个字段 + 一次「完成当前模型技术登记」----
@@ -152,7 +165,7 @@ async function saveFormalConfig() {
   configBusy.value = true;
   configError.value = "";
   try {
-    const input = { scope, base_url: baseURL, api_key: key, reason };
+    const input = { scope, base_url: baseURL, api_key: key, reason, config_group_id: configGroup.value?.config_group_id };
     const saved = editingConfig.value
       ? await resourceOperationsApi.updateFormalConfig(props.resource.supplier_id, editingConfig.value, input, configLifecycle.value)
       : await resourceOperationsApi.createFormalConfig(props.resource.supplier_id, input, configLifecycle.value);
@@ -201,6 +214,14 @@ async function admit() {
 // 配置列表始终加载：既用于「接口配置」预填/复用，也用于已接入资源的只读摘要。
 onMounted(() => { void loadWorkflow(); void loadConfigs(); });
 watch(() => props.resource.revision, () => { void loadWorkflow(); void loadConfigs(); });
+watch(() => props.resource.id, () => { void loadConfigGroup(); }, { immediate: true });
+async function loadConfigGroup() {
+  const id = props.resource.id;
+  try {
+    const group = await resourceOperationsApi.configGroup(id);
+    if (active && props.resource.id === id) configGroup.value = group;
+  } catch { if (active) configGroup.value = null; }
+}
 onBeforeUnmount(() => { active = false; configRequest?.abort(); workflowRequest?.abort(); });
 </script>
 
@@ -240,7 +261,14 @@ onBeforeUnmount(() => { active = false; configRequest?.abort(); workflowRequest?
     <!-- 已登记或非本人办理：同一组字段只读展示 -->
     <section v-else-if="showAccessSummary" class="operation-card">
       <h3>接口配置</h3>
-      <p class="muted">{{ resource.ever_admitted || accessDone ? '当前模型已有有效生产配置。' : '当前账号没有该资源的接入办理资格：要么不是这一批的指定技术办理人，要么该办理批次已经结束。' }}</p>
+      <p class="muted">
+        <template v-if="resource.ever_admitted || accessDone">当前模型已有有效生产配置。</template>
+        <template v-else-if="configGroup?.config_group_id">
+          当前模型属于「{{ configGroup.config_group_name || '未命名' }}」配置组：同组配置可复用，
+          <template v-if="foreignConfigs.length">其他组的 {{ foreignConfigs.length }} 条配置不可直接选用（需为本组单独登记）。</template>
+        </template>
+        <template v-else>该供应商已有配置时可直接关联；不同通道请新建。</template>
+      </p>
       <el-form label-position="top">
         <el-form-item label="接口模型 ID">
           <el-input :model-value="resource.supplier_model_id" readonly aria-label="接口模型 ID">

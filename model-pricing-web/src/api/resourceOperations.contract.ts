@@ -11,6 +11,8 @@ export interface FormalConfigOption {
   status: "ACTIVE" | "INACTIVE";
   revision: string;
   confirmed_revision: string;
+  /** 所属准入配置组（000072）：同组模型共用一条正式配置。 */
+  config_group_id?: string;
 }
 
 export interface ResourceAdmissionInput {
@@ -78,6 +80,7 @@ export function validateFormalConfigOptions(value: unknown, supplierID: string, 
       id, supplier_id: supplierID, region: item.region, scope: item.scope, base_url: item.base_url,
       has_api_key: item.has_api_key, status: item.status as FormalConfigOption["status"], revision: item.revision,
       confirmed_revision: item.confirmed_revision,
+      config_group_id: typeof item.config_group_id === "string" ? item.config_group_id : "",
     };
   });
 }

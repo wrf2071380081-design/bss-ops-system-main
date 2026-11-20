@@ -27,14 +27,21 @@ export const resourceOperationsApi = {
     if(!result||result.resource_id!==resource.id||typeof result.changed!=='boolean'||result.revision!==(BigInt(data.expected_revision)+(result.changed?1n:0n)).toString()||Number(result.coefficient)!==Number(source.coefficient))throw new Error('改价回执不一致，请刷新资源后查看办理结果。');
     return result;
   },
+  /** 该资源所属的准入配置组（同组共用一条正式配置）。 */
+  async configGroup(resourceID: string, signal?: AbortSignal): Promise<{ config_group_id?: string; config_group_name?: string; base_url?: string; has_api_key?: boolean }> {
+    const id = standardModelVersion(resourceID);
+    const result = await apiRequest<unknown>({ url: `/internal/resources/${encodeURIComponent(id)}/config-group`, signal });
+    if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("配置组响应不符合约定。");
+    return result as { config_group_id?: string; config_group_name?: string; base_url?: string; has_api_key?: boolean };
+  },
   async formalConfigs(supplierID: string, region: string, signal?: AbortSignal): Promise<FormalConfigOption[]> {
     const result = await apiRequest<unknown>({ url: `/internal/suppliers/${encodeURIComponent(standardModelVersion(supplierID))}/formal-configs`, signal });
     return validateFormalConfigOptions(result, supplierID, region);
   },
-  async createFormalConfig(supplierID: string, input: { scope: string; base_url: string; api_key: string; reason: string }, lifecycle: string) {
+  async createFormalConfig(supplierID: string, input: { scope: string; base_url: string; api_key: string; reason: string; config_group_id?: string }, lifecycle: string) {
     supplierID = standardModelVersion(supplierID);
     const url = `/internal/suppliers/${encodeURIComponent(supplierID)}/formal-configs`;
-    const data = { ...input, scope: input.scope.trim(), base_url: input.base_url.trim(), api_key: input.api_key.trim(), reason: input.reason.trim(), external_confirmed: true as const };
+    const data = { ...input, scope: input.scope.trim(), base_url: input.base_url.trim(), api_key: input.api_key.trim(), reason: input.reason.trim(), external_confirmed: true as const, ...(input.config_group_id ? { config_group_id: Number(input.config_group_id) } : {}) };
     const result = await apiRequest<unknown>({ method: "POST", url, data, idempotency: { scope: `formal-config:create:${supplierID}`, payload: data, lifecycle } });
     return validateFormalConfigOptions([result], supplierID, "")[0]!;
   },
