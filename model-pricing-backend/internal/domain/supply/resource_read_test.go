@@ -241,3 +241,8 @@ func TestResourceDraftReportUsesOwnRowAndVersion(t *testing.T) {
 		t.Fatalf("other row version admitted: %+v %v", snapshot, err)
 	}
 }
+
+// ConfigGroupOf 测试替身：默认返回空（正式配置按组复用不影响既有用例）。
+func (s *resourceReadMemory) ConfigGroupOf(context.Context, string) (ResourceConfigGroup, error) {
+	return ResourceConfigGroup{}, nil
+}

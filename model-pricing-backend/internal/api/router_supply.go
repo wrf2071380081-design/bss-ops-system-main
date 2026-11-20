@@ -148,6 +148,7 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	resources.GET("", rh.list)
 	resources.GET("/filter-options", rh.options)
 	resources.GET("/:id", rh.get)
+	resources.GET("/:id/config-group", rh.configGroup)
 	rph := &supplyResourceReportHandler{reader: deps.ResourceReports}
 	resources.GET("/:id/test-reports", rph.list)
 	resources.GET("/:id/uploaded-reports", rph.uploaded)

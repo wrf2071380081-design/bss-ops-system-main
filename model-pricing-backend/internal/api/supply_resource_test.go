@@ -162,3 +162,8 @@ func TestSupplyResourceHTTPFilterOptions(t *testing.T) {
 		}
 	}
 }
+
+// ConfigGroupOf 测试替身：默认返回空（正式配置按组复用不影响既有用例）。
+func (s *resourceHTTPStore) ConfigGroupOf(context.Context, string) (supply.ResourceConfigGroup, error) {
+	return supply.ResourceConfigGroup{}, nil
+}

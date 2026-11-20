@@ -3,6 +3,7 @@ package supplypg
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -678,4 +679,40 @@ func filteredResourceEntries(entries []resourceReadEntry, q supply.ResourceListQ
 		}
 	}
 	return result
+}
+
+// ConfigGroupOf 取资源所属的准入配置组（旁路只读查询）。
+//
+// 刻意不走资源投影（facts/projection）那条链路：那条链路会逐字段比对控制快照，
+// 多读一列就会让整条资源被判不一致（2026-11-19 事故）。这里只回答
+// "这个资源挂在哪个配置组、那个组的 URL/Key 是什么"。
+func (s *ResourceReadStore) ConfigGroupOf(ctx context.Context, resourceID string) (supply.ResourceConfigGroup, error) {
+	out := supply.ResourceConfigGroup{}
+	err := s.within(ctx, func(tx *sql.Tx) error {
+		var gid sql.NullInt64
+		var name, base, key sql.NullString
+		err := tx.QueryRowContext(ctx, `
+SELECT sr.test_config_group_id, g.name, g.base_url, g.api_key_enc
+FROM `+s.table("submission_row")+` sr
+LEFT JOIN `+s.table("supplier_test_config_group")+` g ON g.id = sr.test_config_group_id
+WHERE sr.resource_id = $1
+ORDER BY sr.id DESC LIMIT 1`, resourceID).Scan(&gid, &name, &base, &key)
+		if errors.Is(err, sql.ErrNoRows) {
+			return supply.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if gid.Valid && gid.Int64 > 0 {
+			out.GroupID = fmt.Sprintf("%d", gid.Int64)
+		}
+		out.GroupName = name.String
+		out.BaseURL = base.String
+		out.HasKey = key.String != ""
+		return nil
+	})
+	if err != nil {
+		return supply.ResourceConfigGroup{}, err
+	}
+	return out, nil
 }

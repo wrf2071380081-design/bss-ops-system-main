@@ -3,6 +3,7 @@ package supply
 import (
 	"context"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -15,6 +16,7 @@ type ResourceListQuery struct {
 	NullsLast                                                                                    bool
 	TieBreakBy                                                                                   string
 }
+
 // RegionCoefficient 是某部署节点内的采购系数区间。原型在列表里按节点分列展示
 // （如「国内：0.531–0.693；海外：0.486–0.8」），单一全局区间会被最便宜的节点带偏。
 type RegionCoefficient struct {
@@ -58,10 +60,32 @@ type ResourceReadStore interface {
 	ListResourceGroups(context.Context, ResourceListQuery) ([]ResourceGroupRows, int64, error)
 	ListResourceRows(context.Context, ResourceListQuery) ([]*ResourceRecord, int64, error)
 	GetResource(context.Context, string) (*ResourceRecord, error)
+	// ConfigGroupOf 取资源所属的准入配置组（旁路查询，**不参与**控制快照的投影比对）。
+	ConfigGroupOf(context.Context, string) (ResourceConfigGroup, error)
+}
+
+// ResourceConfigGroup 是资源与准入配置组的关系（正式配置按组复用）。
+type ResourceConfigGroup struct {
+	GroupID   string `json:"config_group_id"`
+	GroupName string `json:"config_group_name"`
+	BaseURL   string `json:"base_url"`
+	HasKey    bool   `json:"has_api_key"`
 }
 type ResourceReader struct{ store ResourceReadStore }
 
 func NewResourceReader(store ResourceReadStore) *ResourceReader { return &ResourceReader{store: store} }
+
+// ConfigGroup 取该资源所属的准入配置组。
+// 单独一条只读查询，不走投影校验：正式配置要按"组"复用（2026-11-20）。
+func (r *ResourceReader) ConfigGroup(ctx context.Context, resourceID string) (ResourceConfigGroup, error) {
+	if r == nil || r.store == nil {
+		return ResourceConfigGroup{}, ErrDependencyUnavailable
+	}
+	if id, err := strconv.ParseInt(resourceID, 10, 64); err != nil || id <= 0 {
+		return ResourceConfigGroup{}, invalid("id", "expected positive id")
+	}
+	return r.store.ConfigGroupOf(ctx, resourceID)
+}
 func normalizeResourceQuery(q ResourceListQuery) (ResourceListQuery, error) {
 	var err error
 	q.Page, q.Size, err = readPagination(q.Page, q.Size)

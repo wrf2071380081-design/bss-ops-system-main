@@ -126,6 +126,16 @@ func (h *supplyResourceHandler) list(c *gin.Context) {
 // @Success 200 {object} response.Body{data=supplyResourceDTO}
 // @Failure 400,401,403,404,503 {object} response.Body
 // @Router /api/internal/resources/{id} [get]
+// configGroup 返回该资源所属的准入配置组（正式配置按组复用）。
+func (h *supplyResourceHandler) configGroup(c *gin.Context) {
+	group, err := h.reader.ConfigGroup(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		supplyHTTPError(c, err)
+		return
+	}
+	response.Success(c, group)
+}
+
 func (h *supplyResourceHandler) get(c *gin.Context) {
 	values, err := supplyQuery(c, "region")
 	if err != nil {
