@@ -592,7 +592,7 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 	}
 	hadJob := (platformCategory == "stress" && row.StressJobID != nil) || (platformCategory != "stress" && row.TestJobID != nil)
 	// 快照与指纹先归位，再发单：两个指纹出自同一份凭据，后续才判得准「失效」。
-	if err := h.svc.store.RefreshRowSnapshot(ctx, rowID, baseURL, apiKey, fingerprint); err != nil {
+	if err := h.svc.store.RefreshRowSnapshot(ctx, rowID, baseURL, apiKey, fingerprint, platformCategory); err != nil {
 		return "", actionFailed, err
 	}
 	resourceID, err := h.svc.store.EnsureTestResource(ctx, row)
@@ -1733,23 +1733,33 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			TestConfigGroupEnabled: row.TestConfigGroupEnabled,
 		}
 		dto.ModelNames = append(dto.ModelNames, row.StandardModelName)
+		// 「失效」的正确判据：该任务的指纹 ≠ 该行**当前**凭据算出的指纹。
+		// 不能拿 row.test_fingerprint 比——那一列连通/压测共用，跑一次压测就把它覆盖，
+		// 连通性会被误判成"测试目标已变更"（2026-11-20 反馈）。
+		connStale := row.ConnectivityFingerprint != "" && row.ConnectivityJobFingerprint != "" &&
+			row.ConnectivityFingerprint != row.ConnectivityJobFingerprint
+		stressStale := row.StressFingerprint != "" && row.StressJobFingerprint != "" &&
+			row.StressFingerprint != row.StressJobFingerprint
+
 		if row.ConnectivityStatus != nil {
 			tested := isTerminalStatus(*row.ConnectivityStatus)
 			passed := verdictOK(row.ConnectivityVerdict)
 			item.ConnectivityJob = &submissionTestDTO{
 				Category: "CONNECTIVITY", Status: *row.ConnectivityStatus, Tested: tested && !row.ConnectivityStale,
-				Passed: passed, Verdict: deref(row.ConnectivityVerdict), Stale: row.ConnectivityStale, ConnectionMS: row.ConnectionMS,
+				Passed: passed, Verdict: deref(row.ConnectivityVerdict), Stale: connStale, ConnectionMS: row.ConnectionMS,
+				ReportID: formatOptionalID(row.ConnectivityReportID),
 			}
-			item.ConnectivityTested, item.ConnectivityPassed = tested && !row.ConnectivityStale, passed && !row.ConnectivityStale
+			item.ConnectivityTested, item.ConnectivityPassed = tested && !connStale, passed && !connStale
 		}
 		if row.StressStatus != nil {
 			tested := isTerminalStatus(*row.StressStatus)
 			passed := verdictOK(row.StressVerdict)
 			item.StressJob = &submissionTestDTO{
 				Category: "STRESS", Status: *row.StressStatus, Tested: tested && !row.StressStale,
-				Passed: passed, Verdict: deref(row.StressVerdict), Stale: row.StressStale, RPS: row.RPS, TPS: row.TPS,
+				Passed: passed, Verdict: deref(row.StressVerdict), Stale: stressStale, RPS: row.RPS, TPS: row.TPS,
+				ReportID: formatOptionalID(row.StressReportID),
 			}
-			item.StressTested, item.StressPassed = tested && !row.StressStale, passed && !row.StressStale
+			item.StressTested, item.StressPassed = tested && !stressStale, passed && !stressStale
 		}
 		item.RowStatus = deriveRowStatus(row, submitted)
 		item.SupplementRequired = submitted && item.RowStatus != rowPassed

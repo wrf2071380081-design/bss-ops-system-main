@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -292,7 +293,59 @@ func (r *WorkbenchInboxRepo) ListInbox(ctx context.Context, q workbench.InboxQue
 		}
 		list = append(list, item)
 	}
+	// 同一件事可能被视图从两个来源各产出一行（例如「供应资源接入」同时来自
+	// 流程节点与 todo_task）：业务对象一个带申报编号、一个只带企业名。
+	// 按「标题 + 业务类型 + 业务 id + 状态」去重，保留业务对象更完整（更长）的那行。
+	removed := int64(len(rows) - len(list))
+	list = dedupeInbox(list)
+	removed = int64(len(rows) - len(list))
+	if removed > 0 {
+		total -= removed
+	}
 	return list, total, nil
+}
+
+func dedupeInbox(list []workbench.InboxItem) []workbench.InboxItem {
+	if len(list) < 2 {
+		return list
+	}
+	out := make([]workbench.InboxItem, 0, len(list))
+	for _, item := range list {
+		merged := false
+		for i := range out {
+			// 同一件事的两个来源：标题+状态相同，且业务对象互为前缀
+			// （"企业10" 与 "企业10 · S00000056"）。保留更具体的那个。
+			if dedupeTitle(out[i]) != dedupeTitle(item) || out[i].State != item.State {
+				continue
+			}
+			if strings.HasPrefix(item.BizObject, out[i].BizObject) || strings.HasPrefix(out[i].BizObject, item.BizObject) {
+				if len(item.BizObject) > len(out[i].BizObject) {
+					out[i] = item
+				}
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// dedupeTitle 把 ONBOARDING_NODE 的原始节点名翻成展示名，
+// 否则 "CONFIG" 与 "供应资源接入" 会被当成两条不同的事（标题在这里还没被 domain 翻译）。
+func dedupeTitle(item workbench.InboxItem) string {
+	if item.BizType != "ONBOARDING_NODE" {
+		return item.Title
+	}
+	switch item.Title {
+	case "CONFIG":
+		return "供应资源接入"
+	case "CONTRACT":
+		return "合同与授信办理"
+	}
+	return item.Title
 }
 
 type personRow struct {
