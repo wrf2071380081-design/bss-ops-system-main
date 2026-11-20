@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"model_bss/internal/api/middleware"
@@ -26,6 +27,12 @@ type reportUploadRequest struct {
 	TestItem      string `json:"test_item"`
 	Scene         string `json:"scene"`
 	Reason        string `json:"reason"`
+	// 对齐原型的专项报告元数据（000073）
+	TestType string `json:"test_type"`
+	TestName string `json:"test_name"`
+	TestedAt string `json:"tested_at"`
+	Tester   string `json:"tester"`
+	Note     string `json:"note"`
 }
 
 // upload 对应原型模型广场「测试与报告」里的「上传专项报告」：
@@ -98,10 +105,22 @@ func (h *supplyResourceReportHandler) upload(c *gin.Context) {
 		return
 	}
 	var reportID int64
+	testedAt := time.Now().UTC()
+	if raw := strings.TrimSpace(req.TestedAt); raw != "" {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			testedAt = parsed.UTC()
+		} else if parsed, err := time.Parse("2006-01-02", raw); err == nil {
+			testedAt = parsed.UTC()
+		}
+	}
 	if err := tx.QueryRowContext(c.Request.Context(), `INSERT INTO public.test_report
-(test_job_id,resource_id,report_file,report_format,scene,tested_by,tested_at,source)
-VALUES (NULL,$1,$2,$3,NULLIF($4,''),$5,now(),'UPLOADED') RETURNING id`,
-		resourceID, fileName, format, scene, actor).Scan(&reportID); err != nil {
+(test_job_id,resource_id,report_file,report_format,scene,tested_by,tested_at,source,
+ upload_test_type,upload_test_name,upload_tested_at,upload_tester,upload_note)
+VALUES (NULL,$1,$2,$3,NULLIF($4,''),$5,$6,'UPLOADED',
+ NULLIF($7,''),NULLIF($8,''),$9,NULLIF($10,''),NULLIF($11,'')) RETURNING id`,
+		resourceID, fileName, format, scene, actor, testedAt,
+		strings.TrimSpace(req.TestType), strings.TrimSpace(req.TestName), testedAt,
+		strings.TrimSpace(req.Tester), strings.TrimSpace(req.Note)).Scan(&reportID); err != nil {
 		supplyHTTPError(c, err)
 		return
 	}

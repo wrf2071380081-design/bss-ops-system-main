@@ -313,6 +313,11 @@ type UploadedReportView struct {
 	Scene        string    `json:"scene"`
 	UploadedAt   time.Time `json:"uploaded_at"`
 	OperatorName string    `json:"operator_name"`
+	TestType     string    `json:"test_type,omitempty"`
+	TestName     string    `json:"test_name,omitempty"`
+	TestedAt     string    `json:"tested_at,omitempty"`
+	Tester       string    `json:"tester,omitempty"`
+	Note         string    `json:"note,omitempty"`
 }
 
 // ListUploadedReports 只列 source='UPLOADED' 的报告。它们不参与准入判定，
@@ -324,7 +329,9 @@ func (r *TestReportReader) ListUploadedReports(ctx context.Context, resourceID s
 	if _, err := parseID(resourceID); err != nil {
 		return nil, err
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT p.id::text,coalesce(p.report_file,''),coalesce(p.report_format,''),coalesce(p.scene,''),p.tested_at,COALESCE(st.name,'')
+	rows, err := r.db.QueryContext(ctx, `SELECT p.id::text,coalesce(p.report_file,''),coalesce(p.report_format,''),coalesce(p.scene,''),p.tested_at,COALESCE(st.name,''),
+       COALESCE(p.upload_test_type,''),COALESCE(p.upload_test_name,''),
+       COALESCE(to_char(p.upload_tested_at,'YYYY-MM-DD'),''),COALESCE(p.upload_tester,''),COALESCE(p.upload_note,'')
 FROM `+r.table("test_report")+` p LEFT JOIN `+r.table("internal_staff")+` st ON st.id=p.tested_by
 WHERE p.resource_id=$1::bigint AND p.source='UPLOADED' ORDER BY p.tested_at DESC,p.id DESC LIMIT 100`, resourceID)
 	if err != nil {
@@ -334,7 +341,8 @@ WHERE p.resource_id=$1::bigint AND p.source='UPLOADED' ORDER BY p.tested_at DESC
 	list := []UploadedReportView{}
 	for rows.Next() {
 		var item UploadedReportView
-		if err := rows.Scan(&item.ID, &item.FileName, &item.Format, &item.Scene, &item.UploadedAt, &item.OperatorName); err != nil {
+		if err := rows.Scan(&item.ID, &item.FileName, &item.Format, &item.Scene, &item.UploadedAt, &item.OperatorName,
+			&item.TestType, &item.TestName, &item.TestedAt, &item.Tester, &item.Note); err != nil {
 			return nil, err
 		}
 		item.UploadedAt = item.UploadedAt.UTC()

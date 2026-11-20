@@ -19,6 +19,9 @@ const retestOptions=ref<RetestOptions>(),retestLoading=ref(false),retestBusy=ref
 const retestCategory=ref<RetestCategory>("baseline");
 // 原型「上传专项报告」：外部生成报告只做留档，不改变平台测试结论与准入资格。
 const uploadFile=ref<File>(),uploadScene=ref(""),uploadBusy=ref(false),uploadError=ref("");
+// 对齐原型的专项报告元数据（000073）
+const uploadType=ref(""),uploadTypeName=ref(""),uploadTester=ref(""),uploadTestedAt=ref(""),uploadNote=ref("");
+const uploadTypes=["功能测试","性能专项测试","安全测试","兼容性测试","稳定性测试","长稳测试","压力测试","容量测试","可用性测试","模型效果评测","其他专项"];
 // 外部上传报告没有平台测试任务，单独列示；平台报告历史仍只认 test_job 证据链。
 type UploadedReport={id:string;file_name:string;format:string;scene:string;uploaded_at:string;operator_name:string};
 const uploaded=ref<UploadedReport[]>([]);
@@ -32,7 +35,7 @@ async function loadUploaded(){
     }).filter(row=>row.id);
   }catch{uploaded.value=[];}
 }
-function openUpload(){view.value="upload";uploadFile.value=undefined;uploadScene.value="";uploadError.value="";uploadIntent=crypto.randomUUID();}
+function openUpload(){view.value="upload";uploadFile.value=undefined;uploadScene.value="";uploadError.value="";uploadType.value="";uploadTypeName.value="";uploadTester.value="";uploadTestedAt.value="";uploadNote.value="";uploadIntent=crypto.randomUUID();}
 function pickFile(event:Event){const input=event.target as HTMLInputElement;uploadFile.value=input.files?.[0];}
 function fileBase64(file:File){return new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>{const result=String(reader.result||"");resolve(result.includes(",")?result.split(",")[1]||"":"");};reader.onerror=()=>reject(new Error("文件读取失败，请重试。"));reader.readAsDataURL(file);});}
 async function submitUpload(){
@@ -42,7 +45,17 @@ async function submitUpload(){
   uploadBusy.value=true;uploadError.value="";
   try{
     const content=await fileBase64(file);
-    await resourceReportsApi.upload(props.resourceID,{file_name:file.name,content_base64:content,...(uploadScene.value.trim()?{scene:uploadScene.value.trim()}:{})},uploadIntent);
+    if(!uploadType.value){uploadError.value="请选择专项测试类型。";uploadBusy.value=false;return;}
+    if(uploadType.value==="其他专项"&&!uploadTypeName.value.trim()){uploadError.value="请填写其他专项名称。";uploadBusy.value=false;return;}
+    await resourceReportsApi.upload(props.resourceID,{
+      file_name:file.name,content_base64:content,
+      ...(uploadScene.value.trim()?{scene:uploadScene.value.trim()}:{}),
+      test_type:uploadType.value,
+      ...(uploadTypeName.value.trim()?{test_name:uploadTypeName.value.trim()}:{}),
+      ...(uploadTester.value.trim()?{tester:uploadTester.value.trim()}:{}),
+      ...(uploadTestedAt.value?{tested_at:uploadTestedAt.value}:{}),
+      ...(uploadNote.value.trim()?{note:uploadNote.value.trim()}:{}),
+    },uploadIntent);
     uploadIntent=crypto.randomUUID();view.value="history";page.value=1;await Promise.all([load(),loadUploaded()]);
   }catch(error){uploadError.value=error instanceof Error?error.message:"上传失败，请重试。";}
   finally{uploadBusy.value=false;}
@@ -275,7 +288,24 @@ onBeforeUnmount(() => { active = false; listRequest?.abort(); detailRequest?.abo
           <input type="file" accept=".pdf,.xlsx,.csv,.json,.md,.markdown,.zip" aria-label="报告文件" :disabled="uploadBusy" @change="pickFile" />
           <span v-if="uploadFile" class="upload-name">{{ uploadFile.name }}</span>
         </el-form-item>
+        <el-form-item label="专项测试类型" required>
+          <el-select v-model="uploadType" :disabled="uploadBusy" placeholder="请选择专项测试类型" style="width:100%">
+            <el-option v-for="item in uploadTypes" :key="item" :label="item" :value="item" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="uploadType === '其他专项'" label="其他专项名称" required>
+          <el-input v-model="uploadTypeName" :disabled="uploadBusy" maxlength="64" placeholder="请填写专项名称" />
+        </el-form-item>
+        <el-form-item label="实际测试时间（选填）">
+          <el-date-picker v-model="uploadTestedAt" type="date" value-format="YYYY-MM-DD" :disabled="uploadBusy" placeholder="选择测试完成日期" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="测试人员 / 机构（选填）">
+          <el-input v-model="uploadTester" :disabled="uploadBusy" maxlength="64" placeholder="例如：供应商自测团队 / XX 测评机构" />
+        </el-form-item>
         <el-form-item label="测试场景（选填）"><el-input v-model="uploadScene" :disabled="uploadBusy" placeholder="例如：供应商自测、第三方压测" aria-label="测试场景" /></el-form-item>
+        <el-form-item label="备注（选填）">
+          <el-input v-model="uploadNote" type="textarea" :rows="2" :disabled="uploadBusy" maxlength="500" placeholder="结论摘要、适用范围等" />
+        </el-form-item>
       </el-form>
       <el-alert v-if="uploadError" :title="uploadError" type="error" :closable="false" />
       <div class="upload-actions">

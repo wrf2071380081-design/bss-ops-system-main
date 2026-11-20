@@ -71,7 +71,11 @@ export const resourceReportsApi = {
     return apiFileRequest({ url: `${base(resourceID)}/${standardModelVersion(reportID)}/files/${standardModelVersion(fileID)}` });
   },
   // 原型「上传专项报告」：外部报告只留档，不参与准入判定。
-  async upload(resourceID: string, body: { file_name: string; content_base64: string; scene?: string }, lifecycle: string) {
+  async upload(resourceID: string, body: {
+    file_name: string; content_base64: string; scene?: string;
+    /** 专项报告元数据（000073）：类型必填，其余选填。 */
+    test_type?: string; test_name?: string; tested_at?: string; tester?: string; note?: string;
+  }, lifecycle: string) {
     const payload = { ...body };
     const result = await apiRequest<{ report_id: string; source: string }>({ method: "POST", url: base(resourceID), data: payload,
       idempotency: { scope: `report-upload:${resourceID}`, payload, lifecycle } });
