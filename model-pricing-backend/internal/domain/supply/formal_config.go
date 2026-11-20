@@ -3,6 +3,7 @@ package supply
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -21,6 +22,8 @@ type FormalConfigInput struct {
 	BaseURL           string  `json:"base_url"`
 	APIKey            *string `json:"-"`
 	ExternalConfirmed bool    `json:"external_confirmed"`
+	// ConfigGroupID 是所属准入配置组：同组模型共用一条正式配置（2026-11-20）。
+	ConfigGroupID *int64 `json:"config_group_id,omitempty"`
 }
 
 // FormalConfig is a persistence aggregate. Transport and audit use View, never
@@ -32,6 +35,7 @@ type FormalConfig struct {
 	Region            string
 	Scope             string
 	BaseURL           string
+	ConfigGroupID     *int64
 	APIKey            string `json:"-"`
 	LegacyEncrypted   bool   `json:"-"`
 	Status            string
@@ -59,6 +63,7 @@ type FormalConfigView struct {
 	Region            string    `json:"region"`
 	Scope             string    `json:"scope"`
 	BaseURL           string    `json:"base_url"`
+	ConfigGroupID     string    `json:"config_group_id,omitempty"`
 	HasAPIKey         bool      `json:"has_api_key"`
 	APIKeyMask        string    `json:"api_key_mask"`
 	Status            string    `json:"status"`
@@ -81,8 +86,13 @@ func (c *FormalConfig) View() *FormalConfigView {
 	if hasKey {
 		mask = "********"
 	}
+	groupID := ""
+	if c.ConfigGroupID != nil {
+		groupID = fmt.Sprintf("%d", *c.ConfigGroupID)
+	}
 	return &FormalConfigView{ID: c.ID, SupplierID: c.SupplierID, Region: c.Region, Scope: c.Scope, BaseURL: c.BaseURL,
-		HasAPIKey: hasKey, APIKeyMask: mask, Status: c.Status, Revision: c.Revision,
+		ConfigGroupID: groupID,
+		HasAPIKey:     hasKey, APIKeyMask: mask, Status: c.Status, Revision: c.Revision,
 		CreatedBy: c.CreatedBy, UpdatedBy: c.UpdatedBy, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
 		ConfirmedBy: c.ConfirmedBy, ConfirmedAt: c.ConfirmedAt, ConfirmedRevision: c.ConfirmedRevision}
 }

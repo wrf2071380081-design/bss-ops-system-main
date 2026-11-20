@@ -20,6 +20,7 @@ type createFormalConfigRequest struct {
 	BaseURL           string  `json:"base_url"`
 	APIKey            *string `json:"api_key"`
 	ExternalConfirmed bool    `json:"external_confirmed"`
+	ConfigGroupID     *int64  `json:"config_group_id"`
 	Reason            string  `json:"reason"`
 }
 
@@ -29,6 +30,7 @@ type updateFormalConfigRequest struct {
 	BaseURL           string  `json:"base_url"`
 	APIKey            *string `json:"api_key"`
 	ExternalConfirmed bool    `json:"external_confirmed"`
+	ConfigGroupID     *int64  `json:"config_group_id"`
 	Reason            string  `json:"reason"`
 }
 
@@ -104,6 +106,7 @@ func (h *supplyFormalConfigHandler) create(c *gin.Context) {
 	}
 	view, err := h.writer.Create(c.Request.Context(), meta, supplierID, supply.FormalConfigInput{
 		Scope: req.Scope, BaseURL: req.BaseURL, APIKey: req.APIKey, ExternalConfirmed: req.ExternalConfirmed,
+		ConfigGroupID: req.ConfigGroupID,
 	})
 	if err != nil {
 		supplyHTTPError(c, err)
@@ -150,6 +153,7 @@ func (h *supplyFormalConfigHandler) update(c *gin.Context) {
 	}
 	view, err := h.writer.Update(c.Request.Context(), meta, supplierID, configID, expected, supply.FormalConfigInput{
 		Scope: req.Scope, BaseURL: req.BaseURL, APIKey: req.APIKey, ExternalConfirmed: req.ExternalConfirmed,
+		ConfigGroupID: req.ConfigGroupID,
 	})
 	if err != nil {
 		supplyHTTPError(c, err)

@@ -203,7 +203,7 @@ func (s *FormalConfigStore) Current(ctx context.Context, tx *sql.Tx, supplier, i
 	// 读的时候要「查表 + 查日志 + 拼装 + 全字段比对」，任一处精度差异都变成 500。
 	// The shared schema still names this column api_key_enc; current writes store
 	// the supplied key as entered under the latest formal-config decision.
-	err := tx.QueryRowContext(ctx, `SELECT c.id::text,c.supplier_id::text,c.scope,c.base_url,c.api_key_enc,c.created_by::text,c.updated_by::text,c.created_at,c.updated_at,c.region,c.status,c.revision,c.confirmed_by::text,c.confirmed_at,c.confirmed_revision FROM `+s.table("supplier_formal_config")+` c WHERE c.id=$1 AND c.supplier_id=$2`, id, supplier).Scan(&c.ID, &c.SupplierID, &scope, &c.BaseURL, &wire, &createdBy, &updatedBy, &c.CreatedAt, &c.UpdatedAt, &region, &status, &revision, &confirmedBy, &confirmedAt, &confirmedRevision)
+	err := tx.QueryRowContext(ctx, `SELECT c.id::text,c.supplier_id::text,c.scope,c.base_url,c.api_key_enc,c.created_by::text,c.updated_by::text,c.created_at,c.updated_at,c.region,c.status,c.revision,c.confirmed_by::text,c.confirmed_at,c.confirmed_revision,c.config_group_id FROM `+s.table("supplier_formal_config")+` c WHERE c.id=$1 AND c.supplier_id=$2`, id, supplier).Scan(&c.ID, &c.SupplierID, &scope, &c.BaseURL, &wire, &createdBy, &updatedBy, &c.CreatedAt, &c.UpdatedAt, &region, &status, &revision, &confirmedBy, &confirmedAt, &confirmedRevision, &c.ConfigGroupID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
@@ -399,9 +399,9 @@ func (t *formalConfigTransaction) CreateConfig(ctx context.Context, input *suppl
 	}
 	wire := c.APIKey
 	// 000059：状态类字段落表，表成为唯一事实源（此前只存在于审计快照里）。
-	_, err = t.tx.ExecContext(ctx, `INSERT INTO `+t.store.table("supplier_formal_config")+` (id,supplier_id,scope,base_url,api_key_enc,created_by,updated_by,created_at,updated_at,region,status,revision,confirmed_by,confirmed_at,confirmed_revision) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+	_, err = t.tx.ExecContext(ctx, `INSERT INTO `+t.store.table("supplier_formal_config")+` (id,supplier_id,scope,base_url,api_key_enc,created_by,updated_by,created_at,updated_at,region,status,revision,confirmed_by,confirmed_at,confirmed_revision,config_group_id) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 		c.ID, c.SupplierID, c.Scope, c.BaseURL, wire, c.CreatedBy, c.UpdatedBy, c.CreatedAt, c.UpdatedAt,
-		c.Region, c.Status, int64(c.Revision), formalConfigNullableID(c.ConfirmedBy), c.ConfirmedAt, int64(c.ConfirmedRevision))
+		c.Region, c.Status, int64(c.Revision), formalConfigNullableID(c.ConfirmedBy), c.ConfirmedAt, int64(c.ConfirmedRevision), c.ConfigGroupID)
 	if err != nil {
 		return modelUniqueError(err, supply.ErrIdentityConflict)
 	}
