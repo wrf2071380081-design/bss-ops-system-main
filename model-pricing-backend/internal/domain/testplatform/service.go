@@ -49,12 +49,15 @@ const (
 	CategoryComprehensive Category = "comprehensive" // 连通性/协议（L1）
 	CategoryStress        Category = "stress"        // 压测
 	CategoryVideoQuality  Category = "videoquality"  // 视频：画质 + 连通
+	// CategoryProtocolProbe 是平台 2026-11 上线的专属连通性门类：
+	// 逐协议发一次最小请求，按响应报文体判 PASS/FAIL（比综合测试 L1 更准）。
+	CategoryProtocolProbe Category = "protocolprobe"
 )
 
 // Valid 判断门类是否可创建。
 func (c Category) Valid() bool {
 	switch c {
-	case CategoryComprehensive, CategoryStress, CategoryVideoQuality:
+	case CategoryComprehensive, CategoryStress, CategoryVideoQuality, CategoryProtocolProbe:
 		return true
 	}
 	return false

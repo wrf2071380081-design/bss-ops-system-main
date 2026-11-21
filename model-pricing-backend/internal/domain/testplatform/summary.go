@@ -23,6 +23,11 @@ func Interpret(category Category, state JobState, reportJSON []byte) Outcome {
 	nested, _ := lookup(document, "summary").(map[string]any)
 
 	switch category {
+	case CategoryProtocolProbe:
+		// 判定词表：pass / fail / inconclusive。inconclusive（429、5xx、鉴权失败）
+		// 说明"没测出来"，不能当成不通过，交给办理环节重测。
+		out.ConnectivityPassed = passed
+		out.DataComplete = state.Verdict != "" && state.Verdict != "inconclusive"
 	case CategoryBaseline, CategoryComprehensive:
 		out.ConnectivityPassed = passed
 		// 真机实测：summary 是 {"checks":[{layer,name,result,ttft_ms,duration_ms,...}]}，
@@ -33,13 +38,13 @@ func Interpret(category Category, state JobState, reportJSON []byte) Outcome {
 			"ttft_ms", "duration_ms",
 			"connection_ms", "minimal_chat_ms", "first_token_ms", "latency_ms")
 		out.DataComplete = passed && out.ConnectionMS != nil
-	case CategoryVideoQuality:
-		// 视频门类：verdict 取值 FULL/SUSPECT/WATERED/INCONCLUSIVE。
-		// 只有 INCONCLUSIVE 表示"没测出来"（欠费、生成失败），其余都算测出来了；
-		// WATERED 是画质掺水，属于明确不通过。
-		passed := state.Verdict == "FULL" || state.Verdict == "SUSPECT"
-		out.ConnectivityPassed = passed
-		out.DataComplete = state.Verdict != "" && state.Verdict != "INCONCLUSIVE"
+	case CategoryVideoQuality:
+		// 视频门类：verdict 取值 FULL/SUSPECT/WATERED/INCONCLUSIVE。
+		// 只有 INCONCLUSIVE 表示"没测出来"（欠费、生成失败），其余都算测出来了；
+		// WATERED 是画质掺水，属于明确不通过。
+		passed := state.Verdict == "FULL" || state.Verdict == "SUSPECT"
+		out.ConnectivityPassed = passed
+		out.DataComplete = state.Verdict != "" && state.Verdict != "INCONCLUSIVE"
 	case CategoryStress:
 		// 真机实测：summary.performance_tiers 是档位数组，每档 outcome+summary{concurrency,qps,tps,...}。
 		// Q2 口径：取 outcome=completed 的最高并发档（被 limited 的档不选）。
