@@ -48,15 +48,20 @@ export async function completeResourceAccess(
 
   const reason = accessReasonFor(resource, baseURL);
   const configs = await resourceOperationsApi.formalConfigs(resource.supplier_id, resource.region);
+  // 复用只能落在**同一准入配置组**里：不同组即使 Base URL 相同也必须各配一次
+  // （2026-11-20 业务确认；之前这里只看 URL，GLM 会直接沿用 ds 组的配置）。
+  let groupID = "";
+  try { groupID = (await resourceOperationsApi.configGroup(resource.id)).config_group_id || ""; } catch { groupID = ""; }
   let config = configs.find(item =>
     item.base_url === baseURL && item.status === "ACTIVE" && item.has_api_key &&
-    item.revision === item.confirmed_revision
+    item.revision === item.confirmed_revision &&
+    (!groupID || !item.config_group_id || item.config_group_id === groupID)
   );
   if (!config) {
     if (!apiKey) throw new Error("首次登记该地址需要填写生产 API Key。");
     config = await resourceOperationsApi.createFormalConfig(
       resource.supplier_id,
-      { scope: `${resource.model_name} 生产配置`, base_url: baseURL, api_key: apiKey, reason },
+      { scope: `${resource.model_name} 生产配置`, base_url: baseURL, api_key: apiKey, reason, config_group_id: groupID || undefined },
       crypto.randomUUID()
     );
   }

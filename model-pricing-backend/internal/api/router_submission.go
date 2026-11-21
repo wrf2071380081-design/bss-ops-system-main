@@ -162,25 +162,25 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "请求体格式不正确", 400))
 		return
 	}
-	// 门类映射（2026-11-18 对齐平台 v1）：
-	//   CONNECTIVITY（前端叫法）/ BASELINE（旧口径）/ COMPREHENSIVE → comprehensive + layers=[L1]
-	//   STRESS → stress；VIDEO → videoquality。
-	// baseline 已被平台下线，这里只做**兼容翻译**，不再原样透传。
-	raw := strings.ToUpper(strings.TrimSpace(body.Category))
-	category := tpdomain.CategoryComprehensive
-	params := map[string]any{"layers": []string{"L1"}}
-	switch raw {
-	case "", "CONNECTIVITY", "BASELINE", "COMPREHENSIVE":
-		category = tpdomain.CategoryComprehensive
-	case "STRESS":
-		category = tpdomain.CategoryStress
-		params = nil
-	case "VIDEO", "VIDEOQUALITY":
-		category = tpdomain.CategoryVideoQuality
-		params = nil
-	default:
-		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 connectivity / stress / video", 400))
-		return
+	// 门类映射（2026-11-18 对齐平台 v1）：
+	//   CONNECTIVITY（前端叫法）/ BASELINE（旧口径）/ COMPREHENSIVE → comprehensive + layers=[L1]
+	//   STRESS → stress；VIDEO → videoquality。
+	// baseline 已被平台下线，这里只做**兼容翻译**，不再原样透传。
+	raw := strings.ToUpper(strings.TrimSpace(body.Category))
+	category := tpdomain.CategoryComprehensive
+	params := map[string]any{"layers": []string{"L1"}}
+	switch raw {
+	case "", "CONNECTIVITY", "BASELINE", "COMPREHENSIVE":
+		category = tpdomain.CategoryComprehensive
+	case "STRESS":
+		category = tpdomain.CategoryStress
+		params = nil
+	case "VIDEO", "VIDEOQUALITY":
+		category = tpdomain.CategoryVideoQuality
+		params = nil
+	default:
+		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, "category 只支持 connectivity / stress / video", 400))
+		return
 	}
 	if h.targets == nil {
 		supplyHTTPError(c, supply.ErrDependencyUnavailable)
@@ -198,6 +198,12 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 	owner := target.SupplierName
 	if owner == "" {
 		owner = "resource-" + resourceID
+	}
+	// 内部补测的「连通性」原来发 baseline（平台把它当 comprehensive L1 跑），
+	// 2026-11-21 平台上线专属门类后统一改走 protocolprobe，判定更准也更便宜。
+	if category == tpdomain.CategoryBaseline {
+		category = tpdomain.CategoryProtocolProbe
+		params = map[string]any{"engine": "reference-protocolprobe-v1", "concurrency": 2}
 	}
 	// 平台幂等键与 HTTP 幂等键同源：同一笔业务重试必须命中同一个平台任务。
 	result, err := h.starter.Start(c.Request.Context(), tpdomain.CreateCommand{
