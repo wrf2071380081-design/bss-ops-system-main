@@ -188,7 +188,12 @@ SELECT st.id,'TODO'::varchar(8),CASE WHEN s.status='PENDING_APPROVAL' THEN 'TODO
  'SUBMISSION_APPROVAL'::varchar(32),s.id,'供应商模型申报审批'::varchar(256),sp.name || ' · ' || s.submission_no,s.region,'MID'::varchar(8),coalesce(s.submitted_at,s.created_at),NULL::bigint
  FROM submission s JOIN supplier sp ON sp.id=s.supplier_id JOIN internal_staff st ON st.status='ACTIVE' AND st.can_approve_supplier
  LEFT JOIN LATERAL(SELECT operator_id FROM operation_log WHERE entity_type='submission' AND entity_id=s.id AND (action='REJECT' OR (action='APPROVE' AND "after"->>'contract'='supply.handling_approval')) ORDER BY id DESC LIMIT 1) decided ON TRUE
- WHERE s.status='PENDING_APPROVAL' OR (decided.operator_id=st.id AND s.status IN('REJECTED','PROCESSING','COMPLETED'))
+ WHERE (s.status='PENDING_APPROVAL'
+        -- 2026-11-21：只有本次申报的**所有模型都通过连通性测试**才进领导待办。
+        -- 提交即自动发测试，没跑完/没通过的单子不进待办，避免领导点进去看到未完成数据。
+        AND NOT EXISTS (SELECT 1 FROM submission_row r
+                        WHERE r.submission_id = s.id AND COALESCE(r.connectivity_status,'') <> 'PASS'))
+    OR (decided.operator_id=st.id AND s.status IN('REJECTED','PROCESSING','COMPLETED'))
 UNION ALL
 -- 终态同时认 'COMPLETED' 与历史遗留的 'DONE'：000051 在视图层做过同样的兼容，
 -- 这里若只认 'COMPLETED'，历史节点办完了仍会挂在待办里（或整行消失、不进已办）。

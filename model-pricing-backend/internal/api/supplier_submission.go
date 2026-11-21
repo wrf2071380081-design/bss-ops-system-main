@@ -556,7 +556,7 @@ func (h *supplierSubmissionHandler) startSubmitRowTests(ctx context.Context, sup
 			defer func() { <-sem }()
 			// 幂等键按"申报单+行"固定：重复提交/重试不会重复建任务。
 			key := fmt.Sprintf("submit-%d-%d", submissionID, rowID)
-			_, _, _ = h.startRowTest(ctx, supplierID, submissionID, rowID, "comprehensive", key)
+			_, _, _ = h.startRowTest(ctx, supplierID, submissionID, rowID, "protocolprobe", key)
 		}()
 	}
 	wg.Wait()
@@ -600,13 +600,19 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		return "", actionFailed, err
 	}
 	params := map[string]any(nil)
-	if platformCategory == "comprehensive" {
-		// 提交阶段的连通性测试只要 L1（API 可用性门控）：
-		// 不传 layers 会用门类默认值（L1~L6 全跑），既慢又会真花钱。
-		params = map[string]any{"layers": []string{"L1"}}
+	if platformCategory == "protocolprobe" {
+		// 连通性改用平台专属门类（2026-11-21）：逐协议最小请求、按报文体判 PASS/FAIL。
+		params = map[string]any{"engine": "reference-protocolprobe-v1", "concurrency": 2}
 	}
-	if platformCategory == "stress" {
-		// 真机实测：stress 必须显式声明参考引擎，否则 400。
+	if platformCategory == "stress" && len(StressTemplateParams) > 0 {
+		// 优先用平台模板（如 bss压力测试02）的参数：32k prompt + 高缓存命中，
+		// 比我们写死的 30s/并发1 更有参考价值，也不会随模板变化而失效。
+		params = make(map[string]any, len(StressTemplateParams))
+		for k, v := range StressTemplateParams {
+			params[k] = v
+		}
+	} else if platformCategory == "stress" {
+		// 兜底：模板没拿到时用最小可用参数，保证能发单。
 		params = map[string]any{
 			"engine": "reference-performance-v1", "concurrency": []int{1},
 			"duration":        durationParam(stressDuration),
