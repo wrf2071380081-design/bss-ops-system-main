@@ -648,8 +648,14 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		return "", actionFailed, err
 	}
 	if result.Deduplicated {
-		// 同一受测目标已经有一单在跑/排队：这次没有真的发起，也不改动行上的任务号。
-		// 并发连点、多标签页都会走到这里，是「不重复烧资源」的最后一道闸。
+		// 同一受测目标已经有一单在跑/排队：不重复发单，但**必须把行挂上这个任务**。
+		// 之前直接返回、不写 test_job_id，结果申报行没有任务 → 页面退回"提交时探测"，
+		// 而平台侧其实有一条任务（2026-11-23：GLM 行就卡在这里）。
+		if row.TestJobID == nil {
+			if id, convErr := strconv.ParseInt(result.LocalJobID, 10, 64); convErr == nil {
+				_ = h.svc.store.AttachTestJob(ctx, rowID, id, platformCategory)
+			}
+		}
 		return result.LocalJobID, actionSkipped, nil
 	}
 	localJobID, convErr := strconv.ParseInt(result.LocalJobID, 10, 64)
