@@ -112,7 +112,8 @@ function connectivityTag(row: SupplierSubmissionRowDTO) {
   }
   if (job && job.tested) {
     // 平台对部分门类不给 verdict（如压测）：那是"完成（未判定）"，不能算未通过。
-    const base = job.passed
+    const passedNow = job.passed || String(job.verdict || "").toLowerCase() === "pass";
+    const base = passedNow
       ? { text: "通过", type: "success" as const }
       : job.verdict
         ? { text: "未通过", type: "danger" as const }

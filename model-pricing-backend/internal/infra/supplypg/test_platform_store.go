@@ -311,8 +311,17 @@ RETURNING id`,
 		if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("resource")+`
 SET state='PENDING_ACCESS', updated_at=now()
 WHERE id=$1 AND state='PENDING_TEST' AND NOT ever_admitted
-  AND EXISTS (SELECT 1 FROM `+s.table("test_report")+` r
-              WHERE r.test_job_id = $2 AND r.resource_id = $1 AND r.connection_passed)`, resourceID, jobID); err != nil {
+  AND EXISTS (SELECT 1 FROM `+s.table("test_job")+` j
+              WHERE j.id = $2 AND lower(coalesce(j.verdict,'')) = 'pass')`, resourceID, jobID); err != nil {
+			return "", err
+		}
+	}
+	// 回调先到、轮询后补 verdict 的情况：以任务上的 verdict 为准校正报告，避免
+	// 报告一直停在 connection_passed=false（2026-11-23：状态因此不进"已测试"）。
+	if strings.EqualFold(strings.TrimSpace(done.Verdict), "pass") || done.Outcome.ConnectivityPassed {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("test_report")+`
+SET connection_passed = CASE WHEN $2 THEN true ELSE connection_passed END
+WHERE id=$1`, reportID, done.Outcome.ConnectivityPassed); err != nil {
 			return "", err
 		}
 	}
