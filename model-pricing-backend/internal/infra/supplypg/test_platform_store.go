@@ -133,9 +133,13 @@ func (s *TestPlatformStore) FailJob(ctx context.Context, localID, reason string)
 	if err != nil {
 		return err
 	}
+	// $2 必须显式 ::text：jsonb_build_object 里 PG 推断不出参数类型，
+	// 会报 "could not determine data type of parameter $2"（2026-11-23 实测，
+	// 这条错把真正的 40001 原因盖住了，排查绕了很远）。
 	_, err = s.db.ExecContext(ctx, `UPDATE `+s.table("test_job")+`
 SET status='FAILED', finished_at=now(),
-    response_summary = COALESCE(response_summary,'{}'::jsonb) || jsonb_build_object('start_error',$2)
+    failure_reason = NULLIF($2::text,''),
+    response_summary = COALESCE(response_summary,'{}'::jsonb) || jsonb_build_object('start_error',$2::text)
 WHERE id=$1 AND status IN ('QUEUED','RUNNING')`, id, strings.TrimSpace(reason))
 	return err
 }

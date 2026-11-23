@@ -83,9 +83,9 @@ type submissionTestDTO struct {
 	// 压力测试没有判定，留空——前端据此区分"未通过"和"已完成但无判定"。
 	Verdict string `json:"verdict,omitempty"`
 	// Stale=true 表示测试目标已变化（改了地址/Key/模型），该结果不再有效。
-	Stale        bool    `json:"stale,omitempty"`
-	JobID        string  `json:"job_id,omitempty"`
-	ReportID     string  `json:"report_id,omitempty"`
+	Stale    bool   `json:"stale,omitempty"`
+	JobID    string `json:"job_id,omitempty"`
+	ReportID string `json:"report_id,omitempty"`
 	// Failure 是平台中止原因（无报告时给供应商看，别再只显示"未提供结论"）。
 	Failure      string  `json:"failure,omitempty"`
 	ConnectionMS *string `json:"connection_ms"`
@@ -635,8 +635,11 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 			// 平台按官方 ID 识别模型；供应商自定义名只用于展示。
 			// 优先用「接口模型 ID」（供应商在该通道实际调用的名字，如 deepseek/deepseek-v3.2）；
 			// official_id 是我们目录里的规范名，很多时候不带厂商前缀，发给平台会 404。
-			Model:   modelForTest(baseURL, row.SupplierModelName, row.OfficialID),
-			BaseURL: baseURL, Protocol: "openai", APIKey: apiKey,
+			Model: modelForTest(baseURL, row.SupplierModelName, row.OfficialID),
+			// protocolprobe 要求 target.protocol 留空（平台按探针行自己决定鉴权头），
+			// 之前这里无条件写 "openai"，导致提交时的任务被平台 40001 拒绝、直接 FAILED，
+			// 于是"平台上看不到任务"（2026-11-23 实测：内部补测不传 Protocol 就能成功）。
+			BaseURL: baseURL, Protocol: protocolForCategory(platformCategory), APIKey: apiKey,
 		},
 		Params:         params,
 		IdempotencyKey: idempotencyKey,
@@ -1910,4 +1913,12 @@ func registerSupplierSubmissionRoutes(protected *gin.RouterGroup, deps Deps, ide
 	group.POST("/:id/tests", perClick, handler.batchTests)
 	group.POST("/:id/submit", idempotent, handler.submit)
 	group.POST("/:id/withdraw", idempotent, handler.withdraw)
+}
+
+// protocolForCategory 只对压测给 openai；protocolprobe 必须留空。
+func protocolForCategory(category string) string {
+	if category == "stress" {
+		return "openai"
+	}
+	return ""
 }
