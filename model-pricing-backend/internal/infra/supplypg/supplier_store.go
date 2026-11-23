@@ -94,6 +94,9 @@ func validSupplierAuditTimestamp(action string, createdAt, updatedAt, loggedAt t
 		return updatedAt.Equal(createdAt) && loggedAt.Equal(createdAt)
 	case "UPDATE":
 		return loggedAt.Equal(updatedAt)
+	case "BASELINE":
+		// 基线重建和一次正常变更同一口径：流水时间必须等于主行更新时间。
+		return loggedAt.Equal(updatedAt)
 	case "UPDATE_NOOP":
 		return !loggedAt.Before(updatedAt)
 	default:
@@ -268,7 +271,14 @@ func (t *supplierTransaction) UpdateSupplier(ctx context.Context, input *supply.
 	if t == nil || t.tx == nil || t.current == nil || t.staged != nil || input == nil || input.ID != t.current.ID || expected != t.current.Revision || input.Revision != expected+1 || input.BuyerID != t.current.BuyerID || input.Established != t.current.Established || input.Status != t.current.Status || input.CreatedAt != t.current.CreatedAt || input.Revision > math.MaxInt64 {
 		return supply.ErrRevisionConflict
 	}
-	canonical, err := supply.NewSupplier(input.ID, input.BuyerID, input.Data, input.CreatedAt)
+	// 基线重建通道（链不可信，Revision==0）允许档案暂时没有归属采购人，
+	// 但 canonical 校验要求 buyer 是合法 bigint；这里只借它校验 Data，
+	// 所以用占位 ID 走格式校验，行上的 updated_by 仍按 input.BuyerID 落（可能为空）。
+	canonicalBuyer := input.BuyerID
+	if canonicalBuyer == "" && t.current.Revision == 0 {
+		canonicalBuyer = "1"
+	}
+	canonical, err := supply.NewSupplier(input.ID, canonicalBuyer, input.Data, input.CreatedAt)
 	if err != nil {
 		return err
 	}
@@ -283,7 +293,7 @@ func (t *supplierTransaction) UpdateSupplier(ctx context.Context, input *supply.
 	if err != nil {
 		return err
 	}
-	result, err := t.tx.ExecContext(ctx, `UPDATE `+t.store.table("supplier")+` SET name=$2,region=$3,registration_no=$4,contact=$5,phone=$6,tax_rate=$7,settlement_currency=$8,remark=$9,updated_at=$10,updated_by=$11 WHERE id=$1 AND updated_at=$12`, input.ID, input.Data.Name, input.Data.Region, nullableSupplierText(input.Data.RegistrationNo), nullableSupplierText(input.Data.Contact), nullableSupplierText(input.Data.Phone), taxRate, input.Data.SettlementCurrency, nullableSupplierText(input.Data.Remark), input.UpdatedAt, input.BuyerID, t.current.UpdatedAt)
+	result, err := t.tx.ExecContext(ctx, `UPDATE `+t.store.table("supplier")+` SET name=$2,region=$3,registration_no=$4,contact=$5,phone=$6,tax_rate=$7,settlement_currency=$8,remark=$9,updated_at=$10,updated_by=$11 WHERE id=$1 AND updated_at=$12`, input.ID, input.Data.Name, input.Data.Region, nullableSupplierText(input.Data.RegistrationNo), nullableSupplierText(input.Data.Contact), nullableSupplierText(input.Data.Phone), taxRate, input.Data.SettlementCurrency, nullableSupplierText(input.Data.Remark), input.UpdatedAt, nullableSupplierText(input.BuyerID), t.current.UpdatedAt)
 	if err != nil {
 		return supplierUniqueError(err)
 	}
@@ -419,6 +429,12 @@ func (t *supplierTransaction) AppendSupplierOperation(ctx context.Context, op su
 		}
 	case "UPDATE":
 		if t.current == nil || t.staged == nil || op.Before == nil || !reflect.DeepEqual(op.Before, t.current) || !reflect.DeepEqual(op.After, t.staged) || op.After.Revision != op.Before.Revision+1 {
+			return supply.ErrReadContract
+		}
+	case "BASELINE":
+		// 链不可信（Revision==0）时的基线重建：没有可比的前序版本，
+		// 所以只要求 staged 存在、快照等于 staged、并从 rev=1 重新起算。
+		if t.current == nil || t.staged == nil || op.Before == nil || !reflect.DeepEqual(op.Before, t.current) || !reflect.DeepEqual(op.After, t.staged) || op.After.Revision != 1 {
 			return supply.ErrReadContract
 		}
 	case "UPDATE_NOOP":
@@ -598,7 +614,7 @@ func (s *SupplierStore) verifySupplierAuditSnapshot(ctx context.Context, tx *sql
 	var raw []byte
 	var action, actor, operator, reason, requestID sql.NullString
 	var loggedAt time.Time
-	err := tx.QueryRowContext(ctx, `SELECT "after",action,operator_id::text,operator_name_snapshot,reason,request_id,created_at FROM `+s.table("operation_log")+` WHERE entity_type='supplier' AND entity_id=$1 AND action IN ('CREATE','UPDATE','UPDATE_NOOP') ORDER BY id DESC LIMIT 1`, id).Scan(&raw, &action, &actor, &operator, &reason, &requestID, &loggedAt)
+	err := tx.QueryRowContext(ctx, `SELECT "after",action,operator_id::text,operator_name_snapshot,reason,request_id,created_at FROM `+s.table("operation_log")+` WHERE entity_type='supplier' AND entity_id=$1 AND action IN ('CREATE','UPDATE','UPDATE_NOOP','BASELINE') ORDER BY id DESC LIMIT 1`, id).Scan(&raw, &action, &actor, &operator, &reason, &requestID, &loggedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return supply.ErrReadContract
@@ -647,6 +663,11 @@ func (s *SupplierStore) verifySupplierAuditSnapshot(ctx context.Context, tx *sql
 		}
 	case "UPDATE_NOOP":
 		if snapshot.Revision < 1 {
+			return supply.ErrReadContract
+		}
+	case "BASELINE":
+		// 断链档案重建的基线：没有前序版本可比，只要求从 rev=1 起算。
+		if snapshot.Revision != 1 {
 			return supply.ErrReadContract
 		}
 	default:
@@ -994,7 +1015,9 @@ func (s *SupplierStore) UpdateQualificationMetadata(ctx context.Context, meta su
 	return row, nil
 }
 
-func qualificationMetadataColumns(ctx context.Context, query interface{ QueryRowContext(context.Context, string, ...any) *sql.Row }, schema string) (bool, error) {
+func qualificationMetadataColumns(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, schema string) (bool, error) {
 	var supported bool
 	err := query.QueryRowContext(ctx, `SELECT count(*) = 6
 FROM information_schema.columns

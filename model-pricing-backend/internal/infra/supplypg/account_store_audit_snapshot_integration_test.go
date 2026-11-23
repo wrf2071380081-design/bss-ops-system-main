@@ -163,7 +163,7 @@ func latestSupplierAction(t *testing.T, db *sql.DB, supplierID int64) string {
 	t.Helper()
 	var action string
 	if err := db.QueryRow(`SELECT action FROM public.operation_log
-WHERE entity_type='supplier' AND entity_id=$1 AND action IN ('CREATE','UPDATE','UPDATE_NOOP')
+WHERE entity_type='supplier' AND entity_id=$1 AND action IN ('CREATE','UPDATE','UPDATE_NOOP','BASELINE')
 ORDER BY id DESC LIMIT 1`, supplierID).Scan(&action); err != nil {
 		t.Fatalf("read latest supplier action: %v", err)
 	}
