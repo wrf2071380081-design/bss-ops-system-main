@@ -112,12 +112,15 @@ function connectivityTag(row: SupplierSubmissionRowDTO) {
   }
   if (job && job.tested) {
     // 平台对部分门类不给 verdict（如压测）：那是"完成（未判定）"，不能算未通过。
-    const passedNow = job.passed || String(job.verdict || "").toLowerCase() === "pass";
+    // 状态只保留：测试中 → 通过 / 未通过。没有"已完成"这个中间态
+    // （同一张单里出现"已完成"和"通过"两种，供应商会以为结果不一致）。
+    const verdict = String(job.verdict || "").toLowerCase();
+    const passedNow = job.passed || verdict === "pass" || Boolean(job.report_id);
     const base = passedNow
       ? { text: "通过", type: "success" as const }
-      : job.verdict
+      : verdict && verdict !== "pass"
         ? { text: "未通过", type: "danger" as const }
-        : { text: "已完成", type: "info" as const };
+        : { text: "测试中", type: "info" as const };
     // 结论照实显示，失效只作补充说明——用「已失效」顶掉结论会让供应商误读。
     // 不再展示"需重测/测试目标已变更"：交互原型没有这个状态，
     // 而且它会让供应商以为要反复重测（2026-11-23 反馈，第十次了，直接去掉）。
