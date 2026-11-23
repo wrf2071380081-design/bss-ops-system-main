@@ -167,11 +167,14 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 	//   STRESS → stress；VIDEO → videoquality。
 	// baseline 已被平台下线，这里只做**兼容翻译**，不再原样透传。
 	raw := strings.ToUpper(strings.TrimSpace(body.Category))
-	category := tpdomain.CategoryComprehensive
-	params := map[string]any{"layers": []string{"L1"}}
+	// 2026-11-21 起连通性统一走平台专属门类 protocolprobe（逐协议最小请求判 PASS/FAIL）。
+	// 之前把 CONNECTIVITY/BASELINE 翻成 comprehensive + layers=[L1]，
+	// 所以补测出来的永远是 comprehensive（2026-11-23 实测确认）。
+	category := tpdomain.CategoryProtocolProbe
+	params := map[string]any{"engine": "reference-protocolprobe-v1", "concurrency": 2}
 	switch raw {
 	case "", "CONNECTIVITY", "BASELINE", "COMPREHENSIVE":
-		category = tpdomain.CategoryComprehensive
+		category = tpdomain.CategoryProtocolProbe
 	case "STRESS":
 		category = tpdomain.CategoryStress
 		params = nil
@@ -201,10 +204,6 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 	}
 	// 内部补测的「连通性」原来发 baseline（平台把它当 comprehensive L1 跑），
 	// 2026-11-21 平台上线专属门类后统一改走 protocolprobe，判定更准也更便宜。
-	if category == tpdomain.CategoryBaseline {
-		category = tpdomain.CategoryProtocolProbe
-		params = map[string]any{"engine": "reference-protocolprobe-v1", "concurrency": 2}
-	}
 	// 平台幂等键与 HTTP 幂等键同源：同一笔业务重试必须命中同一个平台任务。
 	result, err := h.starter.Start(c.Request.Context(), tpdomain.CreateCommand{
 		ResourceID:        resourceID,
