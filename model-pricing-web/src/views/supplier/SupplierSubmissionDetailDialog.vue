@@ -130,6 +130,8 @@ function connectivityTag(row: SupplierSubmissionRowDTO) {
 }
 
 function testType(job?: SupplierSubmissionTestDTO): "success" | "danger" | "info" | "warning" {
+  // 有报告就是"做完了"，用绿色；不要因为压测没有 verdict 就染成灰色。
+  if (job?.report_id) return "success";
   if (!job || job.stale) return "info";
   if (!job.tested) return "info";
   if (job.passed) return "success";

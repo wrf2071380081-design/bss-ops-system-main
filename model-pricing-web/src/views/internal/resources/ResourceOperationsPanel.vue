@@ -80,7 +80,9 @@ const canHandleAccess = computed(() => Boolean(workflow.value?.can_bind || workf
 const showAccessSummary = computed(() => Boolean(props.resource.ever_admitted) || accessDone.value);
 const showQuickAccess = computed(() => !showAccessSummary.value);
 // 该地址已有正式配置时可复用，API Key 可以留空（原型里同一供应商的配置也是复用的）。
-const reuseConfig = computed(() => eligibleConfigs.value.find(item => item.base_url === accessForm.base_url.trim()));
+// 2026-11-23 业务裁决：每个模型单独配置。不再"看到同 URL 的配置就沿用 Key"——
+// 那会让同批其它模型看起来"自动填好了"，实际是复用了别人的凭据。
+const reuseConfig = computed(() => undefined);
 // 能用「接口配置」一步走完时，分步面板收起；不能时自动展开，避免功能被藏起来。
 const advancedOpen = ref<string[]>([]);
 watch(showQuickAccess, (quick) => { advancedOpen.value = quick || accessDone.value ? [] : ["advanced"]; }, { immediate: true });

@@ -305,10 +305,14 @@ RETURNING id`,
 	// 状态机（2026-11-23）：连通性通过后资源进入 PENDING_ACCESS（已测试），
 	// 只有"已测试"才允许登记接入变 ADMITTED。之前没有这一层，
 	// 于是出现"测完了还显示待测试、一接入就直接已接入"。
-	if done.FinalStatus == "SUCCEEDED" && strings.EqualFold(strings.TrimSpace(done.Verdict), "pass") {
+	// 判据改成"这个任务产出的报告里 connection_passed 为真"：
+	// 平台回调的 verdict 可能为空（只有轮询才带），之前用它判就把 82/83 漏掉了。
+	if done.FinalStatus == "SUCCEEDED" {
 		if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("resource")+`
 SET state='PENDING_ACCESS', updated_at=now()
-WHERE id=$1 AND state='PENDING_TEST' AND NOT ever_admitted`, resourceID); err != nil {
+WHERE id=$1 AND state='PENDING_TEST' AND NOT ever_admitted
+  AND EXISTS (SELECT 1 FROM `+s.table("test_report")+` r
+              WHERE r.test_job_id = $2 AND r.resource_id = $1 AND r.connection_passed)`, resourceID, jobID); err != nil {
 			return "", err
 		}
 	}
