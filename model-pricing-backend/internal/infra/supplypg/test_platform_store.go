@@ -221,9 +221,30 @@ func (s *TestPlatformStore) CompleteJob(ctx context.Context, done tpdomain.Compl
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 失败原因：优先用平台回传的 error/message 字段，没有再落状态本身。
+	failureReason := ""
+	if done.FinalStatus != "SUCCEEDED" {
+		var probe struct {
+			Error   any `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal([]byte(summary), &probe) == nil {
+			if probe.Message != "" {
+				failureReason = probe.Message
+			} else if probe.Error != nil {
+				if b, e := json.Marshal(probe.Error); e == nil {
+					failureReason = string(b)
+				}
+			}
+		}
+		if failureReason == "" {
+			failureReason = "平台任务状态：" + done.FinalStatus
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("test_job")+`
-SET status=$2, verdict=NULLIF($3,''), response_summary=$4::jsonb, finished_at=$5 WHERE id=$1`,
-		jobID, done.FinalStatus, done.Verdict, summary, done.FinishedAt.UTC()); err != nil {
+SET status=$2, verdict=NULLIF($3,''), response_summary=$4::jsonb, finished_at=$5,
+    failure_reason=NULLIF($6,'') WHERE id=$1`,
+		jobID, done.FinalStatus, done.Verdict, summary, done.FinishedAt.UTC(), failureReason); err != nil {
 		return "", err
 	}
 	// 内部补测是「资源」维度的，申报行不知道它跑过。这里把任务回写到对应的申报行，

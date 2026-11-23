@@ -86,6 +86,8 @@ type submissionTestDTO struct {
 	Stale        bool    `json:"stale,omitempty"`
 	JobID        string  `json:"job_id,omitempty"`
 	ReportID     string  `json:"report_id,omitempty"`
+	// Failure 是平台中止原因（无报告时给供应商看，别再只显示"未提供结论"）。
+	Failure      string  `json:"failure,omitempty"`
 	ConnectionMS *string `json:"connection_ms"`
 	RPS          *string `json:"rps"`
 	TPS          *string `json:"tps"`
@@ -1756,7 +1758,7 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			item.ConnectivityJob = &submissionTestDTO{
 				Category: "CONNECTIVITY", Status: *row.ConnectivityStatus, Tested: tested && !row.ConnectivityStale,
 				Passed: passed, Verdict: deref(row.ConnectivityVerdict), Stale: connStale, ConnectionMS: row.ConnectionMS,
-				ReportID: formatOptionalID(row.ConnectivityReportID),
+				ReportID: formatOptionalID(row.ConnectivityReportID), Failure: row.ConnectivityFailure,
 			}
 			item.ConnectivityTested, item.ConnectivityPassed = tested && !connStale, passed && !connStale
 		}
@@ -1766,7 +1768,7 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			item.StressJob = &submissionTestDTO{
 				Category: "STRESS", Status: *row.StressStatus, Tested: tested && !row.StressStale,
 				Passed: passed, Verdict: deref(row.StressVerdict), Stale: stressStale, RPS: row.RPS, TPS: row.TPS,
-				ReportID: formatOptionalID(row.StressReportID),
+				ReportID: formatOptionalID(row.StressReportID), Failure: row.StressFailure,
 			}
 			item.StressTested, item.StressPassed = tested && !stressStale, passed && !stressStale
 		}

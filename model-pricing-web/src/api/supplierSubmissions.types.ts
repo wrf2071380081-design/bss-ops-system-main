@@ -19,6 +19,8 @@ export interface SupplierSubmissionTestDTO {
   stale?: boolean;
   job_id?: string;
   report_id?: string;
+  /** 平台中止原因（无报告时给供应商看） */
+  failure?: string;
   connection_ms?: string | null;
   rps?: string | null;
   tps?: string | null;

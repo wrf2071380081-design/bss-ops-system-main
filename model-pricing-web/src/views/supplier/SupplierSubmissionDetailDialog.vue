@@ -120,7 +120,8 @@ function connectivityTag(row: SupplierSubmissionRowDTO) {
     // 结论照实显示，失效只作补充说明——用「已失效」顶掉结论会让供应商误读。
     // 不再展示"需重测/测试目标已变更"：交互原型没有这个状态，
     // 而且它会让供应商以为要反复重测（2026-11-23 反馈，第十次了，直接去掉）。
-    return { ...base, note: connectivityMetrics(job) };
+    const reason = job.failure ? `平台中止：${job.failure}` : "";
+    return { ...base, note: [connectivityMetrics(job), reason].filter(Boolean).join(" · ") };
   }
   if (job && job.stale) return { text: "已完成", type: "info" as const, note: "" };
   if (row.probe_status === "PASS") return { text: "通过", type: "success" as const, note: "提交时探测" };

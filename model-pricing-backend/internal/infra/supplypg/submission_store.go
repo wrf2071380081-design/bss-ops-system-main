@@ -75,6 +75,9 @@ type SubmissionRowRecord struct {
 	// 按门类分开的目标指纹（000075）
 	ConnectivityFingerprint string
 	StressFingerprint       string
+	// 平台中止原因（job FAILED 时才有）
+	ConnectivityFailure string
+	StressFailure       string
 	// 审批决定（供应商侧展示用）：PENDING / APPROVED / REJECTED。
 	Decision      string
 	DecidedAt     *time.Time
@@ -270,8 +273,8 @@ func (s *SubmissionStore) Rows(ctx context.Context, submissionIDs []int64) (map[
 SELECT r.submission_id, r.id, r.standard_model_id, m.name, COALESCE(m.official_id,''), r.supplier_model_name,
        r.coefficient::text, COALESCE(r.test_base_url,''), r.row_status, r.participate_test,
        COALESCE(m.company,''), COALESCE(m.model_type,''),
-       r.test_fingerprint, cj.status, crep.id, crep.verdict, crep.connection_ms::text, cj.target_fingerprint,
-       sj.status, srep.id, srep.verdict, srep.rps::text, srep.tps::text, sj.target_fingerprint,
+       r.test_fingerprint, cj.status, crep.id, crep.verdict, crep.connection_ms::text, cj.target_fingerprint, COALESCE(cj.failure_reason,''),
+       sj.status, srep.id, srep.verdict, srep.rps::text, srep.tps::text, sj.target_fingerprint, COALESCE(sj.failure_reason,''),
        r.test_config_group_id, COALESCE(g.name,''), COALESCE(g.enabled, false),
        COALESCE(r.connectivity_fingerprint,''), COALESCE(r.stress_fingerprint,'')
 FROM `+s.table("submission_row")+` r
@@ -303,8 +306,8 @@ ORDER BY r.submission_id, r.id`, args...)
 		if err := rows.Scan(&submissionID, &item.ID, &item.StandardModelID, &item.StandardModelName, &item.OfficialID,
 			&item.SupplierModelName, &item.Coefficient, &item.TestBaseURL, &item.RowStatus,
 			&item.ParticipateTest, &item.Company, &item.ModelType,
-			&rowFP, &connStatus, &connRepoID, &connVerdict, &conn, &connFP,
-			&stressStatus, &stressReportID, &stressVerdict, &rps, &tps, &stressFP,
+			&rowFP, &connStatus, &connRepoID, &connVerdict, &conn, &connFP, &item.ConnectivityFailure,
+			&stressStatus, &stressReportID, &stressVerdict, &rps, &tps, &stressFP, &item.StressFailure,
 			&groupID, &item.TestConfigGroupName, &item.TestConfigGroupEnabled,
 			&item.ConnectivityFingerprint, &item.StressFingerprint); err != nil {
 			return nil, err
