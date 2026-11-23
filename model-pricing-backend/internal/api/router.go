@@ -8,13 +8,13 @@
 package api
 
 import (
+	"net/http"
 	"os"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
 	"model_bss/internal/api/middleware"
-	"model_bss/internal/infra/supplypg"
 	"model_bss/internal/domain/auth"
 	"model_bss/internal/domain/cost"
 	"model_bss/internal/domain/customer"
@@ -28,6 +28,7 @@ import (
 	"model_bss/internal/domain/workbench"
 	"model_bss/internal/infra/config"
 	infra_middleware "model_bss/internal/infra/middleware"
+	"model_bss/internal/infra/supplypg"
 	"model_bss/pkg/perm"
 )
 
@@ -150,6 +151,10 @@ func New(deps Deps) *gin.Engine {
 	r.Use(middleware.FeatureGate(deps.Config.Features))
 
 	r.GET("/healthz", HealthzHandler(deps.Health))
+	// 构建戳：部署后用它核对线上二进制是否就是本地 HEAD，无需人工比对界面。
+	r.GET("/api/version", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": gin.H{"sha": BuildSHA, "built_at": BuildAt}})
+	})
 
 	// 在线接口调试页（Swagger UI）：docs.enable 默认 true，生产显式关闭。
 	// 放在 /api 业务路由之前注册，但路径不重叠（/swagger、/openapi），互不干扰。

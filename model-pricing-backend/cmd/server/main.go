@@ -51,6 +51,12 @@ import (
 	"model_bss/pkg/perm"
 )
 
+// 构建戳：由部署脚本用 -ldflags 注入，用于核对"线上跑的到底是哪一版"。
+var (
+	buildSHA = "dev"
+	buildAt  = "unknown"
+)
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -301,6 +307,7 @@ func main() {
 		log.Warn("initialize staff position store", zap.Error(err))
 		staffPositionStore = nil
 	}
+	api.SetBuildInfo(buildSHA, buildAt)
 	router := api.New(api.Deps{
 		Config:              cfg,
 		Log:                 log,

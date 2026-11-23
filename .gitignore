@@ -20,3 +20,4 @@ docs/Work_A/TDD/evidence/
 
 # 工作区临时产物与工作日志
 .workbuddy/
+.deploy-tmp/
