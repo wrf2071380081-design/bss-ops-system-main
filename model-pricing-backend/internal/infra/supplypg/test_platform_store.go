@@ -277,6 +277,16 @@ RETURNING id`,
 		}
 	}
 
+	// 状态机（2026-11-23）：连通性通过后资源进入 PENDING_ACCESS（已测试），
+	// 只有"已测试"才允许登记接入变 ADMITTED。之前没有这一层，
+	// 于是出现"测完了还显示待测试、一接入就直接已接入"。
+	if done.FinalStatus == "SUCCEEDED" && strings.EqualFold(strings.TrimSpace(done.Verdict), "pass") {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("resource")+`
+SET state='PENDING_ACCESS', updated_at=now()
+WHERE id=$1 AND state='PENDING_TEST' AND NOT ever_admitted`, resourceID); err != nil {
+			return "", err
+		}
+	}
 	fileName, fileErr := s.writeReportFiles(reportID, done.ReportJSON, done.ReportMD)
 	if fileErr != nil {
 		return "", fileErr

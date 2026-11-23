@@ -44,7 +44,7 @@ func Interpret(category Category, state JobState, reportJSON []byte) Outcome {
 		// WATERED 是画质掺水，属于明确不通过。
 		passed := state.Verdict == "FULL" || state.Verdict == "SUSPECT"
 		out.ConnectivityPassed = passed
-		out.DataComplete = state.Verdict != "" && state.Verdict != "INCONCLUSIVE"
+		out.DataComplete = state.Verdict != "" && state.Verdict != "INCONCLUSIVE"
 	case CategoryStress:
 		// 真机实测：summary.performance_tiers 是档位数组，每档 outcome+summary{concurrency,qps,tps,...}。
 		// Q2 口径：取 outcome=completed 的最高并发档（被 limited 的档不选）。
@@ -52,6 +52,16 @@ func Interpret(category Category, state JobState, reportJSON []byte) Outcome {
 		tier = bestTier(summary, nested, document)
 		out.RPS = firstDecimal(tier, summary, nested, document, "qps", "steady_qps", "last30s_qps", "rps")
 		out.TPS = firstDecimal(tier, summary, nested, document, "tps", "steady_tps", "last30s_tps")
+		// 业务口径（2026-11-23）：TPS = 输入 TPS + 输出 TPS。
+		// 只看输出会把预填充（高缓存命中）场景的吞吐严重低估。
+		if in := firstDecimal(tier, summary, nested, document, "input_tps"); in != nil && out.TPS != nil {
+			if a, err1 := strconv.ParseFloat(*in, 64); err1 == nil {
+				if b, err2 := strconv.ParseFloat(*out.TPS, 64); err2 == nil {
+					total := strconv.FormatFloat(a+b, 'f', 2, 64)
+					out.TPS = &total
+				}
+			}
+		}
 		out.DataComplete = passed && out.RPS != nil && out.TPS != nil
 	default:
 		out.DataComplete = passed

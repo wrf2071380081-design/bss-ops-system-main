@@ -20,7 +20,7 @@ const lifecycle = crypto.randomUUID();
 let active = true;
 
 const stateText = (state: string) =>
-  state === "ADMITTED" ? "已接入" : state === "OFFLINE" ? "已下架" : state === "PENDING_ACCESS" ? "待接入" : state === "PENDING_TEST" ? "待测试" : state;
+  state === "ADMITTED" ? "已接入" : state === "OFFLINE" ? "已下架" : state === "PENDING_ACCESS" ? "已测试" : state === "PENDING_TEST" ? "待测试" : state;
 const title = props.kind === "down" ? "确认下架登记" : "确认上架登记";
 const targetState = props.kind === "down" ? "已下架" : "已接入";
 // 资源写权限是「归属采购人」制（后端 can_edit = buyer_id == 操作人）：

@@ -1186,3 +1186,15 @@ WHERE r.submission_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 	}
 	return out
 }
+
+// MarkRowTestFailed 记录"发起测试失败"这一事实，供供应商页面显示原因。
+// 之前调用方把错误吞掉，界面上只会看到"未测试"，排查只能靠翻日志。
+func (s *SubmissionStore) MarkRowTestFailed(ctx context.Context, rowID int64, note string) error {
+	if rowID <= 0 {
+		return supply.ErrNotFound
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE `+s.table("submission_row")+`
+SET connectivity_status = 'FAIL', connectivity_note = NULLIF($2,'')
+WHERE id = $1 AND COALESCE(connectivity_status,'') <> 'PASS'`, rowID, strings.TrimSpace(note))
+	return err
+}

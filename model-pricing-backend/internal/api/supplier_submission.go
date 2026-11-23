@@ -556,7 +556,10 @@ func (h *supplierSubmissionHandler) startSubmitRowTests(ctx context.Context, sup
 			defer func() { <-sem }()
 			// 幂等键按"申报单+行"固定：重复提交/重试不会重复建任务。
 			key := fmt.Sprintf("submit-%d-%d", submissionID, rowID)
-			_, _, _ = h.startRowTest(ctx, supplierID, submissionID, rowID, "protocolprobe", key)
+			// 发单失败必须可见：以前三个返回值全丢，平台上没有任务也没人知道。
+			if _, _, err := h.startRowTest(ctx, supplierID, submissionID, rowID, "protocolprobe", key); err != nil {
+				_ = h.svc.store.MarkRowTestFailed(ctx, rowID, "发起连通性测试失败："+err.Error())
+			}
 		}()
 	}
 	wg.Wait()

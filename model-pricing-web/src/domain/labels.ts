@@ -180,6 +180,7 @@ export const DOC_STATUS_LABELS: Record<string, string> = {
   REJECTED: "已驳回",
   PROCESSING: "办理中",
   PENDING_TEST: "待测试",
+  PENDING_ACCESS: "已测试",
   CONFIGURED: "配置完成",
   ADMITTED: "已接入",
   COMPLETED: "已完成",

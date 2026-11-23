@@ -42,7 +42,7 @@ const regionLabel = (region: string) => region === "CN" ? "国内" : region === 
 const testLabel = (tested: boolean, passed: boolean) => !tested ? "未测" : passed ? "通过" : "未通过";
 
 /** 供应商视角的接入状态只有三档（原型固定三项）；待测试与待接入合并为「待接入」。 */
-const accessStatusLabels: Record<string, string> = { PENDING_ACCESS: "待接入", ADMITTED: "已接入", OFFLINE: "已下架" };
+const accessStatusLabels: Record<string, string> = { PENDING_ACCESS: "已测试", ADMITTED: "已接入", OFFLINE: "已下架" };
 const defaultAccessStatuses = ["PENDING_ACCESS", "ADMITTED", "OFFLINE"];
 /** 模型类型固定四项（原型），不随该主体实际拥有的类型增减。 */
 const defaultModelTypes = ["TEXT", "IMAGE", "VIDEO", "AUDIO"];
