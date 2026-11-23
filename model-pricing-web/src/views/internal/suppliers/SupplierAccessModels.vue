@@ -981,7 +981,8 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
     <el-dialog v-if="ifaceRow" v-model="ifaceOpen" class="iface-dialog" :title="`接口配置 · ${ifaceRow.model_name}`" width="min(940px, 96vw)" top="6vh" append-to-body :close-on-click-modal="false">
       <!-- 关键：是否只读由**这一行的真实状态**决定，不能指望上游字段。
          ifaceRow 里没有可靠的 ever_admitted，导致待测试的行也被锁成只读（2026-11-20）。 -->
-      <ResourceOperationsPanel :resource="asAccessResource(ifaceRow)" variant="plain" @updated="afterInterfaceChange" />
+      <!-- :key 强制每个模型一个全新实例：切模型必重新挂载，任何残留状态都不可能带过去 -->
+      <ResourceOperationsPanel :key="ifaceRow.id" :resource="asAccessResource(ifaceRow)" variant="plain" @updated="afterInterfaceChange" />
       <template #footer>
         <el-button @click="ifaceOpen = false">关闭</el-button>
         <el-button @click="openReports(ifaceRow)">历史版本与证据</el-button>

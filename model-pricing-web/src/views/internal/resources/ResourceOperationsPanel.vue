@@ -86,7 +86,13 @@ const reuseConfig = computed(() => undefined);
 // 能用「接口配置」一步走完时，分步面板收起；不能时自动展开，避免功能被藏起来。
 const advancedOpen = ref<string[]>([]);
 watch(showQuickAccess, (quick) => { advancedOpen.value = quick || accessDone.value ? [] : ["advanced"]; }, { immediate: true });
-watch(boundConfig, (config) => { if (config && !accessForm.base_url) accessForm.base_url = config.base_url; }, { immediate: true });
+// 只有当这条配置**确实绑在本资源上**才回填 URL。
+// 之前只要"能解析出某个配置"就回填，加上组件复用，就变成"配一个同批全填好"。
+watch(boundConfig, (config) => {
+  if (config && props.resource.formal_config_id && config.id === props.resource.formal_config_id && !accessForm.base_url) {
+    accessForm.base_url = config.base_url;
+  }
+}, { immediate: true });
 
 async function copyField(value: string, label: string) {
   if (!value) { ElMessage.info(`${label}尚未填写`); return; }
