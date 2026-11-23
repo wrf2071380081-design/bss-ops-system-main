@@ -220,7 +220,17 @@ async function admit() {
 // 配置列表始终加载：既用于「接口配置」预填/复用，也用于已接入资源的只读摘要。
 onMounted(() => { void loadWorkflow(); void loadConfigs(); });
 watch(() => props.resource.revision, () => { void loadWorkflow(); void loadConfigs(); });
-watch(() => props.resource.id, () => { void loadConfigGroup(); }, { immediate: true });
+watch(() => props.resource.id, () => {
+  // 弹窗切换模型时组件是复用的，不会重新挂载——必须手动清空上一个模型填过的
+  // Base URL / API Key，否则下一个模型打开就是"已经填好了"（2026-11-23 反复踩）。
+  accessForm.base_url = "";
+  accessForm.api_key = "";
+  accessDone.value = false;
+  accessResult.value = undefined;
+  accessError.value = "";
+  void loadConfigGroup();
+  void loadConfigs();
+}, { immediate: true });
 async function loadConfigGroup() {
   const id = props.resource.id;
   try {
