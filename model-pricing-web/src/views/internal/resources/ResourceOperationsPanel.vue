@@ -80,11 +80,19 @@ const canHandleAccess = computed(() => Boolean(workflow.value?.can_bind || workf
 const showAccessSummary = computed(() => Boolean(props.resource.ever_admitted) || accessDone.value);
 const showQuickAccess = computed(() => !showAccessSummary.value);
 // 该地址已有正式配置时可复用，API Key 可以留空（原型里同一供应商的配置也是复用的）。
-const reuseConfig = computed(() => eligibleConfigs.value.find(item => item.base_url === accessForm.base_url.trim()));
+// 2026-11-23 业务裁决：每个模型单独配置。不再"看到同 URL 的配置就沿用 Key"——
+// 那会让同批其它模型看起来"自动填好了"，实际是复用了别人的凭据。
+const reuseConfig = computed(() => undefined);
 // 能用「接口配置」一步走完时，分步面板收起；不能时自动展开，避免功能被藏起来。
 const advancedOpen = ref<string[]>([]);
 watch(showQuickAccess, (quick) => { advancedOpen.value = quick || accessDone.value ? [] : ["advanced"]; }, { immediate: true });
-watch(boundConfig, (config) => { if (config && !accessForm.base_url) accessForm.base_url = config.base_url; }, { immediate: true });
+// 只有当这条配置**确实绑在本资源上**才回填 URL。
+// 之前只要"能解析出某个配置"就回填，加上组件复用，就变成"配一个同批全填好"。
+watch(boundConfig, (config) => {
+  if (config && props.resource.formal_config_id && config.id === props.resource.formal_config_id && !accessForm.base_url) {
+    accessForm.base_url = config.base_url;
+  }
+}, { immediate: true });
 
 async function copyField(value: string, label: string) {
   if (!value) { ElMessage.info(`${label}尚未填写`); return; }
@@ -218,7 +226,17 @@ async function admit() {
 // 配置列表始终加载：既用于「接口配置」预填/复用，也用于已接入资源的只读摘要。
 onMounted(() => { void loadWorkflow(); void loadConfigs(); });
 watch(() => props.resource.revision, () => { void loadWorkflow(); void loadConfigs(); });
-watch(() => props.resource.id, () => { void loadConfigGroup(); }, { immediate: true });
+watch(() => props.resource.id, () => {
+  // 弹窗切换模型时组件是复用的，不会重新挂载——必须手动清空上一个模型填过的
+  // Base URL / API Key，否则下一个模型打开就是"已经填好了"（2026-11-23 反复踩）。
+  accessForm.base_url = "";
+  accessForm.api_key = "";
+  accessDone.value = false;
+  accessResult.value = undefined;
+  accessError.value = "";
+  void loadConfigGroup();
+  void loadConfigs();
+}, { immediate: true });
 async function loadConfigGroup() {
   const id = props.resource.id;
   try {

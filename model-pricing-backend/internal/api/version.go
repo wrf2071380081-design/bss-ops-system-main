@@ -18,3 +18,14 @@ func SetBuildInfo(sha, at string) {
 		BuildAt = at
 	}
 }
+
+// StressTemplateParams 是压测模板参数（启动时从测试平台拉取）。
+// 为空时退回内置默认参数，保证平台不可用也能发单。
+var StressTemplateParams map[string]any
+
+// SetStressTemplateParams 由 main 在启动时注入。
+func SetStressTemplateParams(params map[string]any) {
+	if len(params) > 0 {
+		StressTemplateParams = params
+	}
+}

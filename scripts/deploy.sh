@@ -16,6 +16,14 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"
 API_PORT=18081
 WEB_PORT=8081
 
+# 工作区必须干净：否则打进去的是未提交代码，而版本戳写的是 HEAD，
+# 版本戳就成了假的（2026-11-22 实战踩到）。
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
+  echo "!! 工作区有未提交改动，先 git commit 再发布（否则版本戳不可信）"
+  git -C "$REPO_ROOT" status --short | head -10
+  exit 1
+fi
+
 SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 BUILT_AT="$(date -Iseconds)"
 TAG="${1:-$(date +%Y%m%d)-r$(git -C "$REPO_ROOT" rev-list --count HEAD)}"

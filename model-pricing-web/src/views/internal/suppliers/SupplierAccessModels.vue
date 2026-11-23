@@ -275,12 +275,6 @@ const backLabel = computed(() => queryString(route.query.return_to) === "supplie
   ? "← 返回供应商列表"
   : queryString(route.query.from_model_id) ? "← 返回模型详情" : "← 返回模型广场");
 const stateLabel = (state: string) => resourceStateLabels[state] || state;
-// 状态列的口径：PENDING_TEST 只表示"尚未准入"，不代表没测过。
-// 已经跑出连通/压力数据、但仍未接入的，显示「测试已通过 · 待接入」，避免看着像没测。
-function stateRowText(row: { state: string; connection_ms?: string | null; rps?: string | null }) {
-  if (row.state === "PENDING_TEST" && (row.connection_ms || row.rps)) return "测试已通过 · 待接入";
-  return stateLabel(row.state);
-}
 const regionLabel = (region: string) => resourceRegionLabels[region] || region;
 
 function queryString(value: unknown) {
@@ -740,7 +734,6 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
           <div class="model-filters">
             <label>模型公司<el-select v-model="modelFilters.company" clearable placeholder="全部" aria-label="模型公司" style="width:150px"><el-option v-for="company in modelCompanies" :key="company" :label="company" :value="company"/></el-select></label>
             <label>模型类型<el-select v-model="modelFilters.modelType" clearable placeholder="全部" aria-label="模型类型" style="width:130px"><el-option v-for="(name,key) in modelTypeLabels" :key="key" :label="name" :value="key"/></el-select></label>
-            <label>状态<el-select v-model="modelFilters.state" clearable placeholder="全部" aria-label="资源状态" style="width:130px"><el-option v-for="(name,key) in resourceStateLabels" :key="key" :label="name" :value="key"/></el-select></label>
             <el-input v-model="modelFilters.keyword" clearable placeholder="搜索平台模型名称 / 供应商接口模型 ID" aria-label="搜索模型名称或接口模型 ID" style="width:280px" />
             <el-button @click="resetModelFilters">重置</el-button>
             <span v-if="rows.length" class="muted">共 {{ filteredRows.length }} / {{ rows.length }} 条</span>
@@ -755,7 +748,7 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-table-column label="TPS" width="100"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.tps, row.test.status) }}</template></el-table-column>
             <el-table-column label="输入缓存命中率" width="130"><template #default="{ row }">{{ resourceCacheDisplay(row.test.cache_stats, row.test.status) }}</template></el-table-column>
             <el-table-column label="最近上架时间" width="170"><template #default="{ row }">{{ row.admitted_at ? formatDateTime(row.admitted_at) : "未记录" }}</template></el-table-column>
-            <el-table-column label="状态" min-width="150"><template #default="{ row }"><el-tag :type="row.state === 'ADMITTED' ? 'success' : row.state === 'PENDING_TEST' && (row.connection_ms || row.rps) ? 'warning' : 'info'" size="small">{{ stateRowText(row) }}</el-tag><span class="muted">{{rowHandling(row.id)}}</span></template></el-table-column>
+            <!-- 状态列已移除（2026-11-23）：办理进度看上方进度条与「资源操作」，单列状态重复且口径易歧义 -->
             <el-table-column label="测试与报告" width="112" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click.stop="openReports(row)">测试与报告</el-button></template></el-table-column>
             <!-- 原型末列「资源操作」里就是「接口配置」；行点击仍会选中行看下方详情，不再单占一列。 -->
             <el-table-column label="资源操作" width="110" fixed="right"><template #default="{ row }"><el-button size="small" text type="primary" @click.stop="openInterfaceConfig(row)">接口配置</el-button></template></el-table-column>
@@ -981,7 +974,8 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
     <el-dialog v-if="ifaceRow" v-model="ifaceOpen" class="iface-dialog" :title="`接口配置 · ${ifaceRow.model_name}`" width="min(940px, 96vw)" top="6vh" append-to-body :close-on-click-modal="false">
       <!-- 关键：是否只读由**这一行的真实状态**决定，不能指望上游字段。
          ifaceRow 里没有可靠的 ever_admitted，导致待测试的行也被锁成只读（2026-11-20）。 -->
-      <ResourceOperationsPanel :resource="asAccessResource(ifaceRow)" variant="plain" @updated="afterInterfaceChange" />
+      <!-- :key 强制每个模型一个全新实例：切模型必重新挂载，任何残留状态都不可能带过去 -->
+      <ResourceOperationsPanel :key="ifaceRow.id" :resource="asAccessResource(ifaceRow)" variant="plain" @updated="afterInterfaceChange" />
       <template #footer>
         <el-button @click="ifaceOpen = false">关闭</el-button>
         <el-button @click="openReports(ifaceRow)">历史版本与证据</el-button>

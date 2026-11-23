@@ -46,7 +46,7 @@ function sourceContext() {
   return { source_filters: encodeSourceFilters(applied.value), source_sort_by: sortKey.value, source_order: sortOrder.value, source_page: String(page.value), source_size: String(size.value) };
 }
 const regionLabel = (region: string) => resourceRegionLabels[region] || region;
-const stateLabel = (state: string) => state === "ADMITTED" ? "已接入" : state === "PENDING_ACCESS" ? "待接入" : state === "OFFLINE" ? "已下架" : state === "PENDING_TEST" ? "待测试" : state;
+const stateLabel = (state: string) => state === "ADMITTED" ? "已接入" : state === "PENDING_ACCESS" ? "已测试" : state === "OFFLINE" ? "已下架" : state === "PENDING_TEST" ? "待测试" : state;
 const stateType = (state: string) => state === "ADMITTED" ? "success" : state === "PENDING_ACCESS" ? "warning" : "info";
 // 指标空态按原型口径展示：没有记录=未记录，只跑出一部分=部分结果。
 const metric = (row: ResourceRow, key: "connection_ms" | "rps" | "tps") => {

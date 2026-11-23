@@ -18,13 +18,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -308,30 +312,31 @@ func main() {
 		staffPositionStore = nil
 	}
 	api.SetBuildInfo(buildSHA, buildAt)
+	loadStressTemplate(cfg)
 	router := api.New(api.Deps{
-		Config:              cfg,
-		Log:                 log,
-		Health:              dbClient,
-		AuthService:         authService,
-		SessionReader:       authRepo,
-		IdemStore:           idemStore,
-		StaffPositions: staffPositionStore,
-		TestJobs:            testJobStarter(testPlatform),
-		ManualTests:         api.NewManualTestStore(rawDB),
-		TestCallbacks:       testCallbackReceiver(testPlatform),
-		ResourceTestTargets: testTargets(testPlatform),
-		SupplyRoutes:        &supplyRoutes,
-		SupplierSubmissions: submissionSvc,
+		Config:                   cfg,
+		Log:                      log,
+		Health:                   dbClient,
+		AuthService:              authService,
+		SessionReader:            authRepo,
+		IdemStore:                idemStore,
+		StaffPositions:           staffPositionStore,
+		TestJobs:                 testJobStarter(testPlatform),
+		ManualTests:              api.NewManualTestStore(rawDB),
+		TestCallbacks:            testCallbackReceiver(testPlatform),
+		ResourceTestTargets:      testTargets(testPlatform),
+		SupplyRoutes:             &supplyRoutes,
+		SupplierSubmissions:      submissionSvc,
 		SupplierCredentials:      credentialSvc,
 		SupplierTestConfigGroups: testConfigGroupSvc,
-		SupplierModels:      supplierModelSvc,
-		SupplierAccount:     accountSvc,
-		UploadDir:           cfg.Uploads.Dir,
-		SupplyChain:         supplyChain,
-		CustomerWorkspace:   customerWorkspace,
-		ModelSvc:            modelSvc,
-		SupplierSvc:         supplier.NewService(repo.NewSupplierRepo(dbClient.DB)),
-		SupplierProfileSvc:  supplier.NewProfileService(repo.NewSupplierRepo(dbClient.DB)),
+		SupplierModels:           supplierModelSvc,
+		SupplierAccount:          accountSvc,
+		UploadDir:                cfg.Uploads.Dir,
+		SupplyChain:              supplyChain,
+		CustomerWorkspace:        customerWorkspace,
+		ModelSvc:                 modelSvc,
+		SupplierSvc:              supplier.NewService(repo.NewSupplierRepo(dbClient.DB)),
+		SupplierProfileSvc:       supplier.NewProfileService(repo.NewSupplierRepo(dbClient.DB)),
 		// 批次 7a：供应商门户主体档案（只读 GET）。
 		SupplierPortalProfileSvc: supplier.NewPortalProfileService(repo.NewSupplierRepo(dbClient.DB)),
 		SupplierQuoteSvc:         quoteSvc,
@@ -500,4 +505,37 @@ func adaptCalcFunc(svc *cost.Service) openapi.CalcFunc {
 		}
 		return scores, nil
 	}
+}
+
+// loadStressTemplate 启动时从测试平台拉取压测模板参数（默认 bss压力测试02）。
+//
+// 为什么不硬编码：模板里是 32k prompt + 高缓存命中场景，改由平台侧维护；
+// 我们只在启动时取一次，取不到就退回内置参数，不影响服务启动。
+func loadStressTemplate(cfg *config.Config) {
+	name := strings.TrimSpace(cfg.TestPlatform.StressTemplate)
+	base := strings.TrimRight(strings.TrimSpace(cfg.TestPlatform.BaseURL), "/")
+	token := strings.TrimSpace(cfg.TestPlatform.Token)
+	if name == "" || base == "" || token == "" {
+		return
+	}
+	client := &http.Client{Timeout: 8 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, base+"/api/v1/templates/"+url.PathEscape(name), nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var payload struct {
+		Data struct {
+			Params map[string]any `json:"params"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		return
+	}
+	api.SetStressTemplateParams(payload.Data.Params)
 }

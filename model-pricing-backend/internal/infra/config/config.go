@@ -44,6 +44,9 @@ type TestPlatform struct {
 	// 通常是 `claude-sonnet-4` 这种没有厂商前缀的名字，直接传会被平台
 	// 判 400「非 demo 模型不能使用 demo 地址」。留空表示沿用 official_id。
 	InternalModel string `mapstructure:"internal_model"`
+	// StressTemplate 是平台上的压测模板名（如 bss压力测试02）。
+	// 启动时拉取一次模板参数，压测按模板发单，避免我们这边硬编码过期参数。
+	StressTemplate string `mapstructure:"stress_template"`
 	Enable          bool   `mapstructure:"enable"`
 	BaseURL         string `mapstructure:"base_url"`
 	Token           string `mapstructure:"token"`

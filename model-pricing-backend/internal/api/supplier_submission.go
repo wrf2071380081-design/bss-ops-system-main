@@ -83,9 +83,11 @@ type submissionTestDTO struct {
 	// 压力测试没有判定，留空——前端据此区分"未通过"和"已完成但无判定"。
 	Verdict string `json:"verdict,omitempty"`
 	// Stale=true 表示测试目标已变化（改了地址/Key/模型），该结果不再有效。
-	Stale        bool    `json:"stale,omitempty"`
-	JobID        string  `json:"job_id,omitempty"`
-	ReportID     string  `json:"report_id,omitempty"`
+	Stale    bool   `json:"stale,omitempty"`
+	JobID    string `json:"job_id,omitempty"`
+	ReportID string `json:"report_id,omitempty"`
+	// Failure 是平台中止原因（无报告时给供应商看，别再只显示"未提供结论"）。
+	Failure      string  `json:"failure,omitempty"`
 	ConnectionMS *string `json:"connection_ms"`
 	RPS          *string `json:"rps"`
 	TPS          *string `json:"tps"`
@@ -556,7 +558,10 @@ func (h *supplierSubmissionHandler) startSubmitRowTests(ctx context.Context, sup
 			defer func() { <-sem }()
 			// 幂等键按"申报单+行"固定：重复提交/重试不会重复建任务。
 			key := fmt.Sprintf("submit-%d-%d", submissionID, rowID)
-			_, _, _ = h.startRowTest(ctx, supplierID, submissionID, rowID, "comprehensive", key)
+			// 发单失败必须可见：以前三个返回值全丢，平台上没有任务也没人知道。
+			if _, _, err := h.startRowTest(ctx, supplierID, submissionID, rowID, "protocolprobe", key); err != nil {
+				_ = h.svc.store.MarkRowTestFailed(ctx, rowID, "发起连通性测试失败："+err.Error())
+			}
 		}()
 	}
 	wg.Wait()
@@ -600,13 +605,19 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		return "", actionFailed, err
 	}
 	params := map[string]any(nil)
-	if platformCategory == "comprehensive" {
-		// 提交阶段的连通性测试只要 L1（API 可用性门控）：
-		// 不传 layers 会用门类默认值（L1~L6 全跑），既慢又会真花钱。
-		params = map[string]any{"layers": []string{"L1"}}
+	if platformCategory == "protocolprobe" {
+		// 连通性改用平台专属门类（2026-11-21）：逐协议最小请求、按报文体判 PASS/FAIL。
+		params = map[string]any{"engine": "reference-protocolprobe-v1", "concurrency": 2}
 	}
-	if platformCategory == "stress" {
-		// 真机实测：stress 必须显式声明参考引擎，否则 400。
+	if platformCategory == "stress" && len(StressTemplateParams) > 0 {
+		// 优先用平台模板（如 bss压力测试02）的参数：32k prompt + 高缓存命中，
+		// 比我们写死的 30s/并发1 更有参考价值，也不会随模板变化而失效。
+		params = make(map[string]any, len(StressTemplateParams))
+		for k, v := range StressTemplateParams {
+			params[k] = v
+		}
+	} else if platformCategory == "stress" {
+		// 兜底：模板没拿到时用最小可用参数，保证能发单。
 		params = map[string]any{
 			"engine": "reference-performance-v1", "concurrency": []int{1},
 			"duration":        durationParam(stressDuration),
@@ -624,8 +635,11 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 			// 平台按官方 ID 识别模型；供应商自定义名只用于展示。
 			// 优先用「接口模型 ID」（供应商在该通道实际调用的名字，如 deepseek/deepseek-v3.2）；
 			// official_id 是我们目录里的规范名，很多时候不带厂商前缀，发给平台会 404。
-			Model:   modelForTest(baseURL, row.SupplierModelName, row.OfficialID),
-			BaseURL: baseURL, Protocol: "openai", APIKey: apiKey,
+			Model: modelForTest(baseURL, row.SupplierModelName, row.OfficialID),
+			// protocolprobe 要求 target.protocol 留空（平台按探针行自己决定鉴权头），
+			// 之前这里无条件写 "openai"，导致提交时的任务被平台 40001 拒绝、直接 FAILED，
+			// 于是"平台上看不到任务"（2026-11-23 实测：内部补测不传 Protocol 就能成功）。
+			BaseURL: baseURL, Protocol: protocolForCategory(platformCategory), APIKey: apiKey,
 		},
 		Params:         params,
 		IdempotencyKey: idempotencyKey,
@@ -634,8 +648,14 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		return "", actionFailed, err
 	}
 	if result.Deduplicated {
-		// 同一受测目标已经有一单在跑/排队：这次没有真的发起，也不改动行上的任务号。
-		// 并发连点、多标签页都会走到这里，是「不重复烧资源」的最后一道闸。
+		// 同一受测目标已经有一单在跑/排队：不重复发单，但**必须把行挂上这个任务**。
+		// 之前直接返回、不写 test_job_id，结果申报行没有任务 → 页面退回"提交时探测"，
+		// 而平台侧其实有一条任务（2026-11-23：GLM 行就卡在这里）。
+		if row.TestJobID == nil {
+			if id, convErr := strconv.ParseInt(result.LocalJobID, 10, 64); convErr == nil {
+				_ = h.svc.store.AttachTestJob(ctx, rowID, id, platformCategory)
+			}
+		}
 		return result.LocalJobID, actionSkipped, nil
 	}
 	localJobID, convErr := strconv.ParseInt(result.LocalJobID, 10, 64)
@@ -1747,7 +1767,7 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			item.ConnectivityJob = &submissionTestDTO{
 				Category: "CONNECTIVITY", Status: *row.ConnectivityStatus, Tested: tested && !row.ConnectivityStale,
 				Passed: passed, Verdict: deref(row.ConnectivityVerdict), Stale: connStale, ConnectionMS: row.ConnectionMS,
-				ReportID: formatOptionalID(row.ConnectivityReportID),
+				ReportID: formatOptionalID(row.ConnectivityReportID), Failure: row.ConnectivityFailure,
 			}
 			item.ConnectivityTested, item.ConnectivityPassed = tested && !connStale, passed && !connStale
 		}
@@ -1757,7 +1777,7 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			item.StressJob = &submissionTestDTO{
 				Category: "STRESS", Status: *row.StressStatus, Tested: tested && !row.StressStale,
 				Passed: passed, Verdict: deref(row.StressVerdict), Stale: stressStale, RPS: row.RPS, TPS: row.TPS,
-				ReportID: formatOptionalID(row.StressReportID),
+				ReportID: formatOptionalID(row.StressReportID), Failure: row.StressFailure,
 			}
 			item.StressTested, item.StressPassed = tested && !stressStale, passed && !stressStale
 		}
@@ -1899,4 +1919,12 @@ func registerSupplierSubmissionRoutes(protected *gin.RouterGroup, deps Deps, ide
 	group.POST("/:id/tests", perClick, handler.batchTests)
 	group.POST("/:id/submit", idempotent, handler.submit)
 	group.POST("/:id/withdraw", idempotent, handler.withdraw)
+}
+
+// protocolForCategory 只对压测给 openai；protocolprobe 必须留空。
+func protocolForCategory(category string) string {
+	if category == "stress" {
+		return "openai"
+	}
+	return ""
 }

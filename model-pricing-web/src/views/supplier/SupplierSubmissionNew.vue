@@ -873,12 +873,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       </el-table-column>
       <!-- 2026-11：门户不再提供压力测试 -->
       <!-- 2026-11：门户不再提供手动连通/压力测试，测试列移除 -->
-      <el-table-column label="状态" width="110" align="center">
-        <template #default="{ row }">
-          <el-tag v-if="row.id" size="small" :type="rowStatusType(row.row_status)">{{ rowStatusLabel(row.row_status) }}</el-tag>
-          <span v-else class="muted">未保存</span>
-        </template>
-      </el-table-column>
+      <!-- 「状态」列已移除（2026-11-21）：保存/未保存对供应商没有决策价值 -->
       <el-table-column label="操作" width="80" align="center">
         <template #default="{ $index }"><el-button link type="danger" :disabled="locked" @click="removeRow($index)">删除</el-button></template>
       </el-table-column>

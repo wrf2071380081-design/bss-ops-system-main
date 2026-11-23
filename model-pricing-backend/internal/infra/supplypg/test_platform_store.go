@@ -133,9 +133,13 @@ func (s *TestPlatformStore) FailJob(ctx context.Context, localID, reason string)
 	if err != nil {
 		return err
 	}
+	// $2 必须显式 ::text：jsonb_build_object 里 PG 推断不出参数类型，
+	// 会报 "could not determine data type of parameter $2"（2026-11-23 实测，
+	// 这条错把真正的 40001 原因盖住了，排查绕了很远）。
 	_, err = s.db.ExecContext(ctx, `UPDATE `+s.table("test_job")+`
 SET status='FAILED', finished_at=now(),
-    response_summary = COALESCE(response_summary,'{}'::jsonb) || jsonb_build_object('start_error',$2)
+    failure_reason = NULLIF($2::text,''),
+    response_summary = COALESCE(response_summary,'{}'::jsonb) || jsonb_build_object('start_error',$2::text)
 WHERE id=$1 AND status IN ('QUEUED','RUNNING')`, id, strings.TrimSpace(reason))
 	return err
 }
@@ -221,9 +225,30 @@ func (s *TestPlatformStore) CompleteJob(ctx context.Context, done tpdomain.Compl
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 失败原因：优先用平台回传的 error/message 字段，没有再落状态本身。
+	failureReason := ""
+	if done.FinalStatus != "SUCCEEDED" {
+		var probe struct {
+			Error   any `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal([]byte(summary), &probe) == nil {
+			if probe.Message != "" {
+				failureReason = probe.Message
+			} else if probe.Error != nil {
+				if b, e := json.Marshal(probe.Error); e == nil {
+					failureReason = string(b)
+				}
+			}
+		}
+		if failureReason == "" {
+			failureReason = "平台任务状态：" + done.FinalStatus
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("test_job")+`
-SET status=$2, verdict=NULLIF($3,''), response_summary=$4::jsonb, finished_at=$5 WHERE id=$1`,
-		jobID, done.FinalStatus, done.Verdict, summary, done.FinishedAt.UTC()); err != nil {
+SET status=$2, verdict=NULLIF($3,''), response_summary=$4::jsonb, finished_at=$5,
+    failure_reason=NULLIF($6,'') WHERE id=$1`,
+		jobID, done.FinalStatus, done.Verdict, summary, done.FinishedAt.UTC(), failureReason); err != nil {
 		return "", err
 	}
 	// 内部补测是「资源」维度的，申报行不知道它跑过。这里把任务回写到对应的申报行，
@@ -277,6 +302,29 @@ RETURNING id`,
 		}
 	}
 
+	// 状态机（2026-11-23）：连通性通过后资源进入 PENDING_ACCESS（已测试），
+	// 只有"已测试"才允许登记接入变 ADMITTED。之前没有这一层，
+	// 于是出现"测完了还显示待测试、一接入就直接已接入"。
+	// 判据改成"这个任务产出的报告里 connection_passed 为真"：
+	// 平台回调的 verdict 可能为空（只有轮询才带），之前用它判就把 82/83 漏掉了。
+	if done.FinalStatus == "SUCCEEDED" {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("resource")+`
+SET state='PENDING_ACCESS', updated_at=now()
+WHERE id=$1 AND state='PENDING_TEST' AND NOT ever_admitted
+  AND EXISTS (SELECT 1 FROM `+s.table("test_job")+` j
+              WHERE j.id = $2 AND lower(coalesce(j.verdict,'')) = 'pass')`, resourceID, jobID); err != nil {
+			return "", err
+		}
+	}
+	// 回调先到、轮询后补 verdict 的情况：以任务上的 verdict 为准校正报告，避免
+	// 报告一直停在 connection_passed=false（2026-11-23：状态因此不进"已测试"）。
+	if strings.EqualFold(strings.TrimSpace(done.Verdict), "pass") || done.Outcome.ConnectivityPassed {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+s.table("test_report")+`
+SET connection_passed = CASE WHEN $2 THEN true ELSE connection_passed END
+WHERE id=$1`, reportID, done.Outcome.ConnectivityPassed); err != nil {
+			return "", err
+		}
+	}
 	fileName, fileErr := s.writeReportFiles(reportID, done.ReportJSON, done.ReportMD)
 	if fileErr != nil {
 		return "", fileErr

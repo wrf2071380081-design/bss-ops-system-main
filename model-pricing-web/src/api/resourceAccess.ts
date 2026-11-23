@@ -48,15 +48,22 @@ export async function completeResourceAccess(
 
   const reason = accessReasonFor(resource, baseURL);
   const configs = await resourceOperationsApi.formalConfigs(resource.supplier_id, resource.region);
-  let config = configs.find(item =>
-    item.base_url === baseURL && item.status === "ACTIVE" && item.has_api_key &&
-    item.revision === item.confirmed_revision
-  );
+  // 复用只能落在**同一准入配置组**里：不同组即使 Base URL 相同也必须各配一次
+  // （2026-11-20 业务确认；之前这里只看 URL，GLM 会直接沿用 ds 组的配置）。
+  let groupID = "";
+  try { groupID = (await resourceOperationsApi.configGroup(resource.id)).config_group_id || ""; } catch { groupID = ""; }
+  // 2026-11-23 业务裁决：**每个模型单独配置**，不再跨资源复用同组配置。
+  // 之前按"同组复用"实现，但测试阶段两组用同一 URL+Key，导致永远分不清是该复用还是该新建，
+  // 反复修不好。现在只认"这个资源自己已经绑定过的配置"，其余一律要求填写并新建。
+  const bound = resource.formal_config_id
+    ? configs.find(item => item.id === resource.formal_config_id)
+    : undefined;
+  let config = bound;
   if (!config) {
     if (!apiKey) throw new Error("首次登记该地址需要填写生产 API Key。");
     config = await resourceOperationsApi.createFormalConfig(
       resource.supplier_id,
-      { scope: `${resource.model_name} 生产配置`, base_url: baseURL, api_key: apiKey, reason },
+      { scope: `${resource.model_name} 生产配置`, base_url: baseURL, api_key: apiKey, reason, config_group_id: groupID || undefined },
       crypto.randomUUID()
     );
   }
