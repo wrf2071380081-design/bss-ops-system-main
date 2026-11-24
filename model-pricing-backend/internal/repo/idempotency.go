@@ -108,11 +108,17 @@ func (r *IdempotencyRepo) GetByRequestID(ctx context.Context, requestID string) 
 }
 
 // FindByBizKey 按 biz_key 探查语义重复记录（Agent 重试防线）。
+//
+// 只认**还没过期**的记录（expire_at = 写入时 now+24h）：
+// 之前不加这道过滤，历史上任意一条 DONE 都会永久阻断相同请求。2026-11-24 的典型故障是
+// 「同一份资料第二次新增永远被静默回放第一次的响应」，而业务上那条记录早已改名，用户看到
+// 保存成功却什么都没发生。
 func (r *IdempotencyRepo) FindByBizKey(ctx context.Context, bizKey string) (*middleware.IdempotencyRow, error) {
 	var row row
 	err := r.txOf(ctx).
 		Table("idempotency_key").
 		Where("biz_key = ?", bizKey).
+		Where("expire_at > ?", time.Now()).
 		First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil

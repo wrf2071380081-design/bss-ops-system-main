@@ -131,14 +131,22 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	group.GET("/:id/resource-operations/options", h.sourceOperationOptions)
 	group.GET("/:id", h.get)
 	var idem gin.HandlerFunc
+	// idemCommand 给「每次点击都是一次新命令」的新增接口用：biz_key 里带上客户端幂等键。
+	//
+	// 不加这一个的后果（2026-11-24 实测）：DefaultBizKey 只看 body+operator+path，
+	// 于是"同一份资料第二次点新增"会命中上一次的 DONE 记录被**静默回放**——
+	// 返回 200、前端提示已保存，但库里没新行、操作记录也没有。
+	var idemCommand gin.HandlerFunc
 	if deps.IdemStore == nil {
 		idem = func(c *gin.Context) { supplyHTTPError(c, supply.ErrDependencyUnavailable); c.Abort() }
+		idemCommand = idem
 	} else {
 		idem = middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey)
+		idemCommand = middleware.Idempotency(deps.IdemStore, middleware.ClientKeyBizKey)
 	}
-	group.POST("", idem, h.create)
+	group.POST("", idemCommand, h.create)
 	group.PUT("/:id", idem, h.update)
-	group.POST("/manual-completion", idem, h.manualCreate)
+	group.POST("/manual-completion", idemCommand, h.manualCreate)
 	group.PUT("/:id/manual-completion", idem, h.manualUpdate)
 	group.POST("/:id/verify", idem, h.verify)
 	group.POST("/:id/manual-resource", idem, h.manualResource)

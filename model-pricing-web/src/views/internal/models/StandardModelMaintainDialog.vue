@@ -100,7 +100,13 @@ async function canLeave() {
 }
 async function close() { if (await canLeave()) emit("close"); }
 async function reload() { if (await canLeave()) await load(); }
-function failed(value: unknown) { error.value = message(value); if (value instanceof ApiError && value.httpStatus === 409) conflict.value = true; }
+function failed(value: unknown) {
+  error.value = message(value);
+  // 409 有两种：版本冲突（要用户重新读取再改）和「库里已有同名/同官方 ID 的模型」（要用户去维护那条）。
+  // 后者的处理动作完全不同，不能挂「记录已更新，请重新读取」的横幅，只展示后端给的具体文案。
+  // 10008 = apperr.ErrConflict（数据已存在）；10005 = 版本/幂等冲突。
+  if (value instanceof ApiError && value.httpStatus === 409 && Number(value.code) !== 10008) conflict.value = true;
+}
 async function save() {
   if (blocked.value) return;
   if (issues.value.length) { error.value = `${issues.value[0]!.path ? standardFieldLabel(issues.value[0]!.path) + "：" : ""}${issues.value[0]!.message}`; return; }
