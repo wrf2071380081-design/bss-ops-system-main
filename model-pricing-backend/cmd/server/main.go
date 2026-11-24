@@ -314,6 +314,7 @@ func main() {
 	api.SetBuildInfo(buildSHA, buildAt)
 	loadStressTemplate(cfg)
 	router := api.New(api.Deps{
+		CatalogBusiness:           api.NewCatalogBusinessStore(rawDB),
 		Config:                   cfg,
 		Log:                      log,
 		Health:                   dbClient,

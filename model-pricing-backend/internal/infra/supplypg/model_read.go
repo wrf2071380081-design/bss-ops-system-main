@@ -202,6 +202,14 @@ func decodeModelSnapshot(raw []byte, id string, version uint64) (*supply.Standar
 	if err := validateStoredModel(envelope.Model); err != nil {
 		return nil, supply.ErrReadContract
 	}
+	// Older snapshots can encode empty slices as [] and decimal amounts without
+	// trailing zeroes. Compare the same domain representation as the live row;
+	// these serialization differences do not mean that business data drifted.
+	canonical, err := supply.NewStandardModel(envelope.Model.ID, envelope.Model.MaintainerID, envelope.Model.Data, envelope.Model.UpdatedAt)
+	if err != nil {
+		return nil, supply.ErrReadContract
+	}
+	envelope.Model.Data = canonical.Data
 	return envelope.Model, nil
 }
 func (s *ModelReadStore) ListModelVersions(ctx context.Context, id string, page, size int) ([]*supply.StandardModel, int64, error) {

@@ -16,6 +16,16 @@ test("standard model draft saves a complete replacement without ownership or res
 });
 
 const price = () => ({ item_key: "text_input", label: "输入", task_type: "TEXT_INPUT", amount: "0", currency: "USD", unit_code: "TOKEN", unit_quantity: "1000000", condition: "标准请求", dimensions: {}, source_url: "https://vendor.example/pricing" });
+
+test('scoped specifications and regional prices survive save, with evidence URLs checked',()=>{
+  const draft=emptyStandardModel();
+  draft.capacity=[{key:'max_output',label:'最大输出',value:'8192',disclosure:'DISCLOSED',unit:'TOKEN',semantics:'SHARED_WINDOW',condition:'标准模式',source_url:'https://example.com/limits',quote:'Max output 8192'}];
+  draft.price_items=[{...price(),dimensions:{region:'中国内地',deployment:'标准API',valid_from:'2026-01-01',valid_to:'2026-12-31',period:'PEAK',account_tier:'enterprise'}}];
+  assert.deepEqual(validateStandardModel(draft),[]);
+  assert.deepEqual(buildStandardModelSave(draft,'核对').capacity,draft.capacity);
+  draft.capacity[0]!.source_url='https://example.com/?api_key=secret';
+  assert.ok(validateStandardModel(draft).some(x=>x.path==='capacity[0].source_url'));
+});
 test("prices preserve decimal strings and zero, reject invalid precision, units and key duplicates", () => {
   const draft = emptyStandardModel(); draft.price_items = [price()];
   assert.deepEqual(validateStandardModel(draft), []);

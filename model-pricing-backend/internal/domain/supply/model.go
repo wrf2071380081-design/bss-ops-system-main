@@ -28,11 +28,23 @@ type OfficialFact struct {
 	Key        string `json:"key"`
 	Disclosure string `json:"disclosure"`
 	Value      string `json:"value"`
+	Label      string `json:"label,omitempty"`
+	Unit       string `json:"unit,omitempty"`
+	Semantics  string `json:"semantics,omitempty"`
+	Condition  string `json:"condition,omitempty"`
+	Scope      string `json:"scope,omitempty"`
+	SourceURL  string `json:"source_url,omitempty"`
+	Quote      string `json:"quote,omitempty"`
 }
 type Ability struct {
 	Key         string `json:"key"`
 	State       string `json:"state"`
 	Description string `json:"description"`
+	Label       string `json:"label,omitempty"`
+	Condition   string `json:"condition,omitempty"`
+	Scope       string `json:"scope,omitempty"`
+	SourceURL   string `json:"source_url,omitempty"`
+	Quote       string `json:"quote,omitempty"`
 }
 type Source struct {
 	Label string `json:"label"`
@@ -163,6 +175,7 @@ func (m *StandardModel) unverifiedStatus() string {
 	}
 	return "UNVERIFIED"
 }
+
 // authorize 校验编辑权：维护人本人，或上层已判定其具备维护授权（WriteMeta.CanMaintain）。
 func (m *StandardModel) authorize(meta WriteMeta, revision uint64) error {
 	if meta.ActorID != m.MaintainerID && !meta.CanMaintain {
