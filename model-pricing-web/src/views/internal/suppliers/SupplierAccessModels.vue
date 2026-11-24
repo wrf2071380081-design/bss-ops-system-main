@@ -776,8 +776,10 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
                 <el-button v-if="profile.can_edit" type="primary" plain size="small" :loading="profileSaving" @click="saveProfileInline">保存修改</el-button>
               </div>
               <el-alert v-if="profile.audit_status === 'INCOMPLETE'" type="warning" :closable="false" show-icon
-                title="该供应商档案缺少建档／变更流水，当前仅可查看"
-                description="档案内容本身完好，只是无法追溯建档记录，因此暂不允许修改。补齐归属采购人并由管理员补全流水后即可编辑。" />
+                :title="profile.can_edit ? '该供应商档案缺少建档／变更流水' : '该供应商档案缺少建档／变更流水，当前仅可查看'"
+                :description="profile.can_edit
+                  ? '档案内容本身完好。你具备维护权限，可以直接编辑；保存会重建一条基线流水，补齐归属采购人后审计链即恢复完整。'
+                  : '档案内容本身完好，只是无法追溯建档记录，因此暂不允许修改。补齐归属采购人并由管理员补全流水后即可编辑。'" />
               <el-alert v-else-if="!profile.can_edit" type="info" :closable="false" show-icon title="当前账号不是该供应商的归属采购人，也没有供应商维护权限，档案为只读。" />
               <el-form label-position="top" class="profile-grid" :disabled="!profile.can_edit || profileSaving">
                 <el-form-item label="公司名称"><el-input v-model="profileDraft.name" maxlength="128" /></el-form-item>

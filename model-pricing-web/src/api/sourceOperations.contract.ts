@@ -57,7 +57,7 @@ export function sourceOperationLocation(row: SourceOperation): { path: string; q
 
 export function supplierOperationLabel(row: SourceOperation) {
   const actions: Record<string, string> = {
-    CREATE: "新建", UPDATE: "维护", UPDATE_NOOP: "维护（无变更）", DISABLE: "停用", DISABLE_NOOP: "停用（无变更）",
+    CREATE: "新建", UPDATE: "维护", UPDATE_NOOP: "维护（无变更）", BASELINE: "重建建档基线", DISABLE: "停用", DISABLE_NOOP: "停用（无变更）",
     UPLOAD: "上传", ARCHIVE: "归档", REVISE: "修订", CANCEL: "取消", EXECUTE: "登记实际完成", BLOCK: "执行阻断",
     ADMIT: "登记接入", BIND_FORMAL_CONFIG: "绑定正式配置", ONLINE: "上架", OFFLINE: "下架", CHANGE_COEFFICIENT: "批准改价", CHANGE_COEFFICIENT_NOOP: "同价确认", APPLY_APPROVED_PRICE: "应用批准改价",
     CONFIG_COMPLETE:'登记配置完成',CANCEL_ACCESS:'取消接入',

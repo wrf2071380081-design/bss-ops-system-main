@@ -138,7 +138,9 @@ export function buildSupplierEntitySave(form: SupplierEntityForm, reason: string
     name, region: form.region, registration_no: form.registration_no.trim(), contact: form.contact.trim(), phone: form.phone.trim(),
     tax_rate: taxRate, settlement_currency: form.settlement_currency, remark: form.remark.trim(), reason: reason.trim(),
   };
-  if (revision !== undefined) body.expected_revision = positiveBigint(revision);
+  // revision "0" = 档案审计链不可信（自助注册/历史数据），后端按「重建基线」处理，
+  // 必须原样透传 0，不能当成非法 ID 拒掉。
+  if (revision !== undefined) body.expected_revision = revision === "0" ? "0" : positiveBigint(revision);
   return body;
 }
 

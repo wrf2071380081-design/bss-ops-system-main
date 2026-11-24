@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
+
+	"model_bss/internal/domain/supply"
 )
 
 // 供应商门户「账户设置」持久化层（2026-10-27，M2）。
@@ -203,11 +206,16 @@ func (s *AccountStore) load(ctx context.Context, q rowQuerier, supplierID int64)
 	return &rec, nil
 }
 
-// Update 在一个事务里做「锁定校验 → 写回 supplier → 落留痕」。
+// Update 在一个事务里做「锁定校验 → 写回 supplier → 落留痕 → 续写档案快照」。
 //
 // 先 SELECT ... FOR UPDATE 锁住 supplier 行，避免两个并发保存各自看到旧的 region。
 // 锁定计数用单独查询取：Postgres 不允许 FOR UPDATE 与聚合出现在同一层查询里。
 // 并发口径：region 守卫挂在被锁的行上，resource/submission 只增不减，读到即视为已锁定。
+//
+// 为什么必须续写档案快照（2026-11-20 排查结论，见 appendSupplierSnapshot）：
+// 门户保存此前只写 entity_type='supplier_account'，却同时刷新了 supplier.updated_at。
+// 内部档案页的审计链校验只认 entity_type='supplier' 的完整快照并要求它与主行逐字段
+// 相等，于是「主行变了、快照没变」被判定为 INCOMPLETE，档案立刻转为只读。
 func (s *AccountStore) Update(ctx context.Context, supplierID int64, in AccountUpdate, operatorName, requestID string) (*AccountRecord, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -243,12 +251,38 @@ SELECT
 		return nil, ErrRegionLocked
 	}
 
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+	// 档案视图：既是续写快照的基线，也用来判断这条链还能不能往下接。
+	// FOR UPDATE 已经在上面拿到行锁，这里用不加锁的读，保持同一事务同一快照。
+	suppliers := &SupplierStore{db: s.db, schema: s.schema}
+	previous, previousErr := suppliers.loadSupplier(ctx, tx, fmt.Sprint(supplierID), false)
+	// 只有「保存前审计链本身完好」才续写：revision 必须能接着往下走，
+	// 且归属采购人可追溯。从未有过建档快照的历史数据（演示种子、自助注册）
+	// 保持原样，不在这里凭空造一段历史。
+	extendAudit := previousErr == nil && previous != nil &&
+		previous.AuditStatus == supply.SupplierAuditVerified &&
+		previous.Revision > 0 && previous.Revision < math.MaxInt64 &&
+		modelIdentity(previous.BuyerID)
+
+	var updatedAt time.Time
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`
 UPDATE %s.supplier
    SET name = $2, registration_no = $3, contact = $4, region = $5, updated_at = now()
- WHERE id = $1`, s.schema),
-		supplierID, in.Name, in.RegistrationNo, in.Contact, in.Region); err != nil {
+ WHERE id = $1
+ RETURNING updated_at`, s.schema),
+		supplierID, in.Name, in.RegistrationNo, in.Contact, in.Region).Scan(&updatedAt); err != nil {
 		return nil, fmt.Errorf("update supplier %d: %w", supplierID, err)
+	}
+	// 快照里的 updated_at 必须与主行逐微秒相等，统一截断到数据库精度。
+	updatedAt = updatedAt.UTC().Truncate(time.Microsecond)
+
+	// 门户改名后旧名要沉成曾用名：内部建档路径就是这么维护的。
+	// 不补这一步，若新名恰好等于某个曾用名，档案读取会因「曾用名等于现名」
+	// 再次判为不可信，快照也就白写了。
+	if extendAudit && strings.TrimSpace(previous.Data.Name) != in.Name {
+		aliases := supply.SupplierAliasesAfterRename(previous.Aliases, previous.Data.Name, in.Name)
+		if err := suppliers.replaceSupplierAliases(ctx, tx, fmt.Sprint(supplierID), in.Name, aliases); err != nil {
+			return nil, fmt.Errorf("sync supplier aliases %d: %w", supplierID, err)
+		}
 	}
 
 	before, _ := json.Marshal(map[string]any{
@@ -286,10 +320,71 @@ VALUES ('supplier_account', $1, 'UPDATE_PROFILE', $2, $3::jsonb, $4::jsonb, NULL
 		return nil, fmt.Errorf("write account operation log: %w", err)
 	}
 
+	if extendAudit {
+		if err := s.appendSupplierSnapshot(ctx, tx, suppliers, supplierID, previous, updatedAt, logOperator, requestID); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit account update: %w", err)
 	}
 	return s.Load(ctx, supplierID)
+}
+
+// supplierProfileAuditReason 是门户续写档案快照时落的理由文案。
+// 审计链要求 reason 非空，且它也是「这条流水为什么存在」的唯一说明。
+const supplierProfileAuditReason = "供应商门户自助维护企业资料"
+
+// appendSupplierSnapshot 为门户保存追加一条 entity_type='supplier' 的完整快照，
+// 让档案审计链在门户改动后仍然自洽。
+//
+// 口径与内部建档完全一致（见 supplierTransaction.AppendSupplierOperation）：
+// 快照是整条 supply.Supplier 的 JSON，必须与 supplier 主行逐字段相等，
+// revision 单调递增，且有 reason / request_id / operator 可追溯。
+//
+// 两处刻意的取舍：
+//   - 快照内容不是拼出来的，而是保存后用 loadSupplier 重新读一遍主行——
+//     读路径怎么表达这条档案，快照就怎么记，避免两边格式化口径漂移。
+//   - 拿不到 request_id 或读不回主行时直接跳过，不写一条不可信的流水。
+//     宁可让审计链留缺口（档案继续只读），也不制造看起来完整的假证据。
+func (s *AccountStore) appendSupplierSnapshot(ctx context.Context, tx *sql.Tx, suppliers *SupplierStore, supplierID int64, previous *supply.Supplier, updatedAt time.Time, operator, requestID string) error {
+	if suppliers == nil || previous == nil {
+		return nil
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return nil
+	}
+	after, err := suppliers.loadSupplier(ctx, tx, fmt.Sprint(supplierID), false)
+	if err != nil || after == nil {
+		return nil
+	}
+	action := "UPDATE_NOOP"
+	revision := previous.Revision
+	if !supplierDataEqual(previous.Data, after.Data) {
+		revision = previous.Revision + 1
+		action = "UPDATE"
+	}
+	after.Revision = revision
+	after.UpdatedAt = updatedAt
+	// AuditStatus 是读取时算出来的结论，落库前必须清空，否则会被当成历史写进去。
+	after.AuditStatus = ""
+	payload, err := json.Marshal(after)
+	if err != nil {
+		return fmt.Errorf("marshal supplier snapshot %d: %w", supplierID, err)
+	}
+	var beforePayload any
+	if encoded, err := json.Marshal(previous); err == nil {
+		beforePayload = string(encoded)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+INSERT INTO %s.operation_log (entity_type, entity_id, action, operator_id, operator_name_snapshot, "before", "after", reason, request_id, created_at)
+VALUES ('supplier', $1, $2, NULL, $3, $4::jsonb, $5::jsonb, $6, $7, $8)`, s.schema),
+		supplierID, action, operator, beforePayload, string(payload), supplierProfileAuditReason, requestID, updatedAt); err != nil {
+		return fmt.Errorf("write supplier audit snapshot %d: %w", supplierID, err)
+	}
+	return nil
 }
 
 // CurrentRegionLocked 是锁定判定的唯一口径（service 层也调它，避免两处逻辑漂移）。

@@ -107,14 +107,28 @@ func (s *SupplierService) Update(ctx context.Context, meta WriteMeta, id string,
 		if current == nil {
 			return ErrNotFound
 		}
-		if current.ID != id || !validID(current.BuyerID) || current.Revision == 0 || current.Revision > math.MaxInt64 || (current.Status != "ACTIVE" && current.Status != "FROZEN") {
+		// 审计链不可信（Revision==0 或没有归属采购人）的档案：允许持 M3:E 的内部人员
+		// 直接维护，并在保存时重建一条基线流水（BASELINE）。这类档案的典型来源是
+		// 供应商自助注册——注册那一刻既没有内部员工能当归属人，也还没有任何业务流水。
+		// 2026-11-23 业务明确：内部不做这么细的权限区分，缺历史不该把人挡在编辑入口外。
+		baseline := current.Revision == 0 || !validID(current.BuyerID)
+		if baseline && !meta.CanMaintain {
+			return ErrReadContract
+		}
+		if current.ID != id || current.Revision > math.MaxInt64 || (current.Status != "ACTIVE" && current.Status != "FROZEN") {
 			return ErrReadContract
 		}
 		// 归属采购人本人，或上层已判定其具备 M3:E 维护授权（WriteMeta.CanMaintain）。
 		if current.BuyerID != meta.ActorID && !meta.CanMaintain {
 			return ErrForbidden
 		}
-		if expected == 0 || expected != current.Revision {
+		// 断链档案没有可信修订号，改用「必须显式传 0」表达「我知道这条链是断的」；
+		// 完整的档案仍按原口径做乐观锁。
+		if baseline {
+			if expected != 0 {
+				return ErrRevisionConflict
+			}
+		} else if expected == 0 || expected != current.Revision {
 			return ErrRevisionConflict
 		}
 		canonical, err := canonicalSupplierData(data)
@@ -142,12 +156,24 @@ func (s *SupplierService) Update(ctx context.Context, meta WriteMeta, id string,
 			}
 			next.Data = canonical
 			next.Aliases = SupplierAliasesAfterRename(current.Aliases, current.Data.Name, canonical.Name)
-			next.Revision++
+			if baseline {
+				// 断链档案：用 rev=1 的 BASELINE 重建基线（verify 只接受 BASELINE rev>=1，
+				// 而 UPDATE 要求 rev>=2，这里没有可比的前序版本）。
+				next.Revision = 1
+				action = "BASELINE"
+			} else {
+				next.Revision++
+				action = "UPDATE"
+			}
 			next.UpdatedAt = now
-			action = "UPDATE"
 			if err := tx.UpdateSupplier(ctx, next.Clone(), expected); err != nil {
 				return err
 			}
+		} else if baseline {
+			// 断链且内容没变：无事可做。这里不写流水——rev=0 的 NOOP 快照不合法，
+			// 写进去只会把档案钉得更死。
+			result = current.Clone()
+			return nil
 		}
 		if err := appendSupplierOperation(ctx, tx, current, next, meta, action, now); err != nil {
 			return err

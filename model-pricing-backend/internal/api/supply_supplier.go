@@ -104,9 +104,11 @@ func supplyCanEditSupplier(c *gin.Context) bool {
 
 func supplierDTO(profile *supply.Supplier, actor string, canMaintain bool, aliasesSupported bool) supplySupplierDTO {
 	aliases := append([]string{}, profile.Aliases...)
-	// 审计不完整时 revision 不可信，乐观锁写入必然失败，因此直接关掉编辑入口，
-	// 而不是让用户点开表单再撞一次 409。
-	canEdit := profile.AuditStatus != supply.SupplierAuditIncomplete && (actor == profile.BuyerID || canMaintain)
+	// 编辑入口只看「是不是归属采购人 / 有没有 M3:E 维护授权」，不再看审计链完整度。
+	// 审计不完整（自助注册、历史数据）时 revision 不可信，保存走「重建基线」通道
+	// （见 SupplierService.Update），由服务端用行锁 + updated_at 兜住并发，
+	// 因此这里不能因为 audit_status 就把入口关掉（2026-11-23 业务确认）。
+	canEdit := actor == profile.BuyerID || canMaintain
 	return supplySupplierDTO{ID: profile.ID, BuyerID: profile.BuyerID, Name: profile.Data.Name, Aliases: aliases, AliasesSupported: aliasesSupported, Region: profile.Data.Region, RegistrationNo: profile.Data.RegistrationNo, Contact: profile.Data.Contact, Phone: profile.Data.Phone, TaxRate: profile.Data.TaxRate, SettlementCurrency: profile.Data.SettlementCurrency, Remark: profile.Data.Remark, Established: profile.Established, Status: profile.Status, Revision: profile.Revision, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, CanEdit: canEdit, AuditStatus: profile.AuditStatus}
 }
 
@@ -446,7 +448,9 @@ func (h *supplySupplierHandler) update(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	expected, err := planPositiveID(req.ExpectedRevision)
+	// 断链档案没有可信修订号，客户端会显式传 "0" 表示「我知道这条链是断的，
+	// 按重建基线处理」；完整档案仍要求正整数修订号。
+	expected, err := planRevisionToken(req.ExpectedRevision)
 	if err != nil {
 		supplyHTTPError(c, supplyRequestError("expected_revision", "invalid revision"))
 		return
@@ -463,11 +467,22 @@ func (h *supplySupplierHandler) update(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	if profile == nil || profile.ID != id || profile.Revision < expected || profile.Revision > expected+1 || expected >= math.MaxInt64 || profile.BuyerID == "" {
+	// 基线重建（expected==0）不要求 BuyerID 非空：自助注册的档案本来就没有归属人。
+	if profile == nil || profile.ID != id || profile.Revision < expected || profile.Revision > expected+1 || expected >= math.MaxInt64 || (expected > 0 && profile.BuyerID == "") {
 		supplyHTTPError(c, supply.ErrReadContract)
 		return
 	}
 	h.result(c, profile)
+}
+
+// planRevisionToken 解析档案保存携带的修订号，允许 0 表示「档案链不可信，按重建基线处理」。
+// 其余口径与 planPositiveID 一致：必须是规范化的十进制串。
+func planRevisionToken(value string) (uint64, error) {
+	n, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || n > math.MaxInt64 || strconv.FormatUint(n, 10) != value {
+		return 0, supplyRequestError("expected_revision", "expected canonical bigint string")
+	}
+	return n, nil
 }
 
 func supplierData(req supplySupplierRequest) supply.SupplierData {
