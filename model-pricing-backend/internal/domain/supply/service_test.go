@@ -391,7 +391,9 @@ func TestModelServiceManualSaveAttestsCompleteVersionAtomically(t *testing.T) {
 	}
 }
 
-func TestModelServiceManualSaveKeepsIncompleteDraftUnverifiedAndSourceFailureAtomic(t *testing.T) {
+// 2026-11-24 口径变更：SaveManual 不再校验官方来源白名单（只保留「厂商 + 官方 Model ID」唯一）。
+// 资料完整即按维护人核验落库；资料不完整仍保持 INCOMPLETE、不可报价。
+func TestModelServiceManualSaveKeepsIncompleteDraftUnverifiedAndIgnoresSourcePolicy(t *testing.T) {
 	db := newMemoryDB()
 	ctx := context.Background()
 	incomplete := NewModelService(db, nil, func() time.Time { return modelNow })
@@ -403,12 +405,17 @@ func TestModelServiceManualSaveKeepsIncompleteDraftUnverifiedAndSourceFailureAto
 		t.Fatalf("incomplete save should remain blocked from quotation: %+v", draft)
 	}
 
+	// 来源策略即使全部拒绝，也不再阻断保存（该规则已按产品口径删除）。
 	rejected := NewModelService(db, sourcePolicyFunc(func(context.Context, string, []Source) error { return ErrSourceRejected }), func() time.Time { return modelNow })
-	if result, err := rejected.SaveManual(ctx, writeMeta("8"), "", 0, completeModelData()); result != nil || !errors.Is(err, ErrSourceRejected) {
-		t.Fatalf("complete save without approved official sources should fail: result=%+v error=%v", result, err)
+	accepted, err := rejected.SaveManual(ctx, writeMeta("8"), "", 0, completeModelData())
+	if err != nil || accepted == nil {
+		t.Fatalf("complete save must not be blocked by source policy: result=%+v error=%v", accepted, err)
 	}
-	if len(db.state.models) != 1 || len(db.state.operations) != 1 || db.state.models[draft.ID].VerifyStatus != "INCOMPLETE" {
-		t.Fatal("rejected source policy partially persisted a complete manual save")
+	if accepted.VerifyStatus != "VERIFIED" || accepted.CheckedBy == "" {
+		t.Fatalf("complete save should be attested by the maintainer: %+v", accepted)
+	}
+	if len(db.state.models) != 2 || len(db.state.operations) != 2 {
+		t.Fatalf("complete manual save should persist model + operation, got models=%d operations=%d", len(db.state.models), len(db.state.operations))
 	}
 }
 
