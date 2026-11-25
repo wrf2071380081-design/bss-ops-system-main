@@ -104,17 +104,24 @@ func (s *ModelService) Create(ctx context.Context, meta WriteMeta, data ModelDat
 // action. Incomplete data remains unverified; complete data is source-checked and
 // attested by the maintainer. The model, immutable version and operation record share
 // one transaction.
+//
+// 2026-11-24：按产品口径**取消并发/版本与来源白名单拦截**——当前阶段只保留
+// 「身份唯一（厂商 + 官方 Model ID）」这一条硬约束。具体：
+//   - 不再比较客户端传来的 expected_revision，一律以库里当前版本为基准自增
+//     （同一模型多人/多标签页先后保存时后者覆盖前者，不再回 409「记录状态已变化」）；
+//   - 不再校验官方资料 URL 是否落在厂商白名单里（资料完整性由 missing_fields 提示，
+//     判断权交回人工）；
+//   - 不再因为「资料完整但模型非 ACTIVE」拒绝保存。
+//
+// 身份重复仍由两处守：本流程入口的预检（api.identityTaken，给人话文案）+ 数据库
+// 唯一索引 uk_standard_model_company_official（并发兜底）。
 func (s *ModelService) SaveManual(ctx context.Context, meta WriteMeta, id string, expectedRevision uint64, data ModelData) (*StandardModel, error) {
 	if err := s.checkWrite(meta, id); err != nil {
 		return nil, err
 	}
+	// expectedRevision 自 2026-11-24 起不再参与判断（保留入参兼容调用方）。
+	_ = expectedRevision
 	creating := id == ""
-	if creating && expectedRevision != 0 {
-		return nil, ErrRevisionConflict
-	}
-	if !creating && expectedRevision == 0 {
-		return nil, ErrRevisionConflict
-	}
 	now := s.now()
 	if err := validateModelData(data, now); err != nil {
 		return nil, err
@@ -137,9 +144,6 @@ func (s *ModelService) SaveManual(ctx context.Context, meta WriteMeta, id string
 				return err
 			}
 			if complete {
-				if err = s.validateOfficialSources(ctx, model); err != nil {
-					return err
-				}
 				if err = model.attestInitialVersion(meta.ActorID); err != nil {
 					return err
 				}
@@ -162,17 +166,14 @@ func (s *ModelService) SaveManual(ctx context.Context, meta WriteMeta, id string
 		if current == nil {
 			return ErrNotFound
 		}
-		next, changed, complete, err := current.ManuallySaved(meta, expectedRevision, canonical, now)
+		// 以库里当前版本为基准：客户端 revision 过期也照常保存（后者覆盖前者）。
+		baseRevision := current.Revision
+		next, changed, _, err := current.ManuallySaved(meta, baseRevision, canonical, now)
 		if err != nil {
 			return err
 		}
-		if complete {
-			if err = s.validateOfficialSources(ctx, next); err != nil {
-				return err
-			}
-		}
 		if changed {
-			if err = tx.Update(ctx, next.Clone(), expectedRevision); err != nil {
+			if err = tx.Update(ctx, next.Clone(), baseRevision); err != nil {
 				return err
 			}
 			if err = appendModelChange(ctx, tx, current, next, meta, "MANUAL_SAVE"); err != nil {

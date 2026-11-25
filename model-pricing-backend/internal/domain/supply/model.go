@@ -222,9 +222,8 @@ func (m *StandardModel) ManuallySaved(meta WriteMeta, expectedRevision uint64, d
 	next := m.Clone()
 	next.Data = canonicalData(data)
 	complete := len(next.MissingFields()) == 0
-	if complete && m.Status != "ACTIVE" {
-		return nil, false, false, ErrInactive
-	}
+	// 2026-11-24：取消「资料完整但模型非 ACTIVE 就拒绝保存」的拦截（当前不需要）。
+	// 停用只影响报价可用性，不该挡住资料维护。
 	if complete && meta.ActorID == m.MaintainerID {
 		next.VerifyStatus = "VERIFIED"
 		next.CheckedBy = meta.ActorID

@@ -272,7 +272,9 @@ func TestSupplyHTTPPutRequiresFullReplacementAndStringRevision(t *testing.T) {
 func TestSupplyHTTPManualCompletionUsesOneAtomicSaveContract(t *testing.T) {
 	writer := &supplyHTTPWriter{}
 	r := supplyHTTPRouter(supplyHTTPStaff(), writer, newSupplyHTTPIdemStore())
-	createBody := `{"name":"待补齐模型","reason":"先补基础信息"}`
+	// 2026-11-18 起新增接口要求最小必填集（名称/官方 ID/公司/类型），这里补齐，
+	// 否则在入口就被 400 拦掉，测不到「新增走同一个原子保存」这条契约。
+	createBody := `{"name":"待补齐模型","official_id":"pending-v1","company":"Example","model_type":"TEXT","reason":"先补基础信息"}`
 	rec := supplyHTTPCall(r, "POST", "/api/internal/standard-models/manual-completion", createBody, "manual-create-1", "trace-manual-create")
 	if rec.Code != 200 || writer.manualCalls != 1 || writer.calls != 0 || writer.id != "" || writer.revision != 0 || writer.meta.ActorID != "7" || writer.meta.RequestID != "trace-manual-create" {
 		t.Fatalf("manual creation did not use the atomic save writer: %d %+v %s", rec.Code, writer, rec.Body.String())
