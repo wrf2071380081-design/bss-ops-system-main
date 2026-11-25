@@ -39,6 +39,9 @@ trap 'rm -rf "$TMP"' EXIT
 cd "$REPO_ROOT"
 cd "$REPO_ROOT"
 
+STAGE_T0=$(date +%s)
+stage() { echo "    ⏱  $1 用时 $(( $(date +%s) - STAGE_T0 ))s（累计）"; STAGE_T0=$(date +%s); }
+
 echo "==> 发布 $TAG (commit $SHA)"
 
 # 前后端互不依赖：并行构建，省掉前端那 15~20 秒。
@@ -85,12 +88,14 @@ else
   fi
 fi
 
+stage "构建";
 echo "==> 3/6 上传"
 FILES=()
 [ -f "$TMP/server.gz" ] && FILES+=("$TMP/server.gz")
 [ -f "$TMP/dist.tar.gz" ] && FILES+=("$TMP/dist.tar.gz")
 scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "${FILES[@]}" "$HOST:/tmp/"
 
+stage "上传";
 echo "==> 4/6 切换（保留旧二进制用于回滚）"
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$HOST" bash -s <<EOF
 set -e
