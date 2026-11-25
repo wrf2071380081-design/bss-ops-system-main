@@ -312,9 +312,9 @@ func main() {
 		staffPositionStore = nil
 	}
 	api.SetBuildInfo(buildSHA, buildAt)
-	loadStressTemplate(cfg)
+	loadStressTemplate(cfg, log)
 	router := api.New(api.Deps{
-		CatalogBusiness:           api.NewCatalogBusinessStore(rawDB),
+		CatalogBusiness:          api.NewCatalogBusinessStore(rawDB),
 		Config:                   cfg,
 		Log:                      log,
 		Health:                   dbClient,
@@ -510,23 +510,27 @@ func adaptCalcFunc(svc *cost.Service) openapi.CalcFunc {
 
 // loadStressTemplate 启动时从测试平台拉取压测模板参数（默认 bss压力测试02）。
 //
-// 为什么不硬编码：模板里是 32k prompt + 高缓存命中场景，改由平台侧维护；
-// 我们只在启动时取一次，取不到就退回内置参数，不影响服务启动。
-func loadStressTemplate(cfg *config.Config) {
+// 模板是压测参数的唯一来源（时长/并发档位/目标 RPS）。取不到时必须**显式报错日志**，
+// 因为压测发单侧已经不再兜底——没有模板就直接拒绝发单（2026-11-25）。
+func loadStressTemplate(cfg *config.Config, log *zap.Logger) {
 	name := strings.TrimSpace(cfg.TestPlatform.StressTemplate)
 	base := strings.TrimRight(strings.TrimSpace(cfg.TestPlatform.BaseURL), "/")
 	token := strings.TrimSpace(cfg.TestPlatform.Token)
 	if name == "" || base == "" || token == "" {
+		log.Warn("stress template not configured; stress tests will be rejected",
+			zap.String("template", name), zap.String("base_url", base))
 		return
 	}
 	client := &http.Client{Timeout: 8 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, base+"/api/v1/templates/"+url.PathEscape(name), nil)
 	if err != nil {
+		log.Warn("stress template request build failed", zap.Error(err))
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Warn("stress template fetch failed", zap.String("template", name), zap.Error(err))
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -536,7 +540,15 @@ func loadStressTemplate(cfg *config.Config) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		log.Warn("stress template decode failed", zap.Int("status", resp.StatusCode), zap.Error(err))
 		return
 	}
-	api.SetStressTemplateParams(payload.Data.Params)
+	params := payload.Data.Params
+	api.SetStressTemplateParams(params)
+	log.Info("stress template loaded",
+		zap.String("template", name),
+		zap.Int("params", len(params)),
+		zap.Any("duration", params["duration"]),
+		zap.Any("concurrency", params["concurrency"]),
+		zap.Any("load_mode", params["load_mode"]))
 }

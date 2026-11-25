@@ -622,21 +622,13 @@ func (h *supplierSubmissionHandler) startRowTest(ctx context.Context, supplierID
 		// 连通性改用平台专属门类（2026-11-21）：逐协议最小请求、按报文体判 PASS/FAIL。
 		params = map[string]any{"engine": "reference-protocolprobe-v1", "concurrency": 2}
 	}
-	if platformCategory == "stress" && len(StressTemplateParams) > 0 {
-		// 优先用平台模板（如 bss压力测试02）的参数：32k prompt + 高缓存命中，
-		// 比我们写死的 30s/并发1 更有参考价值，也不会随模板变化而失效。
-		params = make(map[string]any, len(StressTemplateParams))
-		for k, v := range StressTemplateParams {
-			params[k] = v
+	if platformCategory == "stress" {
+		// 压测参数只认平台模板；取不到就报错，绝不静默退回硬编码参数
+		// （2026-11-25：兜底参数 30s/并发1 让 GLM 测出 0/0，还让人误以为用了模板）。
+		if len(StressTemplateParams) == 0 {
+			return "", actionFailed, tpdomain.ErrNotConfigured
 		}
-	} else if platformCategory == "stress" {
-		// 兜底：模板没拿到时用最小可用参数，保证能发单。
-		params = map[string]any{
-			"engine": "reference-performance-v1", "concurrency": []int{1},
-			"duration":        durationParam(stressDuration),
-			"warmup":          true,
-			"warmup_duration": durationParam(stressWarmup),
-		}
+		params = cloneStressParams()
 	}
 	result, err := h.svc.starter.Start(ctx, tpdomain.CreateCommand{
 		ResourceID:        strconv.FormatInt(resourceID, 10),
@@ -1804,4 +1796,13 @@ func protocolForCategory(category string) string {
 		return "openai"
 	}
 	return ""
+}
+
+// cloneStressParams 复制一份模板参数，避免调用方误改全局缓存。
+func cloneStressParams() map[string]any {
+	out := make(map[string]any, len(StressTemplateParams))
+	for k, v := range StressTemplateParams {
+		out[k] = v
+	}
+	return out
 }

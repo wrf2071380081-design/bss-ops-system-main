@@ -56,6 +56,33 @@ const rows = ref<ResourceRow[]>([]);
 const resourceDetailPanelEnabled = false;
 const selectedID = ref("");
 const loading = ref(false);
+// ---- 测试结果自动刷新（2026-11-25）----
+// 只把每行的 test 字段原地合并，绝不替换 rows 数组，否则整表重渲染会闪。
+let metricsTimer: number | undefined;
+const isTestRunning = (row: { test?: { status?: string } }) =>
+  ["QUEUED", "RUNNING"].includes(String(row.test?.status || "").toUpperCase());
+function stopMetricsPoll() { if (metricsTimer !== undefined) { window.clearTimeout(metricsTimer); metricsTimer = undefined; } }
+function scheduleMetricsPoll(delay = 3000) {
+  stopMetricsPoll();
+  if (!active) return;
+  metricsTimer = window.setTimeout(() => { void pollMetrics(); }, delay);
+}
+async function pollMetrics() {
+  if (!active) return;
+  if (document.visibilityState === "hidden") { scheduleMetricsPoll(10000); return; }
+  try {
+    const supplier = standardModelVersion(supplierID.value);
+    const region = queryString(route.query.region);
+    const query = buildResourceQuery({ view: "flat", page: 1, size: 100, sort_by: "supplier_name", order: "asc", supplier_id: supplier, region });
+    const next = await resourcesApi.allRows(query);
+    for (const item of next) {
+      const row = rows.value.find(entry => entry.id === item.id);
+      if (row && item.test) Object.assign(row.test, item.test);
+    }
+  } catch { /* 轮询失败不打扰用户 */ }
+  if (rows.value.some(isTestRunning)) scheduleMetricsPoll();
+  else stopMetricsPoll();
+}
 const error = ref("");
 const activeTab = ref("models");
 // 测试列表弹窗：每次测试单独留档，仅在打开时按资源 ID 拉取报告。
@@ -626,6 +653,7 @@ async function load() {
     const query = buildResourceQuery({ view: "flat", page: 1, size: 100, sort_by: "supplier_name", order: "asc", supplier_id: supplier, region });
     const result = await resourcesApi.allRows(query, current.signal);
     if (!active || current.signal.aborted) return;
+    if (result.some(isTestRunning)) scheduleMetricsPoll();
     if (hasResourceContext) {
       const resource = standardModelVersion(resourceValue);
       const model = standardModelVersion(modelValue);
@@ -706,7 +734,7 @@ watch(
     else { contractFlow.value = undefined; contractFlowError.value = ""; }
   },
 );
-onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(); qualificationRequest?.abort(); operationRequest?.abort(); quoteRequest?.abort(); --contractSequence; });
+onBeforeUnmount(() => { active = false; stopMetricsPoll(); request?.abort(); profileRequest?.abort(); qualificationRequest?.abort(); operationRequest?.abort(); quoteRequest?.abort(); --contractSequence; });
 </script>
 
 <template>
@@ -744,8 +772,8 @@ onBeforeUnmount(() => { active = false; request?.abort(); profileRequest?.abort(
             <el-table-column label="供应商接口模型 ID" min-width="180"><template #default="{ row }"><code>{{ row.supplier_model_id }}</code></template></el-table-column>
             <el-table-column label="采购系数" width="110"><template #default="{ row }">{{ coefficientText(row.coefficient) }}</template></el-table-column>
             <el-table-column label="连通耗时(ms)" width="120"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.connection_ms, row.test.status) }}</template></el-table-column>
-            <el-table-column label="RPS" width="100"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.rps, row.test.status) }}</template></el-table-column>
-            <el-table-column label="TPS" width="100"><template #default="{ row }">{{ resourceMetricDisplay(row.test.metrics.tps, row.test.status) }}</template></el-table-column>
+            <el-table-column label="RPS" width="100"><template #default="{ row }"><el-icon v-if="isTestRunning(row)" class="is-loading" style="vertical-align:-2px" aria-label="测试中"><svg viewBox="0 0 1024 1024" width="14" height="14"><path fill="currentColor" d="M512 64a448 448 0 1 1 0 896 448 448 0 0 1 0-896zm0 128a320 320 0 1 0 0 640 320 320 0 0 0 0-640z" opacity=".25"/><path fill="currentColor" d="M512 64a448 448 0 0 1 448 448h-128a320 320 0 0 0-320-320z"/></svg></el-icon><span v-else>{{ resourceMetricDisplay(row.test.metrics.rps, row.test.status) }}</span></template></el-table-column>
+            <el-table-column label="TPS" width="100"><template #default="{ row }"><el-icon v-if="isTestRunning(row)" class="is-loading" style="vertical-align:-2px" aria-label="测试中"><svg viewBox="0 0 1024 1024" width="14" height="14"><path fill="currentColor" d="M512 64a448 448 0 1 1 0 896 448 448 0 0 1 0-896zm0 128a320 320 0 1 0 0 640 320 320 0 0 0 0-640z" opacity=".25"/><path fill="currentColor" d="M512 64a448 448 0 0 1 448 448h-128a320 320 0 0 0-320-320z"/></svg></el-icon><span v-else>{{ resourceMetricDisplay(row.test.metrics.tps, row.test.status) }}</span></template></el-table-column>
             <el-table-column label="输入缓存命中率" width="130"><template #default="{ row }">{{ resourceCacheDisplay(row.test.cache_stats, row.test.status) }}</template></el-table-column>
             <el-table-column label="最近上架时间" width="170"><template #default="{ row }">{{ row.admitted_at ? formatDateTime(row.admitted_at) : "未记录" }}</template></el-table-column>
             <!-- 状态列已移除（2026-11-23）：办理进度看上方进度条与「资源操作」，单列状态重复且口径易歧义 -->
