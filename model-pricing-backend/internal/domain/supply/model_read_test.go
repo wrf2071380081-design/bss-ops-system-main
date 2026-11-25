@@ -12,9 +12,9 @@ type modelReadFixture struct {
 	query   ModelListQuery
 }
 
-func (f *modelReadFixture) ListModels(_ context.Context, q ModelListQuery) ([]*StandardModel, int64, error) {
+func (f *modelReadFixture) ListModels(_ context.Context, q ModelListQuery) ([]ModelEntry, int64, error) {
 	f.query = q
-	return []*StandardModel{f.current}, 1, nil
+	return []ModelEntry{{Model: f.current}}, 1, nil
 }
 func (f *modelReadFixture) GetModel(_ context.Context, id string) (*StandardModel, error) {
 	if f.current == nil || f.current.ID != id {
@@ -35,6 +35,44 @@ func (f *modelReadFixture) GetModelVersion(_ context.Context, id string, version
 	return nil, ErrNotFound
 }
 
+// 列表允许单行读不出来：坏行降级成占位、位置不变，其余行照常返回。
+// 这条测试锁住「不要因为一条脏数据整页 500」的约定。
+type degradedListFixture struct {
+	*modelReadFixture
+	entries []ModelEntry
+}
+
+func (f degradedListFixture) ListModels(_ context.Context, _ ModelListQuery) ([]ModelEntry, int64, error) {
+	return f.entries, int64(len(f.entries)), nil
+}
+
+func TestModelReaderDegradesSingleUnreadableRow(t *testing.T) {
+	good, err := NewStandardModel("9007199254740993", "7", completeModelData(), modelNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := degradedListFixture{
+		modelReadFixture: &modelReadFixture{current: good},
+		entries: []ModelEntry{
+			{Model: good},
+			{Failure: &ModelFailure{ID: "9007199254740995", Name: "坏行", Company: "Anthropic", ModelType: "TEXT", Status: "ACTIVE", UpdatedAt: modelNow, Reason: "inconsistent snapshot"}},
+		},
+	}
+	page, err := NewModelReader(store).List(context.Background(), ModelListQuery{Page: 1, Size: 20})
+	if err != nil {
+		t.Fatalf("单行异常不该打掉整页: %v", err)
+	}
+	if len(page.List) != 2 || page.List[0].Model == nil || page.List[1].Failure == nil {
+		t.Fatalf("降级行没有按原位置返回: %+v", page.List)
+	}
+	if page.List[1].Failure.ID != "9007199254740995" || page.List[1].Failure.Name != "坏行" {
+		t.Fatalf("降级行丢了可展示字段: %+v", page.List[1].Failure)
+	}
+	if total := page.Total; total != 2 {
+		t.Fatalf("total 应包含降级行: %d", total)
+	}
+}
+
 func TestModelReaderNormalizesSafeGlobalQuery(t *testing.T) {
 	m, _ := NewStandardModel("9007199254740993", "7", completeModelData(), modelNow)
 	store := &modelReadFixture{current: m}
@@ -43,13 +81,13 @@ func TestModelReaderNormalizesSafeGlobalQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if page.Page != 1 || page.Size != 20 || page.Total != 1 || page.List[0].ID != "9007199254740993" {
+	if page.Page != 1 || page.Size != 20 || page.Total != 1 || page.List[0].Model.ID != "9007199254740993" {
 		t.Fatalf("invalid list contract: %+v", page)
 	}
 	if store.query.Keyword != "Example" || store.query.SortBy != "updated_at" || store.query.Order != "desc" || !store.query.NullsLast || store.query.TieBreakBy != "id" {
 		t.Fatalf("unsafe or unstable query: %+v", store.query)
 	}
-	page.List[0].Data.PriceItems[0].Amount = "99"
+	page.List[0].Model.Data.PriceItems[0].Amount = "99"
 	if store.current.Data.PriceItems[0].Amount != "2.00000000" {
 		t.Fatal("reader output aliases repository state")
 	}
@@ -84,7 +122,7 @@ func TestModelReaderHistoricalSnapshotPreservesPriceAndBlocksNewQuotes(t *testin
 		t.Fatalf("current snapshot incorrect: %v %+v", err, snapshot)
 	}
 	versions, err := reader.Versions(context.Background(), "1", 1, 20)
-	if err != nil || len(versions.List) != 1 || versions.List[0].VersionNo != 2 {
+	if err != nil || len(versions.List) != 1 || versions.List[0].Model.VersionNo != 2 {
 		t.Fatalf("version read failed: %v", err)
 	}
 }

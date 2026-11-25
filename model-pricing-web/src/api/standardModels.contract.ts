@@ -118,6 +118,30 @@ export function formatStandardPrice(price: StandardPrice): string {
   return `${price.label}：${price.amount} ${price.currency} / ${price.unit_quantity} ${unitLabels[price.unit_code] || price.unit_code}`;
 }
 export function normalizeStandardModel(model: StandardModelDTO, expectedID?: string): StandardModelDTO {
+  // 降级行：后端解析不了这一行的资料（快照/价格/领域校验没过），只保证 id 与展示字段可信。
+  // 这里刻意不跑契约校验——否则一行坏数据会让整个列表抛错，「单行降级」就白做了。
+  const loadError = typeof model?.load_error === "string" ? model.load_error.trim() : "";
+  if (loadError) {
+    standardModelVersion(model.id);
+    if (expectedID !== undefined && model.id !== expectedID) throw new Error("返回的模型与请求对象不一致，请重新查询。");
+    return {
+      ...model,
+      ...copyStandardModel(model),
+      id: model.id,
+      maintainer_id: "",
+      revision: "0",
+      version_no: "0",
+      status: model.status === "INACTIVE" ? "INACTIVE" : "ACTIVE",
+      verify_status: "INCOMPLETE",
+      checked_by: "",
+      created_at: model.created_at ?? "",
+      updated_at: model.updated_at ?? "",
+      missing_fields: [],
+      quote_readiness: { ready: false, reasons: ["UNREADABLE_ROW"], standard_model_version_no: "0" },
+      permissions: { can_edit: false, can_verify: false },
+      load_error: loadError,
+    };
+  }
   standardModelVersion(model.id); standardModelVersion(model.revision); standardModelVersion(model.version_no);
   standardModelVersion(model.maintainer_id);
   if (expectedID !== undefined && model.id !== expectedID) throw new Error("返回的模型与请求对象不一致，请重新查询。");
