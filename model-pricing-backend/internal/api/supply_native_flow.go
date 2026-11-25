@@ -184,6 +184,9 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 		 CASE WHEN tr.last_report_id IS NULL THEN 'NOT_TESTED'
 		      WHEN tr.connection_failed OR tr.stress_failed THEN 'FAILED'
 		      WHEN tr.connection_passed IS TRUE THEN 'PASSED'
+		      -- 业务口径（2026-11-25）：只有 pass 算通过；conclusive 的 false（含 inconclusive/无法判定）
+		      -- 一律算未通过，不再有"未判定"这个第三态。
+		      WHEN tr.connection_passed IS FALSE THEN 'FAILED'
 		      ELSE 'INCOMPLETE' END,
 		 coalesce(tr.connection_ms::text,''),coalesce(tr.rps::text,''),coalesce(tr.tps::text,''),
 		 coalesce(tr.cache_hit_ratio::text,''),coalesce(tr.cache_available,false),
@@ -200,15 +203,15 @@ LEFT JOIN LATERAL (
 		-- 连通与压力是两个独立 test_job（category=baseline / stress），必须分开取：
 		-- stress 报告同样会写 connection_passed=false，混在一起取「最近非空」会把连通结论取成 false。
 		(SELECT x.connection_ms FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
-			WHERE x.resource_id=r.id AND j.category='baseline' AND x.connection_ms IS NOT NULL
+			WHERE x.resource_id=r.id AND j.category IN ('baseline','comprehensive','protocolprobe') AND x.connection_ms IS NOT NULL
 			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS connection_ms,
 		(SELECT x.connection_passed FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
-			WHERE x.resource_id=r.id AND j.category='baseline' AND x.connection_passed IS NOT NULL
+			WHERE x.resource_id=r.id AND j.category IN ('baseline','comprehensive','protocolprobe') AND x.connection_passed IS NOT NULL
 			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS connection_passed,
 		-- 平台明确判负（fail/abort/canceled）才算失败；空 verdict 是「未判定」，不参与判定。
 		(SELECT lower(coalesce(x.verdict,'')) IN ('fail','failed','abort','aborted','canceled','cancelled')
 			FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id
-			WHERE x.resource_id=r.id AND j.category='baseline'
+			WHERE x.resource_id=r.id AND j.category IN ('baseline','comprehensive','protocolprobe')
 			ORDER BY x.tested_at DESC NULLS LAST, x.id DESC LIMIT 1) AS connection_failed,
 		(SELECT lower(coalesce(x.verdict,'')) IN ('fail','failed','abort','aborted','canceled','cancelled')
 			FROM public.test_report x JOIN public.test_job j ON j.id=x.test_job_id

@@ -71,7 +71,11 @@ async function load(reset = false) {
   finally { if (active && !currentRequest.signal.aborted) loading.value = false; }
 }
 function reset() { clearTimeout(keywordTimer); Object.assign(query, { page: 1, size: 100, keyword: "", companies: [], model_types: [], supplier_ids: [], regions: [], verify_status: "", sort_by: "updated_at", order: "desc" }); void load(); void loadOptions(); }
-function open(model?: StandardModelDTO, panel: 'profile' | 'history' | 'records' | 'advanced' = 'profile') { editID.value = model?.id; editorPanel.value = panel; editorOpen.value = true; }
+function open(model?: StandardModelDTO, panel: 'profile' | 'history' | 'records' | 'advanced' = 'profile') {
+  // 读不出来的行没有可信资料，进详情只会再失败一次：直接提示原因，别让用户点进空白页。
+  if (model?.load_error) { ElMessage.warning(model.load_error); return; }
+  editID.value = model?.id; editorPanel.value = panel; editorOpen.value = true;
+}
 function openMore(model: StandardModelDTO, panel: unknown) {
   if (panel === "resource") { void openManualResource(model); return; }
   if (panel === 'history' || panel === 'records' || panel === 'advanced') open(model, panel);
@@ -284,16 +288,16 @@ onBeforeUnmount(() => { active = false; clearTimeout(keywordTimer); request?.abo
           <th scope="col">容量规格</th><th scope="col">核心能力</th><th scope="col">官方价格 / 计费单位</th><th scope="col">API / 访问概况</th><th scope="col">版本 / 生命周期</th><th scope="col">最近更新结果</th><th scope="col">上次成功</th><th scope="col">操作</th>
         </tr></thead><tbody>
           <tr v-for="model in data?.list || []" :key="model.id">
-            <td><strong>{{ model.name || model.official_id || '待补充名称' }}</strong></td>
+            <td><strong>{{ model.name || model.official_id || '待补充名称' }}</strong><el-tag v-if="model.load_error" class="load-error-tag" size="small" type="danger" effect="plain" :title="model.load_error">资料异常</el-tag></td>
             <td><span class="model-type">{{ modelTypeLabels[model.model_type] || '类型待补齐' }}</span><p class="spec-line">输入：{{ model.input_modalities.map(value => modelTypeLabels[value]).join('、') || '待补齐' }}</p><p class="spec-line">输出：{{ model.output_modalities.map(value => modelTypeLabels[value]).join('、') || '待补齐' }}</p></td>
             <td><p v-for="fact in model.capacity" :key="fact.key" class="spec-line" :class="{ unknown: fact.disclosure !== 'DISCLOSED' }">{{ fact.label || modelParameterLabel(fact.key) }}：{{ factText(fact) }}</p><span v-if="!model.capacity.length" class="unknown">待补齐</span></td>
             <td><p v-for="ability in model.abilities" :key="ability.key" class="spec-line" :class="{ unknown: !['SUPPORTED', 'UNSUPPORTED'].includes(ability.state) }">{{ modelParameterLabel(ability.key) }}：{{ ability.state === 'SUPPORTED' ? '支持' : ability.state === 'UNSUPPORTED' ? '不支持' : ability.state === 'UNDISCLOSED' ? '未披露' : '未核实' }}<span v-if="ability.description">（{{ ability.description }}）</span></p><span v-if="!model.abilities.length" class="unknown">待补齐</span></td>
-            <td class="price-cell" title="点击编辑官方价格与计费项" @click="open(model)"><div v-for="group in modelPriceGroups(model.price_items)" :key="group.key" class="price-group"><p v-for="line in group.lines" :key="line" class="spec-line">{{ line }}</p><p class="spec-line">{{ group.unit }}</p><p v-if="group.condition" class="spec-line price-condition">{{ group.condition }}</p><p v-for="value in group.dimensions" :key="value" class="spec-line">{{ value }}</p></div><span v-if="!model.price_items.length" class="unknown">未核实</span></td>
+            <td class="price-cell" :title="model.load_error || '点击编辑官方价格与计费项'" @click="open(model)"><div v-for="group in modelPriceGroups(model.price_items)" :key="group.key" class="price-group"><p v-for="line in group.lines" :key="line" class="spec-line">{{ line }}</p><p class="spec-line">{{ group.unit }}</p><p v-if="group.condition" class="spec-line price-condition">{{ group.condition }}</p><p v-for="value in group.dimensions" :key="value" class="spec-line">{{ value }}</p></div><span v-if="!model.price_items.length" class="unknown">{{ model.load_error ? '资料异常' : '未核实' }}</span></td>
             <td><p v-for="fact in model.api_access" :key="fact.key" class="spec-line" :class="{ unknown: fact.disclosure !== 'DISCLOSED' }">{{ fact.label || modelParameterLabel(fact.key) }}：{{ factText(fact) }}</p><span v-if="!model.api_access.length" class="unknown">待补齐</span></td>
             <td><p v-for="fact in model.lifecycle" :key="fact.key" class="spec-line" :class="{ unknown: fact.disclosure !== 'DISCLOSED' }">{{ fact.label || modelParameterLabel(fact.key) }}：{{ factText(fact) }}</p><span v-if="!model.lifecycle.length" class="unknown">待补齐</span></td>
             <td><span class="update-state">{{ modelStateLabels[modelStatuses[model.id]?.state || 'UNKNOWN'] }}</span></td>
             <td><span>{{ formatDateTime(modelStatuses[model.id]?.lastCompleteAt, '暂无完整成功记录', false) }}</span><span class="meta">资料核验：{{ model.checked_at || '未记录' }}</span></td>
-            <td><el-button size="small" @click="open(model)">详情</el-button></td>
+            <td><el-button size="small" :disabled="!!model.load_error" :title="model.load_error || '查看并维护模型资料'" @click="open(model)">详情</el-button></td>
           </tr>
           <tr v-if="!loading && !error && !data?.list.length"><td colspan="10" class="empty-row">当前筛选暂无模型</td></tr>
         </tbody></table>
@@ -393,6 +397,7 @@ onBeforeUnmount(() => { active = false; clearTimeout(keywordTimer); request?.abo
 .unknown,.price-condition{color:#8b9299}
 .price-group+.price-group{margin-top:10px}
 .official-table td.empty-row{text-align:center;padding:40px 20px;color:#8b9098}
+.load-error-tag{margin-left:6px;vertical-align:middle;cursor:help}
 .catalog-pagination{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;font-size:12px;color:#91969f}
 .catalog-pagination :deep(.el-pagination){font-weight:400}
 :deep(.el-button--primary){--el-button-bg-color:#315ee8;--el-button-border-color:#315ee8}

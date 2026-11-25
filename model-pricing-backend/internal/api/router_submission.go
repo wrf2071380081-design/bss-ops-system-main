@@ -177,7 +177,14 @@ func (h *submissionTestHandler) start(c *gin.Context) {
 		category = tpdomain.CategoryProtocolProbe
 	case "STRESS":
 		category = tpdomain.CategoryStress
-		params = nil
+		// 压测参数一律取平台模板（bss压力测试02：60s/并发100/open+目标RPS），
+		// 与供应商侧共用同一份，避免两条路径口径不一致（2026-11-25 踩过：
+		// 内部补测不发 params，平台按默认 30s/并发1/closed 跑，GLM 直接测出 0）。
+		if len(StressTemplateParams) == 0 {
+			response.Error(c, apperr.New(apperr.ErrSystem.Code, "压测模板参数未加载，请重启服务后重试", 503))
+			return
+		}
+		params = cloneStressParams()
 	case "VIDEO", "VIDEOQUALITY":
 		category = tpdomain.CategoryVideoQuality
 		params = nil

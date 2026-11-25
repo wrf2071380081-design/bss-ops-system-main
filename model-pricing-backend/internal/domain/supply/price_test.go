@@ -68,3 +68,30 @@ func TestPriceItemsRejectDuplicateStableKey(t *testing.T) {
 		t.Fatalf("duplicate key accepted: %v", err)
 	}
 }
+
+// 同一 task_type 的多档计费项是合法数据：Claude 的缓存写入分 5 分钟 / 1 小时，缓存读取另计，
+// 三者 task_type 都是 CACHE_INPUT，只有计费项名称与单价不同。判重若不带 label，这些行会被判成
+// 「同一条件两个价」，写入被拒、已存的行连列表都读不出来（2026-11-25 标准模型库整页 500）。
+func TestPriceItemsAllowSameTaskTypeWithDistinctLabels(t *testing.T) {
+	tiers := []struct{ key, label, amount string }{
+		{"cache_write_5m", "5 分钟缓存写入", "12.50000000"},
+		{"cache_write_1h", "1 小时缓存写入", "20.00000000"},
+		{"cache_read", "缓存读取", "1.00000000"},
+	}
+	items := make([]PriceItem, 0, len(tiers))
+	for _, tier := range tiers {
+		price := samplePrice()
+		price.ItemKey, price.Label, price.TaskType, price.Amount = tier.key, tier.label, "CACHE_INPUT", tier.amount
+		items = append(items, price)
+	}
+	if err := ValidatePriceItems(items); err != nil {
+		t.Fatalf("legal cache tiers rejected: %v", err)
+	}
+	// 同一计费项名称 + 同一计费条件却给出两个价，仍然要拦。
+	same := items[0]
+	same.ItemKey, same.Amount = "cache_write_5m_alt", "13.00000000"
+	var field *FieldError
+	if err := ValidatePriceItems([]PriceItem{items[0], same}); !errors.As(err, &field) || field.Path != "price_items[1].amount" {
+		t.Fatalf("conflicting amount for one tier accepted: %v", err)
+	}
+}

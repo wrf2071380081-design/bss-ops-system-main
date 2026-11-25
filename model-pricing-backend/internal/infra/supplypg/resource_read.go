@@ -252,7 +252,7 @@ func (s *ResourceReadStore) latestDisplayReport(ctx context.Context, tx *sql.Tx,
 	if !modelIdentity(resourceID) {
 		return nil, nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id::text,connection_ms::text,rps::text,tps::text,connection_passed,stress_passed,coalesce(cache_hit_tokens::text,''),coalesce(cache_input_tokens::text,'')
+	rows, err := tx.QueryContext(ctx, `SELECT id::text,connection_ms::text,rps::text,tps::text,connection_passed,stress_passed,coalesce(cache_hit_tokens::text,''),coalesce(cache_input_tokens::text,''),coalesce(cache_hit_ratio::text,''),coalesce(cache_ratio_available,false)
 FROM `+s.table("test_report")+` WHERE resource_id=$1 ORDER BY tested_at DESC NULLS LAST, id DESC LIMIT 2`, resourceID)
 	if err != nil {
 		return nil, err
@@ -264,9 +264,10 @@ FROM `+s.table("test_report")+` WHERE resource_id=$1 ORDER BY tested_at DESC NUL
 	var connectivityDecided, pressureDecided bool
 	for rows.Next() {
 		var id string
-		var connectionMS, rps, tps, hitTokens, inputTokens sql.NullString
+		var connectionMS, rps, tps, hitTokens, inputTokens, hitRatio sql.NullString
+		var ratioAvailable sql.NullBool
 		var connectionPassed, stressPassed sql.NullBool
-		if err := rows.Scan(&id, &connectionMS, &rps, &tps, &connectionPassed, &stressPassed, &hitTokens, &inputTokens); err != nil {
+		if err := rows.Scan(&id, &connectionMS, &rps, &tps, &connectionPassed, &stressPassed, &hitTokens, &inputTokens, &hitRatio, &ratioAvailable); err != nil {
 			return nil, err
 		}
 		if summary == nil {
@@ -293,6 +294,13 @@ FROM `+s.table("test_report")+` WHERE resource_id=$1 ORDER BY tested_at DESC NUL
 		takeMetric(&summary.Metrics.TPS, tps)
 		if summary.Cache == nil && hitTokens.Valid && inputTokens.Valid && hitTokens.String != "" && inputTokens.String != "" {
 			summary.Cache = &supply.ReportCacheCounters{Status: "PROVIDED", HitTokens: hitTokens.String, InputTokens: inputTokens.String}
+		}
+		// 平台常常只报 cache_hit_ratio_pct（没有命中/输入 token 数）：
+		// 之前只认 token 明细，导致报告里明明有 88.95%，列表仍显示"未提供"（2026-11-25）。
+		if summary.Cache == nil && ratioAvailable.Valid && ratioAvailable.Bool && hitRatio.Valid && hitRatio.String != "" {
+			if pct, ok := normalizePercent(hitRatio.String); ok {
+				summary.Cache = &supply.ReportCacheCounters{Status: "PROVIDED", HitPercent: pct}
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -715,4 +723,19 @@ ORDER BY sr.id DESC LIMIT 1`, resourceID).Scan(&gid, &name, &base, &key)
 		return supply.ResourceConfigGroup{}, err
 	}
 	return out, nil
+}
+
+// normalizePercent 把库里的 numeric(88.9500) 规整成域对象要求的 0-100、最多两位小数。
+func normalizePercent(raw string) (string, bool) {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || value < 0 || value > 100 {
+		return "", false
+	}
+	text := strconv.FormatFloat(value, 'f', 2, 64)
+	text = strings.TrimRight(text, "0")
+	text = strings.TrimRight(text, ".")
+	if text == "" {
+		return "0", true
+	}
+	return text, true
 }

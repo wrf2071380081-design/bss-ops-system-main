@@ -16,7 +16,7 @@ func TestShouldSkipRetest(t *testing.T) {
 	const fp = "fp-current"
 
 	baseline := func() *supplypg.TestRow {
-		return &supplypg.TestRow{TestJobID: jobID(11), TestJobStatus: "SUCCEEDED", TestJobFingerprint: fp, TestJobHasReport: true}
+		return &supplypg.TestRow{TestJobID: jobID(11), TestJobStatus: "SUCCEEDED", TestJobFingerprint: fp, TestJobHasReport: true, TestJobVerdict: "pass"}
 	}
 	stress := func() *supplypg.TestRow {
 		return &supplypg.TestRow{StressJobID: jobID(12), StressJobStatus: "SUCCEEDED", StressJobFingerprint: fp, StressJobHasReport: true}
@@ -37,7 +37,17 @@ func TestShouldSkipRetest(t *testing.T) {
 			category: "stress", wantSkip: true,
 		},
 		"压测完成且有报告：算有效结果，不重跑": {row: stress(), category: "stress", wantSkip: true},
-		"连通完成且有报告：算有效结果":     {row: baseline(), category: "baseline", wantSkip: true},
+		"连通通过：算有效结果，不重跑":     {row: baseline(), category: "protocolprobe", wantSkip: true},
+		// 2026-11-25 口径：只有 PASS 才跳过；未通过/无法判定要允许重测，
+		// 否则「按组测完再点一键」会一条任务都不发。
+		"连通未通过：允许重测": {
+			row:      &supplypg.TestRow{TestJobID: jobID(11), TestJobStatus: "SUCCEEDED", TestJobFingerprint: fp, TestJobHasReport: true, TestJobVerdict: "fail"},
+			category: "protocolprobe", wantSkip: false,
+		},
+		"连通无法判定：允许重测": {
+			row:      &supplypg.TestRow{TestJobID: jobID(11), TestJobStatus: "SUCCEEDED", TestJobFingerprint: fp, TestJobHasReport: true, TestJobVerdict: "inconclusive"},
+			category: "protocolprobe", wantSkip: false,
+		},
 		"终态但没报告：工具异常，重测": {
 			row:      &supplypg.TestRow{StressJobID: jobID(12), StressJobStatus: "SUCCEEDED", StressJobFingerprint: fp, StressJobHasReport: false},
 			category: "stress", wantSkip: false,

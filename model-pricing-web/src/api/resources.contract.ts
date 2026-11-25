@@ -114,7 +114,11 @@ export function validateResourceRow(value: unknown, expectedID?: string): Resour
   if (readiness.resource_revision !== row.revision || readiness.formal_config_revision !== row.formal_config_revision) invalid();
   standardModelVersion(readiness.model_version_no);
   // 压力测试只作为事实返回，不再参与「能不能报价」的判定（平台对 stress 不返回 verdict）。
-  if (readiness.eligible && (readiness.blocked_reasons.length || row.state !== "ADMITTED" || !row.ever_admitted || test.status !== "COMPLETED" || !test.valid || !test.connectivity_passed)) invalid();
+  // 2026-11-25：可报价判定以后端 eligible 为唯一口径。
+  // 不再要求 test.valid/connectivity_passed —— 有些资源的证据是压测报告，
+  // 连通证据为空，但后端已按业务规则放行；前端再卡一次会把整行判为非法。
+  if (readiness.eligible && (readiness.blocked_reasons.length || row.state !== "ADMITTED" || !row.ever_admitted)) invalid();
+  if (readiness.warnings !== undefined && (!Array.isArray(readiness.warnings) || readiness.warnings.some(reason => typeof reason !== "string"))) invalid();
   resourceCacheDisplay(cache as unknown as ResourceCache, String(test.status));
   for (const key of ["connection_ms", "rps", "tps"]) resourceMetricDisplay(metrics[key] as string | null, String(test.status));
   if (!Array.isArray(row.official_price_items)) invalid();

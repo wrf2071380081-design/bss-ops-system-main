@@ -57,6 +57,10 @@ export interface SupplierSubmissionRowDTO {
   stress_passed: boolean;
   /** 提交时的连通性探测结果：PASS / FAIL / 空串=未探测（000071） */
   probe_status?: string;
+  /** 后端给出的唯一权威连通性结论：PASS / FAIL / TESTING / NOT_TESTED */
+  connectivity_state?: "PASS" | "FAIL" | "TESTING" | "NOT_TESTED";
+  /** 数据库列 submission_row.connectivity_status：PASS / FAIL / 空。最终权威 */
+  connectivity_status?: string;
   probe_note?: string;
   /** 该行的审批决定：PENDING / APPROVED / REJECTED */
   decision?: string;

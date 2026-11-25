@@ -78,6 +78,9 @@ type SubmissionRowRecord struct {
 	// 平台中止原因（job FAILED 时才有）
 	ConnectivityFailure string
 	StressFailure       string
+	// 申报行上的连通性结论（数据库字段，最终权威）
+	RowConnectivityStatus string
+	RowConnectivityNote   string
 	// 审批决定（供应商侧展示用）：PENDING / APPROVED / REJECTED。
 	Decision      string
 	DecidedAt     *time.Time
@@ -276,7 +279,8 @@ SELECT r.submission_id, r.id, r.standard_model_id, m.name, COALESCE(m.official_i
        r.test_fingerprint, cj.status, crep.id, crep.verdict, crep.connection_ms::text, cj.target_fingerprint, COALESCE(cj.failure_reason,''),
        sj.status, srep.id, srep.verdict, srep.rps::text, srep.tps::text, sj.target_fingerprint, COALESCE(sj.failure_reason,''),
        r.test_config_group_id, COALESCE(g.name,''), COALESCE(g.enabled, false),
-       COALESCE(r.connectivity_fingerprint,''), COALESCE(r.stress_fingerprint,'')
+       COALESCE(r.connectivity_fingerprint,''), COALESCE(r.stress_fingerprint,''),
+       COALESCE(r.connectivity_status,''), COALESCE(r.connectivity_note,'')
 FROM `+s.table("submission_row")+` r
 JOIN `+s.table("standard_model")+` m ON m.id = r.standard_model_id
 LEFT JOIN `+s.table("test_job")+` cj ON cj.id = r.test_job_id
@@ -309,7 +313,8 @@ ORDER BY r.submission_id, r.id`, args...)
 			&rowFP, &connStatus, &connRepoID, &connVerdict, &conn, &connFP, &item.ConnectivityFailure,
 			&stressStatus, &stressReportID, &stressVerdict, &rps, &tps, &stressFP, &item.StressFailure,
 			&groupID, &item.TestConfigGroupName, &item.TestConfigGroupEnabled,
-			&item.ConnectivityFingerprint, &item.StressFingerprint); err != nil {
+			&item.ConnectivityFingerprint, &item.StressFingerprint,
+			&item.RowConnectivityStatus, &item.RowConnectivityNote); err != nil {
 			return nil, err
 		}
 		if groupID.Valid {
@@ -1200,4 +1205,26 @@ func (s *SubmissionStore) MarkRowTestFailed(ctx context.Context, rowID int64, no
 SET connectivity_status = 'FAIL', connectivity_note = NULLIF($2,'')
 WHERE id = $1 AND COALESCE(connectivity_status,'') <> 'PASS'`, rowID, strings.TrimSpace(note))
 	return err
+}
+
+// RowsNotPassedConnectivity 返回本次申报中连通性尚未通过的模型名。
+// 提交门禁用它：只有全部 PASS 才允许申报（2026-11-25 业务裁决）。
+func (s *SubmissionStore) RowsNotPassedConnectivity(ctx context.Context, submissionID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT supplier_model_name FROM `+s.table("submission_row")+`
+WHERE submission_id = $1 AND COALESCE(row_status,'') <> 'CANCELED'
+  AND COALESCE(connectivity_status,'') <> 'PASS'
+ORDER BY id`, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
 }

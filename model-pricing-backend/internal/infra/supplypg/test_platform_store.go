@@ -336,9 +336,20 @@ WHERE id=$1`, reportID, done.Outcome.ConnectivityPassed); err != nil {
 	// 不回写的话，测试明明通过了，供应商那边仍显示「连通性测试未完成」（2026-11-18 反馈）。
 	if _, err := tx.ExecContext(ctx, `
 UPDATE `+s.table("submission_row")+` sr
-SET test_job_id = CASE WHEN j.category = 'STRESS' THEN sr.test_job_id ELSE $1 END,
-    stress_job_id = CASE WHEN j.category = 'STRESS' THEN $1 ELSE sr.stress_job_id END,
-    test_fingerprint = COALESCE(NULLIF(sr.test_fingerprint, ''), j.target_fingerprint)
+SET test_job_id = CASE WHEN lower(j.category) = 'stress' THEN sr.test_job_id ELSE $1 END,
+    stress_job_id = CASE WHEN lower(j.category) = 'stress' THEN $1 ELSE sr.stress_job_id END,
+    test_fingerprint = COALESCE(NULLIF(sr.test_fingerprint, ''), j.target_fingerprint),
+    -- 连通性结论一律以平台 verdict 为准（本地探测已删除，2026-11-25）。
+    connectivity_status = CASE
+        WHEN lower(j.category) = 'stress' THEN sr.connectivity_status
+        WHEN lower(coalesce(j.verdict,'')) = 'pass' THEN 'PASS'
+        WHEN coalesce(j.verdict,'') <> '' THEN 'FAIL'
+        ELSE sr.connectivity_status END,
+    connectivity_note = CASE
+        WHEN lower(j.category) = 'stress' THEN sr.connectivity_note
+        WHEN lower(coalesce(j.verdict,'')) = 'pass' THEN NULL
+        WHEN coalesce(j.verdict,'') <> '' THEN '平台判定：' || j.verdict
+        ELSE sr.connectivity_note END
 FROM `+s.table("test_job")+` j
 WHERE j.id = $1 AND sr.resource_id = $2 AND sr.row_status <> 'CANCELED'`, jobID, resourceID); err != nil {
 		return "", err

@@ -38,7 +38,7 @@ func (n *NativeHandling) pair(ctx context.Context, tx *sql.Tx, r *supply.Resourc
 	var currentFP, baselineFP, stressFP, bstatus, sstatus string
 	err = tx.QueryRowContext(ctx, `SELECT coalesce(sr.test_fingerprint,''),b.id::text,bp.id::text,st.id::text,sp.id::text,coalesce(b.target_fingerprint,''),coalesce(st.target_fingerprint,''),b.status,st.status
  FROM `+n.State.table("submission_row")+` sr
- JOIN `+n.State.table("test_job")+` b ON b.id=sr.test_job_id AND b.resource_id=$2 AND b.category='baseline'
+ JOIN `+n.State.table("test_job")+` b ON b.id=sr.test_job_id AND b.resource_id=$2 AND b.category IN ('baseline','comprehensive','protocolprobe')
  JOIN `+n.State.table("test_job")+` st ON st.id=sr.stress_job_id AND st.resource_id=$2 AND st.category='stress'
  JOIN LATERAL (SELECT id FROM `+n.State.table("test_report")+` WHERE test_job_id=b.id AND resource_id=$2 ORDER BY id DESC LIMIT 1) bp ON TRUE
  JOIN LATERAL (SELECT id FROM `+n.State.table("test_report")+` WHERE test_job_id=st.id AND resource_id=$2 ORDER BY id DESC LIMIT 1) sp ON TRUE
@@ -158,7 +158,7 @@ func readNativeReportPair(ctx context.Context, tx *sql.Tx, schema string, ref Re
 	var ms, rps, tps sql.NullString
 	var cache ReportCacheRow
 	err := tx.QueryRowContext(ctx, `SELECT b.test_job_id::text,s.test_job_id::text,coalesce(bj.target_fingerprint,''),coalesce(sj.target_fingerprint,''),bj.status,sj.status,b.connection_passed,s.stress_passed,b.connection_ms::text,s.rps::text,s.tps::text,s.cache_hit_tokens,s.cache_input_tokens,s.scene
- FROM `+table("test_report")+` b JOIN `+table("test_job")+` bj ON bj.id=b.test_job_id AND bj.category='baseline' AND bj.resource_id=$3
+ FROM `+table("test_report")+` b JOIN `+table("test_job")+` bj ON bj.id=b.test_job_id AND bj.category IN ('baseline','comprehensive','protocolprobe') AND bj.resource_id=$3
  JOIN `+table("test_report")+` s ON s.id=$2 AND s.resource_id=$3 JOIN `+table("test_job")+` sj ON sj.id=s.test_job_id AND sj.category='stress' AND sj.resource_id=$3
  JOIN `+table("resource")+` r ON r.id=$3 AND r.supplier_id=$4 AND r.standard_model_id=$5 AND r.region=$6
  WHERE b.id=$1 AND b.resource_id=$3`, ref.BaselineReportID, ref.StressReportID, ref.ResourceID, ref.SupplierID, ref.StandardModelID, ref.Region).Scan(&baselineJob, &stressJob, &bfp, &sfp, &bstatus, &sstatus, &bp, &sp, &ms, &rps, &tps, &cache.CacheHitTokens, &cache.CacheInputTokens, &cache.Scene)

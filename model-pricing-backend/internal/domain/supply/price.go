@@ -138,7 +138,11 @@ func ValidatePriceItems(items []PriceItem) error {
 		if dimensions == nil {
 			dimensions = map[string]string{}
 		}
-		scope, _ := json.Marshal([]any{p.TaskType, p.Currency, p.UnitCode, p.UnitQuantity, p.Condition, dimensions})
+		// 同一 task_type 允许存在多档计费项：Claude 的缓存写入分「5 分钟」「1 小时」，缓存读取另计，
+		// 三者的 task_type 都是 CACHE_INPUT，只有计费项名称（label）不同。所以 scope 必须带上 label，
+		// 否则这些合法档位被当成「同一条件两个价」，写入被拒、已存的行连读都读不出来
+		// （2026-11-25 标准模型库整页 500 的根因）。下游按 item_key 精确取价，不依赖 task_type 唯一。
+		scope, _ := json.Marshal([]any{p.TaskType, strings.TrimSpace(p.Label), p.Currency, p.UnitCode, p.UnitQuantity, p.Condition, dimensions})
 		amount, _ := decimal.NewFromString(p.Amount)
 		if prior, ok := scopes[string(scope)]; ok && prior != amount.String() {
 			return invalid(path+"amount", "conflicting amounts for the same scope; select one official price")

@@ -64,9 +64,10 @@ export const supplierSubmissionsApi = {
     validateTest(result, category);
     return result;
   },
-  async batchTest(id: string, categories: SupplierTestCategory[], lifecycle: string) {
+  async batchTest(id: string, categories: SupplierTestCategory[], lifecycle: string, groupID?: string) {
     const url = `${base}/${submissionID(id)}/tests`;
-    const data = { categories };
+    const data: { categories: SupplierTestCategory[]; group_id?: number } = { categories };
+    if (groupID) data.group_id = Number(groupID);
     const result = await apiRequest<SupplierBatchTestResultDTO>({
       method: "POST", url, data, timeout: TEST_START_TIMEOUT_MS, keepServerMessage: true, idempotency: { scope: `${url}:${categories.join("+")}`, payload: data, lifecycle },
     });

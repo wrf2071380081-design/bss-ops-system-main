@@ -255,9 +255,74 @@ const gateError = computed(() => {
   if (rowsWithoutGroup.value.length > 0) return `还有 ${rowsWithoutGroup.value.length} 个模型没有选择准入配置组。`;
   const incomplete = rows.value.find(row => !row.standard_model_id || !String(row.interface_model_id || "").trim());
   if (incomplete) return "每个模型都要选择标准模型并填写接口模型 ID。";
+  // 2026-11-25 业务裁决：必须先跑连通性测试，全部通过才允许申报。
+  const notPassed = rows.value.filter(row => !connPassed(row));
+  if (notPassed.length > 0) {
+    return `还有 ${notPassed.length} 个模型未通过连通性测试（${notPassed.map(r => r.interface_model_id || r.standard_model_name).join("、")}），请先点「连通性测试」。`;
+  }
   return "";
 });
 const canSubmitBatch = computed(() => !gateError.value);
+
+// ---- 连通性测试（2026-11-25：先测后报）----
+const testing = ref(false);
+// 这一行是否正在跑连通性测试（决定显示转圈而不是红/绿）
+function isRowTesting(row: EditableRow) {
+  const status = String(row.connectivity_job?.status || "").toUpperCase();
+  return status === "QUEUED" || status === "RUNNING";
+}
+// 连通性结论的唯一读法：数据库字段优先；轮询只更新 job 时按 job.passed/verdict 兜底。
+function connState(row: EditableRow): "TESTING" | "PASS" | "FAIL" | "NONE" {
+  if (isRowTesting(row)) return "TESTING";
+  const db = String(row.connectivity_status || "").toUpperCase();
+  if (db === "PASS" || db === "FAIL") return db;
+  const job = row.connectivity_job;
+  if (!job) return "NONE";
+  if (job.passed || String(job.verdict || "").toLowerCase() === "pass") return "PASS";
+  if (job.tested) return "FAIL";
+  return "NONE";
+}
+const connPassed = (row: EditableRow) => connState(row) === "PASS";
+const rowGroups = computed(() => {
+  const map = new Map<string, { id: string; name: string; count: number }>();
+  for (const row of rows.value) {
+    const id = String(row.test_config_group_id || "");
+    if (!id) continue;
+    const hit = map.get(id) ?? { id, name: row.test_config_group_name || groupByID(id)?.name || "", count: 0 };
+    hit.count += 1;
+    map.set(id, hit);
+  }
+  return [...map.values()];
+});
+async function runConnectivity(groupID?: string) {
+  if (testing.value) return;
+  // 新开的申报还没有 submission id，测试接口无从发起——先自动保存草稿。
+  if (!submissionID.value) {
+    const saved = await saveDraft();
+    if (!saved || !submissionID.value) {
+      ElMessage.warning("请先补齐模型与准入配置组，保存草稿后再测试");
+      return;
+    }
+  }
+  const id = submissionID.value;
+  testing.value = true;
+  try {
+    await supplierSubmissionsApi.batchTest(id, ["CONNECTIVITY"], crypto.randomUUID(), groupID);
+    ElMessage.success("已发起连通性测试，通常几秒出结果");
+    // 只把这一批行标成"测试中"（转圈），然后交给既有的进度轮询按字段更新，
+    // 不再整单重拉——之前每 2 秒 loadDraft 会让整张表闪。
+    for (const row of rows.value) {
+      if (groupID && String(row.test_config_group_id || "") !== String(groupID)) continue;
+      row.connectivity_job = { category: "CONNECTIVITY", status: "QUEUED" } as SupplierSubmissionTestDTO;
+    }
+    pollDelayMs.value = 1000;
+    schedulePoll(0);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "发起测试失败");
+  } finally {
+    testing.value = false;
+  }
+}
 // 放行时的提示：门禁只保证每组有一个能通，其余模型可能一个都没测。
 const untestedCount = computed(() => rows.value.filter(row => !row.connectivity_tested).length);
 
@@ -758,7 +823,15 @@ const LOCAL_KEY = "supplier-submission-draft-v1";
 function persistLocal() {
   if (submittedOnce.value) return;
   try {
-    sessionStorage.setItem(LOCAL_KEY, JSON.stringify({ rows: rows.value, reason: reason.value, deployRegion: deployRegion.value }));
+    // 只存用户输入：connectivity_status / connectivity_job / *_tested / *_passed
+    // 都是服务端派生结果，存下来会在换供应商时串数据（2026-11-25：1818 → 1919 串了）。
+    const rowsForCache = rows.value.map(row => ({
+      id: row.id, interface_model_id: row.interface_model_id,
+      standard_model_id: row.standard_model_id, standard_model_name: row.standard_model_name,
+      official_id: row.official_id, coefficient: row.coefficient,
+      test_config_group_id: row.test_config_group_id, row_status: row.row_status,
+    }));
+    sessionStorage.setItem(LOCAL_KEY, JSON.stringify({ rows: rowsForCache, reason: reason.value, deployRegion: deployRegion.value }));
   } catch { /* 隐私模式/配额不足时忽略，不影响使用 */ }
 }
 function restoreLocal(): boolean {
@@ -767,7 +840,17 @@ function restoreLocal(): boolean {
     if (!raw) return false;
     const data = JSON.parse(raw) as { rows?: EditableRow[]; reason?: string; deployRegion?: string };
     if (!Array.isArray(data.rows) || !data.rows.length) return false;
-    rows.value = data.rows;
+    // 派生字段一律重置：结果必须重新从服务端拿，不能继承上一位供应商的。
+    rows.value = data.rows.map(row => ({
+      ...row,
+      connectivity_status: "",
+      connectivity_job: undefined,
+      stress_job: undefined,
+      connectivity_tested: false,
+      connectivity_passed: false,
+      stress_tested: false,
+      stress_passed: false,
+    }));
     reason.value = data.reason ?? "";
     deployRegion.value = data.deployRegion === "OVERSEAS" ? "OVERSEAS" : "CN";
     return true;
@@ -854,7 +937,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
         </el-select>
       </span>
       <!-- 2026-11：门户不再提供 Excel 模板与导入 -->
-      <span class="batch-hint">提交时服务端会对每个模型尝试一次连通性探测；未通过的模型<b>不影响本次提交</b>，可在后续办理环节补测。</span>
+
     </div>
 
     <el-table :data="rows" row-key="id" class="submission-table" :row-class-name="rowClassName" empty-text="还没有模型，点「添加模型」开始">
@@ -883,6 +966,21 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
           <small v-else-if="!groupByID(row.test_config_group_id)?.has_api_key" class="warn-text">该组尚未配置 Key</small>
         </template>
       </el-table-column>
+      <el-table-column label="连通性" width="110" align="center">
+        <template #default="{ row }">
+          <el-tag v-if="isRowTesting(row)" size="small" type="info">
+            <el-icon class="is-loading" style="vertical-align:-2px;margin-right:4px">
+              <svg viewBox="0 0 1024 1024" width="12" height="12" aria-hidden="true">
+                <path fill="currentColor" d="M512 64a448 448 0 1 1 0 896 448 448 0 0 1 0-896zm0 128a320 320 0 1 0 0 640 320 320 0 0 0 0-640z" opacity=".25" />
+                <path fill="currentColor" d="M512 64a448 448 0 0 1 448 448h-128a320 320 0 0 0-320-320z" />
+              </svg>
+            </el-icon>测试中
+          </el-tag>
+          <el-tag v-else-if="connState(row) === 'PASS'" size="small" type="success">通过</el-tag>
+          <el-tag v-else-if="connState(row) === 'FAIL'" size="small" type="danger">未通过</el-tag>
+          <el-tag v-else size="small" type="info">未测试</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="采购系数" width="130">
         <template #default="{ row }"><el-input v-model="row.coefficient" inputmode="decimal" placeholder="0.6800" :disabled="locked" /></template>
       </el-table-column>
@@ -894,10 +992,17 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       </el-table-column>
     </el-table>
 
-    <p class="rule-note">提交时系统会对每个模型尝试一次连通性探测（用该行配置组的地址与 API Key）。探测未通过不阻断提交，进入审批后由技术办理人在办理环节补测；专业压力测试由内部执行。</p>
+    <p class="rule-note">先点「连通性测试」：可一键测全部配置组，也可只测某个组。**所有模型都通过后才允许提交申报**；专业压力测试由内部执行。</p>
 
     <div class="form-actions form-actions--inline">
       <el-button :disabled="locked" @click="addRow">添加模型</el-button>
+      <el-button :loading="testing" :disabled="locked || !rows.length" @click="runConnectivity()">一键连通性测试</el-button>
+      <el-dropdown v-if="rowGroups.length > 1" trigger="click" :disabled="locked || testing" @command="runConnectivity">
+        <el-button style="margin-left:8px">按配置组测试 ▾</el-button>
+        <template #dropdown><el-dropdown-menu>
+          <el-dropdown-item v-for="g in rowGroups" :key="g.id" :command="g.id">测试配置组{{ g.id }}：{{ g.name || "未命名" }}（{{ g.count }} 个模型）</el-dropdown-item>
+        </el-dropdown-menu></template>
+      </el-dropdown>
       <el-button type="success" :loading="submitting" :disabled="!canSubmitBatch" @click="submitDraft">提交申请</el-button>
     </div>
 
@@ -913,7 +1018,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       <el-input v-model="reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="locked" placeholder="选填：补充给办理方的信息" />
     </el-form-item>
     <el-alert v-if="!canSubmitBatch" :title="`尚不能提交：${gateError}`" type="warning" :closable="false" show-icon />
-    <el-alert v-else title="可以提交：服务端会在提交时尝试连通性探测（失败不阻断）。" type="success" :closable="false" show-icon />
+    <el-alert v-else title="全部模型连通性已通过，可以提交申报。" type="success" :closable="false" show-icon />
 
     <el-dialog v-model="importDialog" title="导入预览" width="760px">
       <template v-if="importPreview">

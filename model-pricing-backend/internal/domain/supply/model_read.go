@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"strings"
+	"time"
 )
 
 var ErrReadContract = errors.New("standard model read adapter returned inconsistent data")
@@ -18,8 +19,29 @@ type ModelListQuery struct {
 	NullsLast  bool
 	TieBreakBy string
 }
+// ModelFailure 表示列表里某一行读不出来。列表不再整页失败：这一行降级成占位行，
+// 只保留平面列上可信的展示字段（ID 必须有，其余可能为空）。
+//
+// Reason 是内部原因，只写日志、不下发前端——前端只需要知道"这行资料异常"，
+// 把字段路径/契约细节抛给用户既看不懂，也泄露内部结构。
+type ModelFailure struct {
+	ID        string
+	Name      string
+	Company   string
+	ModelType string
+	Status    string
+	UpdatedAt time.Time
+	Reason    string
+}
+
+// ModelEntry 是列表里的一行：要么是完整模型，要么是读不出来的占位（两者必居其一）。
+type ModelEntry struct {
+	Model   *StandardModel
+	Failure *ModelFailure
+}
+
 type ModelPage struct {
-	List       []*StandardModel
+	List       []ModelEntry
 	Total      int64
 	Page, Size int
 }
@@ -33,7 +55,7 @@ type StandardModelSnapshot struct {
 // ModelReadStore has no actor/role scope: every authenticated internal staff member can read.
 // SQL adapters must apply the validated sorting/filtering before pagination, never legacy SKU scopes.
 type ModelReadStore interface {
-	ListModels(context.Context, ModelListQuery) ([]*StandardModel, int64, error)
+	ListModels(context.Context, ModelListQuery) ([]ModelEntry, int64, error)
 	GetModel(context.Context, string) (*StandardModel, error)
 	ListModelVersions(context.Context, string, int, int) ([]*StandardModel, int64, error)
 	GetModelVersion(context.Context, string, uint64) (*StandardModel, error)
@@ -97,16 +119,28 @@ func normalizeModelQuery(q ModelListQuery) (ModelListQuery, error) {
 	q.TieBreakBy = "id"
 	return q, nil
 }
-func readPage(rows []*StandardModel, total int64, page, size int) (*ModelPage, error) {
+func readPage(rows []ModelEntry, total int64, page, size int) (*ModelPage, error) {
 	if total < int64(len(rows)) || len(rows) > size {
 		return nil, ErrReadContract
 	}
-	result := &ModelPage{List: make([]*StandardModel, 0, len(rows)), Total: total, Page: page, Size: size}
+	result := &ModelPage{List: make([]ModelEntry, 0, len(rows)), Total: total, Page: page, Size: size}
 	for _, row := range rows {
-		if row == nil || !validID(row.ID) || row.VersionNo == 0 || row.Revision == 0 {
+		switch {
+		case row.Model != nil:
+			if !validID(row.Model.ID) || row.Model.VersionNo == 0 || row.Model.Revision == 0 {
+				return nil, ErrReadContract
+			}
+			result.List = append(result.List, ModelEntry{Model: row.Model.Clone()})
+		case row.Failure != nil:
+			// 降级行只保证「能被定位」：ID 合法即可，其余字段允许为空。
+			if !validID(row.Failure.ID) {
+				return nil, ErrReadContract
+			}
+			failure := *row.Failure
+			result.List = append(result.List, ModelEntry{Failure: &failure})
+		default:
 			return nil, ErrReadContract
 		}
-		result.List = append(result.List, row.Clone())
 	}
 	return result, nil
 }
@@ -162,12 +196,18 @@ func (r *ModelReader) Versions(ctx context.Context, id string, page, size int) (
 	if err != nil {
 		return nil, err
 	}
-	result, err := readPage(rows, total, page, size)
+	// 版本历史不走降级：想看清某一版的历史快照本身就已经不可信了，
+	// 与其给一个残缺的版本，不如直接报错。
+	entries := make([]ModelEntry, len(rows))
+	for i, model := range rows {
+		entries[i] = ModelEntry{Model: model}
+	}
+	result, err := readPage(entries, total, page, size)
 	if err != nil {
 		return nil, err
 	}
-	for _, model := range result.List {
-		if model.ID != id {
+	for _, entry := range result.List {
+		if entry.Model == nil || entry.Model.ID != id {
 			return nil, ErrReadContract
 		}
 	}
