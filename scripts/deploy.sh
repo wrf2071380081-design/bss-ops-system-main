@@ -27,6 +27,11 @@ fi
 SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 BUILT_AT="$(date -Iseconds)"
 TAG="${1:-$(date +%Y%m%d)-r$(git -C "$REPO_ROOT" rev-list --count HEAD)}"
+# 只改一端时可跳过另一端，省一半时间：
+#   SKIP_BACKEND=1 bash scripts/deploy.sh tag   只发前端
+#   SKIP_FRONTEND=1 bash scripts/deploy.sh tag  只发后端
+SKIP_BACKEND="${SKIP_BACKEND:-0}"
+SKIP_FRONTEND="${SKIP_FRONTEND:-0}"
 # 用仓库内的临时目录：Windows 的 C:// 前缀会被 GNU tar 当成远端主机名
 TMP="$REPO_ROOT/.deploy-tmp"
 rm -rf "$TMP"; mkdir -p "$TMP"
@@ -36,6 +41,7 @@ cd "$REPO_ROOT"
 
 echo "==> 发布 $TAG (commit $SHA)"
 
+if [ "$SKIP_BACKEND" = "1" ]; then echo "==> 1/6 跳过后端构建（SKIP_BACKEND=1）"; else
 echo "==> 1/6 构建后端（-p=1，本机并发编译会崩 0xc0000409）"
 cd "$REPO_ROOT/model-pricing-backend"
 GOFLAGS=-p=1 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOTOOLCHAIN=auto \
@@ -43,13 +49,16 @@ GOFLAGS=-p=1 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOTOOLCHAIN=auto \
   -ldflags "-X main.buildSHA=$SHA -X main.buildAt=$BUILT_AT" \
   -o "$TMP/server" ./cmd/server
 gzip -9 -c "$TMP/server" > "$TMP/server.gz"
+fi
 
+if [ "$SKIP_FRONTEND" = "1" ]; then echo "==> 2/6 跳过前端构建（SKIP_FRONTEND=1）"; else
 echo "==> 2/6 构建前端（每次都建，不再判断『这次改没改前端』）"
 cd "$REPO_ROOT/model-pricing-web"
 [ -f .env.local ] || echo 'VITE_API_BASE_URL=/api' > .env.local
 npm run build >/dev/null
 rm -f dist/mockServiceWorker.js
 ( cd "$REPO_ROOT/model-pricing-web" && tar czf "$TMP/dist.tar.gz" dist )
+fi
 
 echo "==> 3/6 上传"
 scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "$TMP/server.gz" "$TMP/dist.tar.gz" "$HOST:/tmp/"

@@ -188,8 +188,10 @@ type submissionWrite struct {
 type supplierSubmissionHandler struct{ svc *SupplierSubmissionService }
 
 // 前端测试类别 ↔ 平台门类。映射必须留在 API 边界：平台只认 baseline/stress。
-var submissionCategoryToPlatform = map[string]string{"CONNECTIVITY": "baseline", "STRESS": "stress"}
-var platformCategoryToSubmission = map[string]string{"baseline": "CONNECTIVITY", "stress": "STRESS"}
+// 2026-11-25：平台已下线 baseline/comprehensive 的连通性口径，统一走 protocolprobe。
+// 之前这里映射成 "baseline"，Category.Valid() 不认 → 报"发起测试的参数不完整"。
+var submissionCategoryToPlatform = map[string]string{"CONNECTIVITY": "protocolprobe", "STRESS": "stress"}
+var platformCategoryToSubmission = map[string]string{"baseline": "CONNECTIVITY", "comprehensive": "CONNECTIVITY", "protocolprobe": "CONNECTIVITY", "stress": "STRESS"}
 
 // 压测时长：发单参数与页面上的「约需多久」共用这一组常量，别在两处各写一个数字。
 var (
