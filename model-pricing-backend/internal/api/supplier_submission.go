@@ -116,7 +116,10 @@ type submissionRowDTO struct {
 	// ConnectivityState 是**唯一权威**的连通性结论：PASS / FAIL / TESTING / NOT_TESTED。
 	// 由平台任务 verdict 与申报行状态共同决定，前端不要再用 job.passed / report_id 自行推断
 	// （2026-11-25：两处推断口径不一致，导致"平台无法判定"却显示通过）。
-	ConnectivityState  string             `json:"connectivity_state"`
+	ConnectivityState string `json:"connectivity_state"`
+	// ConnectivityStatus 是**数据库列** submission_row.connectivity_status（PASS/FAIL/空），
+	// 前端直接显示它，不再做任何推断（2026-11-25 用户要求）。
+	ConnectivityStatus string             `json:"connectivity_status"`
 	Decision           string             `json:"decision"`
 	DecidedAt          string             `json:"decided_at"`
 	DecidedByName      string             `json:"decided_by_name"`
@@ -1629,6 +1632,8 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 			// 终态但不是 pass（fail / inconclusive / 空）：一律未通过。
 			item.ConnectivityState = "FAIL"
 		}
+		item.ConnectivityStatus = strings.ToUpper(strings.TrimSpace(row.RowConnectivityStatus))
+		item.ProbeNote = row.RowConnectivityNote
 		item.RowStatus = deriveRowStatus(row, submitted)
 		item.SupplementRequired = submitted && item.RowStatus != rowPassed
 		if item.SupplementRequired {

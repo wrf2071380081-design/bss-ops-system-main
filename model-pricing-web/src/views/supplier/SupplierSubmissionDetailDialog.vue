@@ -105,6 +105,14 @@ function testText(job?: SupplierSubmissionTestDTO) {
 }
 /** 连通性单元格：平台任务优先（在跑=测试中，终态=结论），否则退回提交时的探测结果。 */
 function connectivityTag(row: SupplierSubmissionRowDTO) {
+  // 直接按数据库字段显示（用户要求 2026-11-25）：PASS=通过，FAIL=未通过，空=未测试。
+  const dbStatus = String(row.connectivity_status || "").toUpperCase();
+  const job0 = row.connectivity_job;
+  if (dbStatus === "PASS") return { text: "通过", type: "success" as const, note: job0 ? connectivityMetrics(job0) : "" };
+  if (dbStatus === "FAIL") {
+    const note = [job0 ? connectivityMetrics(job0) : "", job0?.failure ? `平台中止：${job0.failure}` : "", row.probe_note || ""].filter(Boolean).join(" · ");
+    return { text: "未通过", type: "danger" as const, note };
+  }
   // 唯一权威结论来自后端；缺失时才回退到任务字段（兼容旧数据）。
   const state = row.connectivity_state;
   const job = row.connectivity_job;
