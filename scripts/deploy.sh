@@ -83,7 +83,7 @@ else
   [ -n "$frontend_pid" ] && { wait "$frontend_pid" || { echo "!! 前端构建失败"; exit 1; }; }
   if [ -f "$TMP/server" ]; then
     echo "    压缩后端二进制：$(du -h "$TMP/server" | cut -f1) → gzip"
-    gzip -1 -c "$TMP/server" > "$TMP/server.gz"
+    gzip -9 -c "$TMP/server" > "$TMP/server.gz"
     rm -f "$TMP/server"
   fi
 fi
