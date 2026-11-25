@@ -107,31 +107,25 @@ function testText(job?: SupplierSubmissionTestDTO) {
 function connectivityTag(row: SupplierSubmissionRowDTO) {
   const job = row.connectivity_job;
   const status = (job?.status || "").toUpperCase();
-  if (job && (status === "QUEUED" || status === "RUNNING")) {
+  const verdict = String(job?.verdict || "").toLowerCase();
+  const note = job ? [connectivityMetrics(job), job.failure ? `平台中止：${job.failure}` : ""].filter(Boolean).join(" · ") : "";
+
+  // 只有四态：未测试 / 测试中 / 通过 / 未通过。
+  // 判定**只看平台 verdict**（2026-11-25：之前把"有报告"当成通过，
+  // 地址填成官网也显示通过，与平台结论直接冲突）。
+  if (!job) return { text: "未测试", type: "info" as const, note: "" };
+  if (status === "QUEUED" || status === "RUNNING") {
     return { text: "测试中", type: "info" as const, note: status === "QUEUED" ? "排队中" : "平台执行中" };
   }
-  if (job && job.tested) {
-    // 平台对部分门类不给 verdict（如压测）：那是"完成（未判定）"，不能算未通过。
-    // 状态只保留：测试中 → 通过 / 未通过。没有"已完成"这个中间态
-    // （同一张单里出现"已完成"和"通过"两种，供应商会以为结果不一致）。
-    const verdict = String(job.verdict || "").toLowerCase();
-    const passedNow = job.passed || verdict === "pass" || Boolean(job.report_id);
-    const base = passedNow
-      ? { text: "通过", type: "success" as const }
-      : verdict && verdict !== "pass"
-        ? { text: "未通过", type: "danger" as const }
-        : { text: "测试中", type: "info" as const };
-    // 结论照实显示，失效只作补充说明——用「已失效」顶掉结论会让供应商误读。
-    // 不再展示"需重测/测试目标已变更"：交互原型没有这个状态，
-    // 而且它会让供应商以为要反复重测（2026-11-23 反馈，第十次了，直接去掉）。
-    const reason = job.failure ? `平台中止：${job.failure}` : "";
-    return { ...base, note: [connectivityMetrics(job), reason].filter(Boolean).join(" · ") };
+  if (verdict === "pass") return { text: "通过", type: "success" as const, note };
+  if (verdict) return { text: "未通过", type: "danger" as const, note };
+  // 终态却没有 verdict：platform 异常/中止，按未通过处理，并给出原因。
+  if (["SUCCEEDED", "FAILED", "ABORTED", "CANCELED"].includes(status)) {
+    return { text: "未通过", type: "danger" as const, note: note || "平台未给出结论" };
   }
-  if (job && job.stale) return { text: "已完成", type: "info" as const, note: "" };
-  if (row.probe_status === "PASS") return { text: "通过", type: "success" as const, note: "提交时探测" };
-  if (row.probe_status === "FAIL") return { text: "未通过", type: "danger" as const, note: row.probe_note || "" };
-  return { text: job ? testText(job) : "未测试", type: "info" as const, note: "" };
+  return { text: "测试中", type: "info" as const, note };
 }
+
 
 function testType(job?: SupplierSubmissionTestDTO): "success" | "danger" | "info" | "warning" {
   // 有报告就是"做完了"，用绿色；不要因为压测没有 verdict 就染成灰色。

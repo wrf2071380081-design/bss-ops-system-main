@@ -2,10 +2,8 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -463,11 +461,9 @@ func (h *supplierSubmissionHandler) submit(c *gin.Context) {
 			writeSubmissionError(c, err)
 			return
 		}
-		// ② 真实连通性探测（本地 HTTP 打 /models，秒级，不花钱）：
-		//    结果落 submission_row.connectivity_status，供"查看申报"显示红绿。
-		if probeErr := h.probeSubmitConnectivity(ctx, supplierID, submissionID); probeErr != nil {
-			_ = probeErr
-		}
+		// ② 本地探测已删除（2026-11-25）：它只看 /models 是否 200，
+		//    地址填成官网（返回 HTML 的 200）也会判"通过"，与平台探针结论冲突。
+		//    连通性一律以测试平台 protocolprobe 的 verdict 为准。
 		// ③ 自动在测试平台发起 L1（综合测试的可用性层），每行一单。
 		//    发不出去不影响提交——办理环节还能补测。
 		h.startSubmitRowTests(ctx, supplierID, submissionID)
@@ -1075,170 +1071,6 @@ func groupGateOrder(groups map[int64]supplypg.TestConfigGroupCredential) []suppl
 	return ordered
 }
 
-// probeSubmitConnectivity 在提交时对每个模型做**真实**连通性探测。
-//
-// 与 simulateSubmitConnectivity 的区别：不再只校验表单，而是拿该行配置组的
-// URL + Key 真去打一次 `GET {base}/models`：
-//
-//	2xx            → 通过（地址可达、Key 有效）
-//	401/403        → 不通过（Key 无效或无权限）
-//	404            → 不通过（地址不是 OpenAI 兼容入口）
-//	5xx / 超时      → 不通过（上游不可用）
-//
-// 用 /models 而不是 /chat/completions：前者不计费、不打模型，最适合做"连通性"。
-func (h *supplierSubmissionHandler) probeSubmitConnectivity(ctx context.Context, supplierID, submissionID int64) error {
-	rows, err := h.svc.store.Rows(ctx, []int64{submissionID})
-	if err != nil {
-		return err
-	}
-	groups, err := h.svc.groups.ListCredentials(ctx, supplierID)
-	if err != nil {
-		return err
-	}
-	list := applyConfigGroups(rows[submissionID], groups)
-	if len(list) == 0 {
-		return nil
-	}
-
-	// 按配置组**去重**：同一组下 3 个模型只打 1 次 /models，结果给这 3 行复用。
-	// 不同组之间**并发**：3 个组就是 3 个 goroutine，总耗时≈最慢那一组。
-	type groupResult struct {
-		ok        bool
-		reason    string
-		modelSet  map[string]struct{}
-		hasModels bool
-	}
-	keys := make([]int64, 0, len(list))
-	seen := map[int64]bool{}
-	for _, row := range list {
-		if row.TestConfigGroupID == nil || *row.TestConfigGroupID <= 0 || seen[*row.TestConfigGroupID] {
-			continue
-		}
-		seen[*row.TestConfigGroupID] = true
-		keys = append(keys, *row.TestConfigGroupID)
-	}
-	groupResults := make(map[int64]groupResult, len(keys))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8) // 并发上限，避免一次打爆网络
-	for _, gid := range keys {
-		gid := gid
-		group, ok := groups[gid]
-		if !ok || !group.Enabled || !validTestBaseURL(strings.TrimSpace(group.BaseURL)) || strings.TrimSpace(group.APIKey) == "" {
-			groupResults[gid] = groupResult{ok: false, reason: describeGroupProblem(gid, groups)}
-			continue
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			res := probeGroupModels(ctx, strings.TrimSpace(group.BaseURL), strings.TrimSpace(group.APIKey))
-			mu.Lock()
-			groupResults[gid] = res
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-
-	results := make(map[int64]supplypg.RowConnectivity, len(list))
-	for _, row := range list {
-		if row.TestConfigGroupID == nil || *row.TestConfigGroupID <= 0 {
-			results[row.ID] = supplypg.RowConnectivity{Status: "FAIL", Note: "未选择准入配置组"}
-			continue
-		}
-		gr, ok := groupResults[*row.TestConfigGroupID]
-		if !ok {
-			results[row.ID] = supplypg.RowConnectivity{Status: "FAIL", Note: "绑定的准入配置组不存在"}
-			continue
-		}
-		if !gr.ok {
-			results[row.ID] = supplypg.RowConnectivity{Status: "FAIL", Note: gr.reason}
-			continue
-		}
-		// 组已连通：再校验"这个模型 ID 在不在该通道的模型列表里"。
-		// /models 不返回列表时跳过这项（有些网关不实现），只做连通判定。
-		if gr.hasModels && !modelListed(gr.modelSet, row.SupplierModelName) {
-			results[row.ID] = supplypg.RowConnectivity{Status: "FAIL", Note: "该通道的模型列表里没有这个接口模型 ID"}
-			continue
-		}
-		results[row.ID] = supplypg.RowConnectivity{Status: "PASS"}
-	}
-	// 落库供「查看申报」与审批过滤使用（迁移 000071）。
-	return h.svc.store.SetRowConnectivity(ctx, results)
-}
-
-// probeGroupModels 对一个配置组做一次连通性探测（不按行重复打）。
-func probeGroupModels(ctx context.Context, base, key string) struct {
-	ok        bool
-	reason    string
-	modelSet  map[string]struct{}
-	hasModels bool
-} {
-	out := struct {
-		ok        bool
-		reason    string
-		modelSet  map[string]struct{}
-		hasModels bool
-	}{}
-	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, strings.TrimRight(base, "/")+"/models", nil)
-	if err != nil {
-		out.reason = "地址无法解析"
-		return out
-	}
-	req.Header.Set("Authorization", "Bearer "+key)
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-	if err != nil {
-		out.reason = "连接失败（超时或域名不可达）"
-		return out
-	}
-	defer func() { _ = resp.Body.Close() }()
-	switch {
-	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		out.ok = true
-	case resp.StatusCode == 401 || resp.StatusCode == 403:
-		out.reason = fmt.Sprintf("鉴权失败（HTTP %d，Key 无效或无权限）", resp.StatusCode)
-		return out
-	case resp.StatusCode == 404:
-		out.reason = "地址不是 OpenAI 兼容入口（/models 返回 404）"
-		return out
-	default:
-		out.reason = fmt.Sprintf("上游不可用（HTTP %d）", resp.StatusCode)
-		return out
-	}
-	// 必须是 JSON：很多网站对任意路径都返回 200 + HTML（SPA 兜底页），
-	// 只看状态码会把「官网首页」判成「可用的 API」，进而让平台任务全部中断。
-	// 2026-11-19 实测：https://www.tokenplus.cn/ 返回 200 HTML，被误判通过。
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	trimmed := strings.TrimSpace(string(body))
-	if trimmed == "" || !json.Valid([]byte(trimmed)) {
-		out.ok = false
-		out.reason = "该地址返回的是网页/非 JSON（不是 API 入口，通常是官网首页或路径不对）"
-		return out
-	}
-	var payload struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if jsonErr := json.Unmarshal([]byte(trimmed), &payload); jsonErr != nil {
-		out.ok = false
-		out.reason = "该地址返回的 JSON 不是模型列表格式（不是 OpenAI 兼容入口）"
-		return out
-	}
-	if len(payload.Data) > 0 {
-		out.hasModels = true
-		out.modelSet = make(map[string]struct{}, len(payload.Data))
-		for _, m := range payload.Data {
-			out.modelSet[strings.ToLower(strings.TrimSpace(m.ID))] = struct{}{}
-		}
-	}
-	return out
-}
-
-// modelListed 判断接口模型 ID 是否在该组的模型列表里（容忍大小写与厂商前缀差异）。
 func modelListed(set map[string]struct{}, model string) bool {
 	name := strings.ToLower(strings.TrimSpace(model))
 	if name == "" {
