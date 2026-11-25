@@ -1206,3 +1206,25 @@ SET connectivity_status = 'FAIL', connectivity_note = NULLIF($2,'')
 WHERE id = $1 AND COALESCE(connectivity_status,'') <> 'PASS'`, rowID, strings.TrimSpace(note))
 	return err
 }
+
+// RowsNotPassedConnectivity 返回本次申报中连通性尚未通过的模型名。
+// 提交门禁用它：只有全部 PASS 才允许申报（2026-11-25 业务裁决）。
+func (s *SubmissionStore) RowsNotPassedConnectivity(ctx context.Context, submissionID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT supplier_model_name FROM `+s.table("submission_row")+`
+WHERE submission_id = $1 AND COALESCE(row_status,'') <> 'CANCELED'
+  AND COALESCE(connectivity_status,'') <> 'PASS'
+ORDER BY id`, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}

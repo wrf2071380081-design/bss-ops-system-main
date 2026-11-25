@@ -255,9 +255,48 @@ const gateError = computed(() => {
   if (rowsWithoutGroup.value.length > 0) return `还有 ${rowsWithoutGroup.value.length} 个模型没有选择准入配置组。`;
   const incomplete = rows.value.find(row => !row.standard_model_id || !String(row.interface_model_id || "").trim());
   if (incomplete) return "每个模型都要选择标准模型并填写接口模型 ID。";
+  // 2026-11-25 业务裁决：必须先跑连通性测试，全部通过才允许申报。
+  const notPassed = rows.value.filter(row => String(row.connectivity_status || "").toUpperCase() !== "PASS");
+  if (notPassed.length > 0) {
+    return `还有 ${notPassed.length} 个模型未通过连通性测试（${notPassed.map(r => r.interface_model_id || r.standard_model_name).join("、")}），请先点「连通性测试」。`;
+  }
   return "";
 });
 const canSubmitBatch = computed(() => !gateError.value);
+
+// ---- 连通性测试（2026-11-25：先测后报）----
+const testing = ref(false);
+const rowGroups = computed(() => {
+  const map = new Map<string, { id: string; name: string; count: number }>();
+  for (const row of rows.value) {
+    const id = String(row.test_config_group_id || "");
+    if (!id) continue;
+    const hit = map.get(id) ?? { id, name: row.test_config_group_name || id, count: 0 };
+    hit.count += 1;
+    map.set(id, hit);
+  }
+  return [...map.values()];
+});
+async function runConnectivity(groupID?: string) {
+  const id = submissionID.value;
+  if (!id || testing.value) return;
+  testing.value = true;
+  try {
+    await supplierSubmissionsApi.batchTest(id, ["CONNECTIVITY"], crypto.randomUUID(), groupID);
+    ElMessage.success("已发起连通性测试，结果通常 10 秒内出来");
+    // 轮询草稿，刷新每行的 connectivity_status，直到全部终态或超时
+    for (let i = 0; i < 12; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      await loadDraft(id);
+      const pending = rows.value.some(row => !["PASS", "FAIL"].includes(String(row.connectivity_status || "").toUpperCase()));
+      if (!pending) break;
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "发起测试失败");
+  } finally {
+    testing.value = false;
+  }
+}
 // 放行时的提示：门禁只保证每组有一个能通，其余模型可能一个都没测。
 const untestedCount = computed(() => rows.value.filter(row => !row.connectivity_tested).length);
 
@@ -883,6 +922,13 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
           <small v-else-if="!groupByID(row.test_config_group_id)?.has_api_key" class="warn-text">该组尚未配置 Key</small>
         </template>
       </el-table-column>
+      <el-table-column label="连通性" width="110" align="center">
+        <template #default="{ row }">
+          <el-tag v-if="String(row.connectivity_status).toUpperCase() === 'PASS'" size="small" type="success">通过</el-tag>
+          <el-tag v-else-if="String(row.connectivity_status).toUpperCase() === 'FAIL'" size="small" type="danger">未通过</el-tag>
+          <el-tag v-else size="small" type="info">未测试</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="采购系数" width="130">
         <template #default="{ row }"><el-input v-model="row.coefficient" inputmode="decimal" placeholder="0.6800" :disabled="locked" /></template>
       </el-table-column>
@@ -894,10 +940,17 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       </el-table-column>
     </el-table>
 
-    <p class="rule-note">提交时系统会对每个模型尝试一次连通性探测（用该行配置组的地址与 API Key）。探测未通过不阻断提交，进入审批后由技术办理人在办理环节补测；专业压力测试由内部执行。</p>
+    <p class="rule-note">先点「连通性测试」：可一键测全部配置组，也可只测某个组。**所有模型都通过后才允许提交申报**；专业压力测试由内部执行。</p>
 
     <div class="form-actions form-actions--inline">
       <el-button :disabled="locked" @click="addRow">添加模型</el-button>
+      <el-button :loading="testing" :disabled="locked || !rows.length" @click="runConnectivity()">一键连通性测试</el-button>
+      <el-dropdown v-if="rowGroups.length > 1" trigger="click" :disabled="locked || testing" @command="runConnectivity">
+        <el-button style="margin-left:8px">按配置组测试 ▾</el-button>
+        <template #dropdown><el-dropdown-menu>
+          <el-dropdown-item v-for="g in rowGroups" :key="g.id" :command="g.id">测试「{{ g.name }}」组（{{ g.count }} 个模型）</el-dropdown-item>
+        </el-dropdown-menu></template>
+      </el-dropdown>
       <el-button type="success" :loading="submitting" :disabled="!canSubmitBatch" @click="submitDraft">提交申请</el-button>
     </div>
 
@@ -913,7 +966,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       <el-input v-model="reason" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="locked" placeholder="选填：补充给办理方的信息" />
     </el-form-item>
     <el-alert v-if="!canSubmitBatch" :title="`尚不能提交：${gateError}`" type="warning" :closable="false" show-icon />
-    <el-alert v-else title="可以提交：服务端会在提交时尝试连通性探测（失败不阻断）。" type="success" :closable="false" show-icon />
+    <el-alert v-else title="全部模型连通性已通过，可以提交申报。" type="success" :closable="false" show-icon />
 
     <el-dialog v-model="importDialog" title="导入预览" width="760px">
       <template v-if="importPreview">

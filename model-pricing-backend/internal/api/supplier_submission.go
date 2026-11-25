@@ -471,9 +471,17 @@ func (h *supplierSubmissionHandler) submit(c *gin.Context) {
 		// ② 本地探测已删除（2026-11-25）：它只看 /models 是否 200，
 		//    地址填成官网（返回 HTML 的 200）也会判"通过"，与平台探针结论冲突。
 		//    连通性一律以测试平台 protocolprobe 的 verdict 为准。
-		// ③ 自动在测试平台发起 L1（综合测试的可用性层），每行一单。
-		//    发不出去不影响提交——办理环节还能补测。
-		h.startSubmitRowTests(ctx, supplierID, submissionID)
+		// ③ 提交门禁（2026-11-25 业务裁决）：必须所有模型连通性 PASS 才能申报。
+		//    之前是"提交后再自动测"，供应商不知道结果就提交了，领导那边看到一堆未通过。
+		//    现在改为：先在申报页点「连通性测试」，全绿才允许提交。
+		if blocked, err := h.svc.store.RowsNotPassedConnectivity(ctx, submissionID); err == nil && len(blocked) > 0 {
+			response.Error(c, apperr.New(apperr.ErrIdempotency.Code,
+				fmt.Sprintf("还有 %d 个模型未通过连通性测试（%s），请先完成连通性测试再提交",
+					len(blocked), strings.Join(blocked, "、")), 409))
+			return
+		}
+		// ④ 不再在提交时自动发测试：连通性已在申报页由供应商主动发起，
+		//    提交门禁（③）保证全部 PASS 才会走到这里（2026-11-25）。
 	}
 	submitter, _ := h.svc.store.SubmitterName(ctx, supplierID)
 	// 原型：提交即「待审批」。PENDING_TEST 只留给改造前的历史数据。
@@ -922,6 +930,8 @@ func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 	var body struct {
 		Category   string   `json:"category"`
 		Categories []string `json:"categories"`
+		// GroupID 非空时只测该准入配置组下的行（按组做连通性测试）。
+		GroupID int64 `json:"group_id"`
 	}
 	_ = c.ShouldBindJSON(&body)
 	raw := body.Categories
@@ -995,6 +1005,9 @@ func (h *supplierSubmissionHandler) batchTests(c *gin.Context) {
 	baseKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 	for _, t := range targets {
 		for _, row := range rows[submissionID] {
+			if body.GroupID > 0 && (row.TestConfigGroupID == nil || *row.TestConfigGroupID != body.GroupID) {
+				continue
+			}
 			// 幂等键带纳秒后缀：重测必须新建平台任务，不能被上次响应回放。
 			key := baseKey + "-" + strconv.FormatInt(row.ID, 10) + "-" + t.platform + "-" + strconv.FormatInt(h.svc.now().UnixNano(), 10)
 			jobID, action, err := h.startRowTest(ctx, supplierID, submissionID, row.ID, t.platform, key)
