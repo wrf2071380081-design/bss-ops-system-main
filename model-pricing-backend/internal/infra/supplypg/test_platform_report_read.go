@@ -73,7 +73,7 @@ type reportRow struct {
 }
 
 const reportSelect = `
-SELECT j.id::text, j.status, j.verdict, j.category, j.created_at, j.finished_at,
+SELECT j.id::text, j.status, r.verdict, j.category, j.created_at, j.finished_at,
        r.id::text, r.connection_ms::text, r.connection_passed, r.stress_passed,
        r.rps::text, r.tps::text, r.cache_hit_tokens, r.cache_input_tokens, r.scene, r.report_file,
        r.cache_hit_ratio::text, r.cache_ratio_available, r.tested_at,
@@ -81,7 +81,7 @@ SELECT j.id::text, j.status, j.verdict, j.category, j.created_at, j.finished_at,
        (SELECT sr.test_fingerprint FROM %s.submission_row sr WHERE sr.resource_id=j.resource_id ORDER BY sr.id DESC LIMIT 1), COALESCE(j.request_payload->>'source','')
 FROM %s.test_job j
 LEFT JOIN LATERAL (
-  SELECT id, connection_ms, connection_passed, stress_passed, rps, tps,
+  SELECT id, verdict, connection_ms, connection_passed, stress_passed, rps, tps,
          cache_hit_tokens, cache_input_tokens, scene, report_file, cache_hit_ratio, cache_ratio_available, tested_at, tested_by
   FROM %s.test_report WHERE test_job_id = j.id ORDER BY id DESC LIMIT 1
 ) r ON TRUE
@@ -221,7 +221,7 @@ func buildReportView(row reportRow, resourceID string, _ map[string]string) (*su
 	}
 	view := &supply.ResourceReportView{
 		ID: row.jobID, ResourceID: resourceID, CreatedAt: row.createdAt,
-		TestJobID: row.jobID, TestReportID: row.reportID.String,
+		TestJobID: row.jobID, TestReportID: row.reportID.String, Verdict: row.verdict.String,
 		TestItem: row.category, OperatorName: row.operatorName, Scene: strings.TrimSpace(row.scene.String),
 		CacheStats: supply.ResourceCacheStats{ReportID: row.jobID},
 	}

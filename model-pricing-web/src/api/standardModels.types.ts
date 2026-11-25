@@ -1,5 +1,6 @@
-export interface StandardFact { key: string; disclosure: string; value: string }
-export interface StandardAbility { key: string; state: string; description: string }
+export interface StandardFactContext { label?: string; unit?: string; semantics?: string; condition?: string; scope?: string; source_url?: string; quote?: string }
+export interface StandardFact extends StandardFactContext { key: string; disclosure: string; value: string }
+export interface StandardAbility extends StandardFactContext { key: string; state: string; description: string }
 export interface StandardSource { label: string; url: string; source_kind: string }
 export interface StandardPrice {
   item_key: string; label: string; task_type: string; amount: string; currency: string;

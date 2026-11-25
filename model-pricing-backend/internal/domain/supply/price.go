@@ -2,6 +2,7 @@
 package supply
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -87,7 +88,7 @@ func knownUnit(unit string) bool {
 }
 func knownDimension(key string) bool {
 	switch key {
-	case "context_tier", "resolution", "duration_seconds", "quality", "cache_type", "modality":
+	case "context_tier", "resolution", "duration_seconds", "quality", "cache_type", "modality", "region", "deployment", "valid_from", "valid_to", "period", "account_tier":
 		return true
 	}
 	return false
@@ -97,6 +98,7 @@ func knownDimension(key string) bool {
 // The vocabulary is explicit; additions require a contract and test change.
 func ValidatePriceItems(items []PriceItem) error {
 	seen := make(map[string]bool, len(items))
+	scopes := map[string]string{}
 	for i, p := range items {
 		path := fmt.Sprintf("price_items[%d].", i)
 		if !stableKey.MatchString(p.ItemKey) || seen[p.ItemKey] {
@@ -132,6 +134,16 @@ func ValidatePriceItems(items []PriceItem) error {
 		if p.SourceURL != "" && !publicURL(p.SourceURL) {
 			return invalid(path+"source_url", "expected a public HTTP(S) source without credentials")
 		}
+		dimensions := p.Dimensions
+		if dimensions == nil {
+			dimensions = map[string]string{}
+		}
+		scope, _ := json.Marshal([]any{p.TaskType, p.Currency, p.UnitCode, p.UnitQuantity, p.Condition, dimensions})
+		amount, _ := decimal.NewFromString(p.Amount)
+		if prior, ok := scopes[string(scope)]; ok && prior != amount.String() {
+			return invalid(path+"amount", "conflicting amounts for the same scope; select one official price")
+		}
+		scopes[string(scope)] = amount.String()
 	}
 	return nil
 }

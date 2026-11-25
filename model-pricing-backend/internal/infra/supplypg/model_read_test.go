@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"model_bss/internal/domain/supply"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -68,5 +69,36 @@ func TestModelSnapshotStrictEnvelopeAndIdentity(t *testing.T) {
 	}
 	if _, err := decodeModelSnapshot(raw, model.ID, 2); !errors.Is(err, supply.ErrReadContract) {
 		t.Fatal("version mismatch")
+	}
+}
+
+func TestModelSnapshotAcceptsEquivalentLegacySerialization(t *testing.T) {
+	now := time.Date(2026, 11, 23, 1, 0, 0, 0, time.UTC)
+	model, err := supply.NewStandardModel("1", "3", supply.ModelData{
+		Name: "qwen-max", PriceItems: []supply.PriceItem{{
+			ItemKey: "output", Label: "输出", TaskType: "TEXT_OUTPUT", Amount: "9.6",
+			Currency: "CNY", UnitCode: "TOKEN", UnitQuantity: "1000000", Condition: "标准 API 计费",
+			SourceURL: "https://help.aliyun.com/zh/model-studio/model-pricing",
+		}},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := model.Clone()
+	model.Data.Capacity = []supply.OfficialFact{}
+	model.Data.Abilities = []supply.Ability{}
+	model.Data.APIAccess = []supply.OfficialFact{}
+	model.Data.PriceItems[0].Amount = "9.6"
+	model.Data.PriceItems[0].Dimensions = map[string]string{}
+	raw, err := json.Marshal(map[string]any{"contract": "supply.standard_model", "schema_version": 1, "model": model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeModelSnapshot(raw, "1", 1)
+	if err != nil || !reflect.DeepEqual(got, expected) {
+		t.Fatalf("equivalent legacy snapshot rejected: %+v %v", got, err)
+	}
+	if model.Data.PriceItems[0].Amount != "9.6" || model.Data.Abilities == nil {
+		t.Fatal("reading changed the source snapshot")
 	}
 }

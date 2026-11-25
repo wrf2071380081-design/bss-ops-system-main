@@ -46,8 +46,13 @@ type nativeFlowRow struct {
 	StressPassed     *bool  `json:"stress_passed"`
 	TestedAt         string `json:"tested_at"`
 	ReportCount      int    `json:"report_count"`
+	TestReportID     *string `json:"test_report_id,omitempty"`
+	ConnectivityJobID *string `json:"connectivity_job_id,omitempty"`
+	StressJobID      *string `json:"stress_job_id,omitempty"`
+	ProbeStatus      *string `json:"probe_status,omitempty"`
 }
 type nativeFlowView struct {
+	Reason               string           `json:"reason,omitempty"`
 	ID                  string           `json:"id"`
 	SupplierID          string           `json:"supplier_id"`
 	SupplierName        string           `json:"supplier_name"`
@@ -101,7 +106,7 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 		id = sub
 	}
 	var v nativeFlowView
-	err := r.raw.QueryRowContext(ctx, `SELECT s.id::text,s.supplier_id::text,sp.name,s.revision::text,s.status,s.kind,s.region,NOT EXISTS(SELECT 1 FROM public.resource r WHERE r.supplier_id=s.supplier_id AND r.ever_admitted),NOT EXISTS(SELECT 1 FROM public.onboarding_node n JOIN public.onboarding_flow f ON f.id=n.flow_id WHERE f.owner_id=s.supplier_id AND f.kind='SUPPLIER' AND n.node_key='CONTRACT' AND n.status='COMPLETED'),s.created_at,s.submitted_at,coalesce(s.submitter_name,'') FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id WHERE s.id=$1`, id).Scan(&v.ID, &v.SupplierID, &v.SupplierName, &v.Revision, &v.Status, &v.Kind, &v.Region, &v.FirstModel, &v.NeedsContract, &v.CreatedAt, &v.SubmittedAt, &v.Submitter)
+	err := r.raw.QueryRowContext(ctx, `SELECT s.id::text,s.supplier_id::text,sp.name,s.revision::text,s.status,s.kind,s.region,NOT EXISTS(SELECT 1 FROM public.resource r WHERE r.supplier_id=s.supplier_id AND r.ever_admitted),NOT EXISTS(SELECT 1 FROM public.onboarding_node n JOIN public.onboarding_flow f ON f.id=n.flow_id WHERE f.owner_id=s.supplier_id AND f.kind='SUPPLIER' AND n.node_key='CONTRACT' AND n.status='COMPLETED'),s.created_at,s.submitted_at,coalesce(s.submitter_name,''),coalesce(s.reason,'') FROM public.submission s JOIN public.supplier sp ON sp.id=s.supplier_id WHERE s.id=$1`, id).Scan(&v.ID, &v.SupplierID, &v.SupplierName, &v.Revision, &v.Status, &v.Kind, &v.Region, &v.FirstModel, &v.NeedsContract, &v.CreatedAt, &v.SubmittedAt, &v.Submitter, &v.Reason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
@@ -183,7 +188,7 @@ func (r *SupplyChainRuntime) nativeFlowView(ctx context.Context, id, actor strin
 		 coalesce(tr.connection_ms::text,''),coalesce(tr.rps::text,''),coalesce(tr.tps::text,''),
 		 coalesce(tr.cache_hit_ratio::text,''),coalesce(tr.cache_available,false),
 		 tr.connection_passed,tr.stress_passed,
-		 coalesce(tr.tested_at::text,''),coalesce(tr.report_count,0)
+		 coalesce(tr.tested_at::text,''),coalesce(tr.report_count,0), sr.test_report_id::text, sr.test_job_id::text, sr.stress_job_id::text, sr.connectivity_status
 FROM public.submission_row sr
 JOIN public.standard_model m ON m.id=sr.standard_model_id
 ` + resourceJoin + `
@@ -238,7 +243,7 @@ WHERE sr.submission_id=$1 ORDER BY sr.id`
 		var connectionPassed, stressPassed sql.NullBool
 		if err := rows.Scan(&row.ID, &row.ModelID, &row.ModelName, &row.InterfaceModel, &row.Coefficient, &row.CurrentCoefficient, &row.Status, &row.ResourceID, &row.Decision, &row.Company, &row.ModelType,
 			&row.TestStatus, &row.ConnectionMS, &row.RPS, &row.TPS, &row.CacheHitRate, &row.CacheAvailable,
-			&connectionPassed, &stressPassed, &row.TestedAt, &row.ReportCount); err != nil {
+			&connectionPassed, &stressPassed, &row.TestedAt, &row.ReportCount, &row.TestReportID, &row.ConnectivityJobID, &row.StressJobID, &row.ProbeStatus); err != nil {
 			return nil, err
 		}
 		// 只有价格变更才有「原系数」这一说：模型新增的 coefficient 就是申报值，
@@ -297,6 +302,7 @@ func RegisterNativeSupplyFlowRoutes(internal *gin.RouterGroup, runtime *SupplyCh
 	group := internal.Group("/flows")
 	group.Use(requireSupplyInternalStaff)
 	registerSupplierActivityRoutes(group, runtime)
+	registerModelSupplierDirectory(group, runtime)
 	get := func(node bool) gin.HandlerFunc {
 		return func(c *gin.Context) {
 			if runtime == nil {

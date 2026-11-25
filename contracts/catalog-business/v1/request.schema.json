@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Catalog business request v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "operation"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "catalog-business.v1"
+    },
+    "operation": {
+      "enum": [
+        "claim",
+        "complete",
+        "fail",
+        "status",
+        "request",
+        "baseline",
+        "draft-list",
+        "draft-save",
+        "draft-remove",
+        "approve",
+        "reject",
+        "receipt-save",
+        "evidence-record",
+        "evidence-read",
+        "plans-list",
+        "plan-save",
+        "plan-pause",
+        "plans-bulk",
+        "plans-claim",
+        "plans-settle"
+      ]
+    },
+    "vendor": {
+      "enum": [
+        "deepseek",
+        "openai",
+        "google",
+        "aliyun",
+        "zhipu",
+        "anthropic"
+      ]
+    },
+    "runId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "key": {
+      "type": "string"
+    },
+    "trigger": {
+      "enum": [
+        "MANUAL",
+        "SCHEDULED"
+      ]
+    },
+    "staffId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "modelId": {
+      "type": "string"
+    },
+    "modelIds": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string"
+      }
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "error": {
+      "type": "string"
+    },
+    "result": {},
+    "overrides": {},
+    "published": {},
+    "evidence": {},
+    "plan": {
+      "description": "Plan configuration; plans-bulk accepts items [{id,revision}], active, and optional action=delete. Delete disables future runs and retains execution history. Platform access is attested by the internal employee gateway; personal access remains owner-scoped."
+    }
+  }
+}

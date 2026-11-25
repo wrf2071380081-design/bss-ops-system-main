@@ -11,7 +11,7 @@ export const taskLabels: Record<string, string> = {
   AUDIO_INPUT: "音频输入", AUDIO_OUTPUT: "音频输出", AUDIO_TRANSCRIPTION: "音频转写", AUDIO_RECOGNITION: "语音识别",
 };
 export const unitLabels: Record<string, string> = { TOKEN: "Token", TOKEN_HOUR: "Token·小时", IMAGE: "张", SECOND: "秒", MINUTE: "分钟", REQUEST: "次", CHARACTER: "字符" };
-export const dimensionLabels: Record<string, string> = { context_tier: "上下文档位", resolution: "分辨率", duration_seconds: "时长（秒）", quality: "质量", cache_type: "缓存类型", modality: "模态" };
+export const dimensionLabels: Record<string, string> = { context_tier: "上下文档位", resolution: "分辨率", duration_seconds: "时长（秒）", quality: "质量", cache_type: "缓存类型", modality: "模态", region:"适用地区", deployment:"部署方式", valid_from:"生效日期", valid_to:"失效日期", period:"计费时段", account_tier:"账号等级" };
 export const sourceLabels: Record<string, string> = { OFFICIAL_SITE: "官网", OFFICIAL_DOCS: "官方文档", OFFICIAL_PRICING: "官方价格" };
 export const fieldLabels: Record<string, string> = { company: "模型公司", name: "模型名称", official_id: "官方 ID", model_type: "模型类型", input_modalities: "输入模态", output_modalities: "输出模态", capacity: "容量规格", abilities: "核心能力", price_items: "官方价格", api_access: "API / 访问条件", lifecycle: "发布 / 生命周期", sources: "官方来源", checked_at: "核对日期" };
 export function standardFieldLabel(path: string): string { return (fieldLabels[path.split(/[.[]/)[0]!] || path) + (/[.[]/.test(path) ? `（${path}）` : ""); }
@@ -55,6 +55,9 @@ export function validateStandardModel(data: StandardModelData): StandardFieldIss
       const path = `${key}[${index}]`;
       if (!/^[a-z][a-z0-9_]*$/.test(fact.key) || seen.has(fact.key)) issue(path + ".key", "资料标识需为唯一的小写英文标识");
       seen.add(fact.key);
+      if (fact.source_url && !isOfficialURL(fact.source_url)) issue(path + ".source_url", "请填写不含凭据的证据网址");
+      if (fact.semantics && !['SHARED_WINDOW','SEPARATE_INPUT_OUTPUT','INPUT_ONLY','UNSPECIFIED'].includes(fact.semantics)) issue(path + '.semantics','请选择有效的 Token 定义');
+      if (fact.unit && !unitLabels[fact.unit]) issue(path + '.unit','请选择有效单位');
       if (!factLabels[fact.disclosure]) issue(path + ".disclosure", "请选择披露状态");
       if (fact.disclosure === "DISCLOSED" && !fact.value.trim()) issue(path + ".value", "已披露资料需填写具体内容");
     }
@@ -63,9 +66,11 @@ export function validateStandardModel(data: StandardModelData): StandardFieldIss
   for (const [index, ability] of data.abilities.entries()) {
     if (!/^[a-z][a-z0-9_]*$/.test(ability.key) || abilities.has(ability.key)) issue(`abilities[${index}].key`, "能力标识需唯一且有效");
     abilities.add(ability.key);
+    if (ability.source_url && !isOfficialURL(ability.source_url)) issue(`abilities[${index}].source_url`,"请填写不含凭据的证据网址");
     if (!abilityLabels[ability.state]) issue(`abilities[${index}].state`, "请选择能力状态");
   }
   const prices = new Set<string>();
+  const priceScopes=new Map<string,string>();
   for (const [index, price] of data.price_items.entries()) {
     const path = `price_items[${index}].`;
     if (!/^[a-z][a-z0-9_]*$/.test(price.item_key) || prices.has(price.item_key)) issue(path + "item_key", "价格项标识需唯一且有效");
@@ -79,6 +84,8 @@ export function validateStandardModel(data: StandardModelData): StandardFieldIss
     if (!price.condition.trim()) issue(path + "condition", "请说明价格适用条件");
     for (const [key, value] of Object.entries(price.dimensions)) if (!dimensionLabels[key] || !value.trim()) issue(path + "dimensions." + key, "价格维度无效或内容为空");
     if (price.source_url && !isOfficialURL(price.source_url)) issue(path + "source_url", "请填写不含凭据的 HTTP(S) 来源");
+    const scope=JSON.stringify([price.task_type,price.currency,price.unit_code,price.unit_quantity,price.condition,Object.entries(price.dimensions??{}).sort(([a],[b])=>a.localeCompare(b))]);
+    if(validDecimal(price.amount,false)) {const amount=new Decimal(price.amount).toFixed();if(priceScopes.has(scope)&&priceScopes.get(scope)!==amount)issue(path+'amount','同一计费条件存在不同价格，请核对后只采纳一条');priceScopes.set(scope,amount);}
   }
   for (const [index, source] of data.sources.entries()) {
     if (!source.label.trim()) issue(`sources[${index}].label`, "请填写来源名称");

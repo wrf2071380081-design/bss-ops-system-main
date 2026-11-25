@@ -12,6 +12,7 @@ type ResourceReportView struct {
 	// B history is job-based; the persisted evidence report has its own ID.
 	TestJobID          string                `json:"test_job_id,omitempty"`
 	TestReportID       string                `json:"test_report_id,omitempty"`
+	Verdict            string                `json:"verdict,omitempty"`
 	ResourceID         string                `json:"resource_id"`
 	Status             string                `json:"status"`
 	CreatedAt          time.Time             `json:"created_at"`

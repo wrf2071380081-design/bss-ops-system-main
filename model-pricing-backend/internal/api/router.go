@@ -34,6 +34,7 @@ import (
 
 // Deps 是路由装配所需的全部依赖。
 type Deps struct {
+	CatalogBusiness *CatalogBusinessStore
 	Config        *config.Config
 	Log           *zap.Logger
 	Health        Pinger
@@ -151,6 +152,7 @@ func New(deps Deps) *gin.Engine {
 	r.Use(middleware.FeatureGate(deps.Config.Features))
 
 	r.GET("/healthz", HealthzHandler(deps.Health))
+	registerCatalogBusiness(r, deps.CatalogBusiness, deps.SessionReader, os.Getenv("MODEL_BSS_AGENT_CATALOG_TOKEN"))
 	// 构建戳：部署后用它核对线上二进制是否就是本地 HEAD，无需人工比对界面。
 	r.GET("/api/version", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": gin.H{"sha": BuildSHA, "built_at": BuildAt}})
@@ -215,6 +217,12 @@ func registerPortal(api *gin.RouterGroup, portal string, deps Deps) {
 	protected := g.Group("")
 	protected.Use(middleware.AuthN(deps.SessionReader))
 	protected.Use(middleware.DataScope())
+
+	if portal == "internal" {
+		protected.GET("/auth/session", employeeSessionSnapshot)
+		registerAgentCatalog(protected, os.Getenv("MODEL_BSS_AGENT_WEB_ORIGIN"))
+		registerCatalogModelStatus(protected, deps.CatalogBusiness)
+	}
 
 	// 冒烟验证路由：仅当 MODEL_BSS_SMOKE=1 时挂载（生产默认关闭）。
 	if os.Getenv("MODEL_BSS_SMOKE") == "1" {

@@ -19,6 +19,18 @@ func validateFacts(path string, facts []OfficialFact) error {
 			return invalid(field+".key", "expected a unique stable key")
 		}
 		seen[fact.Key] = true
+		if fact.Scope != "" && fact.Scope != "API" && fact.Scope != "WEIGHTS" && fact.Scope != "NATIVE" && fact.Scope != "EXTENDED" {
+			return invalid(field+".scope", "unsupported specification scope")
+		}
+		if fact.SourceURL != "" && !publicURL(fact.SourceURL) {
+			return invalid(field+".source_url", "expected public evidence URL without credentials")
+		}
+		if fact.Semantics != "" && fact.Semantics != "SHARED_WINDOW" && fact.Semantics != "SEPARATE_INPUT_OUTPUT" && fact.Semantics != "INPUT_ONLY" && fact.Semantics != "UNSPECIFIED" {
+			return invalid(field+".semantics", "unsupported token semantics")
+		}
+		if fact.Unit != "" && !knownUnit(fact.Unit) {
+			return invalid(field+".unit", "unsupported unit")
+		}
 		switch fact.Disclosure {
 		case "DISCLOSED":
 			if strings.TrimSpace(fact.Value) == "" {
@@ -63,6 +75,9 @@ func validateModelData(data ModelData, now time.Time) error {
 			return invalid(field+".key", "expected a unique stable key")
 		}
 		seen[ability.Key] = true
+		if ability.SourceURL != "" && !publicURL(ability.SourceURL) {
+			return invalid(field+".source_url", "expected public evidence URL without credentials")
+		}
 		switch ability.State {
 		case "SUPPORTED", "UNSUPPORTED", "UNDISCLOSED", "UNVERIFIED":
 		default:
