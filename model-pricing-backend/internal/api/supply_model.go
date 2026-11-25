@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"log"
 	"math"
 	"model_bss/internal/api/middleware"
 	"model_bss/internal/domain/supply"
@@ -46,6 +47,9 @@ type supplyModelDTO struct {
 	QuoteReadiness   supply.ModelReadiness  `json:"quote_readiness"`
 	Permissions      supplyModelPermissions `json:"permissions"`
 	Changed          *bool                  `json:"changed,omitempty"`
+	// LoadError 非空表示这一行读不出来、已降级成占位行。前端据此把该行渲染成
+	// 「资料异常」，而不是让整页 500。内部原因不下发（细节对用户无意义，也泄露结构）。
+	LoadError string `json:"load_error,omitempty"`
 }
 type supplyModelPageDTO struct {
 	List  []supplyModelDTO `json:"list"`
@@ -170,10 +174,46 @@ func (h *supplyModelHandler) list(c *gin.Context) {
 		return
 	}
 	rows := make([]supplyModelDTO, 0, len(result.List))
-	for _, m := range result.List {
-		rows = append(rows, supplyModelResponse(m, supplyActor(c), supplyCanMaintain(c), false))
+	actor, canMaintain := supplyActor(c), supplyCanMaintain(c)
+	for _, entry := range result.List {
+		if entry.Model != nil {
+			rows = append(rows, supplyModelResponse(entry.Model, actor, canMaintain, false))
+			continue
+		}
+		// 单行读不出来只降级这一行：其余行照常返回，页面不再整块打不开。
+		rows = append(rows, supplyModelUnreadable(entry.Failure))
 	}
 	response.Success(c, supplyModelPageDTO{rows, result.Total, result.Page, result.Size})
+}
+
+// supplyModelUnreadableMessage 是下发给用户的降级文案：说清「能做什么」，
+// 不暴露内部契约细节（具体原因写在后端日志里）。
+const supplyModelUnreadableMessage = "该模型资料读取异常，暂时无法查看详情，请维护人重新保存一次资料后再试"
+
+// supplyModelUnreadable 把读不出来的行降级成占位 DTO：保留平面列上可信的展示字段
+// （ID/名称/公司/类型/状态/更新时间），其余留空并带上 load_error。
+func supplyModelUnreadable(failure *supply.ModelFailure) supplyModelDTO {
+	readiness := supply.ModelReadiness{Ready: false, Reasons: []string{"UNREADABLE_ROW"}}
+	if failure == nil {
+		return supplyModelDTO{VerifyStatus: "INCOMPLETE", MissingFields: []string{}, QuoteReadiness: readiness, Permissions: supplyModelPermissions{}, LoadError: supplyModelUnreadableMessage}
+	}
+	// 只记 ID 和原因：有了这两项就能直接定位到行，不必再靠"逐页扫"猜。
+	log.Printf("standard model list degraded: model_id=%s status=%s reason=%s", failure.ID, failure.Status, failure.Reason)
+	status := failure.Status
+	if status != "ACTIVE" && status != "INACTIVE" {
+		status = "ACTIVE"
+	}
+	return supplyModelDTO{
+		ModelData:      supply.ModelData{Company: failure.Company, Name: failure.Name, ModelType: failure.ModelType},
+		ID:             failure.ID,
+		Status:         status,
+		VerifyStatus:   "INCOMPLETE",
+		UpdatedAt:      failure.UpdatedAt,
+		MissingFields:  []string{},
+		QuoteReadiness: readiness,
+		Permissions:    supplyModelPermissions{},
+		LoadError:      supplyModelUnreadableMessage,
+	}
 }
 
 // @Summary 标准模型详情
@@ -222,8 +262,11 @@ func (h *supplyModelHandler) versions(c *gin.Context) {
 		return
 	}
 	rows := make([]supplyModelDTO, 0, len(result.List))
-	for _, m := range result.List {
-		rows = append(rows, supplyModelResponse(m, supplyActor(c), false, true))
+	for _, entry := range result.List {
+		if entry.Model == nil {
+			continue
+		}
+		rows = append(rows, supplyModelResponse(entry.Model, supplyActor(c), false, true))
 	}
 	response.Success(c, supplyModelPageDTO{rows, result.Total, result.Page, result.Size})
 }
@@ -296,7 +339,9 @@ func (h *supplyModelHandler) identityTaken(c *gin.Context, data supply.ModelData
 	if err != nil || page == nil {
 		return nil
 	}
-	for _, model := range page.List {
+	for _, entry := range page.List {
+		model := entry.Model
+		// 读不出来的行不参与"身份重复"预检：它的官方 ID 不可信，硬判重会误挡正常新增。
 		if model == nil || !strings.EqualFold(strings.TrimSpace(model.Data.OfficialID), officialID) {
 			continue
 		}

@@ -13,9 +13,9 @@ type modelFilterHTTPStore struct {
 	query supply.ModelListQuery
 }
 
-func (s *modelFilterHTTPStore) ListModels(_ context.Context, q supply.ModelListQuery) ([]*supply.StandardModel, int64, error) {
+func (s *modelFilterHTTPStore) ListModels(_ context.Context, q supply.ModelListQuery) ([]supply.ModelEntry, int64, error) {
 	s.query = q
-	return []*supply.StandardModel{s.model}, 1, nil
+	return []supply.ModelEntry{{Model: s.model}}, 1, nil
 }
 func (s *modelFilterHTTPStore) ModelFilterOptions(_ context.Context, q supply.ModelOptionsQuery) (supply.ModelFilterOptions, error) {
 	return supply.ModelFilterOptions{Companies: []string{"Company, LLC"}, Suppliers: []supply.ModelSupplierOption{{ID: "21", Name: "甲", Region: "CN"}}}, nil

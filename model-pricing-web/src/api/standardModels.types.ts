@@ -17,6 +17,11 @@ export interface StandardModelDTO extends StandardModelData {
   status: string; verify_status: string; checked_by: string; created_at: string; updated_at: string;
   missing_fields: string[]; quote_readiness: { ready: boolean; reasons: string[]; standard_model_version_no: string };
   permissions: { can_edit: boolean; can_verify: boolean }; changed?: boolean;
+  /**
+   * 非空表示这一行后端读不出来、已降级成占位行：只保证 id/名称/公司/类型/状态可展示，
+   * 其余字段不可信。列表把这一行渲染成「资料异常」，不让整页打不开。
+   */
+  load_error?: string;
 }
 export interface StandardModelPage { list: StandardModelDTO[]; total: number; page: number; size: number }
 export interface StandardModelQuery {

@@ -27,8 +27,8 @@ func supplyHTTPModel() *supply.StandardModel {
 
 type supplyHTTPReadStore struct{ model *supply.StandardModel }
 
-func (s supplyHTTPReadStore) ListModels(context.Context, supply.ModelListQuery) ([]*supply.StandardModel, int64, error) {
-	return []*supply.StandardModel{s.model}, 1, nil
+func (s supplyHTTPReadStore) ListModels(context.Context, supply.ModelListQuery) ([]supply.ModelEntry, int64, error) {
+	return []supply.ModelEntry{{Model: s.model}}, 1, nil
 }
 func (s supplyHTTPReadStore) GetModel(_ context.Context, id string) (*supply.StandardModel, error) {
 	if id != s.model.ID {

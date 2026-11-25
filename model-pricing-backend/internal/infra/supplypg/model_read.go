@@ -151,7 +151,7 @@ func (s *ModelReadStore) listQuery(q supply.ModelListQuery) (string, string, []a
 	order := " ORDER BY " + col + " " + strings.ToUpper(q.Order) + " NULLS LAST,m.id ASC"
 	return from, order, args, nil
 }
-func (s *ModelReadStore) ListModels(ctx context.Context, q supply.ModelListQuery) ([]*supply.StandardModel, int64, error) {
+func (s *ModelReadStore) ListModels(ctx context.Context, q supply.ModelListQuery) ([]supply.ModelEntry, int64, error) {
 	if s == nil {
 		return nil, 0, supply.ErrDependencyUnavailable
 	}
@@ -159,7 +159,7 @@ func (s *ModelReadStore) ListModels(ctx context.Context, q supply.ModelListQuery
 	if err != nil {
 		return nil, 0, err
 	}
-	result := []*supply.StandardModel{}
+	result := []supply.ModelEntry{}
 	var total int64
 	err = s.within(ctx, func(tx *sql.Tx) error {
 		if err := tx.QueryRowContext(ctx, "SELECT count(*)"+from, args...).Scan(&total); err != nil {
@@ -172,11 +172,12 @@ func (s *ModelReadStore) ListModels(ctx context.Context, q supply.ModelListQuery
 		}
 		defer rows.Close()
 		for rows.Next() {
-			m, err := scanStandardModel(rows)
+			// 列表不再让单行不合契约打掉整页：Scan 只取原始列，解析失败的行降级成占位。
+			raw, err := scanRawModel(rows)
 			if err != nil {
 				return err
 			}
-			result = append(result, m)
+			result = append(result, raw.entry())
 		}
 		return rows.Err()
 	})

@@ -226,7 +226,7 @@ func TestModelWritePostgres34Native(t *testing.T) {
 			t.Fatalf("current %+v %v", got, err)
 		}
 		history, err := reader.Versions(ctx, first.ID, 2, 2)
-		if err != nil || history.Total != 5 || len(history.List) != 2 || history.List[0].VersionNo != 3 {
+		if err != nil || history.Total != 5 || len(history.List) != 2 || history.List[0].Model.VersionNo != 3 {
 			t.Fatalf("history page %+v %v", history, err)
 		}
 		snapshot, err := reader.Snapshot(ctx, first.ID, 4)
@@ -238,7 +238,7 @@ func TestModelWritePostgres34Native(t *testing.T) {
 			t.Fatalf("empty page %+v %v", empty, err)
 		}
 		page, err := reader.List(ctx, supply.ModelListQuery{Size: 1, SortBy: "checked_at", Order: "desc"})
-		if err != nil || page.Total != 2 || len(page.List) != 1 || page.List[0].ID != first.ID {
+		if err != nil || page.Total != 2 || len(page.List) != 1 || page.List[0].Model.ID != first.ID {
 			t.Fatalf("NULLS LAST %+v %v", page, err)
 		}
 		// Minimal relationship fixtures exercise the EXISTS semantics only.
@@ -294,7 +294,7 @@ func TestModelWritePostgres34Native(t *testing.T) {
 			t.Fatal(err)
 		}
 		page, err = reader.List(ctx, supply.ModelListQuery{VerifyStatus: "UNVERIFIED", SortBy: "verify_status"})
-		if err != nil || page.Total != 1 || page.List[0].ID != first.ID {
+		if err != nil || page.Total != 1 || page.List[0].Model.ID != first.ID {
 			t.Fatalf("snapshot metadata filter %+v %v", page, err)
 		}
 		if _, err := tx.ExecContext(ctx, "SAVEPOINT drifted_projection"); err != nil {
@@ -310,7 +310,7 @@ func TestModelWritePostgres34Native(t *testing.T) {
 			t.Fatal(err)
 		}
 		page, err = reader.List(ctx, supply.ModelListQuery{SortBy: "checked_at", Order: "asc", Size: 1, Page: 2})
-		if err != nil || page.Total != 2 || len(page.List) != 1 || page.List[0].ID != second.ID {
+		if err != nil || page.Total != 2 || len(page.List) != 1 || page.List[0].Model.ID != second.ID {
 			t.Fatalf("null last pagination %+v %v", page, err)
 		}
 		if _, err := reader.Get(ctx, "9223372036854775807"); !errors.Is(err, supply.ErrNotFound) {
@@ -331,7 +331,7 @@ func TestModelWritePostgres34Native(t *testing.T) {
 			t.Fatal(err)
 		}
 		page, err = reader.List(ctx, supply.ModelListQuery{Keyword: "草稿二", SortBy: "name", Order: "desc"})
-		if err != nil || page.Total != 2 || page.List[0].ID != second.ID || page.List[1].ID != tied.ID {
+		if err != nil || page.Total != 2 || page.List[0].Model.ID != second.ID || page.List[1].Model.ID != tied.ID {
 			t.Fatalf("stable ID tie break %+v %v", page, err)
 		}
 		if _, err := svc.Create(ctx, meta, supply.ModelData{Name: "literal%_", OfficialID: "literal-model"}); err != nil {
@@ -347,7 +347,7 @@ func TestModelWritePostgres34Native(t *testing.T) {
 			t.Fatal(err)
 		}
 		page, err = reader.List(ctx, supply.ModelListQuery{Keyword: "%_"})
-		if err != nil || page.Total != 1 || page.List[0].Data.Name != "literal%_" {
+		if err != nil || page.Total != 1 || page.List[0].Model.Data.Name != "literal%_" {
 			t.Fatalf("literal wildcard characters %+v %v", page, err)
 		}
 	})

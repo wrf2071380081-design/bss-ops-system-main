@@ -120,32 +120,42 @@ func modelProjection(versions string) string {
  m.company,m.name,m.official_id,m.model_type,to_json(m.input_modalities),to_json(m.output_modalities),m.capacity,m.abilities,m.price_items,m.api_access,m.lifecycle,m.sources,m.checked_at,` + modelVersionValue(versions, "v.version_no") + `,` + modelVersionValue(versions, "v.snapshot")
 }
 
-func scanStandardModel(source interface{ Scan(...any) error }) (*supply.StandardModel, error) {
-	var id, status string
-	var createdAt, updatedAt time.Time
-	var row ModelDataRow
-	var inputs, outputs []byte
-	var version sql.NullInt64
-	var snapshot []byte
-	err := source.Scan(&id, &status, &createdAt, &updatedAt,
-		&row.Company, &row.Name, &row.OfficialID, &row.ModelType, &inputs, &outputs, &row.Capacity, &row.Abilities, &row.PriceItems, &row.APIAccess, &row.Lifecycle, &row.Sources, &row.CheckedAt, &version, &snapshot)
+// rawModelRow 是列表投影未经解析的原始值。Scan 只做类型映射、不做契约校验，
+// 所以单行数据不合契约时，仍能拿到可展示的平面列（名称/公司/类型/状态）用于降级展示。
+type rawModelRow struct {
+	id, status           string
+	createdAt, updatedAt time.Time
+	row                  ModelDataRow
+	inputs, outputs      []byte
+	version              sql.NullInt64
+	snapshot             []byte
+}
+
+func scanRawModel(source interface{ Scan(...any) error }) (rawModelRow, error) {
+	var raw rawModelRow
+	err := source.Scan(&raw.id, &raw.status, &raw.createdAt, &raw.updatedAt,
+		&raw.row.Company, &raw.row.Name, &raw.row.OfficialID, &raw.row.ModelType, &raw.inputs, &raw.outputs, &raw.row.Capacity, &raw.row.Abilities, &raw.row.PriceItems, &raw.row.APIAccess, &raw.row.Lifecycle, &raw.row.Sources, &raw.row.CheckedAt, &raw.version, &raw.snapshot)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, supply.ErrNotFound
+		return raw, supply.ErrNotFound
 	}
-	if err != nil {
-		return nil, err
-	}
-	if !version.Valid || version.Int64 <= 0 {
+	return raw, err
+}
+
+// model 把原始行解析成领域模型。任一处不合契约都返回错误——调用方决定是
+// 「整页失败」（单条读取/写前加锁）还是「单行降级」（列表）。
+func (raw rawModelRow) model() (*supply.StandardModel, error) {
+	row := raw.row
+	if !raw.version.Valid || raw.version.Int64 <= 0 {
 		return nil, supply.ErrReadContract
 	}
-	m, err := decodeModelSnapshot(snapshot, id, uint64(version.Int64))
+	m, err := decodeModelSnapshot(raw.snapshot, raw.id, uint64(raw.version.Int64))
 	if err != nil {
 		return nil, err
 	}
-	if row.InputModalities, err = modelModalities(inputs, "input_modalities"); err != nil {
+	if row.InputModalities, err = modelModalities(raw.inputs, "input_modalities"); err != nil {
 		return nil, err
 	}
-	if row.OutputModalities, err = modelModalities(outputs, "output_modalities"); err != nil {
+	if row.OutputModalities, err = modelModalities(raw.outputs, "output_modalities"); err != nil {
 		return nil, err
 	}
 	data, err := row.DomainData()
@@ -158,10 +168,32 @@ func scanStandardModel(source interface{ Scan(...any) error }) (*supply.Standard
 	if err != nil {
 		return nil, err
 	}
-	if !reflect.DeepEqual(m.Data, canonical.Data) || m.Status != status || !m.CreatedAt.Truncate(time.Microsecond).Equal(createdAt.Truncate(time.Microsecond)) || !m.UpdatedAt.Truncate(time.Microsecond).Equal(updatedAt.Truncate(time.Microsecond)) {
+	if !reflect.DeepEqual(m.Data, canonical.Data) || m.Status != raw.status || !m.CreatedAt.Truncate(time.Microsecond).Equal(raw.createdAt.Truncate(time.Microsecond)) || !m.UpdatedAt.Truncate(time.Microsecond).Equal(raw.updatedAt.Truncate(time.Microsecond)) {
 		return nil, supply.ErrReadContract
 	}
 	return m, nil
+}
+
+// entry 把原始行转成列表中的一行：解析成功就是完整模型，失败就降级成占位行，
+// 让这一行显示「资料异常」，而不是把整页打掉（2026-11-25）。
+func (raw rawModelRow) entry() supply.ModelEntry {
+	m, err := raw.model()
+	if err == nil {
+		return supply.ModelEntry{Model: m}
+	}
+	return supply.ModelEntry{Failure: &supply.ModelFailure{
+		ID: raw.id, Name: raw.row.Name, Company: raw.row.Company, ModelType: raw.row.ModelType,
+		Status: raw.status, UpdatedAt: raw.updatedAt, Reason: err.Error(),
+	}}
+}
+
+// scanStandardModel 是严格版本：单条读取与写前加锁用它，一行不合格就是错误。
+func scanStandardModel(source interface{ Scan(...any) error }) (*supply.StandardModel, error) {
+	raw, err := scanRawModel(source)
+	if err != nil {
+		return nil, err
+	}
+	return raw.model()
 }
 func validateStoredModel(m *supply.StandardModel) error {
 	if m == nil || !modelIdentity(m.ID) || !modelIdentity(m.MaintainerID) || m.Revision == 0 || m.Revision > math.MaxInt64 || m.VersionNo == 0 || m.VersionNo > m.Revision || m.CreatedAt.IsZero() || m.UpdatedAt.Before(m.CreatedAt) {

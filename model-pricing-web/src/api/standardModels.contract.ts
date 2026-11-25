@@ -84,8 +84,10 @@ export function validateStandardModel(data: StandardModelData): StandardFieldIss
     if (!price.condition.trim()) issue(path + "condition", "请说明价格适用条件");
     for (const [key, value] of Object.entries(price.dimensions)) if (!dimensionLabels[key] || !value.trim()) issue(path + "dimensions." + key, "价格维度无效或内容为空");
     if (price.source_url && !isOfficialURL(price.source_url)) issue(path + "source_url", "请填写不含凭据的 HTTP(S) 来源");
-    const scope=JSON.stringify([price.task_type,price.currency,price.unit_code,price.unit_quantity,price.condition,Object.entries(price.dimensions??{}).sort(([a],[b])=>a.localeCompare(b))]);
-    if(validDecimal(price.amount,false)) {const amount=new Decimal(price.amount).toFixed();if(priceScopes.has(scope)&&priceScopes.get(scope)!==amount)issue(path+'amount','同一计费条件存在不同价格，请核对后只采纳一条');priceScopes.set(scope,amount);}
+    // 同一 task_type 可以有多档计费项（缓存写入 5 分钟 / 1 小时、缓存读取等只有名称不同），
+    // 所以判重必须带上计费项名称，否则合法档位会被当成「同一条件两个价」而无法保存。
+    const scope=JSON.stringify([price.task_type,price.label.trim(),price.currency,price.unit_code,price.unit_quantity,price.condition,Object.entries(price.dimensions??{}).sort(([a],[b])=>a.localeCompare(b))]);
+    if(validDecimal(price.amount,false)) {const amount=new Decimal(price.amount).toFixed();if(priceScopes.has(scope)&&priceScopes.get(scope)!==amount)issue(path+'amount','同一计费项与计费条件存在不同价格，请核对后只采纳一条');priceScopes.set(scope,amount);}
   }
   for (const [index, source] of data.sources.entries()) {
     if (!source.label.trim()) issue(`sources[${index}].label`, "请填写来源名称");
@@ -116,6 +118,30 @@ export function formatStandardPrice(price: StandardPrice): string {
   return `${price.label}：${price.amount} ${price.currency} / ${price.unit_quantity} ${unitLabels[price.unit_code] || price.unit_code}`;
 }
 export function normalizeStandardModel(model: StandardModelDTO, expectedID?: string): StandardModelDTO {
+  // 降级行：后端解析不了这一行的资料（快照/价格/领域校验没过），只保证 id 与展示字段可信。
+  // 这里刻意不跑契约校验——否则一行坏数据会让整个列表抛错，「单行降级」就白做了。
+  const loadError = typeof model?.load_error === "string" ? model.load_error.trim() : "";
+  if (loadError) {
+    standardModelVersion(model.id);
+    if (expectedID !== undefined && model.id !== expectedID) throw new Error("返回的模型与请求对象不一致，请重新查询。");
+    return {
+      ...model,
+      ...copyStandardModel(model),
+      id: model.id,
+      maintainer_id: "",
+      revision: "0",
+      version_no: "0",
+      status: model.status === "INACTIVE" ? "INACTIVE" : "ACTIVE",
+      verify_status: "INCOMPLETE",
+      checked_by: "",
+      created_at: model.created_at ?? "",
+      updated_at: model.updated_at ?? "",
+      missing_fields: [],
+      quote_readiness: { ready: false, reasons: ["UNREADABLE_ROW"], standard_model_version_no: "0" },
+      permissions: { can_edit: false, can_verify: false },
+      load_error: loadError,
+    };
+  }
   standardModelVersion(model.id); standardModelVersion(model.revision); standardModelVersion(model.version_no);
   standardModelVersion(model.maintainer_id);
   if (expectedID !== undefined && model.id !== expectedID) throw new Error("返回的模型与请求对象不一致，请重新查询。");
