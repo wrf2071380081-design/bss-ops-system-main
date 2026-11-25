@@ -1,6 +1,7 @@
 package supply
 
 import (
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -219,6 +220,21 @@ func BuildResourceSnapshot(record *ResourceRecord) (*ResourceSnapshot, error) {
 		}
 		view.Test.ReportID = report.ID
 		ready.TestEvidenceRef = report.ID
+		// TEMP-DIAG（2026-11-25）：缓存命中率排查用，定位后删除。
+		log.Printf("[diag-cache] res=%s rep=%s valid=%v tv=%q/%q orv=%q/%q cacheNil=%v cacheStatus=%q hit%%=%q",
+			r.ID, report.ID, report.Valid, report.TargetVersion, r.TargetVersion, report.OriginRowVersion, r.OriginRowVersion,
+			report.Cache == nil, func() string {
+				if report.Cache == nil {
+					return ""
+				}
+				return report.Cache.Status
+			}(),
+			func() string {
+				if report.Cache == nil {
+					return ""
+				}
+				return report.Cache.HitPercent
+			}())
 		if report.TargetVersion != r.TargetVersion || report.OriginRowVersion != r.OriginRowVersion {
 			view.Test.Status = "STALE"
 			view.Test.CacheStats = ResourceCacheStats{ReportID: report.ID, Status: "NOT_PROVIDED"}
