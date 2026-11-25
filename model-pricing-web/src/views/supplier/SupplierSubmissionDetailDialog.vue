@@ -105,7 +105,16 @@ function testText(job?: SupplierSubmissionTestDTO) {
 }
 /** 连通性单元格：平台任务优先（在跑=测试中，终态=结论），否则退回提交时的探测结果。 */
 function connectivityTag(row: SupplierSubmissionRowDTO) {
+  // 唯一权威结论来自后端；缺失时才回退到任务字段（兼容旧数据）。
+  const state = row.connectivity_state;
   const job = row.connectivity_job;
+  if (state === "PASS") return { text: "通过", type: "success" as const, note: job ? connectivityMetrics(job) : "" };
+  if (state === "FAIL") {
+    const note = job ? [connectivityMetrics(job), job.failure ? `平台中止：${job.failure}` : "", job.verdict ? `平台判定：${job.verdict}` : ""].filter(Boolean).join(" · ") : "";
+    return { text: "未通过", type: "danger" as const, note };
+  }
+  if (state === "TESTING") return { text: "测试中", type: "info" as const, note: "平台执行中" };
+  if (state === "NOT_TESTED") return { text: "未测试", type: "info" as const, note: "" };
   const status = (job?.status || "").toUpperCase();
   const verdict = String(job?.verdict || "").toLowerCase();
   const note = job ? [connectivityMetrics(job), job.failure ? `平台中止：${job.failure}` : ""].filter(Boolean).join(" · ") : "";

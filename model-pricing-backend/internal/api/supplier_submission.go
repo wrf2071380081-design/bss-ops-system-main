@@ -111,8 +111,12 @@ type submissionRowDTO struct {
 	RowStatus          string `json:"row_status"`
 	// ProbeStatus 是**提交时**的连通性探测结果（PASS/FAIL/空串=未探测），
 	// 与下面基于平台测试任务的 connectivity_tested 不是一回事。
-	ProbeStatus        string             `json:"probe_status"`
-	ProbeNote          string             `json:"probe_note"`
+	ProbeStatus string `json:"probe_status"`
+	ProbeNote   string `json:"probe_note"`
+	// ConnectivityState 是**唯一权威**的连通性结论：PASS / FAIL / TESTING / NOT_TESTED。
+	// 由平台任务 verdict 与申报行状态共同决定，前端不要再用 job.passed / report_id 自行推断
+	// （2026-11-25：两处推断口径不一致，导致"平台无法判定"却显示通过）。
+	ConnectivityState  string             `json:"connectivity_state"`
 	Decision           string             `json:"decision"`
 	DecidedAt          string             `json:"decided_at"`
 	DecidedByName      string             `json:"decided_by_name"`
@@ -1612,6 +1616,18 @@ func buildSubmissionDTO(header supplypg.SubmissionHeader, rows []supplypg.Submis
 				ReportID: formatOptionalID(row.StressReportID), Failure: row.StressFailure,
 			}
 			item.StressTested, item.StressPassed = tested && !stressStale, passed && !stressStale
+		}
+		connVerdict := strings.ToLower(deref(row.ConnectivityVerdict))
+		switch {
+		case row.ConnectivityStatus == nil:
+			item.ConnectivityState = "NOT_TESTED"
+		case *row.ConnectivityStatus == "QUEUED" || *row.ConnectivityStatus == "RUNNING":
+			item.ConnectivityState = "TESTING"
+		case connVerdict == "pass":
+			item.ConnectivityState = "PASS"
+		default:
+			// 终态但不是 pass（fail / inconclusive / 空）：一律未通过。
+			item.ConnectivityState = "FAIL"
 		}
 		item.RowStatus = deriveRowStatus(row, submitted)
 		item.SupplementRequired = submitted && item.RowStatus != rowPassed
