@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"math"
 	"model_bss/internal/api/middleware"
@@ -107,7 +108,12 @@ func supplyHTTPError(c *gin.Context, err error) {
 		response.Error(c, apperr.ErrNotFound)
 	case errors.Is(err, supply.ErrQualificationFileUnavailable):
 		response.Error(c, apperr.ErrNotFound)
-	case errors.Is(err, supply.ErrRevisionConflict), errors.Is(err, supply.ErrF12ContractArchived), errors.Is(err, supply.ErrIdentityConflict), errors.Is(err, supply.ErrInactive), errors.Is(err, supply.ErrSourceRejected), errors.Is(err, supply.ErrConfigInUse), errors.Is(err, supply.ErrConfigInactive), errors.Is(err, supply.ErrSupplierRegionLocked):
+	case errors.Is(err, supply.ErrIdentityConflict):
+		// 唯一索引兜底（并发/预检漏网）：厂商 + 官方 Model ID 已被占用。
+		// 不能和下面的 ErrRevisionConflict 混用同一句话——一个要用户"去核对是谁占了"，
+		// 一个要用户"刷新重来"，文案给错就白拦了。
+		response.Error(c, apperr.New(apperr.ErrConflict.Code, "已存在相同厂商与官方 Model ID 的标准模型，请到列表里查找后维护资料，不要重复新增", 409))
+	case errors.Is(err, supply.ErrRevisionConflict), errors.Is(err, supply.ErrF12ContractArchived), errors.Is(err, supply.ErrInactive), errors.Is(err, supply.ErrSourceRejected), errors.Is(err, supply.ErrConfigInUse), errors.Is(err, supply.ErrConfigInactive), errors.Is(err, supply.ErrSupplierRegionLocked):
 		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "记录状态或操作依据已发生变化，请刷新后核对", 409))
 	case errors.Is(err, supply.ErrTestInProgress):
 		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "测试进行中，请等待测试完成后再操作", 409))
@@ -265,6 +271,49 @@ func (h *supplyModelHandler) writeResult(c *gin.Context, model *supply.StandardM
 	response.Success(c, dto)
 }
 
+// identityTaken 在**新增**前拿当前标准模型库对照一次（厂商 + 官方 Model ID）。
+//
+// 为什么要有这道预检（2026-11-24）：
+//  1. 唯一索引 uk_standard_model_company_official 只能事后拦住，错误文案是笼统的
+//     「记录状态或操作依据已发生变化」，用户根本看不出撞的是哪一条；
+//  2. 前端需要一句能直接照做的话：库里已有的那条叫什么、ID 是多少。
+//
+// 预检只负责"把话说清楚"，并发时仍由唯一索引兜底（supplypg.modelUniqueError →
+// supply.ErrIdentityConflict → 本文件的 supplyHTTPError）。
+// 预检查不动就一律放行，绝不因为预检失败挡住正常新增。
+func (h *supplyModelHandler) identityTaken(c *gin.Context, data supply.ModelData) *apperr.Error {
+	if h.reader == nil {
+		return nil
+	}
+	officialID := strings.TrimSpace(data.OfficialID)
+	company := strings.TrimSpace(data.Company)
+	if officialID == "" || company == "" {
+		return nil
+	}
+	page, err := h.reader.List(c.Request.Context(), supply.ModelListQuery{
+		Keyword: officialID, Company: company, Page: 1, Size: 100,
+	})
+	if err != nil || page == nil {
+		return nil
+	}
+	for _, model := range page.List {
+		if model == nil || !strings.EqualFold(strings.TrimSpace(model.Data.OfficialID), officialID) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(model.Data.Name), strings.TrimSpace(data.Name)) {
+			conflict := apperr.New(apperr.ErrConflict.Code, fmt.Sprintf(
+				"库里已有同名模型：%s（官方 ID %s，ID %s），请到列表里找到它维护资料，不要重复新增",
+				model.Data.Name, model.Data.OfficialID, model.ID), 409)
+			return &conflict
+		}
+		conflict := apperr.New(apperr.ErrConflict.Code, fmt.Sprintf(
+			"官方 Model ID「%s」已被模型「%s」（ID %s，厂商 %s）占用，请核对后再提交",
+			model.Data.OfficialID, model.Data.Name, model.ID, model.Data.Company), 409)
+		return &conflict
+	}
+	return nil
+}
+
 // @Summary 保存标准模型资料（可待补齐）
 // @Tags supply-standard-models
 // @Security BearerAuth
@@ -283,6 +332,10 @@ func (h *supplyModelHandler) create(c *gin.Context) {
 	var req supplyCreateModelRequest
 	if err := decodeSupplyRequest(c, &req, nil); err != nil {
 		supplyHTTPError(c, err)
+		return
+	}
+	if bad := h.identityTaken(c, req.ModelData); bad != nil {
+		response.Error(c, *bad)
 		return
 	}
 	meta, err := supplyWriteMeta(c, req.Reason)
@@ -319,6 +372,12 @@ func (h *supplyModelHandler) manualCreate(c *gin.Context) {
 	// 的一致性校验失败（2026-11-18 两处 500 的根因），因此在入口就拦掉。
 	if msg := validateNewModel(req.ModelData); msg != "" {
 		response.Error(c, apperr.New(apperr.ErrInvalidParams.Code, msg, 400))
+		return
+	}
+	// 新增前先跟**当前**标准模型库对照（厂商 + 官方 ID）；命中就给出"是哪一条"的 409。
+	// 旧口径只靠唯一索引事后拦，文案是笼统的"记录状态已变化"，用户看不出撞了谁。
+	if bad := h.identityTaken(c, req.ModelData); bad != nil {
+		response.Error(c, *bad)
 		return
 	}
 	meta, err := supplyWriteMeta(c, req.Reason)

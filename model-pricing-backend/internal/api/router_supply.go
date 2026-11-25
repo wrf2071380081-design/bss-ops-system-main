@@ -131,14 +131,22 @@ func RegisterSupplyRoutes(internal *gin.RouterGroup, deps SupplyDeps) {
 	group.GET("/:id/resource-operations/options", h.sourceOperationOptions)
 	group.GET("/:id", h.get)
 	var idem gin.HandlerFunc
+	// idemCommand 给新增接口用：biz_key 里带上客户端幂等键，**不做**跨请求的"同 body 语义去重"。
+	//
+	// 2026-11-24 产品口径：新增不再按请求体内容判重（那条规则会静默回放上一次的响应，
+	// 表现为"提示保存成功、库里没新行、操作记录也没有"）。重复只由「厂商 + 官方 Model ID」
+	// 的唯一约束 + 入口预检负责。Idempotency-Key 只保留"同一次点击的重试不重复执行"。
+	var idemCommand gin.HandlerFunc
 	if deps.IdemStore == nil {
 		idem = func(c *gin.Context) { supplyHTTPError(c, supply.ErrDependencyUnavailable); c.Abort() }
+		idemCommand = idem
 	} else {
 		idem = middleware.Idempotency(deps.IdemStore, middleware.DefaultBizKey)
+		idemCommand = middleware.Idempotency(deps.IdemStore, middleware.ClientKeyBizKey)
 	}
-	group.POST("", idem, h.create)
+	group.POST("", idemCommand, h.create)
 	group.PUT("/:id", idem, h.update)
-	group.POST("/manual-completion", idem, h.manualCreate)
+	group.POST("/manual-completion", idemCommand, h.manualCreate)
 	group.PUT("/:id/manual-completion", idem, h.manualUpdate)
 	group.POST("/:id/verify", idem, h.verify)
 	group.POST("/:id/manual-resource", idem, h.manualResource)

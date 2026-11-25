@@ -73,6 +73,22 @@ function groupLabel(id?: string) {
   return `${group.name}${group.enabled ? "" : "（已停用）"}`;
 }
 
+/**
+ * 「准入配置组」下拉的选项：启用中的组；若当前行挂着一个**不在启用列表里**的组
+ * （被停用，或本地草稿里的历史 id），把当前组补到最前面，否则下拉会显示空白。
+ *
+ * 必须容忍 groupByID 返回 undefined（2026-11-24 修复）：
+ * 行是 onMounted 里从 sessionStorage 草稿**同步**恢复的，而 groups 列表是异步拉的，
+ * 首屏渲染时列表还是空的。旧写法把 `groupByID(id)!` 直接展开进 v-for，
+ * 渲染时读 `group.id` 抛 TypeError，Vue 的这次 patch 整体中断 →
+ * 该行**后面的列（采购系数、操作）整格不渲染**，且后续更新一起哑掉（点导航没反应）。
+ */
+function groupOptionsFor(row: EditableRow): SupplierTestConfigGroupDTO[] {
+  const current = row.test_config_group_id ? groupByID(row.test_config_group_id) : undefined;
+  if (!current || current.enabled) return enabledGroups.value;
+  return [current, ...enabledGroups.value];
+}
+
 /** 清掉指向"已不存在配置组"的行值——避免下拉显示裸 id。 */
 function pruneUnknownGroups() {
   const known = new Set(groups.value.map(group => group.id));
@@ -855,12 +871,11 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       </el-table-column>
       <el-table-column label="准入配置组" min-width="190">
         <template #default="{ row }">
-          <!-- 只列启用中的组；行已挂在停用组上时，把当前组也补进选项，否则下拉会显示空。 -->
+          <!-- 只列启用中的组；行已挂在停用组上时，把当前组也补进选项，否则下拉会显示空。
+               选项来源见 groupOptionsFor：必须容忍 groups 尚未加载（草稿恢复早于列表）。 -->
           <el-select v-model="row.test_config_group_id" placeholder="选择准入配置组" :disabled="locked">
             <el-option
-              v-for="group in (enabledGroups.some(g => g.id === row.test_config_group_id) || !row.test_config_group_id
-                ? enabledGroups
-                : [groupByID(row.test_config_group_id)!, ...enabledGroups])"
+              v-for="group in groupOptionsFor(row)"
               :key="group.id" :value="group.id" :label="group.name + (group.enabled ? '' : '（已停用）')"
             />
           </el-select>
