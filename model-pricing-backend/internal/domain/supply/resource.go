@@ -91,6 +91,9 @@ type ResourceTestView struct {
 type ResourceQuoteReadiness struct {
 	Eligible             bool     `json:"eligible"`
 	BlockedReasons       []string `json:"blocked_reasons"`
+	// Warnings 是"不阻断可报价、但要提示"的问题（2026-11-25：标准模型资料不全改为提示，
+	// 让接入+商务办完的资源能立刻进入客户报价）。
+	Warnings             []string `json:"warnings"`
 	ResourceRevision     uint64   `json:"resource_revision,string"`
 	ModelVersionNo       uint64   `json:"model_version_no,string"`
 	FormalConfigRevision uint64   `json:"formal_config_revision,string"`
@@ -169,8 +172,10 @@ func BuildResourceSnapshot(record *ResourceRecord) (*ResourceSnapshot, error) {
 	if view.OfficialPriceItems == nil {
 		view.OfficialPriceItems = []PriceItem{}
 	}
-	ready := ResourceQuoteReadiness{BlockedReasons: []string{}, ResourceRevision: r.Revision, ModelVersionNo: m.VersionNo, FormalConfigRevision: r.FormalConfigRevision}
+	ready := ResourceQuoteReadiness{BlockedReasons: []string{}, Warnings: []string{}, ResourceRevision: r.Revision, ModelVersionNo: m.VersionNo, FormalConfigRevision: r.FormalConfigRevision}
 	block := func(reason string) { ready.BlockedReasons = append(ready.BlockedReasons, reason) }
+	// warn 只做提示，不参与 Eligible 判定。
+	warn := func(reason string) { ready.Warnings = append(ready.Warnings, reason) }
 	if r.State != "ADMITTED" || !r.EverAdmitted {
 		block("RESOURCE_NOT_ADMITTED")
 	}
@@ -181,7 +186,8 @@ func BuildResourceSnapshot(record *ResourceRecord) (*ResourceSnapshot, error) {
 		block("SUPPLIER_REGION_MISMATCH")
 	}
 	if !m.Readiness().Ready {
-		block("MODEL_NOT_READY")
+		// 业务裁决（2026-11-25）：资料不全/未核验不再阻断可报价，改为提示。
+		warn("MODEL_NOT_READY")
 	}
 	cfg := record.Config
 	if cfg == nil || r.FormalConfigID == "" || cfg.ID != r.FormalConfigID || cfg.SupplierID != r.SupplierID || cfg.Region != r.Region || cfg.Status != "ACTIVE" || !cfg.HasAPIKey || cfg.Revision == 0 || cfg.ConfirmedRevision != cfg.Revision {

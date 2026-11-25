@@ -25,7 +25,7 @@ export interface SupplierModelResourceDTO {
     rps?: string | null;
     tps?: string | null;
   };
-  quote_readiness: { eligible: boolean; blocked_reasons: string[] };
+  quote_readiness: { eligible: boolean; blocked_reasons: string[]; warnings?: string[] };
 }
 
 export interface SupplierModelPageDTO {

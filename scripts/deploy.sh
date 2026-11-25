@@ -41,23 +41,48 @@ cd "$REPO_ROOT"
 
 echo "==> 发布 $TAG (commit $SHA)"
 
-if [ "$SKIP_BACKEND" = "1" ]; then echo "==> 1/6 跳过后端构建（SKIP_BACKEND=1）"; else
-echo "==> 1/6 构建后端（-p=1，本机并发编译会崩 0xc0000409）"
-cd "$REPO_ROOT/model-pricing-backend"
-GOFLAGS=-p=1 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOTOOLCHAIN=auto \
-  go build -buildvcs=false \
-  -ldflags "-X main.buildSHA=$SHA -X main.buildAt=$BUILT_AT" \
-  -o "$TMP/server" ./cmd/server
-gzip -9 -c "$TMP/server" > "$TMP/server.gz"
-fi
-
-if [ "$SKIP_FRONTEND" = "1" ]; then echo "==> 2/6 跳过前端构建（SKIP_FRONTEND=1）"; else
-echo "==> 2/6 构建前端（每次都建，不再判断『这次改没改前端』）"
-cd "$REPO_ROOT/model-pricing-web"
-[ -f .env.local ] || echo 'VITE_API_BASE_URL=/api' > .env.local
-npm run build >/dev/null
-rm -f dist/mockServiceWorker.js
-( cd "$REPO_ROOT/model-pricing-web" && tar czf "$TMP/dist.tar.gz" dist )
+# 前后端互不依赖：并行构建，省掉前端那 15~20 秒。
+# BUILD_P 默认 4：2026-11-25 实测，在**沙箱外** -p=4 编译 8.7 秒通过；
+# 之前的 0xc0000409 是工具沙箱拦截 compile.exe 导致的，不是真并发问题。
+# 若在受限环境里仍然崩，用 BUILD_P=1 bash scripts/deploy.sh ... 回退。
+BUILD_P="${BUILD_P:-4}"
+if [ "$SKIP_BACKEND" = "1" ] && [ "$SKIP_FRONTEND" = "1" ]; then
+  echo "==> 1/6 前后端都跳过构建"
+else
+  backend_pid=""; frontend_pid=""
+  if [ "$SKIP_BACKEND" != "1" ]; then
+    echo "==> 1/6 构建后端（-p=${BUILD_P}，加 -s -w 减体积加快上传）"
+    (
+      cd "$REPO_ROOT/model-pricing-backend" || exit 1
+      GOFLAGS=-p=${BUILD_P} GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOTOOLCHAIN=auto \
+        go build -buildvcs=false \
+        -ldflags "-s -w -X main.buildSHA=$SHA -X main.buildAt=$BUILT_AT" \
+        -o "$TMP/server" ./cmd/server
+    ) &
+    backend_pid=$!
+  else
+    echo "==> 1/6 跳过后端构建（SKIP_BACKEND=1）"
+  fi
+  if [ "$SKIP_FRONTEND" != "1" ]; then
+    echo "==> 2/6 构建前端（每次都建，不再判断『这次改没改前端』）"
+    (
+      cd "$REPO_ROOT/model-pricing-web" || exit 1
+      [ -f .env.local ] || echo 'VITE_API_BASE_URL=/api' > .env.local
+      npm run build >/dev/null
+      rm -f dist/mockServiceWorker.js
+      tar czf "$TMP/dist.tar.gz" dist
+    ) &
+    frontend_pid=$!
+  else
+    echo "==> 2/6 跳过前端构建（SKIP_FRONTEND=1）"
+  fi
+  [ -n "$backend_pid" ] && { wait "$backend_pid" || { echo "!! 后端构建失败"; exit 1; }; }
+  [ -n "$frontend_pid" ] && { wait "$frontend_pid" || { echo "!! 前端构建失败"; exit 1; }; }
+  if [ -f "$TMP/server" ]; then
+    echo "    压缩后端二进制：$(du -h "$TMP/server" | cut -f1) → gzip"
+    gzip -1 -c "$TMP/server" > "$TMP/server.gz"
+    rm -f "$TMP/server"
+  fi
 fi
 
 echo "==> 3/6 上传"
