@@ -271,15 +271,23 @@ const rowGroups = computed(() => {
   for (const row of rows.value) {
     const id = String(row.test_config_group_id || "");
     if (!id) continue;
-    const hit = map.get(id) ?? { id, name: row.test_config_group_name || id, count: 0 };
+    const hit = map.get(id) ?? { id, name: row.test_config_group_name || groupByID(id)?.name || "", count: 0 };
     hit.count += 1;
     map.set(id, hit);
   }
   return [...map.values()];
 });
 async function runConnectivity(groupID?: string) {
+  if (testing.value) return;
+  // 新开的申报还没有 submission id，测试接口无从发起——先自动保存草稿。
+  if (!submissionID.value) {
+    const saved = await saveDraft();
+    if (!saved || !submissionID.value) {
+      ElMessage.warning("请先补齐模型与准入配置组，保存草稿后再测试");
+      return;
+    }
+  }
   const id = submissionID.value;
-  if (!id || testing.value) return;
   testing.value = true;
   try {
     await supplierSubmissionsApi.batchTest(id, ["CONNECTIVITY"], crypto.randomUUID(), groupID);
@@ -948,7 +956,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       <el-dropdown v-if="rowGroups.length > 1" trigger="click" :disabled="locked || testing" @command="runConnectivity">
         <el-button style="margin-left:8px">按配置组测试 ▾</el-button>
         <template #dropdown><el-dropdown-menu>
-          <el-dropdown-item v-for="g in rowGroups" :key="g.id" :command="g.id">测试「{{ g.name }}」组（{{ g.count }} 个模型）</el-dropdown-item>
+          <el-dropdown-item v-for="g in rowGroups" :key="g.id" :command="g.id">测试配置组{{ g.id }}：{{ g.name || "未命名" }}（{{ g.count }} 个模型）</el-dropdown-item>
         </el-dropdown-menu></template>
       </el-dropdown>
       <el-button type="success" :loading="submitting" :disabled="!canSubmitBatch" @click="submitDraft">提交申请</el-button>

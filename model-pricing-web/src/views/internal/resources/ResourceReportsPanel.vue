@@ -253,7 +253,8 @@ onBeforeUnmount(() => { active = false; listRequest?.abort(); detailRequest?.abo
         <h3 class="detail-title">{{ projectText(detail.test_item) }}<span v-if="modelName" class="detail-sub"> · {{ modelName }}</span></h3>
         <el-alert v-if="!detail.target_matches" title="本报告尚未确认适用于当前资源目标，不作为当前接入依据。" type="warning" :closable="false" />
         <dl class="g02-facts">
-          <dt>报告状态</dt><dd>{{ labels[detail.status] }}<span v-if="isCurrentReport(detail)"> · 当前引用</span></dd>
+          <!-- 「报告状态」已移除（2026-11-25）：SUCCEEDED/RUNNING 这类平台枚举对业务无意义，
+               结论看「结果」一行即可。 -->
           <dt>测试场景</dt><dd>{{ sceneText(detail) }}</dd>
           <dt>报告身份</dt><dd class="mono">{{ detail.test_report_id || detail.id }}</dd>
           <dt>原执行</dt><dd class="mono">{{ detail.test_job_id || "无（外部上传）" }}</dd>
