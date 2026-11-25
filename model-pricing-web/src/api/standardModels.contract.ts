@@ -84,8 +84,10 @@ export function validateStandardModel(data: StandardModelData): StandardFieldIss
     if (!price.condition.trim()) issue(path + "condition", "请说明价格适用条件");
     for (const [key, value] of Object.entries(price.dimensions)) if (!dimensionLabels[key] || !value.trim()) issue(path + "dimensions." + key, "价格维度无效或内容为空");
     if (price.source_url && !isOfficialURL(price.source_url)) issue(path + "source_url", "请填写不含凭据的 HTTP(S) 来源");
-    const scope=JSON.stringify([price.task_type,price.currency,price.unit_code,price.unit_quantity,price.condition,Object.entries(price.dimensions??{}).sort(([a],[b])=>a.localeCompare(b))]);
-    if(validDecimal(price.amount,false)) {const amount=new Decimal(price.amount).toFixed();if(priceScopes.has(scope)&&priceScopes.get(scope)!==amount)issue(path+'amount','同一计费条件存在不同价格，请核对后只采纳一条');priceScopes.set(scope,amount);}
+    // 同一 task_type 可以有多档计费项（缓存写入 5 分钟 / 1 小时、缓存读取等只有名称不同），
+    // 所以判重必须带上计费项名称，否则合法档位会被当成「同一条件两个价」而无法保存。
+    const scope=JSON.stringify([price.task_type,price.label.trim(),price.currency,price.unit_code,price.unit_quantity,price.condition,Object.entries(price.dimensions??{}).sort(([a],[b])=>a.localeCompare(b))]);
+    if(validDecimal(price.amount,false)) {const amount=new Decimal(price.amount).toFixed();if(priceScopes.has(scope)&&priceScopes.get(scope)!==amount)issue(path+'amount','同一计费项与计费条件存在不同价格，请核对后只采纳一条');priceScopes.set(scope,amount);}
   }
   for (const [index, source] of data.sources.entries()) {
     if (!source.label.trim()) issue(`sources[${index}].label`, "请填写来源名称");
