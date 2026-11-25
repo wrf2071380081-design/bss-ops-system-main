@@ -50,8 +50,8 @@ func ReadSelectedReport(ctx context.Context, tx *sql.Tx, schema string, ref Repo
 	var ms, rps, tps sql.NullString
 	var cache ReportCacheRow
 	err := tx.QueryRowContext(ctx, `SELECT p.test_job_id::text,p.resource_id::text,j.resource_id::text,r.supplier_id::text,r.standard_model_id::text,r.region,
- p.connection_passed,p.stress_passed,p.connection_ms::text,p.rps::text,p.tps::text,p.cache_hit_tokens,p.cache_input_tokens,p.scene
- FROM `+table("test_report")+` p LEFT JOIN `+table("test_job")+` j ON j.id=p.test_job_id LEFT JOIN `+table("resource")+` r ON r.id=p.resource_id WHERE p.id=$1`, ref.ReportID).Scan(&job, &resource, &jobResource, &supplier, &model, &region, &connection, &stress, &ms, &rps, &tps, &cache.CacheHitTokens, &cache.CacheInputTokens, &cache.Scene)
+ p.connection_passed,p.stress_passed,p.connection_ms::text,p.rps::text,p.tps::text,p.cache_hit_tokens,p.cache_input_tokens,p.cache_hit_ratio::text,coalesce(p.cache_ratio_available,false),p.scene
+ FROM `+table("test_report")+` p LEFT JOIN `+table("test_job")+` j ON j.id=p.test_job_id LEFT JOIN `+table("resource")+` r ON r.id=p.resource_id WHERE p.id=$1`, ref.ReportID).Scan(&job, &resource, &jobResource, &supplier, &model, &region, &connection, &stress, &ms, &rps, &tps, &cache.CacheHitTokens, &cache.CacheInputTokens, &cache.CacheHitRatio, &cache.CacheRatioReady, &cache.Scene)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
