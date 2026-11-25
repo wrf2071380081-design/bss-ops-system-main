@@ -724,7 +724,16 @@ func shouldSkipRetest(row *supplypg.TestRow, platformCategory, currentFingerprin
 		return id, true // 排队/运行中
 	}
 	if hasReport {
-		return id, true // 有报告就是有效结果（不达标也算）
+		// 2026-11-25：原来"有报告就跳过"把"未通过要重测"也挡了——
+		// 按组测完再点一键，一条任务都不发。现在只有 PASS 才跳过。
+		if platformCategory == "stress" {
+			return id, true // 压测平台不给 verdict，保持原口径
+		}
+		verdict := strings.ToLower(strings.TrimSpace(row.TestJobVerdict))
+		if verdict == "pass" || verdict == "pass_with_warnings" {
+			return id, true
+		}
+		return id, false // fail / inconclusive / 空：允许重测
 	}
 	return id, false // 终态但没有报告：工具异常，重试
 }

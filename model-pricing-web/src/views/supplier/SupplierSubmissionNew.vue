@@ -256,7 +256,7 @@ const gateError = computed(() => {
   const incomplete = rows.value.find(row => !row.standard_model_id || !String(row.interface_model_id || "").trim());
   if (incomplete) return "每个模型都要选择标准模型并填写接口模型 ID。";
   // 2026-11-25 业务裁决：必须先跑连通性测试，全部通过才允许申报。
-  const notPassed = rows.value.filter(row => String(row.connectivity_status || "").toUpperCase() !== "PASS");
+  const notPassed = rows.value.filter(row => !connPassed(row));
   if (notPassed.length > 0) {
     return `还有 ${notPassed.length} 个模型未通过连通性测试（${notPassed.map(r => r.interface_model_id || r.standard_model_name).join("、")}），请先点「连通性测试」。`;
   }
@@ -266,6 +266,23 @@ const canSubmitBatch = computed(() => !gateError.value);
 
 // ---- 连通性测试（2026-11-25：先测后报）----
 const testing = ref(false);
+// 这一行是否正在跑连通性测试（决定显示转圈而不是红/绿）
+function isRowTesting(row: EditableRow) {
+  const status = String(row.connectivity_job?.status || "").toUpperCase();
+  return status === "QUEUED" || status === "RUNNING";
+}
+// 连通性结论的唯一读法：数据库字段优先；轮询只更新 job 时按 job.passed/verdict 兜底。
+function connState(row: EditableRow): "TESTING" | "PASS" | "FAIL" | "NONE" {
+  if (isRowTesting(row)) return "TESTING";
+  const db = String(row.connectivity_status || "").toUpperCase();
+  if (db === "PASS" || db === "FAIL") return db;
+  const job = row.connectivity_job;
+  if (!job) return "NONE";
+  if (job.passed || String(job.verdict || "").toLowerCase() === "pass") return "PASS";
+  if (job.tested) return "FAIL";
+  return "NONE";
+}
+const connPassed = (row: EditableRow) => connState(row) === "PASS";
 const rowGroups = computed(() => {
   const map = new Map<string, { id: string; name: string; count: number }>();
   for (const row of rows.value) {
@@ -291,14 +308,15 @@ async function runConnectivity(groupID?: string) {
   testing.value = true;
   try {
     await supplierSubmissionsApi.batchTest(id, ["CONNECTIVITY"], crypto.randomUUID(), groupID);
-    ElMessage.success("已发起连通性测试，结果通常 10 秒内出来");
-    // 轮询草稿，刷新每行的 connectivity_status，直到全部终态或超时
-    for (let i = 0; i < 12; i += 1) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      await loadDraft(id);
-      const pending = rows.value.some(row => !["PASS", "FAIL"].includes(String(row.connectivity_status || "").toUpperCase()));
-      if (!pending) break;
+    ElMessage.success("已发起连通性测试，通常几秒出结果");
+    // 只把这一批行标成"测试中"（转圈），然后交给既有的进度轮询按字段更新，
+    // 不再整单重拉——之前每 2 秒 loadDraft 会让整张表闪。
+    for (const row of rows.value) {
+      if (groupID && String(row.test_config_group_id || "") !== String(groupID)) continue;
+      row.connectivity_job = { category: "CONNECTIVITY", status: "QUEUED" } as SupplierSubmissionTestDTO;
     }
+    pollDelayMs.value = 1000;
+    schedulePoll(0);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "发起测试失败");
   } finally {
@@ -805,7 +823,15 @@ const LOCAL_KEY = "supplier-submission-draft-v1";
 function persistLocal() {
   if (submittedOnce.value) return;
   try {
-    sessionStorage.setItem(LOCAL_KEY, JSON.stringify({ rows: rows.value, reason: reason.value, deployRegion: deployRegion.value }));
+    // 只存用户输入：connectivity_status / connectivity_job / *_tested / *_passed
+    // 都是服务端派生结果，存下来会在换供应商时串数据（2026-11-25：1818 → 1919 串了）。
+    const rowsForCache = rows.value.map(row => ({
+      id: row.id, interface_model_id: row.interface_model_id,
+      standard_model_id: row.standard_model_id, standard_model_name: row.standard_model_name,
+      official_id: row.official_id, coefficient: row.coefficient,
+      test_config_group_id: row.test_config_group_id, row_status: row.row_status,
+    }));
+    sessionStorage.setItem(LOCAL_KEY, JSON.stringify({ rows: rowsForCache, reason: reason.value, deployRegion: deployRegion.value }));
   } catch { /* 隐私模式/配额不足时忽略，不影响使用 */ }
 }
 function restoreLocal(): boolean {
@@ -814,7 +840,17 @@ function restoreLocal(): boolean {
     if (!raw) return false;
     const data = JSON.parse(raw) as { rows?: EditableRow[]; reason?: string; deployRegion?: string };
     if (!Array.isArray(data.rows) || !data.rows.length) return false;
-    rows.value = data.rows;
+    // 派生字段一律重置：结果必须重新从服务端拿，不能继承上一位供应商的。
+    rows.value = data.rows.map(row => ({
+      ...row,
+      connectivity_status: "",
+      connectivity_job: undefined,
+      stress_job: undefined,
+      connectivity_tested: false,
+      connectivity_passed: false,
+      stress_tested: false,
+      stress_passed: false,
+    }));
     reason.value = data.reason ?? "";
     deployRegion.value = data.deployRegion === "OVERSEAS" ? "OVERSEAS" : "CN";
     return true;
@@ -901,7 +937,7 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
         </el-select>
       </span>
       <!-- 2026-11：门户不再提供 Excel 模板与导入 -->
-      <span class="batch-hint">提交时服务端会对每个模型尝试一次连通性探测；未通过的模型<b>不影响本次提交</b>，可在后续办理环节补测。</span>
+
     </div>
 
     <el-table :data="rows" row-key="id" class="submission-table" :row-class-name="rowClassName" empty-text="还没有模型，点「添加模型」开始">
@@ -932,8 +968,16 @@ onBeforeUnmount(() => { active = false; stopPolling(); optionRequest?.abort(); d
       </el-table-column>
       <el-table-column label="连通性" width="110" align="center">
         <template #default="{ row }">
-          <el-tag v-if="String(row.connectivity_status).toUpperCase() === 'PASS'" size="small" type="success">通过</el-tag>
-          <el-tag v-else-if="String(row.connectivity_status).toUpperCase() === 'FAIL'" size="small" type="danger">未通过</el-tag>
+          <el-tag v-if="isRowTesting(row)" size="small" type="info">
+            <el-icon class="is-loading" style="vertical-align:-2px;margin-right:4px">
+              <svg viewBox="0 0 1024 1024" width="12" height="12" aria-hidden="true">
+                <path fill="currentColor" d="M512 64a448 448 0 1 1 0 896 448 448 0 0 1 0-896zm0 128a320 320 0 1 0 0 640 320 320 0 0 0 0-640z" opacity=".25" />
+                <path fill="currentColor" d="M512 64a448 448 0 0 1 448 448h-128a320 320 0 0 0-320-320z" />
+              </svg>
+            </el-icon>测试中
+          </el-tag>
+          <el-tag v-else-if="connState(row) === 'PASS'" size="small" type="success">通过</el-tag>
+          <el-tag v-else-if="connState(row) === 'FAIL'" size="small" type="danger">未通过</el-tag>
           <el-tag v-else size="small" type="info">未测试</el-tag>
         </template>
       </el-table-column>
