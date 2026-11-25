@@ -72,8 +72,8 @@ async function load(reset = false) {
 }
 function reset() { clearTimeout(keywordTimer); Object.assign(query, { page: 1, size: 100, keyword: "", companies: [], model_types: [], supplier_ids: [], regions: [], verify_status: "", sort_by: "updated_at", order: "desc" }); void load(); void loadOptions(); }
 function open(model?: StandardModelDTO, panel: 'profile' | 'history' | 'records' | 'advanced' = 'profile') {
-  // 读不出来的行没有可信资料，进详情只会再失败一次：直接提示原因，别让用户点进空白页。
-  if (model?.load_error) { ElMessage.warning(model.load_error); return; }
+  // 读不出来的行也允许进详情：后端会返回占位 + 说明，至少让维护人看到「这条要联系运维」，
+  // 而不是点了没反应。能读出内容的行则会在弹窗里看到「哪一项不合规、改完保存即修复」。
   editID.value = model?.id; editorPanel.value = panel; editorOpen.value = true;
 }
 function openMore(model: StandardModelDTO, panel: unknown) {
@@ -297,7 +297,7 @@ onBeforeUnmount(() => { active = false; clearTimeout(keywordTimer); request?.abo
             <td><p v-for="fact in model.lifecycle" :key="fact.key" class="spec-line" :class="{ unknown: fact.disclosure !== 'DISCLOSED' }">{{ fact.label || modelParameterLabel(fact.key) }}：{{ factText(fact) }}</p><span v-if="!model.lifecycle.length" class="unknown">待补齐</span></td>
             <td><span class="update-state">{{ modelStateLabels[modelStatuses[model.id]?.state || 'UNKNOWN'] }}</span></td>
             <td><span>{{ formatDateTime(modelStatuses[model.id]?.lastCompleteAt, '暂无完整成功记录', false) }}</span><span class="meta">资料核验：{{ model.checked_at || '未记录' }}</span></td>
-            <td><el-button size="small" :disabled="!!model.load_error" :title="model.load_error || '查看并维护模型资料'" @click="open(model)">详情</el-button></td>
+            <td><el-button size="small" :title="model.load_error || (model.data_warnings?.length ? '该模型有资料待核对' : '查看并维护模型资料')" @click="open(model)">详情</el-button></td>
           </tr>
           <tr v-if="!loading && !error && !data?.list.length"><td colspan="10" class="empty-row">当前筛选暂无模型</td></tr>
         </tbody></table>

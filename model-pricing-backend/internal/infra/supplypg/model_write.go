@@ -109,7 +109,14 @@ func (w *modelWriteTransaction) GetForUpdate(ctx context.Context, id string) (*s
 		}
 		return nil, err
 	}
-	return scanStandardModel(w.tx.QueryRowContext(ctx, `SELECT `+modelProjection(w.table("standard_model_version"))+` FROM `+w.table("standard_model")+` m WHERE m.id=$1`, id))
+	raw, err := scanRawModel(w.tx.QueryRowContext(ctx, `SELECT `+modelProjection(w.table("standard_model_version"))+` FROM `+w.table("standard_model")+` m WHERE m.id=$1`, id))
+	if err != nil {
+		return nil, err
+	}
+	// 写前读取必须用宽松版：内容不合规的老数据也要能取出 revision，否则维护人
+	// 永远改不动它。写回仍然走 validateStoredModel（严格），不合规的新数据进不了库。
+	model, _, err := raw.modelLenient()
+	return model, err
 }
 
 func modelVersionValue(table, expression string) string {
@@ -174,6 +181,46 @@ func (raw rawModelRow) model() (*supply.StandardModel, error) {
 	return m, nil
 }
 
+// modelLenient 只保证「结构能读」：内容不合规不阻断，降级成 warning 交给上层展示。
+// 用途只有一个——让维护人把一条读得出来但不合规的模型打开、改好、再存回去。
+func (raw rawModelRow) modelLenient() (*supply.StandardModel, []string, error) {
+	row := raw.row
+	if !raw.version.Valid || raw.version.Int64 <= 0 {
+		return nil, nil, supply.ErrReadContract
+	}
+	m, snapshotWarning, err := decodeModelSnapshotLenient(raw.snapshot, raw.id, uint64(raw.version.Int64))
+	if err != nil {
+		return nil, nil, err
+	}
+	warnings := []string{}
+	if snapshotWarning != "" {
+		warnings = append(warnings, snapshotWarning)
+	}
+	if row.InputModalities, err = modelModalities(raw.inputs, "input_modalities"); err != nil {
+		return nil, nil, err
+	}
+	if row.OutputModalities, err = modelModalities(raw.outputs, "output_modalities"); err != nil {
+		return nil, nil, err
+	}
+	data, err := row.DomainData()
+	if err != nil {
+		return nil, nil, err
+	}
+	canonical, rowErr := supply.NewStandardModel(m.ID, m.MaintainerID, data, m.UpdatedAt)
+	if rowErr != nil {
+		// 表记录也不合规：详情以快照内容为主，但要同时告诉用户两边都有问题。
+		warnings = append(warnings, rowErr.Error())
+	} else if len(warnings) == 0 {
+		// 只有两边都能规范化时，漂移比较才有意义（否则比的是两份都不合规的数据）。
+		if !reflect.DeepEqual(m.Data, canonical.Data) || m.Status != raw.status ||
+			!m.CreatedAt.Truncate(time.Microsecond).Equal(raw.createdAt.Truncate(time.Microsecond)) ||
+			!m.UpdatedAt.Truncate(time.Microsecond).Equal(raw.updatedAt.Truncate(time.Microsecond)) {
+			warnings = append(warnings, "snapshot: 快照与表记录不一致，以快照为准，保存一次即可对齐")
+		}
+	}
+	return m, warnings, nil
+}
+
 // entry 把原始行转成列表中的一行：解析成功就是完整模型，失败就降级成占位行，
 // 让这一行显示「资料异常」，而不是把整页打掉（2026-11-25）。
 func (raw rawModelRow) entry() supply.ModelEntry {
@@ -195,18 +242,20 @@ func scanStandardModel(source interface{ Scan(...any) error }) (*supply.Standard
 	}
 	return raw.model()
 }
-func validateStoredModel(m *supply.StandardModel) error {
+// checkStoredIdentity 只判「这条记录还能不能被安全地定位」：身份、版本号、时间线、状态枚举。
+func checkStoredIdentity(m *supply.StandardModel) error {
 	if m == nil || !modelIdentity(m.ID) || !modelIdentity(m.MaintainerID) || m.Revision == 0 || m.Revision > math.MaxInt64 || m.VersionNo == 0 || m.VersionNo > m.Revision || m.CreatedAt.IsZero() || m.UpdatedAt.Before(m.CreatedAt) {
 		return supply.ErrReadContract
 	}
 	if m.Status != "ACTIVE" && m.Status != "INACTIVE" {
 		return supply.ErrReadContract
 	}
-	// Domain validation permits incomplete drafts but rejects illegal supplied
-	// values. Never reconstruct ownership or verification from missing columns.
-	if _, err := supply.NewStandardModel(m.ID, m.MaintainerID, m.Data, m.UpdatedAt); err != nil {
-		return err
-	}
+	return nil
+}
+
+// checkStoredVerification 判「核验状态与缺失项是否自洽」。它只看字段有没有值，不看值合不合规，
+// 所以内容不合规的记录也能通过这一关。
+func checkStoredVerification(m *supply.StandardModel) error {
 	switch m.VerifyStatus {
 	case "VERIFIED":
 		if !modelIdentity(m.CheckedBy) || m.Data.CheckedAt == "" || len(m.MissingFields()) != 0 {
@@ -224,6 +273,35 @@ func validateStoredModel(m *supply.StandardModel) error {
 		return supply.ErrReadContract
 	}
 	return nil
+}
+
+// validateStoredContent 判「资料本身是否符合当前规则」（价格、维度、日期、枚举）。
+// 这一层代表"今天的规范"，历史数据可能不合规——读路径不该用它判生死。
+func validateStoredContent(m *supply.StandardModel) error {
+	// Domain validation permits incomplete drafts but rejects illegal supplied
+	// values. Never reconstruct ownership or verification from missing columns.
+	_, err := supply.NewStandardModel(m.ID, m.MaintainerID, m.Data, m.UpdatedAt)
+	return err
+}
+
+// checkStoredShape 是读路径要的那一层：结构 + 自洽，不含业务内容校验。
+func checkStoredShape(m *supply.StandardModel) error {
+	if err := checkStoredIdentity(m); err != nil {
+		return err
+	}
+	return checkStoredVerification(m)
+}
+
+func validateStoredModel(m *supply.StandardModel) error {
+	if err := checkStoredIdentity(m); err != nil {
+		return err
+	}
+	// 顺序不能换：写入时先报「哪个字段不合法」（FieldError → 400 带字段路径），
+	// 再报「核验状态不自洽」，否则用户拿不到可执行的提示。
+	if err := validateStoredContent(m); err != nil {
+		return err
+	}
+	return checkStoredVerification(m)
 }
 func modelWriteValues(m *supply.StandardModel) ([]any, error) {
 	if err := validateStoredModel(m); err != nil {
@@ -345,7 +423,9 @@ func AppendModelOperationLog(ctx context.Context, tx *sql.Tx, op supply.ModelOpe
 		if op.Before.ID != op.EntityID {
 			return supply.ErrReadContract
 		}
-		if err := validateStoredModel(op.Before); err != nil {
+		// before 是"变更前的历史快照"，只做结构校验：内容不合规（正是这次要修的那种）
+		// 不能挡住修复本身——否则维护人改好也存不进去（2026-11-25 实锤）。
+		if err := checkStoredShape(op.Before); err != nil {
 			return err
 		}
 		encoded, err := json.Marshal(op.Before)

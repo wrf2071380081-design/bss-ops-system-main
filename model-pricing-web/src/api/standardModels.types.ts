@@ -22,6 +22,11 @@ export interface StandardModelDTO extends StandardModelData {
    * 其余字段不可信。列表把这一行渲染成「资料异常」，不让整页打不开。
    */
   load_error?: string;
+  /**
+   * 能读出来、但资料不符合当前规则（如价格口径冲突、快照与表不一致）。非空时详情页提示
+   * 「哪一项要改」，改完保存即修复——写回仍是严格校验，所以放宽的只是读取。
+   */
+  data_warnings?: { path: string; message: string }[];
 }
 export interface StandardModelPage { list: StandardModelDTO[]; total: number; page: number; size: number }
 export interface StandardModelQuery {

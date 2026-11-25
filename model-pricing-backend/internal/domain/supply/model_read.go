@@ -184,6 +184,39 @@ func (r *ModelReader) Get(ctx context.Context, id string) (*StandardModel, error
 	}
 	return model.Clone(), nil
 }
+// LenientModelReader 是可选存储能力：能读出「结构合法但内容不合规」的模型，并附一条 warning。
+// 没实现它的存储退化为严格读取（读不出来就让调用方报错）。
+type LenientModelReader interface {
+	GetModelLenient(context.Context, string) (*StandardModel, []string, error)
+}
+
+// GetForEdit 给详情/编辑用：内容不合规（价格冲突、快照与表不一致等）不阻断，
+// 返回 warnings 让界面提示「哪项资料不符合当前规则」；结构损坏仍然报错。
+//
+// 这样维护人能把一条「资料异常」的模型打开、改好、再存回去——写回仍是严格校验，
+// 所以放宽的只是读取，库里的数据不会因此变脏。
+func (r *ModelReader) GetForEdit(ctx context.Context, id string) (*StandardModel, []string, error) {
+	if err := r.available(); err != nil {
+		return nil, nil, err
+	}
+	if !validID(id) {
+		return nil, nil, invalid("id", "expected a positive bigint string")
+	}
+	lenient, ok := r.store.(LenientModelReader)
+	if !ok {
+		model, err := r.Get(ctx, id)
+		return model, nil, err
+	}
+	model, warnings, err := lenient.GetModelLenient(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if model == nil || model.ID != id || model.VersionNo == 0 || model.Revision == 0 {
+		return nil, nil, ErrReadContract
+	}
+	return model.Clone(), warnings, nil
+}
+
 func (r *ModelReader) Versions(ctx context.Context, id string, page, size int) (*ModelPage, error) {
 	if _, err := r.Get(ctx, id); err != nil {
 		return nil, err

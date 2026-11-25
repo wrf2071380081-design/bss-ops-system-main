@@ -148,6 +148,9 @@ export function normalizeStandardModel(model: StandardModelDTO, expectedID?: str
   if (!["ACTIVE", "INACTIVE"].includes(model.status) || !["INCOMPLETE", "UNVERIFIED", "VERIFIED"].includes(model.verify_status)) throw new Error("模型状态不符合约定，请重新查询。");
   if (typeof model.permissions?.can_edit !== "boolean" || typeof model.permissions?.can_verify !== "boolean" || !Array.isArray(model.missing_fields) || typeof model.quote_readiness?.ready !== "boolean") throw new Error("模型响应缺少操作资格或完整性资料，请重新查询。");
   const normalized = { ...model, ...copyStandardModel(model) };
-  if (validateStandardModel(normalized).length) throw new Error("模型资料响应不符合字段约定，请重新查询。");
+  // 带 data_warnings 的模型「读得出来、但资料不合规」：这类数据本来就过不了字段校验，
+  // 在这里拦会让维护人永远打不开它。放宽读取、写回仍严格——改好才能存。
+  const hasWarnings = Array.isArray(model.data_warnings) && model.data_warnings.length > 0;
+  if (!hasWarnings && validateStandardModel(normalized).length) throw new Error("模型资料响应不符合字段约定，请重新查询。");
   return normalized;
 }

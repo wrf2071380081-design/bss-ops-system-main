@@ -13,6 +13,14 @@ import { formatDateTime } from "../../../domain/date";
 const props = defineProps<{ id?: string; initialPanel?: 'profile' | 'history' | 'records' | 'advanced' }>();
 const emit = defineEmits<{ close: []; saved: [] }>();
 const current = ref<StandardModelDTO>();
+// 后端「读得出来但资料不合规」的清单与「结构损坏、根本读不出」的标记。
+// 前者要提示具体改哪一项（改完保存即修复），后者只能告诉用户联系运维。
+const warnings = ref<{ path: string; message: string }[]>([]);
+const unreadable = ref(false);
+function warningLabel(item: { path: string; message: string }) {
+  const label = standardFieldLabel(item.path);
+  return label === item.path ? item.message : `${label}：${item.message}`;
+}
 
 /**
  * 新增时的两条默认计费项（原型：输入 / 输出，适用条件「标准 API 计费」）。
@@ -70,7 +78,7 @@ const issues = computed(() => { try { return validateStandardModel(formData()); 
 const companies = computed(() => [...new Set([draft.value.company, "OpenAI", "Google", "DeepSeek", "阿里云", "Anthropic", "MiniMax", "智谱"].filter(Boolean))]);
 const operationLabels: Record<string, string> = { CREATE: "创建", UPDATE: "更新", UPDATE_NOOP: "保存（无变化）", VERIFY: "人工核验", VERIFY_NOOP: "核验（无变化）", MANUAL_SAVE: "保存并留痕", MANUAL_SAVE_NOOP: "保存并留痕（无变化）" };
 const verificationLabels: Record<string, string> = { INCOMPLETE: "资料待补齐", UNVERIFIED: "待人工核验", VERIFIED: "已人工核验" };
-const blocked = computed(() => saving.value || loading.value || readonly.value || conflict.value);
+const blocked = computed(() => saving.value || loading.value || readonly.value || conflict.value || unreadable.value);
 let active = true;
 let detailRequest: AbortController | undefined, historyRequest: AbortController | undefined, recordsRequest: AbortController | undefined;
 let intent = crypto.randomUUID();
@@ -82,6 +90,8 @@ function addSource() {
 }
 function apply(model: StandardModelDTO) {
   current.value = model; draft.value = copyStandardModel(model); notes.value = modelNotes(draft.value); initialNotes.value = JSON.stringify(notes.value);
+  warnings.value = Array.isArray(model.data_warnings) ? model.data_warnings : [];
+  unreadable.value = Boolean(model.load_error);
   sourceURL.value = draft.value.sources[0]?.url || ""; baseline.value = JSON.stringify(draft.value); reason.value = ""; intent = crypto.randomUUID();
 }
 async function load() {
@@ -144,6 +154,12 @@ onBeforeUnmount(() => { active = false; detailRequest?.abort(); historyRequest?.
   <el-dialog class="standard-model-dialog" :model-value="true" :title="current || id ? '手动补全' : '新增标准模型'" width="min(880px, 95vw)" align-center :before-close="close" :close-on-click-modal="false" :close-on-press-escape="!saving" destroy-on-close append-to-body>
     <div v-loading="loading" class="model-maintenance">
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
+      <el-alert v-if="unreadable" class="data-warning" type="error" :closable="false" show-icon
+        :title="current?.load_error || '该模型资料读取异常，无法在此修改，请联系运维处理。'" />
+      <el-alert v-else-if="warnings.length" class="data-warning" type="warning" :closable="false" show-icon>
+        <template #title>该模型有 {{ warnings.length }} 项资料不符合当前规则，核对并保存后即可修复</template>
+        <ul class="data-warning-list"><li v-for="item in warnings" :key="item.path + item.message">{{ warningLabel(item) }}</li></ul>
+      </el-alert>
       <el-alert v-if="conflict" title="记录已更新。你的输入已保留，请核对最新资料后重新编辑。" type="warning" :closable="false"><el-button text @click="reload">重新读取当前资料</el-button></el-alert>
       <el-alert v-if="readonly && !loading" title="当前为只读查看；仅绑定维护人可以补全资料并保存核验记录。" type="info" :closable="false" />
       <div class="maintenance-note">资料完整后直接保存，所有修改留痕。官方未披露参数明确填写“未披露”。价格及计费条件必须可核验；自动获取失败时手动补全。</div>
@@ -189,6 +205,6 @@ onBeforeUnmount(() => { active = false; detailRequest?.abort(); historyRequest?.
 </template>
 <style scoped>
 :global(.standard-model-dialog){--el-color-primary:#315ee8;--el-color-primary-dark-2:#284fc4;padding:0;border-radius:10px;overflow:hidden}:global(.standard-model-dialog .el-dialog__header){padding:20px 22px;border-bottom:1px solid #e3e6eb;margin:0}:global(.standard-model-dialog .el-dialog__title){font-size:15px;font-weight:600;color:#30343b}:global(.standard-model-dialog .el-dialog__headerbtn){top:10px;right:12px}:global(.standard-model-dialog .el-dialog__body){max-height:calc(90vh - 142px);overflow-y:auto;padding:20px}:global(.standard-model-dialog .el-dialog__footer){padding:12px 20px;border-top:1px solid #e3e6eb;background:#fafbfc}
-.model-maintenance{min-height:250px;color:#30343b}.maintenance-note{background:#f8f9fb;border:1px solid #e8ebef;color:#6e747e;padding:12px;border-radius:6px;font-size:12px;line-height:1.6;margin-bottom:0}.missing-fields{margin-bottom:16px}.model-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px 16px}.model-form>.full{grid-column:1/-1}.model-form:deep(.el-form-item){margin-bottom:0;min-width:0}.model-form:deep(.el-form-item__label){padding:0;margin-bottom:6px;line-height:18px;height:auto;font-size:12px;color:#69707c}.model-form:deep(.el-select),.model-form:deep(.el-date-editor){width:100%}.model-form:deep(.el-textarea__inner){font-family:inherit;font-size:12px;line-height:19px;min-height:75px;padding:8px 10px;resize:vertical}.model-form:deep(.el-input__inner){font-size:12px}.trace-links{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;font-size:12px;color:#8b9098}.trace-links .el-button{margin:0}.source-extra{font-size:12px;color:#8b9098}.source-extra summary{cursor:pointer}.source-row{display:grid;grid-template-columns:1fr 110px 2fr auto;gap:8px;margin:10px 0}.validation-hint{font-size:12px;color:#b45309}.dialog-actions{display:flex;justify-content:flex-end;gap:8px}.dialog-actions .el-button{margin:0}.history-snapshot{padding:18px;background:#f8f9fb;margin-top:18px;font-size:13px}.history-snapshot dt{font-weight:600;margin-top:14px}.history-snapshot dd{margin:7px 0;overflow-wrap:anywhere}.hint{font-size:12px;color:#8b9098}@media(max-width:600px){.model-form{grid-template-columns:minmax(0,1fr)}.model-form>div:empty{display:none}.source-row{grid-template-columns:1fr}.model-form>.full{grid-column:auto}:global(.standard-model-dialog .el-dialog__body){padding:14px}}
+.model-maintenance{min-height:250px;color:#30343b}.data-warning{margin-bottom:16px}.data-warning-list{margin:6px 0 0;padding-left:18px;font-size:12px;line-height:1.7}.maintenance-note{background:#f8f9fb;border:1px solid #e8ebef;color:#6e747e;padding:12px;border-radius:6px;font-size:12px;line-height:1.6;margin-bottom:0}.missing-fields{margin-bottom:16px}.model-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px 16px}.model-form>.full{grid-column:1/-1}.model-form:deep(.el-form-item){margin-bottom:0;min-width:0}.model-form:deep(.el-form-item__label){padding:0;margin-bottom:6px;line-height:18px;height:auto;font-size:12px;color:#69707c}.model-form:deep(.el-select),.model-form:deep(.el-date-editor){width:100%}.model-form:deep(.el-textarea__inner){font-family:inherit;font-size:12px;line-height:19px;min-height:75px;padding:8px 10px;resize:vertical}.model-form:deep(.el-input__inner){font-size:12px}.trace-links{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;font-size:12px;color:#8b9098}.trace-links .el-button{margin:0}.source-extra{font-size:12px;color:#8b9098}.source-extra summary{cursor:pointer}.source-row{display:grid;grid-template-columns:1fr 110px 2fr auto;gap:8px;margin:10px 0}.validation-hint{font-size:12px;color:#b45309}.dialog-actions{display:flex;justify-content:flex-end;gap:8px}.dialog-actions .el-button{margin:0}.history-snapshot{padding:18px;background:#f8f9fb;margin-top:18px;font-size:13px}.history-snapshot dt{font-weight:600;margin-top:14px}.history-snapshot dd{margin:7px 0;overflow-wrap:anywhere}.hint{font-size:12px;color:#8b9098}@media(max-width:600px){.model-form{grid-template-columns:minmax(0,1fr)}.model-form>div:empty{display:none}.source-row{grid-template-columns:1fr}.model-form>.full{grid-column:auto}:global(.standard-model-dialog .el-dialog__body){padding:14px}}
 :global(.standard-model-dialog .el-dialog__header){padding:20px;border-color:#e2e6ed}:global(.standard-model-dialog .el-dialog__title){font-size:16px}:global(.standard-model-dialog .el-dialog__headerbtn){top:14px;right:20px;width:36px;height:34px;border:1px solid #e2e6ed;border-radius:6px}:global(.standard-model-dialog .el-dialog__headerbtn .el-dialog__close){font-size:12px}:global(.standard-model-dialog .el-dialog__body){padding:20px;max-height:calc(90vh - 128px)}:global(.standard-model-dialog .el-dialog__footer){padding:12px 20px;background:#fafbfc}.maintenance-note{margin-bottom:20px}.model-form{gap:20px 16px}.model-form:deep(.el-form-item__label){font-size:12px;margin-bottom:8px;color:#778391}.model-form:deep(.el-input__wrapper),.model-form:deep(.el-select__wrapper){min-height:34px}.model-form:deep(.el-textarea__inner){min-height:76px}.verification-date{box-sizing:border-box;display:block;width:100%;min-width:0;height:34px;padding:0 10px;border:1px solid #dfe4ed;border-radius:5px;background:#fff;color:#263b57;font:inherit;font-size:12px;color-scheme:light}.verification-date:focus{outline:2px solid #315ee8;outline-offset:-1px}.verification-date:disabled{background:#f5f7fa;color:#a8abb2}.supplementary-sources{width:100%}.dialog-actions .el-button{height:30px;padding:0 12px;font-size:12px;border-radius:5px}.dialog-actions .el-button--primary{font-weight:600}@media(max-width:600px){:global(.standard-model-dialog .el-dialog__header){padding:18px 16px}:global(.standard-model-dialog .el-dialog__body){padding:16px}:global(.standard-model-dialog .el-dialog__footer){padding:12px 16px}}
 </style>

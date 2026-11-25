@@ -50,6 +50,9 @@ type supplyModelDTO struct {
 	// LoadError 非空表示这一行读不出来、已降级成占位行。前端据此把该行渲染成
 	// 「资料异常」，而不是让整页 500。内部原因不下发（细节对用户无意义，也泄露结构）。
 	LoadError string `json:"load_error,omitempty"`
+	// DataWarnings 是「读得出来、但资料不符合当前规则」的清单。非空时前端提示哪一项要改，
+	// 改完保存即修复（写回仍是严格校验）。
+	DataWarnings []supplyModelWarning `json:"data_warnings,omitempty"`
 }
 type supplyModelPageDTO struct {
 	List  []supplyModelDTO `json:"list"`
@@ -228,12 +231,77 @@ func (h *supplyModelHandler) get(c *gin.Context) {
 		supplyHTTPError(c, err)
 		return
 	}
-	model, err := h.reader.Get(c.Request.Context(), c.Param("id"))
+	// 详情用宽松读：内容不合规也让人打开（附 data_warnings），否则「资料异常」的行
+	// 永远没人能修——这正是 2026-11-25 之后剩下的那个洞。写回仍是严格校验。
+	model, warnings, err := h.reader.GetForEdit(c.Request.Context(), c.Param("id"))
 	if err != nil {
+		if errors.Is(err, supply.ErrReadContract) {
+			// 结构损坏（快照解不出、没有版本行）：连底稿都没有，只能明确告诉用户修不了。
+			log.Printf("standard model detail unreadable: model_id=%s", c.Param("id"))
+			response.Success(c, supplyModelDTO{
+				ID: c.Param("id"), Status: "ACTIVE", VerifyStatus: "INCOMPLETE", MissingFields: []string{},
+				QuoteReadiness: supply.ModelReadiness{Ready: false, Reasons: []string{"UNREADABLE_ROW"}},
+				Permissions:    supplyModelPermissions{}, LoadError: supplyModelUnreadableMessage,
+			})
+			return
+		}
 		supplyHTTPError(c, err)
 		return
 	}
-	response.Success(c, supplyModelResponse(model, supplyActor(c), supplyCanMaintain(c), false))
+	dto := supplyModelResponse(model, supplyActor(c), supplyCanMaintain(c), false)
+	dto.DataWarnings = supplyModelWarnings(warnings)
+	response.Success(c, dto)
+}
+
+type supplyModelWarning struct {
+	Path    string `json:"path"`
+	Message string `json:"message"`
+}
+
+// supplyModelWarnings 把内部错误翻成用户能读的提示：字段路径保留（前端会翻成中文字段名），
+// reason 只做兜底——细节留在日志里，界面不展示英文契约错误。
+func supplyModelWarnings(raw []string) []supplyModelWarning {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]supplyModelWarning, 0, len(raw))
+	for _, item := range raw {
+		path, reason := item, ""
+		if i := strings.Index(item, ": "); i > 0 {
+			path, reason = item[:i], item[i+2:]
+		}
+		out = append(out, supplyModelWarning{Path: path, Message: supplyWarningMessage(path, reason)})
+	}
+	return out
+}
+
+func supplyWarningMessage(path, reason string) string {
+	switch {
+	case path == "snapshot":
+		return "快照与表记录不一致，保存一次即可对齐"
+	case path == supply.ErrReadContract.Error() || path == "":
+		return "资料与表记录不一致，保存一次即可修复"
+	case strings.HasPrefix(path, "price_items") && strings.HasSuffix(path, "amount"):
+		return "同一计费项与计费条件出现了两个价格，请核对后只保留一条"
+	case strings.HasPrefix(path, "price_items"):
+		return "价格项不符合当前规则，请核对金额、币种、单位与计费条件"
+	case path == "checked_at":
+		return "核验日期不是有效日期，或不早于今天"
+	case path == "model_type":
+		return "模型类型不在支持范围内"
+	case strings.HasSuffix(path, "_modalities"):
+		return "输入/输出模态不符合规则，请重新选择"
+	case strings.HasPrefix(path, "sources"):
+		return "官方来源不符合规则（名称、网址或来源类型）"
+	case strings.HasPrefix(path, "capacity"), strings.HasPrefix(path, "abilities"),
+		strings.HasPrefix(path, "api_access"), strings.HasPrefix(path, "lifecycle"):
+		return "官方参数不符合规则，请核对该项内容"
+	default:
+		if reason != "" {
+			return "资料不符合当前规则（" + path + "）"
+		}
+		return "资料不符合当前规则"
+	}
 }
 
 // @Summary 标准模型不可变历史版本

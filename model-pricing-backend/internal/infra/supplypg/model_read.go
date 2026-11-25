@@ -75,6 +75,28 @@ func (s *ModelReadStore) GetModel(ctx context.Context, id string) (*supply.Stand
 	}
 	return model, nil
 }
+
+// GetModelLenient 供详情/编辑使用：结构必须能读，内容不合规只返回 warning。
+// 读不出来（结构坏/没有版本行）仍然报错，那种情况没有可编辑的底稿。
+func (s *ModelReadStore) GetModelLenient(ctx context.Context, id string) (*supply.StandardModel, []string, error) {
+	if !modelIdentity(id) {
+		return nil, nil, mappingError("id")
+	}
+	var model *supply.StandardModel
+	var warnings []string
+	err := s.within(ctx, func(tx *sql.Tx) error {
+		raw, err := scanRawModel(tx.QueryRowContext(ctx, `SELECT `+modelProjection(s.table("standard_model_version"))+` FROM `+s.table("standard_model")+` m WHERE m.id=$1`, id))
+		if err != nil {
+			return err
+		}
+		model, warnings, err = raw.modelLenient()
+		return err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return model, warnings, nil
+}
 func modelPageValid(page, size int) bool {
 	return page >= 1 && size >= 1 && size <= 100 && page <= math.MaxInt/size
 }
@@ -186,7 +208,9 @@ func (s *ModelReadStore) ListModels(ctx context.Context, q supply.ModelListQuery
 	}
 	return result, total, nil
 }
-func decodeModelSnapshot(raw []byte, id string, version uint64) (*supply.StandardModel, error) {
+// decodeSnapshotEnvelope 只解「信封 + 结构」：契约名、版本号、model 是否为空、与行是否匹配。
+// 业务内容（价格/维度/日期/枚举）不在这里判——读路径和写路径对它的态度不同。
+func decodeSnapshotEnvelope(raw []byte, id string, version uint64) (*supply.StandardModel, error) {
 	var envelope struct {
 		Contract      string                `json:"contract"`
 		SchemaVersion int                   `json:"schema_version"`
@@ -200,18 +224,49 @@ func decodeModelSnapshot(raw []byte, id string, version uint64) (*supply.Standar
 	if _, err := d.Token(); err != io.EOF || envelope.Contract != "supply.standard_model" || envelope.SchemaVersion != 1 || envelope.Model == nil || envelope.Model.ID != id || envelope.Model.VersionNo != version {
 		return nil, supply.ErrReadContract
 	}
-	if err := validateStoredModel(envelope.Model); err != nil {
+	return envelope.Model, nil
+}
+
+func decodeModelSnapshot(raw []byte, id string, version uint64) (*supply.StandardModel, error) {
+	m, err := decodeSnapshotEnvelope(raw, id, version)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateStoredModel(m); err != nil {
 		return nil, supply.ErrReadContract
 	}
 	// Older snapshots can encode empty slices as [] and decimal amounts without
 	// trailing zeroes. Compare the same domain representation as the live row;
 	// these serialization differences do not mean that business data drifted.
-	canonical, err := supply.NewStandardModel(envelope.Model.ID, envelope.Model.MaintainerID, envelope.Model.Data, envelope.Model.UpdatedAt)
+	canonical, err := supply.NewStandardModel(m.ID, m.MaintainerID, m.Data, m.UpdatedAt)
 	if err != nil {
 		return nil, supply.ErrReadContract
 	}
-	envelope.Model.Data = canonical.Data
-	return envelope.Model, nil
+	m.Data = canonical.Data
+	return m, nil
+}
+
+// decodeModelSnapshotLenient 是详情/编辑用的宽松版：结构不过仍然报错，
+// 内容不合规降级成一条 warning——让人能把这条模型打开、看到哪里不对、改好再存。
+func decodeModelSnapshotLenient(raw []byte, id string, version uint64) (*supply.StandardModel, string, error) {
+	m, err := decodeSnapshotEnvelope(raw, id, version)
+	if err != nil {
+		return nil, "", err
+	}
+	// 结构与自洽（身份、版本号关系、时间线、status、verify 与缺失项）坏了就没得救，
+	// 这是"这一行数据不一致"，不是"资料不合规"。
+	if err := checkStoredShape(m); err != nil {
+		return nil, "", err
+	}
+	if err := validateStoredContent(m); err != nil {
+		return m, err.Error(), nil
+	}
+	canonical, err := supply.NewStandardModel(m.ID, m.MaintainerID, m.Data, m.UpdatedAt)
+	if err != nil {
+		return m, err.Error(), nil
+	}
+	m.Data = canonical.Data
+	return m, "", nil
 }
 func (s *ModelReadStore) ListModelVersions(ctx context.Context, id string, page, size int) ([]*supply.StandardModel, int64, error) {
 	if !modelIdentity(id) || !modelPageValid(page, size) {

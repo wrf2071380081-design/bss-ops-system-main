@@ -244,6 +244,22 @@ func Idempotency(store IdempotencyStore, bizKey BizKeyFunc) gin.HandlerFunc {
 		// 执行业务
 		c.Next()
 
+		// 业务失败（HTTP >= 400 且不是显式声明的「终态失败」）→ 整笔回滚。
+		//
+		// 之前这里是无条件 Commit：只要 handler 没 panic，业务在事务里写下的东西
+		// 就会落库，即使接口返回 400。2026-11-25 实测到过最坏形态——保存接口返回
+		// 「字段校验失败」，库里却已经多了一个新版本，用户以为没保存，实际已改库。
+		// 回滚后幂等记录一起消失，客户端用同一个 key 重试会被当作首次请求，语义一致。
+		// 终态失败（如 503 依赖不可用）仍要提交，才能让重放拿到同样的失败结果。
+		if tx != nil {
+			if status := c.Writer.Status(); status >= 400 {
+				if _, terminal := IdempotencyTerminalSnapshot(c, status); !terminal {
+					tx.Rollback()
+					return
+				}
+			}
+		}
+
 		// 兜底：handler 未显式调用 SetIdempotencyResult 时，从响应体提取 data，
 		// 保证 DONE 记录一定有可重放的快照（联调 P1-3）。
 		if GetIdempotencyResult(c) == nil {
