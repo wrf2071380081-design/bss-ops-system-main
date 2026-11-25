@@ -61,25 +61,32 @@ rm -f dist/mockServiceWorker.js
 fi
 
 echo "==> 3/6 上传"
-scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "$TMP/server.gz" "$TMP/dist.tar.gz" "$HOST:/tmp/"
+FILES=()
+[ -f "$TMP/server.gz" ] && FILES+=("$TMP/server.gz")
+[ -f "$TMP/dist.tar.gz" ] && FILES+=("$TMP/dist.tar.gz")
+scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "${FILES[@]}" "$HOST:/tmp/"
 
 echo "==> 4/6 切换（保留旧二进制用于回滚）"
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$HOST" bash -s <<EOF
 set -e
-BAK=/tmp/server.bak.\$(date +%s)
-cp /app/model_bss/bin/server \$BAK
-echo "\$BAK" > /tmp/last-good-server
-gunzip -c /tmp/server.gz > /tmp/srv.new
-chmod 755 /tmp/srv.new
-mv /tmp/srv.new /app/model_bss/bin/server
+if [ -f /tmp/server.gz ]; then
+  BAK=/tmp/server.bak.\$(date +%s)
+  cp /app/model_bss/bin/server \$BAK
+  echo "\$BAK" > /tmp/last-good-server
+  gunzip -c /tmp/server.gz > /tmp/srv.new
+  chmod 755 /tmp/srv.new
+  mv /tmp/srv.new /app/model_bss/bin/server
+  sudo systemctl restart model-bss
+fi
+if [ -f /tmp/dist.tar.gz ]; then
 R=/app/model_bss-web/releases/$TAG
 mkdir -p \$R
 tar xzf /tmp/dist.tar.gz -C \$R
 find \$R -type d -exec chmod 755 {} \;
 find \$R -type f -exec chmod 644 {} \;
 ln -sfn \$R /app/model_bss-web/current
-sudo systemctl restart model-bss
-sleep 4
+fi
+sleep 3
 EOF
 
 echo "==> 5/6 自证：线上版本必须等于 $SHA"
@@ -91,8 +98,8 @@ WEB_SHA="$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$HOST" \
 echo "    前端: $WEB_SHA"
 
 fail=0
-echo "$ONLINE_SHA" | grep -q "\"sha\":\"$SHA\"" || { echo "!! 后端版本不符"; fail=1; }
-echo "$WEB_SHA" | grep -q "content=\"$SHA\"" || { echo "!! 前端版本不符"; fail=1; }
+[ "$SKIP_BACKEND" = "1" ] || echo "$ONLINE_SHA" | grep -q "\"sha\":\"$SHA\"" || { echo "!! 后端版本不符"; fail=1; }
+[ "$SKIP_FRONTEND" = "1" ] || echo "$WEB_SHA" | grep -q "content=\"$SHA\"" || { echo "!! 前端版本不符"; fail=1; }
 
 if [ "$fail" != "0" ]; then
   echo "==> 6/6 版本不一致，自动回滚后端"
