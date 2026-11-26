@@ -24,6 +24,22 @@ if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
   exit 1
 fi
 
+# 发布前必须确认没落后远端：2026-11-26 踩过——我们基于旧基线发了版，
+# 把同事已合并的修复排除在线上之外，而 git status 只显示"ahead"，看不出落后。
+if [ "${SKIP_REMOTE_CHECK:-0}" != "1" ]; then
+  if git -C "$REPO_ROOT" -c http.proxy= -c https.proxy= fetch -q origin main 2>/dev/null; then
+    behind=$(git -C "$REPO_ROOT" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+    if [ "${behind:-0}" -gt 0 ]; then
+      echo "!! 本地落后 origin/main ${behind} 个提交，先 git rebase origin/main 再发布"
+      git -C "$REPO_ROOT" log --oneline HEAD..origin/main | head -5
+      exit 1
+    fi
+    echo "    ✓ 已确认与 origin/main 同步"
+  else
+    echo "    ! 拉取远端失败，跳过同步检查（SKIP_REMOTE_CHECK=1 可显式跳过）"
+  fi
+fi
+
 SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 BUILT_AT="$(date -Iseconds)"
 TAG="${1:-$(date +%Y%m%d)-r$(git -C "$REPO_ROOT" rev-list --count HEAD)}"
