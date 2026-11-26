@@ -92,8 +92,30 @@ func newSupplyRuntimeDeps(db *gorm.DB, idem middleware.IdempotencyStore, workflo
 	deps.F12Readiness = supply.NewF12ReadinessService(f12Flow, f12Store)
 	var f12Files supply.F12AttachmentBlobStore
 	var f12AttachmentVerifier supplypg.F12AttachmentVerifier
-	f12AttachmentRoot := strings.TrimSpace(os.Getenv("MODEL_BSS_F12_ATTACHMENT_STORE_DIR"))
-	if f12AttachmentRoot != "" {
+	// 附件存储后端：默认本地目录；设 MODEL_BSS_ATTACHMENT_DRIVER=cos 后走腾讯云 COS。
+	// 两者实现同一接口、同一 file_id 规则，切换不需要迁移数据库（对象 key 也一致）。
+	// 密钥只从环境变量读，不进 config.yaml、不进仓库。
+	attachmentDriver := strings.ToLower(strings.TrimSpace(os.Getenv("MODEL_BSS_ATTACHMENT_DRIVER")))
+	if attachmentDriver == "" {
+		attachmentDriver = "fs"
+	}
+	if attachmentDriver == "cos" {
+		cosStore, err := supplyfiles.NewF12AttachmentCOSStore(
+			os.Getenv("COS_SECRET_ID"), os.Getenv("COS_SECRET_KEY"),
+			os.Getenv("COS_REGION"), os.Getenv("COS_BUCKET"))
+		if err != nil {
+			return api.SupplyDeps{}, err
+		}
+		var store supply.F12AttachmentBlobStore = cosStore
+		// 历史附件还在本地：新写入进 COS，老的从本地兜底读，切换零停机。
+		if root := strings.TrimSpace(os.Getenv("MODEL_BSS_F12_ATTACHMENT_STORE_DIR")); root != "" {
+			if localStore, localErr := supplyfiles.NewF12AttachmentFileStore(root); localErr == nil {
+				store = &supplyfiles.F12AttachmentFallbackStore{Primary: cosStore, Fallback: localStore}
+			}
+		}
+		f12Files = store
+		f12AttachmentVerifier = supplypg.F12AttachmentBlobVerifier{Files: store}
+	} else if f12AttachmentRoot := strings.TrimSpace(os.Getenv("MODEL_BSS_F12_ATTACHMENT_STORE_DIR")); f12AttachmentRoot != "" {
 		fileStore, err := supplyfiles.NewF12AttachmentFileStore(f12AttachmentRoot)
 		if err != nil {
 			return api.SupplyDeps{}, err
