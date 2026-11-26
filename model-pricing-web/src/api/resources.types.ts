@@ -6,10 +6,13 @@ export interface ResourceQuery {
   keyword?: string; company?: string; model_type?: string; supplier_id?: string; standard_model_id?: string; region?: string; state?: string;
 }
 export interface RegionCoefficient { region: string; min: string; max: string }
+// 模型行上的「这条资源为什么读不出来」：不计入统计，但必须显示给用户，避免货源凭空消失。
+export interface ResourceIssue { code: string; message: string; resource_id?: string; supplier_id?: string; supplier_name?: string }
 export interface ResourceGroup {
   id: string; name: string; official_id: string; company: string; model_type: string;
   supplier_count: number; resource_count: number; available_count: number;
   coefficient_min: string; coefficient_max: string; regions: string[]; region_coefficients: RegionCoefficient[]; state_counts: Record<string, number>;
+  issues?: ResourceIssue[];
 }
 export interface ResourceCache {
   status: string; report_id?: string; hit_tokens?: string; input_tokens?: string; hit_rate?: string; hit_percent?: string; scene?: string;

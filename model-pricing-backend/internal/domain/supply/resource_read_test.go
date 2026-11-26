@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -50,7 +51,6 @@ func TestResourceSnapshotRequiresOwnCurrentEvidenceAndConfiguration(t *testing.T
 		{"stale target", "TEST_TARGET_CHANGED", func(r *ResourceRecord) { r.Report.TargetVersion = 2 }},
 		{"config changed", "FORMAL_CONFIG_CHANGED", func(r *ResourceRecord) { r.Config.Revision = 2; r.Config.ConfirmedRevision = 2 }},
 		{"no key", "FORMAL_CONFIG_UNAVAILABLE", func(r *ResourceRecord) { r.Config.HasAPIKey = false }},
-		{"unverified model", "MODEL_NOT_READY", func(r *ResourceRecord) { r.Model.VerifyStatus = "UNVERIFIED" }},
 		{"inactive supplier", "SUPPLIER_INACTIVE", func(r *ResourceRecord) { r.Supplier.Status = "INACTIVE" }},
 		{"not admitted", "RESOURCE_NOT_ADMITTED", func(r *ResourceRecord) { r.Resource.State = "PENDING_ACCESS"; r.Resource.EverAdmitted = false }},
 		{"invalid report", "TEST_EVIDENCE_INVALID", func(r *ResourceRecord) { r.Report.Valid = false }},
@@ -239,6 +239,38 @@ func TestResourceDraftReportUsesOwnRowAndVersion(t *testing.T) {
 	snapshot, err = BuildResourceSnapshot(record)
 	if err != nil || snapshot.QuoteReadiness.Eligible || snapshot.Test.Status != "STALE" {
 		t.Fatalf("other row version admitted: %+v %v", snapshot, err)
+	}
+}
+
+// 2026-11-25 业务裁决：标准模型资料/核验不全不再阻断「可报价」，只在 QuoteReadiness.Warnings
+// 里提示（客户报价能选到，运营再补资料）。这条口径改动由 6c83794 引入，但当时没有同步本文件的旧用例。
+func TestResourceSnapshotWarnsUnverifiedModelInsteadOfBlocking(t *testing.T) {
+	record := resourceRecord(t, "31", "21", "11", "CN", "0.6800")
+	record.Model.VerifyStatus = "UNVERIFIED"
+	record.Model.CheckedBy = ""
+	snapshot, err := BuildResourceSnapshot(record)
+	if err != nil || !snapshot.QuoteReadiness.Eligible {
+		t.Fatalf("unverified model should stay quotable: %+v %v", snapshot, err)
+	}
+	if !slices.Contains(snapshot.QuoteReadiness.Warnings, "MODEL_NOT_READY") {
+		t.Fatalf("missing MODEL_NOT_READY warning: %+v", snapshot.QuoteReadiness)
+	}
+	if slices.Contains(snapshot.QuoteReadiness.BlockedReasons, "MODEL_NOT_READY") {
+		t.Fatalf("MODEL_NOT_READY must not block: %+v", snapshot.QuoteReadiness)
+	}
+}
+
+// 单行数据问题的原因必须能取出来给前端展示，同时保持 errors.Is(ErrReadContract) 语义不变。
+func TestBuildResourceSnapshotCarriesIssueReason(t *testing.T) {
+	record := resourceRecord(t, "31", "21", "11", "CN", "0.6800")
+	record.Resource.BuyerID = ""
+	_, err := BuildResourceSnapshot(record)
+	if !errors.Is(err, ErrReadContract) {
+		t.Fatalf("legacy sentinel lost: %v", err)
+	}
+	issue, ok := ResourceIssueOf(err)
+	if !ok || issue.Code != "RESOURCE_BUYER_MISSING" || issue.Message == "" {
+		t.Fatalf("missing typed issue: %+v %v", issue, err)
 	}
 }
 

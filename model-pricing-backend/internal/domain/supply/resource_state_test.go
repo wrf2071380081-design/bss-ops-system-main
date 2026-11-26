@@ -156,16 +156,16 @@ func TestResourceOnlineFailsClosedWithoutCurrentReadiness(t *testing.T) {
 	}
 }
 
+// 只列真正会拦上线的因素：标准模型核验在 2026-11-25 已改为"提示不阻断"（见
+// TestResourceSnapshotWarnsUnverifiedModelInsteadOfBlocking），所以这里不再包含 model。
 func TestResourceOnlineRechecksModelConfigAndOwnEvidence(t *testing.T) {
-	for _, kind := range []string{"ready", "model", "config", "report", "target"} {
+	for _, kind := range []string{"ready", "config", "report", "target"} {
 		t.Run(kind, func(t *testing.T) {
 			record := resourceRecord(t, "11", "21", "31", "CN", "0.68")
 			record.Resource.State = "OFFLINE"
 			record.Resource.BuyerID = "7"
 			record.Resource.Revision = 2
 			switch kind {
-			case "model":
-				record.Model.VerifyStatus = "UNVERIFIED"
 			case "config":
 				record.Config.ConfirmedRevision = 0
 			case "report":

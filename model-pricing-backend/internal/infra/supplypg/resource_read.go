@@ -139,9 +139,28 @@ func resourceReadQuery(q supply.ResourceListQuery, view string) (string, []any, 
 	return strings.Join(where, " AND "), args, nil
 }
 
+// resourceModelRef 是分组用的模型元信息：能从标准模型读到就用模型本身，
+// 读不到时退回 resource 关联的 standard_model 列，保证"模型行"仍然能显示出来。
+type resourceModelRef struct{ id, name, officialID, company, modelType string }
+
+// resourceProjectionRow 是一条资源的 SQL 投影 + 模型列兜底。
+type resourceProjectionRow struct {
+	p     ResourceProjection
+	model resourceModelRef
+}
+
+// resourceReadEntry 要么是一条可用的资源（record/view 非空），
+// 要么是一条"读不出来但必须让用户看见"的问题行（issue 非空）。
 type resourceReadEntry struct {
 	record *supply.ResourceRecord
 	view   *supply.ResourceSnapshot
+	issue  *supply.ResourceIssue
+	model  resourceModelRef
+}
+
+func issueEntry(row resourceProjectionRow, code, message string) resourceReadEntry {
+	p := row.p
+	return resourceReadEntry{model: row.model, issue: &supply.ResourceIssue{Code: code, Message: message, ResourceID: p.ID, SupplierID: p.SupplierID, SupplierName: p.Supplier.Name}}
 }
 
 func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, args []any) ([]resourceReadEntry, error) {
@@ -149,35 +168,49 @@ func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, 
 	// supply resources only when approval materializes the authoritative A
 	// control snapshot. Keep these allocations out of both lists and details.
 	where = "(" + where + ") AND (NOT EXISTS (SELECT 1 FROM " + s.table("submission_row") + " sr WHERE sr.resource_id=r.id) OR EXISTS (SELECT 1 FROM " + s.table("operation_log") + " ctl WHERE ctl.entity_type='resource' AND ctl.entity_id=r.id AND ctl.action='RESOURCE_REVISION'))"
-	rows, err := tx.QueryContext(ctx, `SELECT r.id::text,r.supplier_id::text,r.standard_model_id::text,r.region,r.supplier_model_name,r.coefficient::text,r.buyer_id::text,r.state,r.ever_admitted,r.latest_test_report_id::text,r.created_at,r.updated_at,admission.admitted_at,s.id::text,s.name,s.region,s.status FROM `+s.table("resource")+` r LEFT JOIN LATERAL (SELECT min(l.created_at) AS admitted_at FROM `+s.table("operation_log")+` l WHERE l.entity_type='resource' AND l.entity_id=r.id AND l.action='RESOURCE_REVISION' AND l."after"->>'operation'='ADMIT') admission ON TRUE LEFT JOIN `+s.table("supplier")+` s ON s.id=r.supplier_id LEFT JOIN `+s.table("standard_model")+` m ON m.id=r.standard_model_id WHERE `+where+` ORDER BY r.id ASC`, args...)
+	rows, err := tx.QueryContext(ctx, `SELECT r.id::text,r.supplier_id::text,r.standard_model_id::text,r.region,r.supplier_model_name,r.coefficient::text,r.buyer_id::text,r.state,r.ever_admitted,r.latest_test_report_id::text,r.created_at,r.updated_at,admission.admitted_at,s.id::text,s.name,s.region,s.status,m.name,m.official_id,m.company,m.model_type FROM `+s.table("resource")+` r LEFT JOIN LATERAL (SELECT min(l.created_at) AS admitted_at FROM `+s.table("operation_log")+` l WHERE l.entity_type='resource' AND l.entity_id=r.id AND l.action='RESOURCE_REVISION' AND l."after"->>'operation'='ADMIT') admission ON TRUE LEFT JOIN `+s.table("supplier")+` s ON s.id=r.supplier_id LEFT JOIN `+s.table("standard_model")+` m ON m.id=r.standard_model_id WHERE `+where+` ORDER BY r.id ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
-	projections := []ResourceProjection{}
+	// 扫描阶段就把"这一行读不全"挑出来，而不是让整页失败：
+	// 列结构/驱动错误仍然致命（那是环境问题），行内容不合法一律降级成问题行。
+	projections := []resourceProjectionRow{}
+	entries := []resourceReadEntry{}
 	for rows.Next() {
-		var p ResourceProjection
-		var buyer, report, supplier, name, region, status sql.NullString
-		var admittedAt sql.NullTime
-		err = rows.Scan(&p.ID, &p.SupplierID, &p.StandardModelID, &p.Region, &p.SupplierModelID, &p.Coefficient, &buyer, &p.State, &p.EverAdmitted, &report, &p.CreatedAt, &p.UpdatedAt, &admittedAt, &supplier, &name, &region, &status)
+		var id, supplierID, modelID, region, supplierModel, coefficient, state sql.NullString
+		var buyer, report, supplier, name, supplierRegion, status sql.NullString
+		var modelName, modelOfficial, modelCompany, modelType sql.NullString
+		var everAdmitted sql.NullBool
+		var createdAt, updatedAt, admittedAt sql.NullTime
+		err = rows.Scan(&id, &supplierID, &modelID, &region, &supplierModel, &coefficient, &buyer, &state, &everAdmitted, &report, &createdAt, &updatedAt, &admittedAt, &supplier, &name, &supplierRegion, &status, &modelName, &modelOfficial, &modelCompany, &modelType)
 		if err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if !buyer.Valid || !supplier.Valid || !name.Valid || !region.Valid || !status.Valid {
-			rows.Close()
-			return nil, supply.ErrReadContract
+		model := resourceModelRef{id: modelID.String, name: modelName.String, officialID: modelOfficial.String, company: modelCompany.String, modelType: modelType.String}
+		row := resourceProjectionRow{model: model}
+		row.p = ResourceProjection{ID: id.String, SupplierID: supplierID.String, StandardModelID: modelID.String, Region: region.String, SupplierModelID: supplierModel.String, Coefficient: coefficient.String, State: state.String, LatestReportID: report.String}
+		switch {
+		case !id.Valid || !supplierID.Valid || !modelID.Valid || !region.Valid || !supplierModel.Valid || !coefficient.Valid || !state.Valid || !everAdmitted.Valid || !createdAt.Valid || !updatedAt.Valid:
+			entries = append(entries, issueEntry(row, "RESOURCE_COLUMN_MISSING", "资源关键字段为空，无法展示"))
+			continue
+		case !supplier.Valid || !name.Valid || !supplierRegion.Valid || !status.Valid:
+			entries = append(entries, issueEntry(row, "RESOURCE_SUPPLIER_MISSING", "关联的供应商资料读取不到"))
+			continue
 		}
-		p.BuyerID = buyer.String
-		p.LatestReportID = report.String
+		row.p.EverAdmitted = everAdmitted.Bool
+		row.p.CreatedAt = createdAt.Time
+		row.p.UpdatedAt = updatedAt.Time
+		row.p.BuyerID = buyer.String
+		row.p.Supplier = supply.ResourceSupplier{ID: supplier.String, Name: name.String, Region: supplierRegion.String, Status: status.String}
+		if row.p.State == "PENDING_ADMIT" {
+			row.p.State = "PENDING_ACCESS"
+		}
 		if admittedAt.Valid {
 			value := admittedAt.Time.UTC()
-			p.AdmittedAt = &value
+			row.p.AdmittedAt = &value
 		}
-		p.Supplier = supply.ResourceSupplier{ID: supplier.String, Name: name.String, Region: region.String, Status: status.String}
-		if p.State == "PENDING_ADMIT" {
-			p.State = "PENDING_ACCESS"
-		}
-		projections = append(projections, p)
+		projections = append(projections, row)
 	}
 	err = rows.Err()
 	rows.Close()
@@ -185,59 +218,117 @@ func (s *ResourceReadStore) load(ctx context.Context, tx *sql.Tx, where string, 
 		return nil, err
 	}
 	// Close rows before model/fact/report queries on this same connection.
-	entries := make([]resourceReadEntry, 0, len(projections))
 	models := map[string]*supply.StandardModel{}
+	modelErrors := map[string]bool{}
 	modelStore := &ModelReadStore{schema: s.schema}
-	for _, p := range projections {
+	for _, row := range projections {
+		p := row.p
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		// 容错：单条资源读不到控制快照（或快照与投影不一致）时**跳过这一条**，
-		// 不要让整页 500。2026-11-18 实测：运营手工登记的资源没有 A 线控制快照，
-		// 过去会把「模型广场」整个打挂；一条脏数据不该拖垮整页。
+		// 采集人未分配＝还没进入正式接入流程（典型是申报行点测试时自动建的临时资源）。
+		// 不再整页 500，也不再静默隐藏：挂一条问题在模型行上，让运营看得见、补得动。
+		if p.BuyerID == "" {
+			entries = append(entries, issueEntry(row, "RESOURCE_BUYER_MISSING", "该资源尚未分配采购人，未纳入统计"))
+			continue
+		}
 		f, err := s.facts(ctx, tx, p)
+		// facts 报的若是基础设施问题（依赖未装配、连接失败、事务中断），必须继续向上抛：
+		// 把它伪装成"这条数据脏"会让真正的环境故障被一条黄色提示盖住。
+		if err != nil {
+			if _, dataProblem := supply.ResourceIssueOf(err); !dataProblem {
+				return nil, err
+			}
+		}
 		if err != nil || f == nil || f.ResourceID != p.ID || !f.ProjectionUpdatedAt.Equal(p.UpdatedAt) || !resourceProjectionEqual(f.Projection, p) || f.Revision == 0 || f.LatestReportSequence > math.MaxInt64 || (f.FormalConfigID == "") != (f.FormalConfigRevision == 0) {
+			// 区分「还没登记」和「登记过但对不上」：前者是正常中间态（申报测试 / 手工登记），
+			// 后者要人介入核对，前端给的颜色也不一样。
+			code, message := "RESOURCE_CONTROL_SNAPSHOT_INCONSISTENT", "资源与控制快照不一致，请联系运营核对"
+			exists, snapshotErr := s.hasControlSnapshot(ctx, tx, p.ID)
+			if snapshotErr != nil {
+				return nil, snapshotErr
+			}
+			if !exists {
+				code, message = "RESOURCE_NOT_FORMALIZED", "该资源尚未完成接入登记（常见于申报测试或手工登记），未纳入统计"
+			}
+			entries = append(entries, issueEntry(row, code, message))
 			continue
 		}
 		r := &supply.Resource{ID: p.ID, SupplierID: p.SupplierID, StandardModelID: p.StandardModelID, Region: p.Region, SupplierModelID: p.SupplierModelID, Coefficient: p.Coefficient, BuyerID: p.BuyerID, State: p.State, EverAdmitted: p.EverAdmitted, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 			Revision: f.Revision, OriginRowID: f.OriginRowID, OriginRowVersion: f.OriginRowVersion, TargetVersion: f.TargetVersion, FormalConfigID: f.FormalConfigID, FormalConfigRevision: f.FormalConfigRevision, LatestReportID: p.LatestReportID, LatestReportSequence: f.LatestReportSequence}
 		model, exists := models[p.StandardModelID]
 		if !exists {
+			if modelErrors[p.StandardModelID] {
+				entries = append(entries, issueEntry(row, "MODEL_UNREADABLE", "标准模型资料读取不到，请到标准模型库核对"))
+				continue
+			}
 			model, err = modelStore.current(ctx, tx, p.StandardModelID)
 			if err != nil {
+				// 数据类问题（快照不合契约、模型行不存在）降级；其它（SQL/连接）仍然致命。
+				if issue, dataProblem := supply.ResourceIssueOf(err); dataProblem {
+					modelErrors[p.StandardModelID] = true
+					row.model = resourceModelRef{id: p.StandardModelID, name: row.model.name, officialID: row.model.officialID, company: row.model.company, modelType: row.model.modelType}
+					entry := issueEntry(row, issue.Code, "标准模型资料读取不到："+issue.Message)
+					entries = append(entries, entry)
+					continue
+				}
 				return nil, err
 			}
 			models[p.StandardModelID] = model
 		}
+		// 分组/去重按模型本体为准，避免同一模型一部分行用兜底列、一部分用模型，拼出两个名字。
+		row.model = resourceModelRef{id: model.ID, name: model.Data.Name, officialID: model.Data.OfficialID, company: model.Data.Company, modelType: model.Data.ModelType}
 		record := &supply.ResourceRecord{Resource: r, Model: model, Supplier: p.Supplier, Config: f.Config, AdmittedAt: p.AdmittedAt}
 		if p.LatestReportID == "" {
 			if f.Report != nil || f.LatestReportSequence != 0 {
-				return nil, supply.ErrReadContract
+				entries = append(entries, issueEntry(row, "RESOURCE_EVIDENCE_POINTER_INCONSISTENT", "资源标记的测试证据与生效报告不一致"))
+				continue
 			}
 			// 没有生效证据时，仍把「最近一次实际测试」带给前端展示；
 			// 它不参与准入判定（resource.go 里依旧 block TESTS_REQUIRED）。
 			display, err := s.latestDisplayReport(ctx, tx, p.ID)
 			if err != nil {
+				if issue, dataProblem := supply.ResourceIssueOf(err); dataProblem {
+					entries = append(entries, issueEntry(row, issue.Code, issue.Message))
+					continue
+				}
 				return nil, err
 			}
 			record.DisplayReport = display
 		} else {
 			ref := f.Report
 			if ref == nil || ref.ReportID != p.LatestReportID || ref.ResourceID != p.ID || ref.SupplierID != p.SupplierID || ref.StandardModelID != p.StandardModelID || ref.Region != p.Region || ref.OriginRowID != f.OriginRowID || ref.Sequence != f.LatestReportSequence {
-				return nil, supply.ErrReadContract
+				entries = append(entries, issueEntry(row, "RESOURCE_EVIDENCE_POINTER_INCONSISTENT", "资源标记的测试证据与生效报告不一致"))
+				continue
 			}
 			record.Report, err = ReadSelectedReport(ctx, tx, s.schema, *ref)
 			if err != nil {
+				if issue, dataProblem := supply.ResourceIssueOf(err); dataProblem {
+					entries = append(entries, issueEntry(row, issue.Code, issue.Message))
+					continue
+				}
 				return nil, err
 			}
 		}
 		view, err := supply.BuildResourceSnapshot(record)
 		if err != nil {
+			if issue, dataProblem := supply.ResourceIssueOf(err); dataProblem {
+				entries = append(entries, issueEntry(row, issue.Code, issue.Message))
+				continue
+			}
 			return nil, err
 		}
-		entries = append(entries, resourceReadEntry{record, view})
+		entries = append(entries, resourceReadEntry{record: record, view: view, model: row.model})
 	}
 	return entries, nil
+}
+
+// hasControlSnapshot 判断这条资源有没有正式的 A 线控制快照（RESOURCE_REVISION 操作日志）。
+// 只在单行已经读不出来时才调用，用来区分「还没登记」与「登记过但对不上」。
+func (s *ResourceReadStore) hasControlSnapshot(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
+	var exists bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM `+s.table("operation_log")+` WHERE entity_type='resource' AND entity_id=$1 AND action='RESOURCE_REVISION')`, id).Scan(&exists)
+	return exists, err
 }
 
 // latestDisplayReport 取该资源「最近一次实际跑过」的测试证据，**仅用于展示**。
@@ -353,6 +444,14 @@ func (s *ResourceReadStore) GetResource(ctx context.Context, id string) (*supply
 		if len(rows) != 1 {
 			return supply.ErrReadContract
 		}
+		// 行存在但数据有问题：返回可读的类型化错误，让详情页显示"哪里不对"，
+		// 而不是像以前那样 500「系统错误」。
+		if rows[0].record == nil {
+			if issue := rows[0].issue; issue != nil {
+				return &supply.ResourceDataError{Code: issue.Code, Message: issue.Message}
+			}
+			return supply.ErrReadContract
+		}
 		record = rows[0].record
 		return nil
 	})
@@ -458,9 +557,17 @@ func (s *ResourceReadStore) ListResourceRows(ctx context.Context, q supply.Resou
 	result := []*supply.ResourceRecord{}
 	var total int64
 	err = s.within(ctx, func(tx *sql.Tx) error {
-		entries, err := s.load(ctx, tx, where, args)
+		loaded, err := s.load(ctx, tx, where, args)
 		if err != nil {
 			return err
+		}
+		// flat 视图是「挑一条资源去报价/接入」用的，没有位置挂问题标签：
+		// 数据有问题的行不参与（由模型广场在模型行上展示原因），total 也随之只计可用行。
+		entries := make([]resourceReadEntry, 0, len(loaded))
+		for _, e := range loaded {
+			if e.view != nil {
+				entries = append(entries, e)
+			}
 		}
 		entries = filteredResourceEntries(entries, q)
 		total = int64(len(entries))
@@ -481,6 +588,7 @@ type resourceReadGroup struct {
 	id, name, officialID, company, modelType string
 	suppliers                                map[string]bool
 	entries                                  []resourceReadEntry
+	issues                                   []supply.ResourceIssue
 	available                                int
 	min, max                                 *big.Rat
 }
@@ -562,13 +670,31 @@ func (s *ResourceReadStore) ListResourceGroups(ctx context.Context, q supply.Res
 		byID := map[string]*resourceReadGroup{}
 		groups := []*resourceReadGroup{}
 		for _, e := range entries {
-			v := e.view
-			g := byID[v.StandardModelID]
-			coefficient := resourceNumber(v.Coefficient)
+			// 模型 id 都取不到的行走不了分组（连行标题都没有），只能丢弃。
+			if e.model.id == "" {
+				continue
+			}
+			g := byID[e.model.id]
 			if g == nil {
-				g = &resourceReadGroup{id: v.StandardModelID, name: v.ModelName, company: v.Company, modelType: v.ModelType, suppliers: map[string]bool{}, min: coefficient, max: coefficient}
+				g = &resourceReadGroup{id: e.model.id, name: e.model.name, officialID: e.model.officialID, company: e.model.company, modelType: e.model.modelType, suppliers: map[string]bool{}}
 				byID[g.id] = g
 				groups = append(groups, g)
+			}
+			// 兜底列可能没有名称：后到的可用资源行/模型行会把元信息补全。
+			if g.name == "" && e.model.name != "" {
+				g.name, g.officialID, g.company, g.modelType = e.model.name, e.model.officialID, e.model.company, e.model.modelType
+			}
+			if e.view == nil {
+				// 读不出来的资源：只记问题，不计入供应商数/资源数/可报价数/系数区间。
+				if e.issue != nil {
+					g.issues = append(g.issues, *e.issue)
+				}
+				continue
+			}
+			v := e.view
+			coefficient := resourceNumber(v.Coefficient)
+			if g.min == nil || g.max == nil {
+				g.min, g.max = coefficient, coefficient
 			}
 			g.entries = append(g.entries, e)
 			g.suppliers[v.SupplierID] = true
@@ -598,14 +724,17 @@ func (s *ResourceReadStore) ListResourceGroups(ctx context.Context, q supply.Res
 		start, end := resourcePageRange(len(groups), q)
 		for _, g := range groups[start:end] {
 			if len(g.entries) == 0 {
-				result = append(result, supply.ResourceGroupRows{Model: &supply.ResourceGroup{ID: g.id, Name: g.name, OfficialID: g.officialID, Company: g.company, ModelType: g.modelType}})
+				result = append(result, supply.ResourceGroupRows{
+					Model:  &supply.ResourceGroup{ID: g.id, Name: g.name, OfficialID: g.officialID, Company: g.company, ModelType: g.modelType},
+					Issues: g.issues,
+				})
 				continue
 			}
 			members := make([]*supply.ResourceRecord, 0, len(g.entries))
 			for _, e := range g.entries {
 				members = append(members, e.record)
 			}
-			result = append(result, supply.ResourceGroupRows{Records: members})
+			result = append(result, supply.ResourceGroupRows{Records: members, Issues: g.issues})
 		}
 		return nil
 	})
@@ -682,11 +811,27 @@ func (s *ResourceReadStore) unsuppliedModels(ctx context.Context, tx *sql.Tx, q 
 func filteredResourceEntries(entries []resourceReadEntry, q supply.ResourceListQuery) []resourceReadEntry {
 	result := make([]resourceReadEntry, 0, len(entries))
 	for _, e := range entries {
+		if e.view == nil {
+			// 问题行没有系数/指标可比：带数值区间筛选时无法判断是否命中，只能不展示；
+			// 其余维度（关键词/公司/类型/供应商/节点/状态）已经由 SQL 过滤过。
+			if hasResourceRangeFilter(q) {
+				continue
+			}
+			result = append(result, e)
+			continue
+		}
 		if supply.ResourceMatchesQuery(e.view, q) {
 			result = append(result, e)
 		}
 	}
 	return result
+}
+
+// hasResourceRangeFilter 判断查询是否带系数/连通/吞吐的数值区间筛选。
+func hasResourceRangeFilter(q supply.ResourceListQuery) bool {
+	return q.CoefficientMin != "" || q.CoefficientMax != "" ||
+		q.ConnectionMin != "" || q.ConnectionMax != "" ||
+		q.RPSMin != "" || q.RPSMax != "" || q.TPSMin != "" || q.TPSMax != ""
 }
 
 // ConfigGroupOf 取资源所属的准入配置组（旁路只读查询）。
