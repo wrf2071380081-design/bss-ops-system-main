@@ -1,7 +1,6 @@
 package supply
 
 import (
-	"log"
 	"math"
 	"strings"
 	"time"
@@ -36,7 +35,7 @@ func copyResourceMetrics(metrics ResourceReportMetrics) (ResourceReportMetrics, 
 			return nil, nil
 		}
 		if !unsignedDecimal.MatchString(*value) {
-			return nil, ErrReadContract
+			return nil, dataIssue("RESOURCE_METRICS_INVALID", "测试指标格式不合法（应为非负数字）")
 		}
 		copy := *value
 		return &copy, nil
@@ -128,33 +127,57 @@ type ResourceSnapshot struct {
 func resourceStateKnown(state string) bool {
 	return state == "PENDING_TEST" || state == "PENDING_ACCESS" || state == "ADMITTED" || state == "OFFLINE"
 }
+// resourceCoefficient 校验并归一采购系数（0 < 系数 ≤ 1，最多四位小数）。
+// 失败时返回带原因的 ResourceDataError，供模型广场按行展示「系数不合法」。
 func resourceCoefficient(value string) (decimal.Decimal, error) {
 	if !unsignedDecimal.MatchString(value) {
-		return decimal.Zero, ErrReadContract
+		return decimal.Zero, dataIssue("RESOURCE_COEFFICIENT_INVALID", "采购系数不合法（须为数字）")
 	}
 	parts := strings.SplitN(value, ".", 2)
 	if len(parts) == 2 && len(parts[1]) > 4 {
-		return decimal.Zero, ErrReadContract
+		return decimal.Zero, dataIssue("RESOURCE_COEFFICIENT_INVALID", "采购系数最多四位小数")
 	}
 	coefficient, err := decimal.NewFromString(value)
 	if err != nil || !coefficient.IsPositive() || coefficient.GreaterThan(decimal.NewFromInt(1)) {
-		return decimal.Zero, ErrReadContract
+		return decimal.Zero, dataIssue("RESOURCE_COEFFICIENT_INVALID", "采购系数须大于 0 且不超过 1")
 	}
 	return coefficient, nil
 }
 func BuildResourceSnapshot(record *ResourceRecord) (*ResourceSnapshot, error) {
-	if record == nil || record.Resource == nil || record.Model == nil {
-		return nil, ErrReadContract
+	if record == nil || record.Resource == nil {
+		return nil, dataIssue("RESOURCE_MISSING", "资源不存在或已被删除")
+	}
+	if record.Model == nil {
+		return nil, dataIssue("MODEL_METADATA_MISSING", "标准模型资料读取不到，无法生成资源视图")
 	}
 	r, m, supplier := record.Resource, record.Model, record.Supplier
-	if m.VersionNo == 0 || m.VersionNo > math.MaxInt64 || m.Revision == 0 || m.Revision > math.MaxInt64 || ValidatePriceItems(m.Data.PriceItems) != nil {
-		return nil, ErrReadContract
+	if m.VersionNo == 0 || m.VersionNo > math.MaxInt64 || m.Revision == 0 || m.Revision > math.MaxInt64 {
+		return nil, dataIssue("MODEL_VERSION_INVALID", "标准模型缺少有效版本，请到标准模型库核对")
+	}
+	if ValidatePriceItems(m.Data.PriceItems) != nil {
+		return nil, dataIssue("MODEL_PRICE_INVALID", "标准模型价格项不合法，请到标准模型库修正")
 	}
 	if r.TargetVersion > math.MaxInt64 || r.OriginRowVersion > math.MaxInt64 || r.FormalConfigRevision > math.MaxInt64 || (r.FormalConfigID != "" && !validID(r.FormalConfigID)) {
-		return nil, ErrReadContract
+		return nil, dataIssue("RESOURCE_VERSION_INVALID", "资源的版本号超出允许范围")
 	}
-	if !validID(r.ID) || !validID(r.SupplierID) || !validID(r.StandardModelID) || !validID(r.BuyerID) || !validID(r.OriginRowID) || r.Revision == 0 || r.Revision > math.MaxInt64 || r.TargetVersion == 0 || r.OriginRowVersion == 0 || m.ID != r.StandardModelID || supplier.ID != r.SupplierID || !resourceStateKnown(r.State) || (r.Region != "CN" && r.Region != "OVERSEAS") || strings.TrimSpace(r.SupplierModelID) == "" {
-		return nil, ErrReadContract
+	// 逐项拆开判，是为了让前端能显示「到底哪里不对」而不是一句笼统的"数据异常"。
+	switch {
+	case strings.TrimSpace(r.BuyerID) == "" || !validID(r.BuyerID):
+		return nil, dataIssue("RESOURCE_BUYER_MISSING", "该资源尚未分配采购人")
+	case !validID(r.ID) || !validID(r.SupplierID) || !validID(r.StandardModelID) || !validID(r.OriginRowID):
+		return nil, dataIssue("RESOURCE_IDENTITY_INVALID", "资源标识或关联 ID 不合法")
+	case r.Revision == 0 || r.Revision > math.MaxInt64:
+		return nil, dataIssue("RESOURCE_REVISION_MISSING", "资源缺少修订版本，尚未完成接入登记")
+	case r.TargetVersion == 0 || r.OriginRowVersion == 0:
+		return nil, dataIssue("RESOURCE_VERSION_MISSING", "资源缺少目标版本，尚未完成接入登记")
+	case m.ID != r.StandardModelID || supplier.ID != r.SupplierID:
+		return nil, dataIssue("RESOURCE_RELATION_MISMATCH", "资源与标准模型或供应商的关联不一致")
+	case !resourceStateKnown(r.State):
+		return nil, dataIssue("RESOURCE_STATE_INVALID", "资源状态不在允许范围内")
+	case r.Region != "CN" && r.Region != "OVERSEAS":
+		return nil, dataIssue("RESOURCE_REGION_INVALID", "资源部署节点不合法")
+	case strings.TrimSpace(r.SupplierModelID) == "":
+		return nil, dataIssue("SUPPLIER_MODEL_NAME_MISSING", "供应商侧模型名称为空")
 	}
 	coefficient, err := resourceCoefficient(r.Coefficient)
 	if err != nil {
@@ -163,7 +186,7 @@ func BuildResourceSnapshot(record *ResourceRecord) (*ResourceSnapshot, error) {
 	var admittedAt *time.Time
 	if record.AdmittedAt != nil {
 		if !r.EverAdmitted || record.AdmittedAt.IsZero() {
-			return nil, ErrReadContract
+			return nil, dataIssue("RESOURCE_ADMITTED_AT_INVALID", "准入时间与准入状态矛盾")
 		}
 		value := record.AdmittedAt.UTC().Truncate(time.Microsecond)
 		admittedAt = &value
@@ -200,7 +223,7 @@ func BuildResourceSnapshot(record *ResourceRecord) (*ResourceSnapshot, error) {
 	report := record.Report
 	if report == nil {
 		if r.LatestReportID != "" {
-			return nil, ErrReadContract
+			return nil, dataIssue("RESOURCE_EVIDENCE_POINTER_MISSING", "资源标记了生效测试报告，但读不到该报告")
 		}
 		block("TESTS_REQUIRED")
 		// 没有生效证据（审批未正式化 / 办理重开）时，用最近一次实际测试的数据填充展示位。
@@ -222,25 +245,10 @@ func BuildResourceSnapshot(record *ResourceRecord) (*ResourceSnapshot, error) {
 		}
 	} else {
 		if report.ID != r.LatestReportID || !validID(report.ID) || (report.ResourceID != "" && report.ResourceID != r.ID) || report.SupplierID != r.SupplierID || report.StandardModelID != m.ID || report.Region != r.Region || report.OriginRowID != r.OriginRowID {
-			return nil, ErrReadContract
+			return nil, dataIssue("RESOURCE_REPORT_MISMATCH", "测试报告与资源身份不一致，请重新选取测试证据")
 		}
 		view.Test.ReportID = report.ID
 		ready.TestEvidenceRef = report.ID
-		// TEMP-DIAG（2026-11-25）：缓存命中率排查用，定位后删除。
-		log.Printf("[diag-cache] res=%s rep=%s valid=%v tv=%q/%q orv=%q/%q cacheNil=%v cacheStatus=%q hit%%=%q",
-			r.ID, report.ID, report.Valid, report.TargetVersion, r.TargetVersion, report.OriginRowVersion, r.OriginRowVersion,
-			report.Cache == nil, func() string {
-				if report.Cache == nil {
-					return ""
-				}
-				return report.Cache.Status
-			}(),
-			func() string {
-				if report.Cache == nil {
-					return ""
-				}
-				return report.Cache.HitPercent
-			}())
 		if report.TargetVersion != r.TargetVersion || report.OriginRowVersion != r.OriginRowVersion {
 			view.Test.Status = "STALE"
 			view.Test.CacheStats = ResourceCacheStats{ReportID: report.ID, Status: "NOT_PROVIDED"}

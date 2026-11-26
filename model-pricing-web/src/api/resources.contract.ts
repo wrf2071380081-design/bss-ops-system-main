@@ -92,6 +92,15 @@ export function validateResourceGroup(value: unknown): ResourceGroup {
   }
   const states = object(row.state_counts);
   if (Object.entries(states).some(([key, count]) => !resourceStateLabels[key] || !integer(count)) || Object.values(states).reduce<number>((total, count) => total + (count as number), 0) !== row.resource_count) invalid();
+  // issues 是「这条资源读不出来」的展示信息：可选、不计入统计，但字段必须是可读文案。
+  if (row.issues !== undefined) {
+    if (!Array.isArray(row.issues) || row.issues.length > 200) invalid();
+    for (const item of row.issues) {
+      const entry = object(item);
+      if (typeof entry.code !== "string" || !entry.code || typeof entry.message !== "string" || !entry.message) invalid();
+      for (const key of ["resource_id", "supplier_id", "supplier_name"]) if (entry[key] !== undefined && typeof entry[key] !== "string") invalid();
+    }
+  }
   return structuredClone(row) as unknown as ResourceGroup;
 }
 export function validateResourceRow(value: unknown, expectedID?: string): ResourceRow {

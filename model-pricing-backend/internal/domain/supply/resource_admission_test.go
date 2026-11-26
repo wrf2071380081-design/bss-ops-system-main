@@ -78,8 +78,19 @@ func TestAdmissionKeepsModelVerificationAsSeparateQuoteGate(t *testing.T) {
 	copy := *r
 	copy.Resource = after
 	snapshot, err := BuildResourceSnapshot(&copy)
-	if err != nil || snapshot.QuoteReadiness.Eligible {
-		t.Fatalf("unverified model became quotable %+v %v", snapshot, err)
+	// 2026-11-25 业务裁决：模型核验状态不再阻断「可报价」，只在 Warnings 里提示；
+	// 它仍然是"独立于准入的门"——准入本身不因为核验而失败，但页面要提示待补资料。
+	if err != nil || !snapshot.QuoteReadiness.Eligible {
+		t.Fatalf("unverified model should stay quotable with warning %+v %v", snapshot, err)
+	}
+	found := false
+	for _, warning := range snapshot.QuoteReadiness.Warnings {
+		if warning == "MODEL_NOT_READY" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("unverified model lost its warning %+v", snapshot.QuoteReadiness)
 	}
 }
 func TestAdmissionRequiresFirstAdmissionRevisionAndActualEvidence(t *testing.T) {

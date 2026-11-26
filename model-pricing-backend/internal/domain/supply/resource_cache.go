@@ -40,7 +40,7 @@ func resourceCacheStats(reportID string, raw *ReportCacheCounters) (ResourceCach
 		return view, nil
 	}
 	if !validID(reportID) {
-		return view, ErrReadContract
+		return view, dataIssue("RESOURCE_CACHE_INVALID", "缓存数据缺少合法的报告 ID")
 	}
 	if raw == nil {
 		return view, nil
@@ -50,31 +50,31 @@ func resourceCacheStats(reportID string, raw *ReportCacheCounters) (ResourceCach
 	switch raw.Status {
 	case "NOT_PROVIDED", "NOT_APPLICABLE":
 		if raw.HitTokens != "" || raw.InputTokens != "" || raw.HitPercent != "" {
-			return view, ErrReadContract
+			return view, dataIssue("RESOURCE_CACHE_INVALID", "缓存状态为未提供，但带有缓存数值")
 		}
 		return view, nil
 	case "PROVIDED":
 	default:
-		return view, ErrReadContract
+		return view, dataIssue("RESOURCE_CACHE_INVALID", "缓存状态不在允许范围内")
 	}
 	// 有比率但无 Token 明细：直接采用平台上报值（Q4），不做反算。
 	if raw.HitTokens == "" && raw.InputTokens == "" {
 		if !percentValue.MatchString(raw.HitPercent) {
-			return view, ErrReadContract
+			return view, dataIssue("RESOURCE_CACHE_INVALID", "缓存命中率须为 0-100、最多两位小数")
 		}
 		view.HitPercent = raw.HitPercent
 		return view, nil
 	}
 	if !tokenCount.MatchString(raw.HitTokens) || !tokenCount.MatchString(raw.InputTokens) {
-		return view, ErrReadContract
+		return view, dataIssue("RESOURCE_CACHE_INVALID", "缓存命中 Token 数不合法")
 	}
 	hit, ok := new(big.Int).SetString(raw.HitTokens, 10)
 	if !ok {
-		return view, ErrReadContract
+		return view, dataIssue("RESOURCE_CACHE_INVALID", "缓存命中 Token 数不合法")
 	}
 	input, ok := new(big.Int).SetString(raw.InputTokens, 10)
 	if !ok || input.Sign() <= 0 || hit.Cmp(input) > 0 {
-		return view, ErrReadContract
+		return view, dataIssue("RESOURCE_CACHE_INVALID", "缓存 Token 明细不合法（命中数大于输入数或输入数为 0）")
 	}
 	ratio := new(big.Rat).SetFrac(hit, input)
 	view.HitTokens = raw.HitTokens

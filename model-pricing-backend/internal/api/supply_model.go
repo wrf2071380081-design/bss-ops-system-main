@@ -92,6 +92,7 @@ func supplyModelResponse(model *supply.StandardModel, actor string, canMaintain 
 }
 func supplyHTTPError(c *gin.Context, err error) {
 	var field *supply.FieldError
+	var dataErr *supply.ResourceDataError
 	switch {
 	case errors.As(err, &field):
 		// base_url 的校验来自两处（publicURL 的语法检查 + FormalURLPolicy 的环境策略：
@@ -125,6 +126,10 @@ func supplyHTTPError(c *gin.Context, err error) {
 		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "测试报告未通过或已失效，不能登记接入", 409))
 	case errors.Is(err, supply.ErrDependencyUnavailable):
 		response.Error(c, apperr.New(apperr.ErrSystem.Code, "供应侧依赖尚未就绪", 503))
+	case errors.As(err, &dataErr):
+		// 单条资源/模型数据不完整：这是"去补数据"的指引，不是系统故障。
+		// 以前落到 default 回 10000「系统错误」，用户既看不到原因也无从修（2026-11-26 事故）。
+		response.Error(c, apperr.New(apperr.ErrIdempotency.Code, "该资源数据不完整："+dataErr.Message+"，请联系运营补齐后重试", 409))
 	default:
 		response.Error(c, apperr.ErrSystem)
 	}

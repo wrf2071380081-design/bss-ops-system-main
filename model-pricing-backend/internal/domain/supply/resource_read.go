@@ -38,13 +38,19 @@ type ResourceGroup struct {
 	Regions            []string            `json:"regions"`
 	RegionCoefficients []RegionCoefficient `json:"region_coefficients"`
 	StateCounts        map[string]int      `json:"state_counts"`
+	// Issues 是"这个模型下有哪些资源读不出来"的展示信息。
+	// 问题行不计入上面的供应商数/资源数/可报价数/系数区间，避免把没接入完成的数据算成货源；
+	// 但它必须显示出来——隐藏起来用户只会看到模型凭空少了货源，无从排查（2026-11-26 事故）。
+	Issues []ResourceIssue `json:"issues,omitempty"`
 }
 
-// ResourceGroupRows 是一个分组的成员资源。Model 只在没有货源时提供模型元信息
+// ResourceGroupRows 是一个分组的成员资源。Model 只在没有可统计资源时提供模型元信息
 // ——模型广场同时是招商清单，没有资源的模型也要占一行（供应来源 0 家、系数「—」）。
 type ResourceGroupRows struct {
 	Model   *ResourceGroup
 	Records []*ResourceRecord
+	// Issues 是该模型下读不出来、未计入 Records 的资源问题。
+	Issues []ResourceIssue
 }
 type ResourceListResult struct {
 	View       string
@@ -259,6 +265,20 @@ func buildEmptyResourceGroup(model *ResourceGroup) (*ResourceGroup, error) {
 	}
 	return &ResourceGroup{ID: model.ID, Name: model.Name, OfficialID: model.OfficialID, Company: model.Company, ModelType: model.ModelType, Regions: []string{}, RegionCoefficients: []RegionCoefficient{}, StateCounts: map[string]int{}}, nil
 }
+// resourceGroupFallback 在某组数据构建失败时，尽量用模型元信息拼一个"只有问题、没有统计"的行，
+// 让前端仍能看到这个模型，而不是整页报错或静默消失。
+func resourceGroupFallback(row ResourceGroupRows) *ResourceGroup {
+	meta := row.Model
+	if meta == nil && len(row.Records) > 0 {
+		if m := row.Records[0].Model; m != nil {
+			meta = &ResourceGroup{ID: m.ID, Name: m.Data.Name, OfficialID: m.Data.OfficialID, Company: m.Data.Company, ModelType: m.Data.ModelType}
+		}
+	}
+	if meta == nil {
+		return nil
+	}
+	return &ResourceGroup{ID: meta.ID, Name: meta.Name, OfficialID: meta.OfficialID, Company: meta.Company, ModelType: meta.ModelType, Regions: []string{}, RegionCoefficients: []RegionCoefficient{}, StateCounts: map[string]int{}}
+}
 func (r *ResourceReader) List(ctx context.Context, q ResourceListQuery) (*ResourceListResult, error) {
 	if r == nil || r.store == nil {
 		return nil, ErrDependencyUnavailable
@@ -280,16 +300,28 @@ func (r *ResourceReader) List(ctx context.Context, q ResourceListQuery) (*Resour
 		seen := map[string]bool{}
 		for _, row := range groups {
 			var group *ResourceGroup
-			if len(row.Records) == 0 {
-				group, err = buildEmptyResourceGroup(row.Model)
-			} else {
-				group, err = buildResourceGroup(row.Records, q)
+			var buildErr error
+			switch {
+			case len(row.Records) == 0 && row.Model != nil:
+				group, buildErr = buildEmptyResourceGroup(row.Model)
+			case len(row.Records) > 0:
+				group, buildErr = buildResourceGroup(row.Records, q)
+			default:
+				buildErr = ErrReadContract
 			}
-			if err != nil {
-				return nil, err
+			if buildErr != nil || group == nil {
+				// 一组数据不合契约不再打挂整页：降级成一条带原因的问题行。
+				group = resourceGroupFallback(row)
+				if group == nil {
+					continue
+				}
+				group.Issues = append(group.Issues, ResourceIssue{Code: "RESOURCE_GROUP_INVALID", Message: "该模型下的资源数据不一致，已从统计中剔除"})
 			}
-			if seen[group.ID] {
-				return nil, ErrReadContract
+			if len(row.Issues) > 0 {
+				group.Issues = append(group.Issues, row.Issues...)
+			}
+			if group.ID == "" || seen[group.ID] {
+				continue
 			}
 			seen[group.ID] = true
 			result.Groups = append(result.Groups, group)
@@ -307,10 +339,15 @@ func (r *ResourceReader) List(ctx context.Context, q ResourceListQuery) (*Resour
 		for _, record := range rows {
 			row, err := BuildResourceSnapshot(record)
 			if err != nil {
+				// flat 视图只服务"挑一条资源"的场景，没有地方挂问题标签：数据问题的行跳过，
+				// 由模型广场（grouped）在模型行上展示原因。
+				if _, dataProblem := ResourceIssueOf(err); dataProblem {
+					continue
+				}
 				return nil, err
 			}
 			if seen[row.ID] || !resourceMatches(row, q) {
-				return nil, ErrReadContract
+				continue
 			}
 			seen[row.ID] = true
 			result.Resources = append(result.Resources, row)

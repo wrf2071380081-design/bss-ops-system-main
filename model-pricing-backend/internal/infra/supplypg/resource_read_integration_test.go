@@ -180,7 +180,9 @@ func TestResourceReadPostgres34Native(t *testing.T) {
 		t.Fatalf("groups %+v %v", group, err)
 	}
 	g := group.Groups[0]
-	if g.ID != modelIDs[0] || g.ResourceCount != 3 || g.SupplierCount != 3 || g.AvailableCount != 1 || g.CoefficientMin != "0.2000" || g.CoefficientMax != "0.8000" {
+	// AvailableCount=2：fixture 里两条 ADMITTED 资源的模型资料都不全，而 2026-11-25 起
+	// 「模型资料/核验不全」从阻断改为 Warnings（MODEL_NOT_READY），两条都算可报价。旧值 1 已过时。
+	if g.ID != modelIDs[0] || g.ResourceCount != 3 || g.SupplierCount != 3 || g.AvailableCount != 2 || g.CoefficientMin != "0.2000" || g.CoefficientMax != "0.8000" {
 		t.Fatalf("group paginated before aggregate %+v", g)
 	}
 	multi, err := reader.List(ctx, supply.ResourceListQuery{View: "grouped", SupplierIDs: []string{"21", "22"}, Regions: []string{"CN"}, CoefficientMax: "0.7"})
@@ -269,8 +271,21 @@ func TestResourceReadPostgres34Native(t *testing.T) {
 		copy := original
 		change(&copy)
 		facts["2"] = &copy
-		if got, err := reader.List(ctx, supply.ResourceListQuery{View: "grouped"}); !errors.Is(err, supply.ErrReadContract) || got != nil {
-			t.Fatalf("corrupt facts accepted %+v %v", got, err)
+		// 2026-11-26 起：单行数据问题只降级这一行（在模型行上展示原因），不再让整页失败。
+		page, err := reader.List(ctx, supply.ResourceListQuery{View: "grouped", Size: 100})
+		if err != nil {
+			t.Fatalf("corrupt facts must degrade per row instead of failing the page: %v", err)
+		}
+		surfaced := false
+		for _, group := range page.Groups {
+			for _, issue := range group.Issues {
+				if issue.ResourceID == "2" || issue.Code == "RESOURCE_EVIDENCE_POINTER_INCONSISTENT" || issue.Code == "RESOURCE_CONTROL_SNAPSHOT_INCONSISTENT" {
+					surfaced = true
+				}
+			}
+		}
+		if !surfaced {
+			t.Fatalf("corrupt facts row was hidden instead of surfaced: %+v", page.Groups)
 		}
 	}
 	facts["2"] = &original
