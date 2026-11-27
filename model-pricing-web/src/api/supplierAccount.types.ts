@@ -42,8 +42,8 @@ export interface SupplierLicenseDTO {
  *   - 读的是 A/B 线共用的 `supplier` 表（name / region / registration_no / contact / phone），
  *     不是旧的 supplier_profile + legal_subject；
  *   - 字段为**明文**（本主体看自己，经安全确认，决策 D2）；
- *   - 多了 `regionLocked`：由后端按「有资源 / 有申报 / 曾上架」判定（决策 D3），
- *     前端只按该标志渲染，**不得自行推断**。 */
+ *   - `region` 仅用于「统一社会信用代码 / 当地企业注册编号」的文案分流，
+ *     **页面不再显示也不再提交**（原型已把「首次登记区域」从账户设置里去掉）。 */
 export interface SupplierAccountDTO {
   id: string;
   name: string;
@@ -52,8 +52,18 @@ export interface SupplierAccountDTO {
   phone: string;
   region: SupplierRegion;
   regionLocked: boolean;
-  /** 锁定原因，用于 label 后缀，如「有上架历史，已锁定」。 */
+  /** 锁定原因，历史口径保留（页面已不再渲染区域字段）。 */
   regionLockReason?: string;
+  /** 联系人职务/邮箱 + 主体默认商务与合规条款（迁移 000083），全部可选自由文本。 */
+  contactTitle: string;
+  contactEmail: string;
+  defaultSettlement: string;
+  defaultPayment: string;
+  invoicePreference: string;
+  minConsumption: string;
+  dataTrainingPolicy: string;
+  logRetentionPolicy: string;
+  defaultSla: string;
   license: SupplierLicenseDTO | null;
   updatedAt: IsoDateTime;
 }
@@ -62,12 +72,21 @@ export interface SupplierAccountDTO {
  *
  * 刻意不含 supplierId / phone：身份只从登录态解析，手机号不可写。
  * 也**不含**企业证明：文件走独立接口 `POST /supplier/account/license`（multipart），
- * 先上传拿到 fileRef，再单独保存资料（两个动作、两条留痕）。 */
+ * 先上传拿到 fileRef，再单独保存资料（两个动作、两条留痕）。
+ * 2026-11-27 起也不含 region：账户设置里已无「首次登记区域」字段。 */
 export interface UpdateSupplierAccountRequest {
   name: string;
   registrationNo: string;
   contact: string;
-  region: SupplierRegion;
+  contactTitle: string;
+  contactEmail: string;
+  defaultSettlement: string;
+  defaultPayment: string;
+  invoicePreference: string;
+  minConsumption: string;
+  dataTrainingPolicy: string;
+  logRetentionPolicy: string;
+  defaultSla: string;
 }
 
 /** 账户操作留痕（GET /api/supplier/account/operation-logs）。

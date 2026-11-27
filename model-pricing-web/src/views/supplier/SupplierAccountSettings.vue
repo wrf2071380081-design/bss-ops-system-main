@@ -5,11 +5,10 @@ import { supplierAccountApi } from "../../api/supplierAccount";
 import type {
   SupplierAccountDTO,
   SupplierOperationLogDTO,
-  SupplierRegion,
 } from "../../api/supplierAccount.types";
 import { ApiError } from "../../domain/common";
 import { formatDateTime } from "../../domain/date";
-import { registrationLabelOf, regionFieldLabelOf } from "../../api/supplierAccount.contract";
+import { registrationLabelOf } from "../../api/supplierAccount.contract";
 
 const activeTab = ref<"profile" | "logs">("profile");
 const account = ref<SupplierAccountDTO | null>(null);
@@ -24,39 +23,21 @@ const detail = ref<SupplierOperationLogDTO | null>(null);
 /** 已选但还没上传的企业证明文件。保存时才真正提交（原型只有一个「保存资料」）。 */
 const pendingFile = ref<File | null>(null);
 
-const form = reactive<{ name: string; registrationNo: string; contact: string; region: SupplierRegion }>({
-  name: "",
-  registrationNo: "",
-  contact: "",
-  region: "CN",
+const form = reactive({
+  name: "", registrationNo: "", contact: "",
+  contactTitle: "", contactEmail: "",
+  defaultSettlement: "", defaultPayment: "", invoicePreference: "", minConsumption: "",
+  dataTrainingPolicy: "", logRetentionPolicy: "", defaultSla: "",
 });
-
-const REGION_OPTIONS: { value: SupplierRegion; label: string }[] = [
-  { value: "CN", label: "国内" },
-  { value: "OVERSEAS", label: "海外" },
-];
 
 /** 页头副标题：主体名 · 国内/海外主体（原型「澄海智算（演示） · 国内主体」）。 */
 const regionLabel = computed(() => (account.value?.region === "OVERSEAS" ? "海外主体" : "国内主体"));
 
-/** 注册编号的 label 由**已保存**的 region 决定，不跟下拉即时联动（原型实测如此，见测试用例 B05）。 */
+/** 注册编号的 label 由**已保存**的 region 决定（原型实测如此，见测试用例 B05）。
+ * 区域字段本身已按原型从账户设置里去掉，但它的值仍决定这行文案。 */
 const registrationLabel = computed(() => registrationLabelOf(account.value?.region || "CN"));
 
-/**
- * 2026-11：区域不再是主体属性，只是历史资料——不再按「有上架历史，已锁定」追加原因。
- * 部署位置由每次申报的部署节点决定，同一主体可关联国内、海外两个平台。
- */
-const regionFieldLabel = computed(() => "首次登记区域（历史资料）");
-
 const licenseName = computed(() => pendingFile.value?.name || account.value?.license?.name || "");
-
-/** 开发态 + mock 时提供演示主体切换入口，方便肉眼核对两种状态；生产构建不会渲染。 */
-const canSwitchMockVariant = import.meta.env.DEV && import.meta.env.VITE_MOCK_ENABLED === "true";
-const mockVariant = ref<"locked" | "unlocked">(
-  typeof localStorage !== "undefined" && localStorage.getItem("msw:account-variant") === "unlocked"
-    ? "unlocked"
-    : "locked",
-);
 
 const errorMessage = (value: unknown, fallback = "操作失败，请稍后重试。") =>
   value instanceof ApiError ? value.message : value instanceof Error ? value.message : fallback;
@@ -65,7 +46,15 @@ function syncForm(value: SupplierAccountDTO) {
   form.name = value.name;
   form.registrationNo = value.registrationNo;
   form.contact = value.contact;
-  form.region = value.region;
+  form.contactTitle = value.contactTitle ?? "";
+  form.contactEmail = value.contactEmail ?? "";
+  form.defaultSettlement = value.defaultSettlement ?? "";
+  form.defaultPayment = value.defaultPayment ?? "";
+  form.invoicePreference = value.invoicePreference ?? "";
+  form.minConsumption = value.minConsumption ?? "";
+  form.dataTrainingPolicy = value.dataTrainingPolicy ?? "";
+  form.logRetentionPolicy = value.logRetentionPolicy ?? "";
+  form.defaultSla = value.defaultSla ?? "";
   pendingFile.value = null;
 }
 
@@ -155,7 +144,15 @@ async function save() {
       name,
       registrationNo: form.registrationNo.trim(),
       contact: form.contact.trim(),
-      region: form.region,
+      contactTitle: form.contactTitle.trim(),
+      contactEmail: form.contactEmail.trim(),
+      defaultSettlement: form.defaultSettlement.trim(),
+      defaultPayment: form.defaultPayment.trim(),
+      invoicePreference: form.invoicePreference.trim(),
+      minConsumption: form.minConsumption.trim(),
+      dataTrainingPolicy: form.dataTrainingPolicy.trim(),
+      logRetentionPolicy: form.logRetentionPolicy.trim(),
+      defaultSla: form.defaultSla.trim(),
     });
     account.value = updated;
     syncForm(updated);
@@ -168,14 +165,6 @@ async function save() {
   } finally {
     saving.value = false;
   }
-}
-
-function switchMockVariant() {
-  const next = mockVariant.value === "locked" ? "unlocked" : "locked";
-  localStorage.setItem("msw:account-variant", next);
-  mockVariant.value = next;
-  void loadAccount();
-  void loadLogs();
 }
 
 const formatTime = (value?: string) => formatDateTime(value, "—", true);
@@ -221,11 +210,13 @@ onMounted(loadAccount);
           </label>
 
           <label class="account-field">
-            <span class="account-field__label">{{ regionFieldLabel }}</span>
-            <el-select v-model="form.region" :disabled="Boolean(account?.regionLocked)" style="width: 100%">
-              <el-option v-for="option in REGION_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
-            </el-select>
-            <span class="account-field__hint">资源部署位置在每次申报中选择；同一主体可关联两个平台。</span>
+            <span class="account-field__label">联系人职务</span>
+            <el-input v-model="form.contactTitle" maxlength="64" />
+          </label>
+
+          <label class="account-field">
+            <span class="account-field__label">联系人邮箱</span>
+            <el-input v-model="form.contactEmail" maxlength="128" />
           </label>
 
           <div class="account-field account-field--license">
@@ -244,19 +235,46 @@ onMounted(loadAccount);
           </div>
         </div>
 
-        <p class="account-note">主体属性变更前须无资源、无申报；更换法律主体请另行注册。</p>
+        <!-- 主体默认商务与合规条款：原型里是独立一块，全部可选自由文本，
+             占位文案只是提示，留空即「未填写」（示例不入库）。 -->
+        <div class="account-section">
+          <h3 class="account-section__title">主体默认商务与合规条款</h3>
+          <div class="account-form account-form--terms">
+            <label class="account-field">
+              <span class="account-field__label">默认账期</span>
+              <el-input v-model="form.defaultSettlement" maxlength="128" placeholder="预付 / 月结 / T+30" />
+            </label>
+            <label class="account-field">
+              <span class="account-field__label">默认付款方式</span>
+              <el-input v-model="form.defaultPayment" maxlength="128" placeholder="银行转账 / 在线支付 / 其他" />
+            </label>
+            <label class="account-field">
+              <span class="account-field__label">发票偏好</span>
+              <el-input v-model="form.invoicePreference" maxlength="128" placeholder="专用发票 / 普通发票 / 其他" />
+            </label>
+            <label class="account-field">
+              <span class="account-field__label">最低消费</span>
+              <el-input v-model="form.minConsumption" maxlength="128" placeholder="无 / 金额 + 币种 + 周期" />
+            </label>
+            <label class="account-field">
+              <span class="account-field__label">数据训练政策</span>
+              <el-input v-model="form.dataTrainingPolicy" maxlength="128" placeholder="不用于训练 / 经授权使用 / 按协议约定" />
+            </label>
+            <label class="account-field">
+              <span class="account-field__label">日志留存与删除策略</span>
+              <el-input v-model="form.logRetentionPolicy" maxlength="128" placeholder="不留存 / 留存 X 天 / 按协议删除" />
+            </label>
+            <label class="account-field">
+              <span class="account-field__label">默认 SLA</span>
+              <el-input v-model="form.defaultSla" maxlength="128" placeholder="99.9% / 按合同约定" />
+            </label>
+          </div>
+        </div>
 
         <div class="account-actions">
-          <el-button type="primary" size="small" :loading="saving" :disabled="!account" @click="save">保存资料</el-button>
+          <el-button type="primary" size="small" :loading="saving" :disabled="!account" @click="save">保存账户设置</el-button>
         </div>
       </section>
-
-  <p class="supplier-footnote">
-    Token Ops · 主体池迭代
-    <button v-if="canSwitchMockVariant" type="button" class="mock-switch" @click="switchMockVariant">
-      演示数据：切换为{{ mockVariant === "locked" ? "未上架主体" : "已上架主体" }}
-    </button>
-  </p>
 
   <el-dialog :model-value="Boolean(detail)" :title="detail?.action || '操作详情'" width="min(560px, 94vw)" @close="detail = null">
     <template v-if="detail">
@@ -288,15 +306,17 @@ onMounted(loadAccount);
 .license-row { display: flex; align-items: center; gap: 12px; min-height: 32px; }
 .license-name { color: var(--app-text); font-size: 13px; word-break: break-all; }
 
-.account-note { margin: 10px 22px 0; color: var(--app-text-muted); font-size: 12px; }
 .account-actions { padding: 18px 22px 22px; }
+
+/* 主体默认商务与合规条款：与基础资料同一张卡里，用分隔线分成两块（原型如此）。 */
+.account-section { border-top: 1px solid var(--app-border); margin-top: 8px; }
+.account-section__title { margin: 18px 22px 0; font-size: 15px; font-weight: 500; }
+.account-form--terms { padding-top: 14px; }
 
 .account-logs { padding: 0; overflow: hidden; }
 .account-logs__table { padding-top: 6px; }
 .account-logs__total { margin: 0; padding: 12px 22px 18px; color: var(--app-text-muted); font-size: 12px; }
 
-.supplier-footnote { margin: 26px 0 0; color: var(--app-text-muted); font-size: 11px; }
-.mock-switch { margin-left: 10px; padding: 0; border: 0; background: transparent; color: var(--el-color-primary); font-size: 11px; cursor: pointer; text-decoration: underline; }
 
 .detail-meta { margin: 0 0 12px; color: var(--app-text-muted); font-size: 12px; }
 .detail-payload { margin: 0; padding: 12px; border-radius: 6px; background: var(--app-bg); font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }

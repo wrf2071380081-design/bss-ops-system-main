@@ -30,14 +30,13 @@ import (
 
 // 账户设置的业务错误（复用通用错误码，只改 message，前端直接展示）。
 var (
-	errAccountNameRequired  = apperr.New(apperr.ErrInvalidParams.Code, "企业资料必填", 400)
-	errAccountFieldTooLong  = apperr.New(apperr.ErrInvalidParams.Code, "字段长度超出上限", 400)
-	errAccountRegionInvalid = apperr.New(apperr.ErrInvalidParams.Code, "主体属性取值不合法", 400)
-	errAccountRegionLocked  = apperr.New(apperr.ErrIdempotency.Code, "主体属性变更前须无资源、无申报", 409)
-	errAccountNotFound      = apperr.New(apperr.ErrNotFound.Code, "账户档案不存在", 404)
-	errLicenseMissing       = apperr.New(apperr.ErrInvalidParams.Code, "请选择企业证明文件", 400)
-	errLicenseTooLarge      = apperr.New(apperr.ErrInvalidParams.Code, "企业证明不能超过 10 MB", 400)
-	errLicenseType          = apperr.New(apperr.ErrInvalidParams.Code, "企业证明仅支持 pdf / png / jpg / jpeg / txt", 400)
+	errAccountNameRequired = apperr.New(apperr.ErrInvalidParams.Code, "企业资料必填", 400)
+	errAccountFieldTooLong = apperr.New(apperr.ErrInvalidParams.Code, "字段长度超出上限", 400)
+	errAccountRegionLocked = apperr.New(apperr.ErrIdempotency.Code, "主体属性变更前须无资源、无申报", 409)
+	errAccountNotFound     = apperr.New(apperr.ErrNotFound.Code, "账户档案不存在", 404)
+	errLicenseMissing      = apperr.New(apperr.ErrInvalidParams.Code, "请选择企业证明文件", 400)
+	errLicenseTooLarge     = apperr.New(apperr.ErrInvalidParams.Code, "企业证明不能超过 10 MB", 400)
+	errLicenseType         = apperr.New(apperr.ErrInvalidParams.Code, "企业证明仅支持 pdf / png / jpg / jpeg / txt", 400)
 )
 
 // 字段上限与列宽一致（supplier.name varchar(128) 等），超长在应用层拦掉，别等数据库报错。
@@ -45,6 +44,9 @@ const (
 	accountNameMaxLen    = 128
 	accountRegNoMaxLen   = 64
 	accountContactMaxLen = 64
+	accountTitleMaxLen   = 64
+	accountEmailMaxLen   = 128
+	accountTermMaxLen    = 128
 	licenseMaxBytes      = 10 << 20
 )
 
@@ -80,23 +82,43 @@ type supplierLicenseDTO struct {
 
 // supplierAccountDTO 是 GET/PUT 的统一响应体（camelCase，与前端 SupplierAccountDTO 逐字一致）。
 type supplierAccountDTO struct {
-	ID               string              `json:"id"`
-	Name             string              `json:"name"`
-	RegistrationNo   string              `json:"registrationNo"`
-	Contact          string              `json:"contact"`
-	Phone            string              `json:"phone"`
-	Region           string              `json:"region"`
-	RegionLocked     bool                `json:"regionLocked"`
-	RegionLockReason string              `json:"regionLockReason,omitempty"`
-	License          *supplierLicenseDTO `json:"license"`
-	UpdatedAt        string              `json:"updatedAt"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	RegistrationNo   string `json:"registrationNo"`
+	Contact          string `json:"contact"`
+	Phone            string `json:"phone"`
+	Region           string `json:"region"`
+	RegionLocked     bool   `json:"regionLocked"`
+	RegionLockReason string `json:"regionLockReason,omitempty"`
+	// 联系人职务/邮箱 + 主体默认商务与合规条款（迁移 000083），全部可选自由文本。
+	ContactTitle       string              `json:"contactTitle"`
+	ContactEmail       string              `json:"contactEmail"`
+	DefaultSettlement  string              `json:"defaultSettlement"`
+	DefaultPayment     string              `json:"defaultPayment"`
+	InvoicePreference  string              `json:"invoicePreference"`
+	MinConsumption     string              `json:"minConsumption"`
+	DataTrainingPolicy string              `json:"dataTrainingPolicy"`
+	LogRetentionPolicy string              `json:"logRetentionPolicy"`
+	DefaultSLA         string              `json:"defaultSla"`
+	License            *supplierLicenseDTO `json:"license"`
+	UpdatedAt          string              `json:"updatedAt"`
 }
 
+// supplierAccountUpdateRequest 刻意不含 region：原型与 PRD 都把「首次登记区域」
+// 从账户设置里去掉，区域只作为历史事实留在 supplier 表，门户保存不碰它。
 type supplierAccountUpdateRequest struct {
-	Name           string `json:"name"`
-	RegistrationNo string `json:"registrationNo"`
-	Contact        string `json:"contact"`
-	Region         string `json:"region"`
+	Name               string `json:"name"`
+	RegistrationNo     string `json:"registrationNo"`
+	Contact            string `json:"contact"`
+	ContactTitle       string `json:"contactTitle"`
+	ContactEmail       string `json:"contactEmail"`
+	DefaultSettlement  string `json:"defaultSettlement"`
+	DefaultPayment     string `json:"defaultPayment"`
+	InvoicePreference  string `json:"invoicePreference"`
+	MinConsumption     string `json:"minConsumption"`
+	DataTrainingPolicy string `json:"dataTrainingPolicy"`
+	LogRetentionPolicy string `json:"logRetentionPolicy"`
+	DefaultSLA         string `json:"defaultSla"`
 }
 
 type supplierOperationLogDTO struct {
@@ -122,9 +144,6 @@ var actionLabels = map[string]string{
 	"UPDATE_LICENSE": "更换企业证明",
 }
 
-// 合法主体属性（对齐 supplier.region 的 CHECK 约束口径）。
-var validAccountRegions = map[string]struct{}{"CN": {}, "OVERSEAS": {}}
-
 // normalizeAccountUpdate 做入场校验与裁剪，返回可直接落库的结构。
 // 纯函数，单测覆盖（不依赖数据库）。
 func normalizeAccountUpdate(in supplierAccountUpdateRequest) (supplypg.AccountUpdate, error) {
@@ -143,12 +162,34 @@ func normalizeAccountUpdate(in supplierAccountUpdateRequest) (supplypg.AccountUp
 	if utf8.RuneCountInString(contact) > accountContactMaxLen {
 		return supplypg.AccountUpdate{}, errAccountFieldTooLong
 	}
-	region := strings.ToUpper(strings.TrimSpace(in.Region))
-	if _, ok := validAccountRegions[region]; !ok {
-		return supplypg.AccountUpdate{}, errAccountRegionInvalid
+	// 9 个可选自由文本字段：只 trim + 拦超长（对齐列宽），不做枚举/格式校验。
+	// 邮箱按业务口径暂时也是自由文本，不套正则。
+	texts := []struct {
+		value string
+		max   int
+	}{
+		{in.ContactTitle, accountTitleMaxLen},
+		{in.ContactEmail, accountEmailMaxLen},
+		{in.DefaultSettlement, accountTermMaxLen},
+		{in.DefaultPayment, accountTermMaxLen},
+		{in.InvoicePreference, accountTermMaxLen},
+		{in.MinConsumption, accountTermMaxLen},
+		{in.DataTrainingPolicy, accountTermMaxLen},
+		{in.LogRetentionPolicy, accountTermMaxLen},
+		{in.DefaultSLA, accountTermMaxLen},
+	}
+	trimmed := make([]string, len(texts))
+	for i, item := range texts {
+		trimmed[i] = strings.TrimSpace(item.value)
+		if utf8.RuneCountInString(trimmed[i]) > item.max {
+			return supplypg.AccountUpdate{}, errAccountFieldTooLong
+		}
 	}
 	return supplypg.AccountUpdate{
-		Name: name, RegistrationNo: registrationNo, Contact: contact, Region: region,
+		Name: name, RegistrationNo: registrationNo, Contact: contact,
+		ContactTitle: trimmed[0], ContactEmail: trimmed[1],
+		DefaultSettlement: trimmed[2], DefaultPayment: trimmed[3], InvoicePreference: trimmed[4],
+		MinConsumption: trimmed[5], DataTrainingPolicy: trimmed[6], LogRetentionPolicy: trimmed[7], DefaultSLA: trimmed[8],
 	}, nil
 }
 
@@ -165,15 +206,24 @@ func regionLockReason(rec *supplypg.AccountRecord) string {
 
 func buildSupplierAccountDTO(rec *supplypg.AccountRecord) supplierAccountDTO {
 	dto := supplierAccountDTO{
-		ID:               fmt.Sprintf("%d", rec.ID),
-		Name:             rec.Name,
-		RegistrationNo:   rec.RegistrationNo,
-		Contact:          rec.Contact,
-		Phone:            rec.Phone,
-		Region:           rec.Region,
-		RegionLocked:     supplypg.CurrentRegionLocked(rec),
-		RegionLockReason: regionLockReason(rec),
-		UpdatedAt:        rec.UpdatedAt.Format(time.RFC3339),
+		ID:                 fmt.Sprintf("%d", rec.ID),
+		Name:               rec.Name,
+		RegistrationNo:     rec.RegistrationNo,
+		Contact:            rec.Contact,
+		Phone:              rec.Phone,
+		Region:             rec.Region,
+		RegionLocked:       supplypg.CurrentRegionLocked(rec),
+		RegionLockReason:   regionLockReason(rec),
+		ContactTitle:       rec.ContactTitle,
+		ContactEmail:       rec.ContactEmail,
+		DefaultSettlement:  rec.DefaultSettlement,
+		DefaultPayment:     rec.DefaultPayment,
+		InvoicePreference:  rec.InvoicePreference,
+		MinConsumption:     rec.MinConsumption,
+		DataTrainingPolicy: rec.DataTrainingPolicy,
+		LogRetentionPolicy: rec.LogRetentionPolicy,
+		DefaultSLA:         rec.DefaultSLA,
+		UpdatedAt:          rec.UpdatedAt.Format(time.RFC3339),
 	}
 	if rec.LicenseName != "" || rec.LicenseRef != "" {
 		license := &supplierLicenseDTO{Name: rec.LicenseName, FileRef: rec.LicenseRef}
@@ -195,7 +245,7 @@ func (s *SupplierAccountService) Get(ctx context.Context, supplierID int64) (*su
 	return &dto, nil
 }
 
-// Update 保存账户资料。锁定校验在仓储事务内完成（store.ErrRegionLocked）。
+// Update 保存账户资料。区域已不在门户可写范围内，仓储层也不再做区域锁定校验。
 func (s *SupplierAccountService) Update(ctx context.Context, supplierID int64, in supplierAccountUpdateRequest, requestID string) (*supplierAccountDTO, error) {
 	update, err := normalizeAccountUpdate(in)
 	if err != nil {

@@ -46,18 +46,29 @@ type supplierQualificationUpdateRequest struct {
 }
 
 type supplySupplierDTO struct {
-	ID                 string    `json:"id"`
-	BuyerID            string    `json:"buyer_id"`
-	Name               string    `json:"name"`
-	Aliases            []string  `json:"aliases"`
-	AliasesSupported   bool      `json:"aliases_supported"`
-	Region             string    `json:"region"`
-	RegistrationNo     string    `json:"registration_no"`
-	Contact            string    `json:"contact"`
-	Phone              string    `json:"phone"`
-	TaxRate            *string   `json:"tax_rate"`
-	SettlementCurrency string    `json:"settlement_currency"`
-	Remark             string    `json:"remark"`
+	ID                 string   `json:"id"`
+	BuyerID            string   `json:"buyer_id"`
+	Name               string   `json:"name"`
+	Aliases            []string `json:"aliases"`
+	AliasesSupported   bool     `json:"aliases_supported"`
+	Region             string   `json:"region"`
+	RegistrationNo     string   `json:"registration_no"`
+	Contact            string   `json:"contact"`
+	Phone              string   `json:"phone"`
+	TaxRate            *string  `json:"tax_rate"`
+	SettlementCurrency string   `json:"settlement_currency"`
+	Remark             string   `json:"remark"`
+	// 9 个可选自由文本字段（迁移 000083）：联系人职务/邮箱 + 主体默认商务与合规条款。
+	// 空串表示「未填写」，前端按 placeholder 提示，不写默认值。
+	ContactTitle       string    `json:"contact_title"`
+	ContactEmail       string    `json:"contact_email"`
+	DefaultSettlement  string    `json:"default_settlement"`
+	DefaultPayment     string    `json:"default_payment"`
+	InvoicePreference  string    `json:"invoice_preference"`
+	MinConsumption     string    `json:"min_consumption"`
+	DataTrainingPolicy string    `json:"data_training_policy"`
+	LogRetentionPolicy string    `json:"log_retention_policy"`
+	DefaultSLA         string    `json:"default_sla"`
 	Established        bool      `json:"established"`
 	Status             string    `json:"status"`
 	Revision           uint64    `json:"revision,string"`
@@ -87,6 +98,15 @@ type supplySupplierRequest struct {
 	TaxRate            *string `json:"tax_rate"`
 	SettlementCurrency string  `json:"settlement_currency"`
 	Remark             string  `json:"remark"`
+	ContactTitle       string  `json:"contact_title"`
+	ContactEmail       string  `json:"contact_email"`
+	DefaultSettlement  string  `json:"default_settlement"`
+	DefaultPayment     string  `json:"default_payment"`
+	InvoicePreference  string  `json:"invoice_preference"`
+	MinConsumption     string  `json:"min_consumption"`
+	DataTrainingPolicy string  `json:"data_training_policy"`
+	LogRetentionPolicy string  `json:"log_retention_policy"`
+	DefaultSLA         string  `json:"default_sla"`
 	ExpectedRevision   string  `json:"expected_revision"`
 	Reason             string  `json:"reason"`
 }
@@ -109,7 +129,26 @@ func supplierDTO(profile *supply.Supplier, actor string, canMaintain bool, alias
 	// （见 SupplierService.Update），由服务端用行锁 + updated_at 兜住并发，
 	// 因此这里不能因为 audit_status 就把入口关掉（2026-11-23 业务确认）。
 	canEdit := actor == profile.BuyerID || canMaintain
-	return supplySupplierDTO{ID: profile.ID, BuyerID: profile.BuyerID, Name: profile.Data.Name, Aliases: aliases, AliasesSupported: aliasesSupported, Region: profile.Data.Region, RegistrationNo: profile.Data.RegistrationNo, Contact: profile.Data.Contact, Phone: profile.Data.Phone, TaxRate: profile.Data.TaxRate, SettlementCurrency: profile.Data.SettlementCurrency, Remark: profile.Data.Remark, Established: profile.Established, Status: profile.Status, Revision: profile.Revision, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, CanEdit: canEdit, AuditStatus: profile.AuditStatus}
+	return supplySupplierDTO{
+		ID: profile.ID, BuyerID: profile.BuyerID, Name: profile.Data.Name,
+		Aliases: aliases, AliasesSupported: aliasesSupported,
+		Region: profile.Data.Region, RegistrationNo: profile.Data.RegistrationNo,
+		Contact: profile.Data.Contact, Phone: profile.Data.Phone,
+		TaxRate: profile.Data.TaxRate, SettlementCurrency: profile.Data.SettlementCurrency,
+		Remark:             profile.Data.Remark,
+		ContactTitle:       profile.Data.ContactTitle,
+		ContactEmail:       profile.Data.ContactEmail,
+		DefaultSettlement:  profile.Data.DefaultSettlement,
+		DefaultPayment:     profile.Data.DefaultPayment,
+		InvoicePreference:  profile.Data.InvoicePreference,
+		MinConsumption:     profile.Data.MinConsumption,
+		DataTrainingPolicy: profile.Data.DataTrainingPolicy,
+		LogRetentionPolicy: profile.Data.LogRetentionPolicy,
+		DefaultSLA:         profile.Data.DefaultSLA,
+		Established:        profile.Established, Status: profile.Status,
+		Revision: profile.Revision, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt,
+		CanEdit: canEdit, AuditStatus: profile.AuditStatus,
+	}
 }
 
 func (h *supplySupplierHandler) list(c *gin.Context) {
@@ -486,7 +525,8 @@ func planRevisionToken(value string) (uint64, error) {
 }
 
 func supplierData(req supplySupplierRequest) supply.SupplierData {
-	return supply.SupplierData{Name: req.Name, Region: req.Region, RegistrationNo: req.RegistrationNo, Contact: req.Contact, Phone: req.Phone, TaxRate: req.TaxRate, SettlementCurrency: req.SettlementCurrency, Remark: req.Remark}
+	return supply.SupplierData{Name: req.Name, Region: req.Region, RegistrationNo: req.RegistrationNo, Contact: req.Contact, Phone: req.Phone, TaxRate: req.TaxRate, SettlementCurrency: req.SettlementCurrency, Remark: req.Remark,
+		ContactTitle: req.ContactTitle, ContactEmail: req.ContactEmail, DefaultSettlement: req.DefaultSettlement, DefaultPayment: req.DefaultPayment, InvoicePreference: req.InvoicePreference, MinConsumption: req.MinConsumption, DataTrainingPolicy: req.DataTrainingPolicy, LogRetentionPolicy: req.LogRetentionPolicy, DefaultSLA: req.DefaultSLA}
 }
 
 func (h *supplySupplierHandler) result(c *gin.Context, profile *supply.Supplier) {

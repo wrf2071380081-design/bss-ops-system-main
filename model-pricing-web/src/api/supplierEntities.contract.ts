@@ -11,6 +11,17 @@ export interface SupplierEntityForm {
   settlement_currency: "CNY" | "USD";
   /** 主体档案备注（原型「基础资料」最后一行）。 */
   remark: string;
+  /** 以下 9 项对应 v0.2.1 原型的联系人信息与「主体默认商务与合规条款」。
+   * 全部可选自由文本，空串表示未填写（原型里的示例只是 placeholder，不入库）。 */
+  contact_title: string;
+  contact_email: string;
+  default_settlement: string;
+  default_payment: string;
+  invoice_preference: string;
+  min_consumption: string;
+  data_training_policy: string;
+  log_retention_policy: string;
+  default_sla: string;
 }
 
 export interface SupplierEntitySaveBody {
@@ -22,6 +33,15 @@ export interface SupplierEntitySaveBody {
   tax_rate: string | null;
   settlement_currency: "CNY" | "USD";
   remark: string;
+  contact_title: string;
+  contact_email: string;
+  default_settlement: string;
+  default_payment: string;
+  invoice_preference: string;
+  min_consumption: string;
+  data_training_policy: string;
+  log_retention_policy: string;
+  default_sla: string;
   reason: string;
   expected_revision?: string;
 }
@@ -40,6 +60,15 @@ export interface SupplierEntityDTO {
   tax_rate: string | null;
   settlement_currency: "CNY" | "USD";
   remark: string;
+  contact_title: string;
+  contact_email: string;
+  default_settlement: string;
+  default_payment: string;
+  invoice_preference: string;
+  min_consumption: string;
+  data_training_policy: string;
+  log_retention_policy: string;
+  default_sla: string;
   established: boolean;
   status: "ACTIVE" | "FROZEN";
   /** "0" 表示审计信息不完整、无可用修订号，此时不可编辑。 */
@@ -119,6 +148,14 @@ const positiveBigint = (value: unknown): string => {
   return result;
 };
 
+/** 可选的自由文本字段：只 trim + 拦超长（对齐后端列宽），不做格式校验。
+ * 邮箱按业务口径暂时也是自由文本，**不要**在这里加正则。 */
+function freeText(value: string | undefined, max: number, label: string): string {
+  const text = (value ?? "").trim();
+  if ([...text].length > max) throw new Error(`${label}不能超过 ${max} 个字符。`);
+  return text;
+}
+
 export function buildSupplierEntitySave(form: SupplierEntityForm, reason: string, revision?: string): SupplierEntitySaveBody {
   const name = form.name.trim();
   if (!name) throw new Error("请填写供应商名称。");
@@ -137,6 +174,15 @@ export function buildSupplierEntitySave(form: SupplierEntityForm, reason: string
   const body: SupplierEntitySaveBody = {
     name, region: form.region, registration_no: form.registration_no.trim(), contact: form.contact.trim(), phone: form.phone.trim(),
     tax_rate: taxRate, settlement_currency: form.settlement_currency, remark: form.remark.trim(), reason: reason.trim(),
+    contact_title: freeText(form.contact_title, 64, "联系人职务"),
+    contact_email: freeText(form.contact_email, 128, "联系人邮箱"),
+    default_settlement: freeText(form.default_settlement, 128, "默认账期"),
+    default_payment: freeText(form.default_payment, 128, "默认付款方式"),
+    invoice_preference: freeText(form.invoice_preference, 128, "发票偏好"),
+    min_consumption: freeText(form.min_consumption, 128, "最低消费"),
+    data_training_policy: freeText(form.data_training_policy, 128, "数据训练政策"),
+    log_retention_policy: freeText(form.log_retention_policy, 128, "日志留存与删除策略"),
+    default_sla: freeText(form.default_sla, 128, "默认 SLA"),
   };
   // revision "0" = 档案审计链不可信（自助注册/历史数据），后端按「重建基线」处理，
   // 必须原样透传 0，不能当成非法 ID 拒掉。
@@ -167,9 +213,23 @@ export function normalizeSupplierEntity(value: unknown): SupplierEntityDTO {
       Number.isNaN(Date.parse(row.created_at)) || Number.isNaN(Date.parse(row.updated_at)) || Date.parse(row.updated_at) < Date.parse(row.created_at)) {
     throw new Error("供应商主体响应不符合字段契约。");
   }
+  // 9 个可选自由文本字段：老响应/老 mock 可能不带这些键，缺省按「未填写」处理；
+  // 但一旦出现就必须是字符串，别把 undefined 静默渲染进输入框。
+  const optionalText = (key: string): string => {
+    const value = row[key];
+    if (value === undefined) return "";
+    if (typeof value !== "string") throw new Error(`供应商主体响应 ${key} 格式不正确。`);
+    return value;
+  };
   return { id, buyer_id: buyerID, name: row.name, aliases: [...aliases], aliases_supported: row.aliases_supported, region: row.region, registration_no: row.registration_no,
     contact: row.contact, phone: row.phone, tax_rate: row.tax_rate === null ? null : new Decimal(row.tax_rate).toFixed(8),
-    settlement_currency: row.settlement_currency, remark: row.remark, established: row.established, status: row.status,
+    settlement_currency: row.settlement_currency, remark: row.remark,
+    contact_title: optionalText("contact_title"), contact_email: optionalText("contact_email"),
+    default_settlement: optionalText("default_settlement"), default_payment: optionalText("default_payment"),
+    invoice_preference: optionalText("invoice_preference"), min_consumption: optionalText("min_consumption"),
+    data_training_policy: optionalText("data_training_policy"), log_retention_policy: optionalText("log_retention_policy"),
+    default_sla: optionalText("default_sla"),
+    established: row.established, status: row.status,
     revision, created_at: row.created_at, updated_at: row.updated_at, can_edit: row.can_edit,
     audit_status: auditStatus as "" | "INCOMPLETE" };
 }

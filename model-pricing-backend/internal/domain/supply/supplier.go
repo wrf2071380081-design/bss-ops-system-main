@@ -34,6 +34,19 @@ type SupplierData struct {
 	SettlementCurrency string  `json:"settlement_currency"`
 	// Remark 是主体档案的自述备注（原型「基础资料」最后一行），与合同/授信的备注无关。
 	Remark string `json:"remark"`
+
+	// 以下 9 个字段对应 Token-Ops v0.2.1 原型的 b1ContactFields /
+	// b1CommercialDefaultFields（迁移 000083），全部是可选自由文本：
+	// 空串表示「未填写」，原型里的「预付 / 月结 / T+30」等只是占位提示，不入库。
+	ContactTitle       string `json:"contact_title"`
+	ContactEmail       string `json:"contact_email"`
+	DefaultSettlement  string `json:"default_settlement"`
+	DefaultPayment     string `json:"default_payment"`
+	InvoicePreference  string `json:"invoice_preference"`
+	MinConsumption     string `json:"min_consumption"`
+	DataTrainingPolicy string `json:"data_training_policy"`
+	LogRetentionPolicy string `json:"log_retention_policy"`
+	DefaultSLA         string `json:"default_sla"`
 }
 type Supplier struct {
 	ID          string       `json:"id"`
@@ -96,6 +109,16 @@ func canonicalSupplierData(data SupplierData) (SupplierData, error) {
 	data.Contact = strings.TrimSpace(data.Contact)
 	data.Phone = strings.TrimSpace(data.Phone)
 	data.Remark = strings.TrimSpace(data.Remark)
+	// 9 个可选自由文本字段同样只做 trim：不校验枚举、不套格式（邮箱暂不校验）。
+	data.ContactTitle = strings.TrimSpace(data.ContactTitle)
+	data.ContactEmail = strings.TrimSpace(data.ContactEmail)
+	data.DefaultSettlement = strings.TrimSpace(data.DefaultSettlement)
+	data.DefaultPayment = strings.TrimSpace(data.DefaultPayment)
+	data.InvoicePreference = strings.TrimSpace(data.InvoicePreference)
+	data.MinConsumption = strings.TrimSpace(data.MinConsumption)
+	data.DataTrainingPolicy = strings.TrimSpace(data.DataTrainingPolicy)
+	data.LogRetentionPolicy = strings.TrimSpace(data.LogRetentionPolicy)
+	data.DefaultSLA = strings.TrimSpace(data.DefaultSLA)
 	if data.Name == "" {
 		return data, invalid("name", "supplier name is required")
 	}
@@ -174,20 +197,20 @@ type SupplierReadStore interface {
 // SupplierQualification contains only safe qualification metadata. The native
 // supplier_qualification.file_ref value is intentionally never projected.
 type SupplierQualification struct {
-	ID            string    `json:"id"`
-	SupplierID    string    `json:"supplier_id"`
-	Name          string    `json:"name"`
-	QualificationType string `json:"qualification_type,omitempty"`
-	ValidFrom     *string   `json:"valid_from,omitempty"`
-	ValidTo       *string   `json:"valid_to,omitempty"`
-	ReviewStatus  *string   `json:"review_status,omitempty"`
-	Revision      *uint64   `json:"revision,string,omitempty"`
-	CreatedBy     *string   `json:"created_by,omitempty"`
-	HasAttachment bool      `json:"has_attachment"`
-	CanDownload   bool      `json:"can_download"`
-	FileName      string    `json:"file_name,omitempty"`
-	UploadedAt    time.Time `json:"uploaded_at"`
-	FileReference string    `json:"-"`
+	ID                string    `json:"id"`
+	SupplierID        string    `json:"supplier_id"`
+	Name              string    `json:"name"`
+	QualificationType string    `json:"qualification_type,omitempty"`
+	ValidFrom         *string   `json:"valid_from,omitempty"`
+	ValidTo           *string   `json:"valid_to,omitempty"`
+	ReviewStatus      *string   `json:"review_status,omitempty"`
+	Revision          *uint64   `json:"revision,string,omitempty"`
+	CreatedBy         *string   `json:"created_by,omitempty"`
+	HasAttachment     bool      `json:"has_attachment"`
+	CanDownload       bool      `json:"can_download"`
+	FileName          string    `json:"file_name,omitempty"`
+	UploadedAt        time.Time `json:"uploaded_at"`
+	FileReference     string    `json:"-"`
 }
 
 type SupplierQualificationQuery struct {

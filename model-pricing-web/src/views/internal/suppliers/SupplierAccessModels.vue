@@ -91,11 +91,16 @@ function openReports(row: ResourceRow) { reportsRow.value = row; reportsVisible.
 const profile = ref<SupplierEntityDTO>();
 const profileFormOpen = ref(false), profileSaving = ref(false), reloadingProfileConflict = ref(false), profileSaveError = ref(""), profileSaveConflict = ref(false), profileReloadKey = ref(0);
 // 档案改成页面内表单（原型样式）：编辑内容先落在草稿里，点「保存修改」才入库并写审计。
-const profileDraft = ref<SupplierEntityForm>({ name: "", region: "CN", registration_no: "", contact: "", phone: "", tax_rate_percent: "", settlement_currency: "CNY", remark: "" });
+const profileDraft = ref<SupplierEntityForm>({
+  name: "", region: "CN", registration_no: "", contact: "", phone: "", tax_rate_percent: "", settlement_currency: "CNY", remark: "",
+  contact_title: "", contact_email: "", default_settlement: "", default_payment: "", invoice_preference: "",
+  min_consumption: "", data_training_policy: "", log_retention_policy: "", default_sla: "",
+});
 watch(() => profile.value, (value) => {
   if (!value) return;
   profileDraft.value = {
     name: value.name,
+    // 区域已从档案里摘掉（原型如此）：仍然回填原值，保存时原样带回，保证 supplier.region 不被改动。
     region: value.region,
     registration_no: value.registration_no,
     contact: value.contact,
@@ -105,6 +110,15 @@ watch(() => profile.value, (value) => {
       ? "" : String(Number(value.tax_rate) * 100),
     settlement_currency: value.settlement_currency,
     remark: value.remark ?? "",
+    contact_title: value.contact_title ?? "",
+    contact_email: value.contact_email ?? "",
+    default_settlement: value.default_settlement ?? "",
+    default_payment: value.default_payment ?? "",
+    invoice_preference: value.invoice_preference ?? "",
+    min_consumption: value.min_consumption ?? "",
+    data_training_policy: value.data_training_policy ?? "",
+    log_retention_policy: value.log_retention_policy ?? "",
+    default_sla: value.default_sla ?? "",
   };
 }, { immediate: true, deep: true });
 const profileLoading = ref(false), profileError = ref("");
@@ -814,10 +828,25 @@ onBeforeUnmount(() => { active = false; stopMetricsPoll(); request?.abort(); pro
                 <el-form-item label="统一社会信用代码"><el-input v-model="profileDraft.registration_no" maxlength="64" /></el-form-item>
                 <el-form-item label="联系人"><el-input v-model="profileDraft.contact" maxlength="64" /></el-form-item>
                 <el-form-item label="联系电话"><el-input v-model="profileDraft.phone" maxlength="32" /></el-form-item>
-                <el-form-item label="区域（历史资料）"><el-select v-model="profileDraft.region"><el-option label="国内" value="CN" /><el-option label="海外" value="OVERSEAS" /></el-select></el-form-item>
+                <el-form-item label="联系人职务"><el-input v-model="profileDraft.contact_title" maxlength="64" /></el-form-item>
+                <el-form-item label="联系人邮箱"><el-input v-model="profileDraft.contact_email" maxlength="128" /></el-form-item>
                 <el-form-item label="税率 %"><el-input v-model="profileDraft.tax_rate_percent" inputmode="decimal" placeholder="可留空，例如 6 或 6.25" /></el-form-item>
                 <el-form-item label="结算币种"><el-select v-model="profileDraft.settlement_currency"><el-option label="人民币 CNY" value="CNY" /><el-option label="美元 USD" value="USD" /></el-select></el-form-item>
                 <el-form-item label="备注" class="span-2"><el-input v-model="profileDraft.remark" type="textarea" :rows="2" maxlength="500" placeholder="选填，例如合作背景或特殊约定" /></el-form-item>
+              </el-form>
+
+              <!-- 主体默认商务与合规条款：原型是独立一块，全部可选自由文本，
+                   占位文案只是提示（产品口径：示例不入库）。 -->
+              <div class="supplier-profile-heading"><h3>主体默认商务与合规条款</h3></div>
+              <p class="muted" style="margin:0 0 6px;font-size:12px">以下条款均可留空，填写后随主体档案保存；与合同、授信及正式采购价格相互独立。</p>
+              <el-form label-position="top" class="profile-grid" :disabled="!profile.can_edit || profileSaving">
+                <el-form-item label="默认账期"><el-input v-model="profileDraft.default_settlement" maxlength="128" placeholder="预付 / 月结 / T+30" /></el-form-item>
+                <el-form-item label="默认付款方式"><el-input v-model="profileDraft.default_payment" maxlength="128" placeholder="银行转账 / 在线支付 / 其他" /></el-form-item>
+                <el-form-item label="发票偏好"><el-input v-model="profileDraft.invoice_preference" maxlength="128" placeholder="专用发票 / 普通发票 / 其他" /></el-form-item>
+                <el-form-item label="最低消费"><el-input v-model="profileDraft.min_consumption" maxlength="128" placeholder="无 / 金额 + 币种 + 周期" /></el-form-item>
+                <el-form-item label="数据训练政策"><el-input v-model="profileDraft.data_training_policy" maxlength="128" placeholder="不用于训练 / 经授权使用 / 按协议约定" /></el-form-item>
+                <el-form-item label="日志留存与删除策略"><el-input v-model="profileDraft.log_retention_policy" maxlength="128" placeholder="不留存 / 留存 X 天 / 按协议删除" /></el-form-item>
+                <el-form-item label="默认 SLA"><el-input v-model="profileDraft.default_sla" maxlength="128" placeholder="99.9% / 按合同约定" /></el-form-item>
               </el-form>
               <el-alert v-if="profileSaveError" :title="profileSaveError" type="error" :closable="false" />
               <!-- 营业执照／企业证明：原型就是一个文件控件 + 当前状态，不放表格。 -->

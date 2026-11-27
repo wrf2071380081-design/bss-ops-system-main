@@ -51,7 +51,8 @@ func TestAccountStoreUpdateKeepsAuditChain(t *testing.T) {
 
 	// ② 改名字 + 改联系人：快照必须跟着走，revision 递增，旧名沉成曾用名。
 	if _, err := store.Update(ctx, supplierID, AccountUpdate{
-		Name: "门户快照测试公司（改）", RegistrationNo: "91310000TEST00001", Contact: "李四", Region: "CN",
+		Name: "门户快照测试公司（改）", RegistrationNo: "91310000TEST00001", Contact: "李四",
+		ContactTitle: "商务负责人", DefaultSLA: "99.9%",
 	}, "张三", "req-portal-update-1"); err != nil {
 		t.Fatalf("portal update: %v", err)
 	}
@@ -74,7 +75,8 @@ func TestAccountStoreUpdateKeepsAuditChain(t *testing.T) {
 
 	// ③ 内容没变只点保存：只该留一条 UPDATE_NOOP，revision 不涨，链依然自洽。
 	if _, err := store.Update(ctx, supplierID, AccountUpdate{
-		Name: "门户快照测试公司（改）", RegistrationNo: "91310000TEST00001", Contact: "李四", Region: "CN",
+		Name: "门户快照测试公司（改）", RegistrationNo: "91310000TEST00001", Contact: "李四",
+		ContactTitle: "商务负责人", DefaultSLA: "99.9%",
 	}, "张三", "req-portal-update-2"); err != nil {
 		t.Fatalf("portal noop update: %v", err)
 	}

@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import {
   isSupplierRegion,
   registrationLabelOf,
-  regionFieldLabelOf,
   validateOperationLogPage,
   validateSupplierAccount,
   validateSupplierAccountUpdate,
@@ -52,23 +51,36 @@ test("account contract rejects unknown region and bad timestamps", () => {
   assert.throws(() => validateSupplierAccount({ ...account, license: { name: "", fileRef: "" } }), /企业证明字段缺失/);
 });
 
-test("registration label follows the saved region, not the pending select", () => {
+test("registration label follows the saved region even though the field is no longer editable", () => {
+  // 「首次登记区域」已按原型从账户设置里去掉，但注册编号的文案仍随 saved region 分流。
   assert.equal(registrationLabelOf("CN"), "统一社会信用代码");
   assert.equal(registrationLabelOf("OVERSEAS"), "当地企业注册编号");
-  assert.equal(regionFieldLabelOf({ regionLocked: false }), "主体属性");
-  assert.equal(
-    regionFieldLabelOf({ regionLocked: true, regionLockReason: "有上架历史，已锁定" }),
-    "主体属性（有上架历史，已锁定）",
-  );
-  assert.equal(regionFieldLabelOf({ regionLocked: true }), "主体属性（已锁定）");
 });
 
-test("update contract trims fields and blocks empty name or bad region", () => {
-  const body = validateSupplierAccountUpdate({ name: "  初禾资源  ", registrationNo: " DEMO ", contact: " 吴安 ", region: "OVERSEAS" });
-  assert.deepEqual(body, { name: "初禾资源", registrationNo: "DEMO", contact: "吴安", region: "OVERSEAS" });
-  assert.throws(() => validateSupplierAccountUpdate({ name: "   ", registrationNo: "", contact: "", region: "CN" }), /企业资料必填/);
-  assert.throws(() => validateSupplierAccountUpdate({ name: "甲", registrationNo: "", contact: "", region: "MARS" as never }), /主体属性取值不合法/);
-  assert.throws(() => validateSupplierAccountUpdate({ name: "长".repeat(129), registrationNo: "", contact: "", region: "CN" }), /不能超过 128/);
+const emptyUpdate = {
+  name: "甲", registrationNo: "", contact: "", contactTitle: "", contactEmail: "",
+  defaultSettlement: "", defaultPayment: "", invoicePreference: "", minConsumption: "",
+  dataTrainingPolicy: "", logRetentionPolicy: "", defaultSla: "",
+};
+
+test("update contract trims fields and blocks empty name", () => {
+  const body = validateSupplierAccountUpdate({ ...emptyUpdate, name: "  初禾资源  ", registrationNo: " DEMO ", contact: " 吴安 " });
+  // 请求体不再携带 region：账户设置页已按原型去掉「首次登记区域」。
+  assert.deepEqual(body, { ...emptyUpdate, name: "初禾资源", registrationNo: "DEMO", contact: "吴安" });
+  assert.equal("region" in body, false);
+  assert.throws(() => validateSupplierAccountUpdate({ ...emptyUpdate, name: "   " }), /企业资料必填/);
+  assert.throws(() => validateSupplierAccountUpdate({ ...emptyUpdate, name: "长".repeat(129) }), /不能超过 128/);
+});
+
+test("update contract keeps email as free text and only guards column width", () => {
+  // 产品口径：邮箱暂不校验格式，只要不超 128 字符就放行。
+  for (const raw of ["not-an-email", "a@b", "@", " 中文邮箱 ", ""]) {
+    const body = validateSupplierAccountUpdate({ ...emptyUpdate, contactEmail: raw });
+    assert.equal(body.contactEmail, raw.trim());
+  }
+  assert.throws(() => validateSupplierAccountUpdate({ ...emptyUpdate, contactEmail: "a".repeat(129) }), /联系人邮箱不能超过 128/);
+  assert.throws(() => validateSupplierAccountUpdate({ ...emptyUpdate, contactTitle: "职".repeat(65) }), /联系人职务不能超过 64/);
+  assert.throws(() => validateSupplierAccountUpdate({ ...emptyUpdate, defaultSla: "S".repeat(129) }), /默认 SLA ?不能超过 128/);
 });
 
 test("region guard only accepts the two server-side values", () => {

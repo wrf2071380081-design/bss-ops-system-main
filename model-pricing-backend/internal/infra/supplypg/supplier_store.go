@@ -227,7 +227,10 @@ func (t *supplierTransaction) CreateSupplier(ctx context.Context, input *supply.
 	if err != nil {
 		return err
 	}
-	_, err = t.tx.ExecContext(ctx, `INSERT INTO `+t.store.table("supplier")+` (id,name,region,registration_no,contact,phone,established,tax_rate,settlement_currency,remark,status,created_at,updated_at,created_by,updated_by) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4,$5,$6,false,$7,$8,$9,'ACTIVE',$10,$10,$11,$11)`, profile.ID, profile.Data.Name, profile.Data.Region, nullableSupplierText(profile.Data.RegistrationNo), nullableSupplierText(profile.Data.Contact), nullableSupplierText(profile.Data.Phone), taxRate, profile.Data.SettlementCurrency, nullableSupplierText(profile.Data.Remark), profile.CreatedAt, profile.BuyerID)
+	_, err = t.tx.ExecContext(ctx, `INSERT INTO `+t.store.table("supplier")+` (id,name,region,registration_no,contact,phone,established,tax_rate,settlement_currency,remark,contact_title,contact_email,default_settlement,default_payment,invoice_preference,min_consumption,data_training_policy,log_retention_policy,default_sla,status,created_at,updated_at,created_by,updated_by) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4,$5,$6,false,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'ACTIVE',$19,$19,$20,$20)`,
+		profile.ID, profile.Data.Name, profile.Data.Region, nullableSupplierText(profile.Data.RegistrationNo), nullableSupplierText(profile.Data.Contact), nullableSupplierText(profile.Data.Phone), taxRate, profile.Data.SettlementCurrency, nullableSupplierText(profile.Data.Remark),
+		nullableSupplierText(profile.Data.ContactTitle), nullableSupplierText(profile.Data.ContactEmail), nullableSupplierText(profile.Data.DefaultSettlement), nullableSupplierText(profile.Data.DefaultPayment), nullableSupplierText(profile.Data.InvoicePreference), nullableSupplierText(profile.Data.MinConsumption), nullableSupplierText(profile.Data.DataTrainingPolicy), nullableSupplierText(profile.Data.LogRetentionPolicy), nullableSupplierText(profile.Data.DefaultSLA),
+		profile.CreatedAt, profile.BuyerID)
 	if err != nil {
 		return supplierUniqueError(err)
 	}
@@ -293,7 +296,12 @@ func (t *supplierTransaction) UpdateSupplier(ctx context.Context, input *supply.
 	if err != nil {
 		return err
 	}
-	result, err := t.tx.ExecContext(ctx, `UPDATE `+t.store.table("supplier")+` SET name=$2,region=$3,registration_no=$4,contact=$5,phone=$6,tax_rate=$7,settlement_currency=$8,remark=$9,updated_at=$10,updated_by=$11 WHERE id=$1 AND updated_at=$12`, input.ID, input.Data.Name, input.Data.Region, nullableSupplierText(input.Data.RegistrationNo), nullableSupplierText(input.Data.Contact), nullableSupplierText(input.Data.Phone), taxRate, input.Data.SettlementCurrency, nullableSupplierText(input.Data.Remark), input.UpdatedAt, nullableSupplierText(input.BuyerID), t.current.UpdatedAt)
+	result, err := t.tx.ExecContext(ctx, `UPDATE `+t.store.table("supplier")+` SET name=$2,region=$3,registration_no=$4,contact=$5,phone=$6,tax_rate=$7,settlement_currency=$8,remark=$9,`+
+		`contact_title=$10,contact_email=$11,default_settlement=$12,default_payment=$13,invoice_preference=$14,min_consumption=$15,data_training_policy=$16,log_retention_policy=$17,default_sla=$18,`+
+		`updated_at=$19,updated_by=$20 WHERE id=$1 AND updated_at=$21`,
+		input.ID, input.Data.Name, input.Data.Region, nullableSupplierText(input.Data.RegistrationNo), nullableSupplierText(input.Data.Contact), nullableSupplierText(input.Data.Phone), taxRate, input.Data.SettlementCurrency, nullableSupplierText(input.Data.Remark),
+		nullableSupplierText(input.Data.ContactTitle), nullableSupplierText(input.Data.ContactEmail), nullableSupplierText(input.Data.DefaultSettlement), nullableSupplierText(input.Data.DefaultPayment), nullableSupplierText(input.Data.InvoicePreference), nullableSupplierText(input.Data.MinConsumption), nullableSupplierText(input.Data.DataTrainingPolicy), nullableSupplierText(input.Data.LogRetentionPolicy), nullableSupplierText(input.Data.DefaultSLA),
+		input.UpdatedAt, nullableSupplierText(input.BuyerID), t.current.UpdatedAt)
 	if err != nil {
 		return supplierUniqueError(err)
 	}
@@ -542,14 +550,20 @@ func (s *SupplierStore) loadSupplier(ctx context.Context, tx *sql.Tx, id string,
 	if s == nil || tx == nil || !modelIdentity(id) {
 		return nil, supply.ErrDependencyUnavailable
 	}
-	query := `SELECT id::text,name,region,registration_no,contact,phone,established,tax_rate::text,settlement_currency,remark,status,created_at,updated_at FROM ` + s.table("supplier") + ` WHERE id=$1`
+	query := `SELECT id::text,name,region,registration_no,contact,phone,established,tax_rate::text,settlement_currency,remark,` +
+		`contact_title,contact_email,default_settlement,default_payment,invoice_preference,min_consumption,data_training_policy,log_retention_policy,default_sla,` +
+		`status,created_at,updated_at FROM ` + s.table("supplier") + ` WHERE id=$1`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var profile supply.Supplier
 	var registration, contact, phone, taxRate, currency, remark sql.NullString
+	var contactTitle, contactEmail, defaultSettlement, defaultPayment, invoicePreference sql.NullString
+	var minConsumption, dataTrainingPolicy, logRetentionPolicy, defaultSLA sql.NullString
 	var createdAt, updatedAt time.Time
-	err := tx.QueryRowContext(ctx, query, id).Scan(&profile.ID, &profile.Data.Name, &profile.Data.Region, &registration, &contact, &phone, &profile.Established, &taxRate, &currency, &remark, &profile.Status, &createdAt, &updatedAt)
+	err := tx.QueryRowContext(ctx, query, id).Scan(&profile.ID, &profile.Data.Name, &profile.Data.Region, &registration, &contact, &phone, &profile.Established, &taxRate, &currency, &remark,
+		&contactTitle, &contactEmail, &defaultSettlement, &defaultPayment, &invoicePreference, &minConsumption, &dataTrainingPolicy, &logRetentionPolicy, &defaultSLA,
+		&profile.Status, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, supply.ErrNotFound
 	}
@@ -561,6 +575,17 @@ func (s *SupplierStore) loadSupplier(ctx context.Context, tx *sql.Tx, id string,
 	auditIncomplete := false
 	profile.Data.RegistrationNo, profile.Data.Contact, profile.Data.Phone = registration.String, contact.String, phone.String
 	profile.Data.Remark = remark.String
+	// 9 个可选自由文本字段：库里 NULL 与快照里「键不存在」都表达同一件事（未填写），
+	// 统一读成空串，才能与旧快照解码出的零值相等。
+	profile.Data.ContactTitle = contactTitle.String
+	profile.Data.ContactEmail = contactEmail.String
+	profile.Data.DefaultSettlement = defaultSettlement.String
+	profile.Data.DefaultPayment = defaultPayment.String
+	profile.Data.InvoicePreference = invoicePreference.String
+	profile.Data.MinConsumption = minConsumption.String
+	profile.Data.DataTrainingPolicy = dataTrainingPolicy.String
+	profile.Data.LogRetentionPolicy = logRetentionPolicy.String
+	profile.Data.DefaultSLA = defaultSLA.String
 	if taxRate.Valid {
 		if parsed, err := supplierTaxRateFromDB(taxRate.String); err != nil {
 			auditIncomplete = true
