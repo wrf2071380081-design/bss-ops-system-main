@@ -106,7 +106,7 @@ onBeforeUnmount(() => { active = false; listRequest?.abort(); });
     <div><div class="eyebrow">SUPPLIER SUBJECTS</div><h1>供应商主体</h1><p>维护供应商企业主体资料及归属采购人；新建主体默认归属当前登录员工。</p></div>
     <div class="heading-actions">
       <el-button v-if="routeValue(route.query.return_to) === 'suppliers'" @click="backToSupplierWorkspace">← 返回供应商管理</el-button>
-      <el-button :loading="loading" @click="load">刷新</el-button><el-button type="primary" @click="resetForm()">新建供应商</el-button>
+      <el-button :loading="loading" @click="load">刷新</el-button><el-button type="primary" @click="resetForm()">新增供应商</el-button>
     </div>
   </section>
 

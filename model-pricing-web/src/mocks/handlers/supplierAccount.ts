@@ -92,27 +92,40 @@ export const supplierAccountHandlers = [
       const name = (body.name || "").trim();
       // 原型实测：清空企业名称 → 统一 toast「企业资料必填」（不是行内红字）。
       if (!name) throw new ApiError(400, "企业资料必填");
-      if (body.region !== "CN" && body.region !== "OVERSEAS") throw new ApiError(400, "主体属性取值不合法");
-      // 后端兜底：已上架/有资源/有申报时不允许改 region（决策 D3）。
-      if (body.region !== account.region && account.regionLocked) throw new ApiError(409, "主体属性变更前须无资源、无申报");
+      // 区域已按原型从账户设置里去掉：请求不再携带 region，mock 也不再做锁定校验。
       const signature = JSON.stringify(body);
       const { key, cached } = requireIdempotency(request, signature);
       if (cached) return result(copy(cached.value));
 
       const registrationNo = (body.registrationNo || "").trim();
       const contact = (body.contact || "").trim();
+      // 9 个可选自由文本字段：只 trim，不做格式校验（邮箱暂不校验）。
+      const freeText = (value?: string) => (value ?? "").trim();
+      const texts = {
+        contactTitle: freeText(body.contactTitle),
+        contactEmail: freeText(body.contactEmail),
+        defaultSettlement: freeText(body.defaultSettlement),
+        defaultPayment: freeText(body.defaultPayment),
+        invoicePreference: freeText(body.invoicePreference),
+        minConsumption: freeText(body.minConsumption),
+        dataTrainingPolicy: freeText(body.dataTrainingPolicy),
+        logRetentionPolicy: freeText(body.logRetentionPolicy),
+        defaultSla: freeText(body.defaultSla),
+      };
       const changed: string[] = [];
       if (name !== account.name) changed.push("name");
       if (registrationNo !== account.registrationNo) changed.push("registrationNo");
       if (contact !== account.contact) changed.push("contact");
-      if (body.region !== account.region) changed.push("region");
+      (Object.keys(texts) as (keyof typeof texts)[]).forEach((key) => {
+        if (texts[key] !== account[key]) changed.push(key);
+      });
 
       const updated: SupplierAccountDTO = {
         ...account,
         name,
         registrationNo,
         contact,
-        region: body.region,
+        ...texts,
         // 企业证明不走这个接口：文件在 POST /account/license 里单独登记，这里保持原值。
         license: account.license,
         updatedAt: new Date().toISOString(),

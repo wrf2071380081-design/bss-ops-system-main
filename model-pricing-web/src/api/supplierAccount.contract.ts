@@ -35,14 +35,10 @@ export function isSupplierRegion(value: unknown): value is SupplierRegion {
   return typeof value === "string" && (REGIONS as readonly string[]).includes(value);
 }
 
-/** 注册编号的 label 由**已保存**的 region 决定（原型实测：下拉切换不即时联动）。 */
+/** 注册编号的 label 由**已保存**的 region 决定（原型实测：下拉切换不即时联动）。
+ * 账户设置页已按原型去掉「首次登记区域」字段，但 region 仍决定这行文案的分支。 */
 export function registrationLabelOf(region: SupplierRegion): string {
   return region === "OVERSEAS" ? "当地企业注册编号" : "统一社会信用代码";
-}
-
-/** 主体属性 label：锁定时追加原因（原型「主体属性（有上架历史，已锁定）」）。 */
-export function regionFieldLabelOf(account: Pick<SupplierAccountDTO, "regionLocked" | "regionLockReason">): string {
-  return account.regionLocked ? `主体属性（${account.regionLockReason || "已锁定"}）` : "主体属性";
 }
 
 function validateLicense(value: unknown): SupplierLicenseDTO | null {
@@ -76,6 +72,13 @@ export function validateSupplierAccount(value: unknown): SupplierAccountDTO {
     invalid("账户档案响应不符合约定：更新时间格式异常。");
   }
   const license = validateLicense(row.license);
+  // 9 个可选自由文本字段：老响应可能不带这些键，缺省按「未填写」；出现就必须是字符串。
+  const freeText = (key: string): string => {
+    const value = row[key];
+    if (value === undefined) return "";
+    if (typeof value !== "string") invalid(`账户档案响应不符合约定：${key} 类型异常。`);
+    return value;
+  };
   return {
     id: row.id,
     name: row.name,
@@ -85,12 +88,24 @@ export function validateSupplierAccount(value: unknown): SupplierAccountDTO {
     region: row.region,
     regionLocked: row.regionLocked,
     ...(row.regionLockReason ? { regionLockReason: row.regionLockReason as string } : {}),
+    contactTitle: freeText("contactTitle"),
+    contactEmail: freeText("contactEmail"),
+    defaultSettlement: freeText("defaultSettlement"),
+    defaultPayment: freeText("defaultPayment"),
+    invoicePreference: freeText("invoicePreference"),
+    minConsumption: freeText("minConsumption"),
+    dataTrainingPolicy: freeText("dataTrainingPolicy"),
+    logRetentionPolicy: freeText("logRetentionPolicy"),
+    defaultSla: freeText("defaultSla"),
     license,
     updatedAt: row.updatedAt,
   };
 }
 
-/** 保存前的入场校验（与后端 normalizeAccountUpdate 同口径），返回裁剪后的请求体。 */
+/** 保存前的入场校验（与后端 normalizeAccountUpdate 同口径），返回裁剪后的请求体。
+ *
+ * 9 个商务与合规字段只做 trim + 拦超长：**邮箱暂不校验格式**（产品口径，自由文本）。
+ * 请求体不再含 region —— 账户设置页已按原型去掉「首次登记区域」。 */
 export function validateSupplierAccountUpdate(input: UpdateSupplierAccountRequest): UpdateSupplierAccountRequest {
   const name = (input.name || "").trim();
   if (!name) throw new Error("企业资料必填");
@@ -99,8 +114,25 @@ export function validateSupplierAccountUpdate(input: UpdateSupplierAccountReques
   if ([...registrationNo].length > REG_NO_MAX) throw new Error("注册编号不能超过 64 个字符。");
   const contact = (input.contact || "").trim();
   if ([...contact].length > CONTACT_MAX) throw new Error("对接负责人不能超过 64 个字符。");
-  if (!isSupplierRegion(input.region)) throw new Error("主体属性取值不合法");
-  return { name, registrationNo, contact, region: input.region };
+  const text = (value: string | undefined, max: number, label: string): string => {
+    const trimmed = (value ?? "").trim();
+    if ([...trimmed].length > max) throw new Error(`${label}不能超过 ${max} 个字符。`);
+    return trimmed;
+  };
+  return {
+    name,
+    registrationNo,
+    contact,
+    contactTitle: text(input.contactTitle, 64, "联系人职务"),
+    contactEmail: text(input.contactEmail, 128, "联系人邮箱"),
+    defaultSettlement: text(input.defaultSettlement, 128, "默认账期"),
+    defaultPayment: text(input.defaultPayment, 128, "默认付款方式"),
+    invoicePreference: text(input.invoicePreference, 128, "发票偏好"),
+    minConsumption: text(input.minConsumption, 128, "最低消费"),
+    dataTrainingPolicy: text(input.dataTrainingPolicy, 128, "数据训练政策"),
+    logRetentionPolicy: text(input.logRetentionPolicy, 128, "日志留存与删除策略"),
+    defaultSla: text(input.defaultSla, 128, "默认 SLA"),
+  };
 }
 
 function validateLogRow(value: unknown, seen: Set<string>): SupplierOperationLogDTO {
