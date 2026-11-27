@@ -68,15 +68,36 @@ type AccountRecord struct {
 	LicenseName       string
 	LicenseRef        string
 	LicenseUploadedAt *time.Time
+	// 9 个可选自由文本字段（迁移 000083），空串表示未填写。
+	ContactTitle       string
+	ContactEmail       string
+	DefaultSettlement  string
+	DefaultPayment     string
+	InvoicePreference  string
+	MinConsumption     string
+	DataTrainingPolicy string
+	LogRetentionPolicy string
+	DefaultSLA         string
 }
 
 // AccountUpdate 是 PUT 的可写字段。刻意不含 phone / subject_id：
 // 手机号是登录键，主体归属不可由门户自助修改。
+//
+// 2026-11-27 起也不再含 region：原型与 PRD 都把「首次登记区域」从账户设置里去掉，
+// 区域只作为历史事实保留在 supplier 表里，门户保存时原样不动。
 type AccountUpdate struct {
-	Name           string
-	RegistrationNo string
-	Contact        string
-	Region         string
+	Name               string
+	RegistrationNo     string
+	Contact            string
+	ContactTitle       string
+	ContactEmail       string
+	DefaultSettlement  string
+	DefaultPayment     string
+	InvoicePreference  string
+	MinConsumption     string
+	DataTrainingPolicy string
+	LogRetentionPolicy string
+	DefaultSLA         string
 }
 
 // AccountLogRow 是一条账户留痕。
@@ -156,6 +177,9 @@ SELECT s.id
 const accountSelect = `
 SELECT s.id, s.name, s.region,
        COALESCE(s.registration_no, ''), COALESCE(s.contact, ''), COALESCE(s.phone, ''),
+       COALESCE(s.contact_title, ''), COALESCE(s.contact_email, ''),
+       COALESCE(s.default_settlement, ''), COALESCE(s.default_payment, ''), COALESCE(s.invoice_preference, ''),
+       COALESCE(s.min_consumption, ''), COALESCE(s.data_training_policy, ''), COALESCE(s.log_retention_policy, ''), COALESCE(s.default_sla, ''),
        s.status, COALESCE(s.subject_id, 0), s.updated_at,
        (SELECT count(*) FROM %[1]s.resource r WHERE r.supplier_id = s.id),
        (SELECT count(*) FROM %[1]s.submission sub WHERE sub.supplier_id = s.id),
@@ -189,6 +213,9 @@ func (s *AccountStore) load(ctx context.Context, q rowQuerier, supplierID int64)
 	var uploadedAt sql.NullTime
 	err := q.QueryRowContext(ctx, fmt.Sprintf(accountSelect, s.schema), supplierID).Scan(
 		&rec.ID, &rec.Name, &rec.Region, &rec.RegistrationNo, &rec.Contact, &rec.Phone,
+		&rec.ContactTitle, &rec.ContactEmail,
+		&rec.DefaultSettlement, &rec.DefaultPayment, &rec.InvoicePreference,
+		&rec.MinConsumption, &rec.DataTrainingPolicy, &rec.LogRetentionPolicy, &rec.DefaultSLA,
 		&rec.Status, &rec.SubjectID, &rec.UpdatedAt,
 		&rec.ResourceCount, &rec.SubmissionCount, &rec.EverAdmitted,
 		&rec.LicenseName, &rec.LicenseRef, &uploadedAt,
@@ -206,11 +233,11 @@ func (s *AccountStore) load(ctx context.Context, q rowQuerier, supplierID int64)
 	return &rec, nil
 }
 
-// Update 在一个事务里做「锁定校验 → 写回 supplier → 落留痕 → 续写档案快照」。
+// Update 在一个事务里做「写回 supplier → 落留痕 → 续写档案快照」。
 //
-// 先 SELECT ... FOR UPDATE 锁住 supplier 行，避免两个并发保存各自看到旧的 region。
-// 锁定计数用单独查询取：Postgres 不允许 FOR UPDATE 与聚合出现在同一层查询里。
-// 并发口径：region 守卫挂在被锁的行上，resource/submission 只增不减，读到即视为已锁定。
+// 先 SELECT ... FOR UPDATE 锁住 supplier 行，避免两个并发保存互相覆盖。
+// 区域锁定计数（resource/submission/ever_admitted）仍在这里取：一是 DTO 要用它算
+// regionLocked，二是档案快照的字段比对依赖同一事务快照。门户本身已不再写 region。
 //
 // 为什么必须续写档案快照（2026-11-20 排查结论，见 appendSupplierSnapshot）：
 // 门户保存此前只写 entity_type='supplier_account'，却同时刷新了 supplier.updated_at。
@@ -225,9 +252,15 @@ func (s *AccountStore) Update(ctx context.Context, supplierID int64, in AccountU
 
 	var current AccountRecord
 	err = tx.QueryRowContext(ctx, fmt.Sprintf(`
-SELECT id, name, region, COALESCE(registration_no, ''), COALESCE(contact, ''), COALESCE(phone, '')
+SELECT id, name, region, COALESCE(registration_no, ''), COALESCE(contact, ''), COALESCE(phone, ''),
+       COALESCE(contact_title, ''), COALESCE(contact_email, ''),
+       COALESCE(default_settlement, ''), COALESCE(default_payment, ''), COALESCE(invoice_preference, ''),
+       COALESCE(min_consumption, ''), COALESCE(data_training_policy, ''), COALESCE(log_retention_policy, ''), COALESCE(default_sla, '')
   FROM %s.supplier WHERE id = $1 FOR UPDATE`, s.schema), supplierID).Scan(
 		&current.ID, &current.Name, &current.Region, &current.RegistrationNo, &current.Contact, &current.Phone,
+		&current.ContactTitle, &current.ContactEmail,
+		&current.DefaultSettlement, &current.DefaultPayment, &current.InvoicePreference,
+		&current.MinConsumption, &current.DataTrainingPolicy, &current.LogRetentionPolicy, &current.DefaultSLA,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrAccountMissing
@@ -247,9 +280,8 @@ SELECT
 		return nil, fmt.Errorf("load supplier lock state %d: %w", supplierID, err)
 	}
 
-	if CurrentRegionLocked(&current) && in.Region != current.Region {
-		return nil, ErrRegionLocked
-	}
+	// 区域不在门户可写范围内（原型已去掉该字段），这里不再做锁定校验：
+	// 主体属性由内部建档时确定，门户保存不会触碰 supplier.region。
 
 	// 档案视图：既是续写快照的基线，也用来判断这条链还能不能往下接。
 	// FOR UPDATE 已经在上面拿到行锁，这里用不加锁的读，保持同一事务同一快照。
@@ -266,10 +298,18 @@ SELECT
 	var updatedAt time.Time
 	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`
 UPDATE %s.supplier
-   SET name = $2, registration_no = $3, contact = $4, region = $5, updated_at = now()
+   SET name = $2, registration_no = $3, contact = $4,
+       contact_title = $5, contact_email = $6,
+       default_settlement = $7, default_payment = $8, invoice_preference = $9,
+       min_consumption = $10, data_training_policy = $11, log_retention_policy = $12, default_sla = $13,
+       updated_at = now()
  WHERE id = $1
  RETURNING updated_at`, s.schema),
-		supplierID, in.Name, in.RegistrationNo, in.Contact, in.Region).Scan(&updatedAt); err != nil {
+		supplierID, in.Name, in.RegistrationNo, in.Contact,
+		nullableSupplierText(in.ContactTitle), nullableSupplierText(in.ContactEmail),
+		nullableSupplierText(in.DefaultSettlement), nullableSupplierText(in.DefaultPayment), nullableSupplierText(in.InvoicePreference),
+		nullableSupplierText(in.MinConsumption), nullableSupplierText(in.DataTrainingPolicy), nullableSupplierText(in.LogRetentionPolicy), nullableSupplierText(in.DefaultSLA),
+	).Scan(&updatedAt); err != nil {
 		return nil, fmt.Errorf("update supplier %d: %w", supplierID, err)
 	}
 	// 快照里的 updated_at 必须与主行逐微秒相等，统一截断到数据库精度。
@@ -285,26 +325,39 @@ UPDATE %s.supplier
 		}
 	}
 
-	before, _ := json.Marshal(map[string]any{
-		"name": current.Name, "registrationNo": current.RegistrationNo,
-		"contact": current.Contact, "region": current.Region,
-	})
-	changed := make([]string, 0, 4)
-	if in.Name != current.Name {
-		changed = append(changed, "name")
+	// 逐字段比对并留痕。新增的「联系人职务/邮箱 + 商务与合规条款」也要算进 changed，
+	// 否则供应商自己改了默认 SLA，内部操作记录里只看得到一条笼统的「维护企业资料」。
+	//
+	// region 不再参与：门户已去掉「首次登记区域」，保存时不会写这一列。
+	type accountField struct{ key, before, after string }
+	fields := []accountField{
+		{"name", current.Name, in.Name},
+		{"registrationNo", current.RegistrationNo, in.RegistrationNo},
+		{"contact", current.Contact, in.Contact},
+		{"contactTitle", current.ContactTitle, in.ContactTitle},
+		{"contactEmail", current.ContactEmail, in.ContactEmail},
+		{"defaultSettlement", current.DefaultSettlement, in.DefaultSettlement},
+		{"defaultPayment", current.DefaultPayment, in.DefaultPayment},
+		{"invoicePreference", current.InvoicePreference, in.InvoicePreference},
+		{"minConsumption", current.MinConsumption, in.MinConsumption},
+		{"dataTrainingPolicy", current.DataTrainingPolicy, in.DataTrainingPolicy},
+		{"logRetentionPolicy", current.LogRetentionPolicy, in.LogRetentionPolicy},
+		{"defaultSla", current.DefaultSLA, in.DefaultSLA},
 	}
-	if in.RegistrationNo != current.RegistrationNo {
-		changed = append(changed, "registrationNo")
+	beforeFields := make(map[string]any, len(fields))
+	afterFields := make(map[string]any, len(fields))
+	changed := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if field.before == field.after {
+			continue
+		}
+		changed = append(changed, field.key)
+		beforeFields[field.key] = field.before
+		afterFields[field.key] = field.after
 	}
-	if in.Contact != current.Contact {
-		changed = append(changed, "contact")
-	}
-	if in.Region != current.Region {
-		changed = append(changed, "region")
-	}
+	before, _ := json.Marshal(beforeFields)
 	after, _ := json.Marshal(map[string]any{
-		"changed": changed, "name": in.Name, "registrationNo": in.RegistrationNo,
-		"contact": in.Contact, "region": in.Region,
+		"changed": changed, "fields": afterFields,
 	})
 	// operation_log.operator_id 外键指向 internal_staff，供应商侧没有 staff id，
 	// 因此留空、只落 operator_name_snapshot（前端「操作人」列取的就是这个快照）。
